@@ -1,5 +1,7 @@
 import json
 import ssl
+import time
+import urllib.error
 import urllib.request
 from datetime import date
 
@@ -47,9 +49,23 @@ def _call_claude(prompt):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30, context=_ssl_ctx) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data["content"][0]["text"].strip()
+    # Retry transient 429/529/5xx and network errors — Anthropic 529 (overload)
+    # sank a full run before; same backoff covers DNS/TLS/connection blips.
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=30, context=_ssl_ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data["content"][0]["text"].strip()
+        except urllib.error.HTTPError as exc:
+            if attempt < 2 and (exc.code in (429, 529) or 500 <= exc.code < 600):
+                time.sleep(2 ** (attempt + 1))
+                continue
+            raise
+        except urllib.error.URLError:
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            raise
 
 def generate_email(contact, action):
     """
