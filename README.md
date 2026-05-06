@@ -93,7 +93,7 @@ Add all 5 secrets:
 
 GitHub → Actions tab → Cold Email Agent → Run workflow → Run workflow
 
-Watch the run. If it passes, you're live. Agent runs every weekday at 8am EST.
+Watch the run. If it passes, you're live. Agent runs every weekday at **5:37am EST / 6:37am EDT** (10:37 UTC — off-peak to avoid GitHub Actions queue delays).
 
 ---
 
@@ -114,6 +114,8 @@ Supabase → Table Editor → contacts → Insert row:
 | mode | outreach |
 
 Leave all other fields empty. Agent picks it up next morning.
+
+> **Threading:** Follow-up emails automatically appear in the same Gmail thread as the original. The agent saves a `Message-ID` after the first draft and passes it as `In-Reply-To` on every follow-up — no setup needed.
 
 ### Adding a Mode B contact (applied to a job)
 
@@ -178,9 +180,15 @@ new → applied_intro_drafted    → applied_intro_sent
 
 ---
 
+## Failure Notifications
+
+If the agent or monitor job fails on GitHub Actions, `notify_failure.py` sends an email to your Gmail address with a direct link to the failed run. No additional setup — it uses your existing `GMAIL_APP_PASSWORD` secret.
+
+---
+
 ## Auto Reply Monitoring
 
-`monitor.py` runs every 2 hours Monday-Friday via GitHub Actions. No manual steps needed.
+`monitor.py` runs every 2 hours Monday-Friday at :23 past the hour (off-peak) via GitHub Actions. No manual steps needed.
 
 **How it works:**
 

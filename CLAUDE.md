@@ -12,12 +12,13 @@ was actually written, not just style preferences.
 ## Module layout
 
 ```
-agent.py     # Daily run: pick contacts, draft, label, update Supabase
-monitor.py   # Reply detector — runs every 2 hours, sets reply_status=replied
-emailer.py   # Claude prompts and email generation
-gmail.py     # IMAP draft creation + Gmail label management
-db.py        # Supabase client + thin query/update wrappers
-config.py    # All env-var reads + prompt templates + tier instructions
+agent.py          # Daily run: pick contacts, draft, label, update Supabase
+monitor.py        # Reply detector — runs every 2 hours, sets reply_status=replied
+emailer.py        # Claude prompts and email generation
+gmail.py          # IMAP draft creation + Gmail label management
+db.py             # Supabase client + thin query/update wrappers
+config.py         # All env-var reads + prompt templates + tier instructions
+notify_failure.py # Emailed to GMAIL_ADDRESS when a workflow step fails
 ```
 
 Every module that touches the outside world is wrapped behind a function so
@@ -93,12 +94,49 @@ except Exception as exc:
     log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
 ```
 
+## Threading invariants
+
+Follow-up emails must land in the same Gmail thread as the original.
+
+- `create_draft()` in `gmail.py` generates a `Message-ID` via
+  `email.utils.make_msgid()` and embeds it in the MIME message before IMAP
+  APPEND. It returns the ID to the caller. **Do not fetch the ID from IMAP
+  after append** — Gmail drafts have no server-assigned Message-ID until sent.
+- `create_draft()` accepts `in_reply_to` and `references` kwargs. When
+  `in_reply_to` is set, it adds `In-Reply-To` and `References` headers and
+  auto-prefixes the subject with `Re: ` (unless it already starts with it).
+- `_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}` is
+  defined in both `agent.py` and `emailer.py`. Keep them in sync manually if
+  new first-touch actions are added.
+- After a first-touch draft is created, `agent.py` calls `save_thread_info()`
+  to persist `message_id` and `original_subject` in Supabase.
+- For all follow-up actions, `agent.py` calls `get_thread_info()` first and
+  passes the stored `message_id` as `in_reply_to` to `create_draft()`.
+- `generate_email()` in `emailer.py` accepts `original_subject=None`. For
+  follow-up actions it returns `"Re: " + original_subject` without calling
+  Claude — only first-touch actions call `_generate_subject()`.
+- `message_id` and `original_subject` columns are **agent-managed**. Never
+  write them manually — they are set once after the first draft.
+
+## Resilience patterns
+
+- **Anthropic API** (`emailer._call_claude`): retries on HTTP 429, 529, any
+  5xx, and `urllib.error.URLError`, up to 3 attempts with 2 s / 4 s backoff.
+  Other 4xx (auth, bad request) raise immediately.
+- **Supabase** (`db._retry`): every query/update is wrapped in a 3-attempt
+  retry with the same 2 s / 4 s backoff. Catches broad `Exception` — Supabase
+  blips are transient; the retry budget is small.
+- **Failure notification** (`notify_failure.py`): both workflows have an
+  `if: failure()` step that runs this script. It emails `GMAIL_ADDRESS` via
+  Gmail SMTP using `GMAIL_APP_PASSWORD` — no new secrets required.
+
 ## Supabase patterns
 
 - All queries go through `get_client()` (cached singleton).
 - Filtering uses the chain pattern: `.table().select().eq().like().execute()`.
 - Updates always set `last_emailed = str(date.today())` alongside the stage
-  change (except for `update_reply_status`, which only changes that field).
+  change (except for `update_reply_status` and `save_thread_info`, which only
+  touch their own fields).
 - The Supabase Python client validates API keys against a JWT regex. The
   monkey-patch in `db.py` widens it to also accept `sb_publishable_*` keys.
   **Do not remove this patch** — it is the only reason the publishable key
@@ -113,6 +151,9 @@ except Exception as exc:
   intentionally ignores the return value.
 - Always wrap IMAP calls in `try/finally imap.logout()`. Connection cleanup
   is non-negotiable.
+- `create_draft()` returns the `Message-ID` it generated (always a non-None
+  string). Do not try to fetch the ID from IMAP after append — Gmail drafts
+  only receive a server Message-ID when actually sent.
 
 ## Tests
 
