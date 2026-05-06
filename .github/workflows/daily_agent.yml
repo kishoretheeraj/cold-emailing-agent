@@ -2,7 +2,7 @@ name: Cold Email Agent
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5'  # 8am EST = 13:00 UTC, Mon-Fri
+    - cron: '37 10 * * 1-5'  # 5:37am EST / 6:37am EDT — off-peak minute to dodge GHA queue delays
   workflow_dispatch:          # Manual trigger from GitHub Actions UI
 
 jobs:

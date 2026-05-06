@@ -2,7 +2,7 @@ name: Reply Monitor
 
 on:
   schedule:
-    - cron: '0 */2 * * 1-5'  # Every 2 hours, Mon-Fri
+    - cron: '23 */2 * * 1-5'  # Every 2 hours at :23, Mon-Fri — off-peak minute
   workflow_dispatch:           # Manual trigger from GitHub Actions UI
 
 jobs:
