@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0b;
+  --color-surface: #131316;
+  --color-surface-2: #1a1a1f;
+  --color-border: #25252b;
+  --color-border-strong: #34343b;
+  --color-fg: #ededed;
+  --color-fg-muted: #9ca3af;
+  --color-fg-dim: #6b7280;
+  --color-primary: #6366f1;
+  --color-primary-hover: #818cf8;
+  --color-primary-soft: #4338ca;
+
+  --color-stage-new: #6b7280;
+  --color-stage-drafted: #3b82f6;
+  --color-stage-sent: #22c55e;
+  --color-reply-positive: #22c55e;
+  --color-reply-dead: #7f1d1d;
+
+  --font-sans: var(--font-inter);
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-strong); }
+
+input, textarea, select, button {
+  font-family: inherit;
+}
+
+/* Tasteful focus ring */
+*:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
