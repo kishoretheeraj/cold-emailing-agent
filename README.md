@@ -178,6 +178,36 @@ new → applied_intro_drafted    → applied_intro_sent
 
 ---
 
+## Auto Reply Monitoring
+
+`monitor.py` runs every 2 hours Monday-Friday via GitHub Actions. No manual steps needed.
+
+**How it works:**
+
+1. Fetches all contacts where `reply_status = 'no_reply'` AND `stage` contains `_sent` (email was already sent)
+2. For each contact, searches the Gmail INBOX for any email FROM that contact's address
+3. If a reply is found, sets `reply_status = 'replied'` in Supabase automatically
+4. Labels the reply in Gmail under **Cold Outreach/Replied** so all replies are visible in one place
+5. The next morning, `agent.py` sees `reply_status = 'replied'` and skips that contact automatically — no more emails sent
+
+**Gmail labels applied automatically:**
+
+| Action | Gmail label |
+|---|---|
+| First Touch draft created | Cold Outreach/First Touch |
+| Follow-up #1 draft created | Cold Outreach/Follow-up #1 |
+| Follow-up #2 draft created | Cold Outreach/Follow-up #2 |
+| Break-up draft created | Cold Outreach/Break-up |
+| Applied Intro draft created | Cold Outreach/Applied Intro |
+| Applied Follow-up draft created | Cold Outreach/Applied Follow-up |
+| Reply detected by monitor | Cold Outreach/Replied |
+
+Labels are created automatically if they don't exist — nothing to set up in Gmail.
+
+**You never need to manually update `reply_status` for standard replies.** Only use the manual update (see Daily Workflow above) when you want to mark a contact as `interested`, `call_scheduled`, or `dead`.
+
+---
+
 ## Reading Logs
 
 GitHub → Actions tab → click any run → download artifact `agent-log-*`

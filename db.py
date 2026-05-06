@@ -67,3 +67,21 @@ def close_contact(contact_id):
         "stage": "closed",
         "last_emailed": str(date.today()),
     }).eq("id", contact_id).execute()
+
+def get_sent_contacts():
+    """Fetch contacts where an email was sent but no reply recorded yet."""
+    result = (
+        get_client()
+        .table("contacts")
+        .select("*")
+        .eq("reply_status", "no_reply")
+        .like("stage", "%_sent%")
+        .execute()
+    )
+    return result.data or []
+
+def update_reply_status(contact_id, status):
+    """Update reply_status for a single contact."""
+    get_client().table("contacts").update({
+        "reply_status": status,
+    }).eq("id", contact_id).execute()

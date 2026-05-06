@@ -22,7 +22,7 @@ from datetime import date
 from config import FOLLOWUP_DAYS
 from db import get_all_contacts, update_contact, close_contact
 from emailer import generate_email
-from gmail import create_draft
+from gmail import create_draft, apply_label_to_latest_draft
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -121,6 +121,15 @@ NEXT_TEMPLATE = {
     "send_applied_followup": "applied_followup",
 }
 
+ACTION_LABEL = {
+    "send_first_touch":      "Cold Outreach/First Touch",
+    "send_followup1":        "Cold Outreach/Follow-up #1",
+    "send_followup2":        "Cold Outreach/Follow-up #2",
+    "send_breakup":          "Cold Outreach/Break-up",
+    "send_applied_intro":    "Cold Outreach/Applied Intro",
+    "send_applied_followup": "Cold Outreach/Applied Follow-up",
+}
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run():
@@ -157,6 +166,14 @@ def run():
 
             # Create Gmail draft
             create_draft(contact["email"], subject, body)
+
+            # Apply Gmail label to the draft (best-effort — never blocks)
+            label = ACTION_LABEL.get(action)
+            if label:
+                try:
+                    apply_label_to_latest_draft(label)
+                except Exception as exc:
+                    log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
 
             # Update Supabase
             next_stage = NEXT_STAGE[action]
