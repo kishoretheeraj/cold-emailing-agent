@@ -21,13 +21,78 @@ def test_create_draft_logs_in_appends_and_logs_out(mocker):
     fake_imap.append.assert_called_once()
     args = fake_imap.append.call_args.args
     assert args[0] == '"[Gmail]/Drafts"'
-    # The fourth arg is the raw message bytes; verify subject + recipient inline.
     raw_msg = args[3]
     assert b"Subject: subject" in raw_msg
     assert b"To: dana@example.com" in raw_msg
     assert b"body text" in raw_msg
-
     fake_imap.logout.assert_called_once()
+
+
+def test_create_draft_returns_message_id(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    mid = gmail.create_draft("dana@example.com", "subject", "body")
+
+    # make_msgid always generates an RFC-compliant angle-bracket id
+    assert mid.startswith("<") and mid.endswith(">")
+    assert "@" in mid
+
+
+def test_create_draft_embeds_message_id_in_raw_bytes(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    mid = gmail.create_draft("dana@example.com", "subject", "body")
+
+    raw_msg = fake_imap.append.call_args.args[3]
+    assert mid.encode() in raw_msg
+
+
+def test_create_draft_adds_threading_headers_when_in_reply_to(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.create_draft(
+        "dana@example.com", "Re: intro", "follow-up body",
+        in_reply_to="<orig@mail.gmail.com>",
+    )
+
+    raw_msg = fake_imap.append.call_args.args[3]
+    assert b"In-Reply-To: <orig@mail.gmail.com>" in raw_msg
+    assert b"References: <orig@mail.gmail.com>" in raw_msg
+
+
+def test_create_draft_prefixes_subject_with_re(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.create_draft(
+        "dana@example.com", "quick intro", "body",
+        in_reply_to="<orig@mail.gmail.com>",
+    )
+
+    raw_msg = fake_imap.append.call_args.args[3]
+    assert b"Subject: Re: quick intro" in raw_msg
+
+
+def test_create_draft_does_not_double_prefix_re(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.create_draft(
+        "dana@example.com", "Re: quick intro", "body",
+        in_reply_to="<orig@mail.gmail.com>",
+    )
+
+    raw_msg = fake_imap.append.call_args.args[3]
+    assert b"Subject: Re: quick intro" in raw_msg
+    assert b"Subject: Re: Re:" not in raw_msg
 
 
 def test_create_draft_raises_on_non_ok(mocker):

@@ -119,6 +119,41 @@ def test_update_reply_status_writes_field(fake_client):
     fake_client.table.return_value.update.return_value.eq.assert_called_with("id", 42)
 
 
+# ── save_thread_info ─────────────────────────────────────────────────────────
+
+
+def test_save_thread_info_writes_message_id_and_subject(fake_client):
+    db.save_thread_info(5, "<mid@gmail.com>", "quick intro")
+
+    payload = fake_client.table.return_value.update.call_args.args[0]
+    assert payload["message_id"] == "<mid@gmail.com>"
+    assert payload["original_subject"] == "quick intro"
+    fake_client.table.return_value.update.return_value.eq.assert_called_with("id", 5)
+
+
+# ── get_thread_info ───────────────────────────────────────────────────────────
+
+
+def test_get_thread_info_returns_row(fake_client):
+    chain = fake_client.table.return_value.select.return_value.eq.return_value
+    chain.execute.return_value.data = [
+        {"message_id": "<mid@gmail.com>", "original_subject": "quick intro"}
+    ]
+
+    result = db.get_thread_info(5)
+
+    fake_client.table.return_value.select.assert_called_with("message_id, original_subject")
+    fake_client.table.return_value.select.return_value.eq.assert_called_with("id", 5)
+    assert result == {"message_id": "<mid@gmail.com>", "original_subject": "quick intro"}
+
+
+def test_get_thread_info_returns_empty_dict_when_no_row(fake_client):
+    chain = fake_client.table.return_value.select.return_value.eq.return_value
+    chain.execute.return_value.data = []
+
+    assert db.get_thread_info(99) == {}
+
+
 # ── get_client lazy caching ──────────────────────────────────────────────────
 
 

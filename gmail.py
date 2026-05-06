@@ -2,19 +2,34 @@ import imaplib
 import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import make_msgid
 
 from config import GMAIL_ADDRESS, GMAIL_APP_PASSWORD
 
 
-def create_draft(to_email, subject, body):
+def create_draft(to_email, subject, body, in_reply_to=None, references=None, subject_prefix=True):
     """
     Create a Gmail draft via IMAP. Never sends — draft only.
-    User reviews and sends manually from Gmail.
+    Generates and sets a Message-ID on the draft so follow-ups can reference
+    it for threading. Returns the Message-ID string.
+    When in_reply_to is provided, adds In-Reply-To/References headers and
+    prefixes subject with 'Re: ' (unless already set or subject_prefix=False).
     """
+    if in_reply_to and subject_prefix and not subject.startswith("Re: "):
+        subject = "Re: " + subject
+
+    # Generate before append so we own the ID and can return it immediately.
+    # Gmail honours a pre-set Message-ID when the user clicks Send.
+    mid = make_msgid(domain="gmail.com")
+
     msg = MIMEMultipart()
+    msg["Message-ID"] = mid
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = to_email
     msg["Subject"] = subject
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = references or in_reply_to
     msg.attach(MIMEText(body, "plain"))
 
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
@@ -28,6 +43,7 @@ def create_draft(to_email, subject, body):
         )
         if status != "OK":
             raise RuntimeError(f"IMAP APPEND failed: {status} {data}")
+        return mid
     finally:
         imap.logout()
 

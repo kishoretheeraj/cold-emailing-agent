@@ -99,3 +99,18 @@ def update_reply_status(contact_id, status):
     _retry(lambda: get_client().table("contacts").update({
         "reply_status": status,
     }).eq("id", contact_id).execute())
+
+def save_thread_info(contact_id, message_id, subject):
+    """Save Message-ID and subject of the first email so follow-ups can thread."""
+    _retry(lambda: get_client().table("contacts").update({
+        "message_id": message_id,
+        "original_subject": subject,
+    }).eq("id", contact_id).execute())
+
+def get_thread_info(contact_id):
+    """Return message_id and original_subject for a contact."""
+    result = _retry(lambda: get_client().table("contacts").select(
+        "message_id, original_subject"
+    ).eq("id", contact_id).execute())
+    rows = result.data or []
+    return rows[0] if rows else {}

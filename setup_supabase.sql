@@ -30,9 +30,17 @@ CREATE TABLE IF NOT EXISTS contacts (
   company_applied   TEXT,
   applied_date      DATE,
 
+  -- THREADING — populated after first email is drafted
+  message_id        TEXT,
+  original_subject  TEXT,
+
   created_at        TIMESTAMPTZ DEFAULT NOW(),
   updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Threading columns (safe to run on existing tables)
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS message_id TEXT;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS original_subject TEXT;
 
 -- Indexes for fast daily queries
 CREATE INDEX IF NOT EXISTS idx_contacts_stage_followup ON contacts(stage, followup_date);

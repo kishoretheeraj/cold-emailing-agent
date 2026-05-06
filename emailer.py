@@ -18,6 +18,8 @@ from config import (
 )
 
 # ── Action → template name mapping ────────────────────────────────────────────
+_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
+
 ACTION_TO_TEMPLATE = {
     "send_first_touch":      "cold_intro",
     "send_followup1":        "follow_up_1",
@@ -67,10 +69,12 @@ def _call_claude(prompt):
                 continue
             raise
 
-def generate_email(contact, action):
+def generate_email(contact, action, original_subject=None):
     """
     Generate email body + subject for a contact based on the action.
     Returns (subject, body) tuple.
+    For follow-up actions, skips Claude subject generation and returns
+    'Re: {original_subject}' so follow-ups stay in the same thread.
     """
     mode = contact.get("mode", "outreach")
     dart = _is_dartmouth(contact)
@@ -86,7 +90,10 @@ def generate_email(contact, action):
     else:
         raise ValueError(f"Unknown action: {action}")
 
-    subject = _generate_subject(contact, mode, body)
+    if action in _FIRST_TOUCH_ACTIONS:
+        subject = _generate_subject(contact, mode, body)
+    else:
+        subject = "Re: " + (original_subject or "")
     return subject, body
 
 def _generate_outreach(contact, action, dart_instr):

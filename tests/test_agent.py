@@ -280,36 +280,72 @@ def test_run_drafts_and_labels_a_new_contact(mocker):
         return_value=[_build_contact()],
     )
     mocker.patch("agent.generate_email", return_value=("subj", "body"))
-    create_draft = mocker.patch("agent.create_draft")
+    create_draft = mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
     apply_label = mocker.patch("agent.apply_label_to_latest_draft")
     update_contact = mocker.patch("agent.update_contact")
+    save_thread_info = mocker.patch("agent.save_thread_info")
     mocker.patch("agent.time.sleep")
 
     agent.run()
 
+    # First-touch: no in_reply_to
     create_draft.assert_called_once_with("dana@example.com", "subj", "body")
     apply_label.assert_called_once_with("Cold Outreach/First Touch")
     update_contact.assert_called_once()
     args, _ = update_contact.call_args
     assert args[0] == 1  # contact id
     assert args[1] == "first_touch_drafted"
+    # Thread info saved after first touch
+    save_thread_info.assert_called_once_with(1, "<mid@gmail.com>", "subj")
+
 
 
 def test_run_does_not_block_on_label_failure(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
     mocker.patch("agent.generate_email", return_value=("s", "b"))
-    mocker.patch("agent.create_draft")
+    mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
     mocker.patch(
         "agent.apply_label_to_latest_draft",
         side_effect=RuntimeError("imap down"),
     )
     update_contact = mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
     mocker.patch("agent.time.sleep")
 
     # Must not raise — labeling is best-effort.
     agent.run()
 
     update_contact.assert_called_once()
+
+
+def test_run_followup_passes_thread_headers(mocker):
+    contact = _build_contact(
+        stage="first_touch_sent",
+        followup_date=str(date.today() - timedelta(days=1)),
+        message_id="<orig@gmail.com>",
+        original_subject="quick intro",
+    )
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    mocker.patch(
+        "agent.get_thread_info",
+        return_value={"message_id": "<orig@gmail.com>", "original_subject": "quick intro"},
+    )
+    mocker.patch("agent.generate_email", return_value=("Re: quick intro", "follow body"))
+    create_draft = mocker.patch("agent.create_draft", return_value="<fup@gmail.com>")
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    save_thread_info = mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    # Follow-up must be sent with in_reply_to
+    create_draft.assert_called_once_with(
+        "dana@example.com", "Re: quick intro", "follow body",
+        in_reply_to="<orig@gmail.com>",
+    )
+    # Thread info not re-saved for follow-ups
+    save_thread_info.assert_not_called()
 
 
 def test_run_skips_replied_contacts(mocker):

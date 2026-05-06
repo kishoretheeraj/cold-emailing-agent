@@ -111,11 +111,14 @@ def test_generate_email_applied_intro(mocker):
 
 
 def test_generate_email_applied_followup(mocker):
-    mocker.patch.object(
-        emailer, "_call_claude", side_effect=["Quick follow-up.", "follow-up"]
+    mock_claude = mocker.patch.object(emailer, "_call_claude", return_value="Quick follow-up.")
+    subject, body = emailer.generate_email(
+        _applied_contact(), "send_applied_followup", original_subject="Senior PM Role"
     )
-    subject, body = emailer.generate_email(_applied_contact(), "send_applied_followup")
-    assert subject == "follow-up"
+    assert subject == "Re: Senior PM Role"
+    assert body == "Quick follow-up."
+    # Only one Claude call (body) — subject is derived, not generated
+    assert mock_claude.call_count == 1
 
 
 def test_generate_email_unknown_action_raises():
@@ -129,6 +132,29 @@ def test_generate_email_strips_quotes_from_subject(mocker):
     )
     subject, _ = emailer.generate_email(_outreach_contact(), "send_first_touch")
     assert subject == "quoted subject"
+
+
+def test_generate_email_followup_uses_re_prefix_not_claude(mocker):
+    mock_claude = mocker.patch.object(emailer, "_call_claude", return_value="follow-up body")
+    subject, _ = emailer.generate_email(
+        _outreach_contact(), "send_followup1", original_subject="quick intro"
+    )
+    assert subject == "Re: quick intro"
+    assert mock_claude.call_count == 1  # body only, no subject call
+
+
+def test_generate_email_breakup_also_uses_re_prefix(mocker):
+    mocker.patch.object(emailer, "_call_claude", return_value="breakup body")
+    subject, _ = emailer.generate_email(
+        _outreach_contact(), "send_breakup", original_subject="quick intro"
+    )
+    assert subject == "Re: quick intro"
+
+
+def test_generate_email_followup_empty_original_subject(mocker):
+    mocker.patch.object(emailer, "_call_claude", return_value="body")
+    subject, _ = emailer.generate_email(_outreach_contact(), "send_followup1")
+    assert subject == "Re: "
 
 
 def test_outreach_prompt_includes_dartmouth_when_alumni(mocker):

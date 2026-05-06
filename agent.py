@@ -20,7 +20,7 @@ import logging
 from datetime import date
 
 from config import FOLLOWUP_DAYS
-from db import get_all_contacts, update_contact, close_contact
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info
 from emailer import generate_email
 from gmail import create_draft, apply_label_to_latest_draft
 
@@ -101,6 +101,9 @@ def _parse_date(value):
         return None
 
 
+# Actions that open a new thread — first email in a sequence.
+_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
+
 # ── Stage transitions ──────────────────────────────────────────────────────────
 
 NEXT_STAGE = {
@@ -161,11 +164,26 @@ def run():
             continue
 
         try:
-            # Generate email
-            subject, body = generate_email(contact, action)
+            # Fetch stored thread info for follow-ups
+            thread_message_id = None
+            original_subject = None
+            if action not in _FIRST_TOUCH_ACTIONS:
+                thread_info = get_thread_info(contact["id"])
+                thread_message_id = thread_info.get("message_id")
+                original_subject = thread_info.get("original_subject")
 
-            # Create Gmail draft
-            create_draft(contact["email"], subject, body)
+            # Generate email
+            subject, body = generate_email(contact, action, original_subject)
+
+            # Create Gmail draft (with threading headers for follow-ups)
+            if thread_message_id:
+                message_id = create_draft(contact["email"], subject, body, in_reply_to=thread_message_id)
+            else:
+                message_id = create_draft(contact["email"], subject, body)
+
+            # Persist thread info after the first email so follow-ups can thread
+            if action in _FIRST_TOUCH_ACTIONS and message_id:
+                save_thread_info(contact["id"], message_id, subject)
 
             # Apply Gmail label to the draft (best-effort — never blocks)
             label = ACTION_LABEL.get(action)
