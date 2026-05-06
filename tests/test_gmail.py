@@ -1,0 +1,117 @@
+"""Tests for gmail.py — IMAP draft creation and label management."""
+
+from unittest.mock import MagicMock
+
+import pytest
+
+import gmail
+
+
+# ── create_draft ─────────────────────────────────────────────────────────────
+
+
+def test_create_draft_logs_in_appends_and_logs_out(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.create_draft("dana@example.com", "subject", "body text")
+
+    fake_imap.login.assert_called_once_with(gmail.GMAIL_ADDRESS, gmail.GMAIL_APP_PASSWORD)
+    fake_imap.append.assert_called_once()
+    args = fake_imap.append.call_args.args
+    assert args[0] == '"[Gmail]/Drafts"'
+    # The fourth arg is the raw message bytes; verify subject + recipient inline.
+    raw_msg = args[3]
+    assert b"Subject: subject" in raw_msg
+    assert b"To: dana@example.com" in raw_msg
+    assert b"body text" in raw_msg
+
+    fake_imap.logout.assert_called_once()
+
+
+def test_create_draft_raises_on_non_ok(mocker):
+    fake_imap = MagicMock()
+    fake_imap.append.return_value = ("NO", [b"oh no"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    with pytest.raises(RuntimeError, match="IMAP APPEND failed"):
+        gmail.create_draft("x@y", "s", "b")
+
+    # Logout must still happen via finally.
+    fake_imap.logout.assert_called_once()
+
+
+# ── create_gmail_label_if_not_exists ─────────────────────────────────────────
+
+
+def test_create_gmail_label_calls_create_with_quoted_name():
+    fake_imap = MagicMock()
+    fake_imap.create.return_value = ("OK", [b"created"])
+
+    gmail.create_gmail_label_if_not_exists(fake_imap, "Cold Outreach/First Touch")
+
+    fake_imap.create.assert_called_once_with('"Cold Outreach/First Touch"')
+
+
+def test_create_gmail_label_swallows_already_exists():
+    fake_imap = MagicMock()
+    fake_imap.create.return_value = ("NO", [b"[ALREADYEXISTS] Mailbox exists."])
+
+    # Must not raise — Gmail returns NO when the label already exists.
+    gmail.create_gmail_label_if_not_exists(fake_imap, "Cold Outreach/Replied")
+
+
+# ── apply_label_to_latest_draft ──────────────────────────────────────────────
+
+
+def test_apply_label_copies_latest_message(mocker):
+    fake_imap = MagicMock()
+    fake_imap.search.return_value = ("OK", [b"1 2 3"])
+    fake_imap.create.return_value = ("OK", [b"ok"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.apply_label_to_latest_draft("Cold Outreach/First Touch")
+
+    fake_imap.login.assert_called_once_with(gmail.GMAIL_ADDRESS, gmail.GMAIL_APP_PASSWORD)
+    fake_imap.create.assert_called_once_with('"Cold Outreach/First Touch"')
+    fake_imap.select.assert_called_once_with('"[Gmail]/Drafts"')
+    fake_imap.search.assert_called_once_with(None, "ALL")
+    # Copies the LAST UID — not the first
+    fake_imap.copy.assert_called_once_with("3", '"Cold Outreach/First Touch"')
+    fake_imap.logout.assert_called_once()
+
+
+def test_apply_label_no_messages_skips_copy(mocker):
+    fake_imap = MagicMock()
+    fake_imap.search.return_value = ("OK", [b""])
+    fake_imap.create.return_value = ("OK", [b"ok"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.apply_label_to_latest_draft("Cold Outreach/Break-up")
+
+    fake_imap.copy.assert_not_called()
+    fake_imap.logout.assert_called_once()
+
+
+def test_apply_label_search_failure_skips(mocker):
+    fake_imap = MagicMock()
+    fake_imap.search.return_value = ("NO", [None])
+    fake_imap.create.return_value = ("OK", [b"ok"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.apply_label_to_latest_draft("Cold Outreach/First Touch")
+
+    fake_imap.copy.assert_not_called()
+    fake_imap.logout.assert_called_once()
+
+
+def test_apply_label_logs_out_even_on_failure(mocker):
+    fake_imap = MagicMock()
+    fake_imap.create.side_effect = RuntimeError("imap is down")
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    with pytest.raises(RuntimeError):
+        gmail.apply_label_to_latest_draft("Cold Outreach/First Touch")
+
+    fake_imap.logout.assert_called_once()
