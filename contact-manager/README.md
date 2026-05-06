@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Cold Email Ops — Contact Manager
 
-## Getting Started
+A Next.js app that adds contacts to the Supabase table the Python cold-email
+agent reads every morning at 8am EST.
 
-First, run the development server:
+**Live:** https://contact-manager-steel-eight.vercel.app
+
+## What it does
+
+- **Smart Input mode** — paste a LinkedIn bio, JD, or casual description.
+  Claude extracts structured fields and shows an editable preview before save.
+- **Structured Form mode** — separate sections for outreach contacts and
+  hiring-manager (applied) contacts.
+- **Contacts list** — last 20 added, with a side panel for stage and
+  `reply_status` updates. Color-coded by stage and reply state.
+
+## Stack
+
+- Next.js 16 (App Router) + React 19
+- Tailwind CSS v4 with custom dark theme (indigo primary)
+- `@supabase/supabase-js` for client-side reads and writes
+- `@anthropic-ai/sdk` server-only via `/api/extract` route
+- Vitest + React Testing Library + jsdom for tests
+
+## Run locally
 
 ```bash
+npm install
+cp .env.example .env.local   # fill in the three values
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Three env vars are required:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Variable | Where it's used |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Browser + server |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Browser + server |
+| `ANTHROPIC_API_KEY` | Server-only (`/api/extract`) |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Tests
 
-## Learn More
+```bash
+npm test                # 52 tests, ~85% line coverage
+npm run test:coverage   # full coverage report
+```
 
-To learn more about Next.js, take a look at the following resources:
+All Supabase and Anthropic calls are mocked — tests run hermetically.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deploy
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+This subdirectory is configured as a Vercel project with `Root Directory`
+set to `contact-manager`. Pushes to `main` that touch files inside this
+directory trigger an auto-deploy.
 
-## Deploy on Vercel
+To deploy manually from your machine:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+vercel deploy --prod
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Conventions
+
+See [`CLAUDE.md`](./CLAUDE.md) and [`AGENTS.md`](./AGENTS.md) for the rules
+this project follows. Future changes (by humans or by Claude) should
+respect both files.
