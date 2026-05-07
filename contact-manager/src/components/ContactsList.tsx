@@ -14,6 +14,8 @@ import {
 
 type Stats = {
   lastRun: string | null;
+  lastRunStatus: "success" | "failure" | null;
+  lastRunFailureReason: string | null;
   pipelineCount: number;
   draftsCount: number;
   errorsCount: number;
@@ -34,10 +36,9 @@ function StatusBar({
         const [lastRunRes, pipelineRes, draftsRes, errNotesRes, errStuckRes] =
           await Promise.all([
             supabase
-              .from("contacts")
-              .select("last_emailed")
-              .not("last_emailed", "is", null)
-              .order("last_emailed", { ascending: false })
+              .from("agent_runs")
+              .select("ran_at, status, failure_reason")
+              .order("ran_at", { ascending: false })
               .limit(1),
             supabase
               .from("contacts")
@@ -60,9 +61,14 @@ function StatusBar({
 
         if (cancelled) return;
 
-        const lastRun =
-          (lastRunRes.data as { last_emailed: string }[] | null)?.[0]
-            ?.last_emailed ?? null;
+        const lastRunRow = (lastRunRes.data as {
+          ran_at: string;
+          status: "success" | "failure";
+          failure_reason: string | null;
+        }[] | null)?.[0] ?? null;
+        const lastRun = lastRunRow?.ran_at ?? null;
+        const lastRunStatus = lastRunRow?.status ?? null;
+        const lastRunFailureReason = lastRunRow?.failure_reason ?? null;
         const pipelineCount = pipelineRes.count ?? 0;
         const draftsCount = draftsRes.count ?? 0;
         const errorsCount =
@@ -84,7 +90,7 @@ function StatusBar({
           // prompts table may not exist yet
         }
 
-        setStats({ lastRun, pipelineCount, draftsCount, errorsCount, promptsUpdatedToday });
+        setStats({ lastRun, lastRunStatus, lastRunFailureReason, pipelineCount, draftsCount, errorsCount, promptsUpdatedToday });
       } catch {
         // Stats are non-blocking — a failed fetch just leaves the bar hidden.
       }
@@ -103,7 +109,13 @@ function StatusBar({
 
   return (
     <div className="space-y-2 mb-3">
-      {staleAgent && (
+      {stats.lastRunStatus === "failure" && (
+        <div className="rounded-lg border border-red-600/40 bg-red-900/20 px-3 py-2 text-xs text-red-300">
+          Last run failed
+          {stats.lastRunFailureReason ? ` — ${stats.lastRunFailureReason}` : ""}
+        </div>
+      )}
+      {staleAgent && stats.lastRunStatus !== "failure" && (
         <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-300">
           Agent hasn't run in 2+ days — check GitHub Actions
         </div>

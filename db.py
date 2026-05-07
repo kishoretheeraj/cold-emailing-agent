@@ -131,3 +131,16 @@ def load_prompts():
     """Load all rows from the prompts table at agent startup."""
     result = _retry(lambda: get_client().table("prompts").select("key, value").execute())
     return {r["key"]: r["value"] for r in (result.data or [])}
+
+def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None):
+    """Insert a row into agent_runs after every run, success or failure."""
+    row = {
+        "status": status,
+        "drafted": drafted,
+        "skipped": skipped,
+        "errors": errors,
+        "elapsed_seconds": elapsed,
+    }
+    if failure_reason:
+        row["failure_reason"] = failure_reason
+    _retry(lambda: get_client().table("agent_runs").insert(row).execute())

@@ -42,6 +42,18 @@ CREATE TABLE IF NOT EXISTS contacts (
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS message_id TEXT;
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS original_subject TEXT;
 
+-- Agent run history — one row per run, read by the dashboard
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id               SERIAL PRIMARY KEY,
+  ran_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status           TEXT NOT NULL CHECK (status IN ('success', 'failure')),
+  drafted          INT NOT NULL DEFAULT 0,
+  skipped          INT NOT NULL DEFAULT 0,
+  errors           INT NOT NULL DEFAULT 0,
+  elapsed_seconds  INT NOT NULL DEFAULT 0,
+  failure_reason   TEXT
+);
+
 -- Indexes for fast daily queries
 CREATE INDEX IF NOT EXISTS idx_contacts_stage_followup ON contacts(stage, followup_date);
 CREATE INDEX IF NOT EXISTS idx_contacts_mode ON contacts(mode);

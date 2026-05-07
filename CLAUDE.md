@@ -142,6 +142,26 @@ Follow-up emails must land in the same Gmail thread as the original.
   **Do not remove this patch** — it is the only reason the publishable key
   format works.
 
+## Agent run tracking
+
+`agent_runs` is a separate table (not `contacts`) that records every run:
+
+```
+id, ran_at, status ('success'|'failure'), drafted, skipped, errors,
+elapsed_seconds, failure_reason (TEXT, nullable)
+```
+
+`db.record_run()` is called at the end of `run()` — before `sys.exit(1)` —
+so it captures per-contact error counts as `failure`. The `__main__` block
+also catches catastrophic exceptions (Supabase down, auth failure) and records
+them with the exception message as `failure_reason`. Both callsites are
+best-effort: a failed `record_run` logs a warning and never masks the original
+error or exit code.
+
+The dashboard's "Last run" reads `ran_at` from the most recent `agent_runs`
+row, not `MAX(last_emailed)` from contacts. This means the date updates on
+every run regardless of whether any drafts were created.
+
 ## IMAP patterns
 
 - `[Gmail]/Drafts` mailbox name is double-quoted: `'"[Gmail]/Drafts"'`.

@@ -21,7 +21,7 @@ from datetime import date
 
 from config import FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run
 from emailer import generate_email
 from gmail import create_draft, apply_label_to_latest_draft
 
@@ -254,6 +254,13 @@ def run():
     elapsed = round(time.time() - start)
     log.info(f"DONE | {drafted} drafted | {skipped} skipped | {errors} errors | {elapsed}s")
 
+    status = "failure" if errors > 0 else "success"
+    failure_reason = f"{errors} contact error(s)" if errors > 0 else None
+    try:
+        record_run(status, drafted, skipped, errors, elapsed, failure_reason)
+    except Exception as exc:
+        log.warning(f"Failed to record run metadata: {exc}")
+
     if errors > 0:
         sys.exit(1)
 
@@ -277,4 +284,13 @@ def _skip_reason(contact, today):
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        run()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        try:
+            record_run("failure", 0, 0, 0, 0, str(exc))
+        except Exception:
+            pass
+        raise

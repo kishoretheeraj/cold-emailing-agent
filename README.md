@@ -184,6 +184,8 @@ new → applied_intro_drafted    → applied_intro_sent
 
 If the agent or monitor job fails on GitHub Actions, `notify_failure.py` sends an email to your Gmail address with a direct link to the failed run. No additional setup — it uses your existing `GMAIL_APP_PASSWORD` secret.
 
+The contact manager dashboard also shows a red banner if the last run failed, including the failure reason. "Last run" in the dashboard reflects the actual run time — not just when emails were drafted — so it stays current even on days where all contacts are skipped.
+
 ---
 
 ## Auto Reply Monitoring
