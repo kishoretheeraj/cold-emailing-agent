@@ -1,7 +1,10 @@
 from datetime import date, timedelta
+import logging
 import re
 import time
 import supabase._sync.client as _sc
+
+log = logging.getLogger(__name__)
 
 # Patch: Supabase updated their key format (sb_publishable_*) but the Python
 # client still validates against JWT regex. Widen the check.
@@ -63,7 +66,7 @@ def get_all_contacts():
     result = _retry(lambda: get_client().table("contacts").select("*").execute())
     return result.data or []
 
-def update_contact(contact_id, stage, followup_days=None, template=None):
+def update_contact(contact_id, stage, followup_days=None, template=None, expected_stage=None):
     """Update contact stage, followup_date, and last_emailed after a draft is created."""
     updates = {
         "stage": stage,
@@ -73,7 +76,16 @@ def update_contact(contact_id, stage, followup_days=None, template=None):
         updates["followup_date"] = str(date.today() + timedelta(days=followup_days))
     if template:
         updates["template_current"] = template
-    _retry(lambda: get_client().table("contacts").update(updates).eq("id", contact_id).execute())
+
+    def _do_update():
+        q = get_client().table("contacts").update(updates).eq("id", contact_id)
+        if expected_stage is not None:
+            q = q.eq("stage", expected_stage)
+        return q.execute()
+
+    result = _retry(_do_update)
+    if expected_stage is not None and not result.data:
+        log.warning(f"Stage changed externally, skipping update for contact {contact_id}")
 
 def close_contact(contact_id):
     """Mark a contact as closed — no more emails."""

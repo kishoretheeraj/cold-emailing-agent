@@ -1,40 +1,63 @@
+import hashlib
 import imaplib
+import logging
 import time
+from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import make_msgid
 
 from config import GMAIL_ADDRESS, GMAIL_APP_PASSWORD
 
+log = logging.getLogger(__name__)
 
-def create_draft(to_email, subject, body, in_reply_to=None, references=None, subject_prefix=True):
+
+def create_draft(to_email, subject, body, in_reply_to=None, references=None,
+                 subject_prefix=True, contact_id=None, stage=None):
     """
     Create a Gmail draft via IMAP. Never sends — draft only.
     Generates and sets a Message-ID on the draft so follow-ups can reference
-    it for threading. Returns the Message-ID string.
+    it for threading. Returns the Message-ID string, or None if a duplicate
+    draft already exists for this contact_id/stage/date combination.
     When in_reply_to is provided, adds In-Reply-To/References headers and
     prefixes subject with 'Re: ' (unless already set or subject_prefix=False).
     """
     if in_reply_to and subject_prefix and not subject.startswith("Re: "):
         subject = "Re: " + subject
 
-    # Generate before append so we own the ID and can return it immediately.
-    # Gmail honours a pre-set Message-ID when the user clicks Send.
-    mid = make_msgid(domain="gmail.com")
-
-    msg = MIMEMultipart()
-    msg["Message-ID"] = mid
-    msg["From"] = GMAIL_ADDRESS
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    if in_reply_to:
-        msg["In-Reply-To"] = in_reply_to
-        msg["References"] = references or in_reply_to
-    msg.attach(MIMEText(body, "plain"))
-
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+
+        # Idempotency: if contact_id and stage are given, check whether a draft
+        # with the same key was already created today and skip if so.
+        key = None
+        if contact_id is not None and stage is not None:
+            key = hashlib.sha256(
+                f"{contact_id}:{stage}:{date.today()}".encode()
+            ).hexdigest()[:16]
+            imap.select('"[Gmail]/Drafts"')
+            status, data = imap.search(None, "HEADER", "X-Cold-Email-Key", key)
+            if status == "OK" and data[0]:
+                log.info(f"draft already exists | key={key} | contact={contact_id}")
+                return None
+
+        # Generate before append so we own the ID and can return it immediately.
+        # Gmail honours a pre-set Message-ID when the user clicks Send.
+        mid = make_msgid(domain="gmail.com")
+
+        msg = MIMEMultipart()
+        msg["Message-ID"] = mid
+        msg["From"] = GMAIL_ADDRESS
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        if key:
+            msg["X-Cold-Email-Key"] = key
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+            msg["References"] = references or in_reply_to
+        msg.attach(MIMEText(body, "plain"))
+
         status, data = imap.append(
             '"[Gmail]/Drafts"',
             "",

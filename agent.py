@@ -20,6 +20,7 @@ import logging
 from datetime import date
 
 from config import FOLLOWUP_DAYS
+from constants import TERMINAL_REPLY_STATUSES
 from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info
 from emailer import generate_email
 from gmail import create_draft, apply_label_to_latest_draft
@@ -44,7 +45,7 @@ def decide_action(contact, today):
     stage = contact.get("stage", "new")
 
     # Global skips
-    if reply in ("replied", "interested", "call_scheduled", "dead"):
+    if reply in TERMINAL_REPLY_STATUSES:
         return "skip"
     if stage == "closed":
         return "skip"
@@ -155,6 +156,13 @@ def run():
         mode    = contact.get("mode", "outreach")
         mode_tag = "[OUTREACH]" if mode == "outreach" else "[APPLIED] "
 
+        # Idempotency: skip contacts already processed today
+        last_emailed = _parse_date(contact.get("last_emailed"))
+        if last_emailed == today:
+            log.info(f"{mode_tag} {name} | {company} | skip | already processed today")
+            skipped += 1
+            continue
+
         action = decide_action(contact, today)
 
         if action == "skip":
@@ -175,11 +183,26 @@ def run():
             # Generate email
             subject, body = generate_email(contact, action, original_subject)
 
-            # Create Gmail draft (with threading headers for follow-ups)
+            # Create Gmail draft (with threading headers for follow-ups).
+            # Returns None if a duplicate draft already exists for today.
+            current_stage = contact.get("stage")
             if thread_message_id:
-                message_id = create_draft(contact["email"], subject, body, in_reply_to=thread_message_id)
+                message_id = create_draft(
+                    contact["email"], subject, body,
+                    in_reply_to=thread_message_id,
+                    contact_id=contact["id"], stage=current_stage,
+                )
             else:
-                message_id = create_draft(contact["email"], subject, body)
+                message_id = create_draft(
+                    contact["email"], subject, body,
+                    contact_id=contact["id"], stage=current_stage,
+                )
+
+            if message_id is None:
+                log.info(f"{mode_tag} {name} | {company} | {action} | draft already exists, skipping")
+                skipped += 1
+                time.sleep(2)
+                continue
 
             # Persist thread info after the first email so follow-ups can thread
             if action in _FIRST_TOUCH_ACTIONS and message_id:
@@ -193,11 +216,14 @@ def run():
                 except Exception as exc:
                     log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
 
-            # Update Supabase
+            # Update Supabase — conditional on current stage to guard against races
             next_stage = NEXT_STAGE[action]
             followup_days = FOLLOWUP_DAYS.get(action)
             next_template = NEXT_TEMPLATE.get(action)
-            update_contact(contact["id"], next_stage, followup_days, next_template)
+            update_contact(
+                contact["id"], next_stage, followup_days, next_template,
+                expected_stage=current_stage,
+            )
 
             extra = ""
             if mode == "applied":

@@ -10,6 +10,117 @@ import {
   REPLY_STATUSES,
 } from "@/lib/types";
 
+// ── Status bar ────────────────────────────────────────────────────────────────
+
+type Stats = {
+  lastRun: string | null;
+  pipelineCount: number;
+  draftsCount: number;
+  errorsCount: number;
+};
+
+function StatusBar({
+  refreshKey,
+}: {
+  refreshKey: number;
+}) {
+  const [stats, setStats] = useState<Stats | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [lastRunRes, pipelineRes, draftsRes, errNotesRes, errStuckRes] =
+          await Promise.all([
+            supabase
+              .from("contacts")
+              .select("last_emailed")
+              .not("last_emailed", "is", null)
+              .order("last_emailed", { ascending: false })
+              .limit(1),
+            supabase
+              .from("contacts")
+              .select("*", { count: "exact", head: true })
+              .eq("reply_status", "no_reply"),
+            supabase
+              .from("contacts")
+              .select("*", { count: "exact", head: true })
+              .like("stage", "%drafted%"),
+            supabase
+              .from("contacts")
+              .select("*", { count: "exact", head: true })
+              .ilike("notes", "%ERROR%"),
+            supabase
+              .from("contacts")
+              .select("*", { count: "exact", head: true })
+              .is("last_emailed", null)
+              .neq("stage", "new"),
+          ]);
+
+        if (cancelled) return;
+
+        const lastRun =
+          (lastRunRes.data as { last_emailed: string }[] | null)?.[0]
+            ?.last_emailed ?? null;
+        const pipelineCount = pipelineRes.count ?? 0;
+        const draftsCount = draftsRes.count ?? 0;
+        const errorsCount =
+          (errNotesRes.count ?? 0) + (errStuckRes.count ?? 0);
+
+        setStats({ lastRun, pipelineCount, draftsCount, errorsCount });
+      } catch {
+        // Stats are non-blocking — a failed fetch just leaves the bar hidden.
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  if (!stats) return null;
+
+  const staleAgent =
+    stats.lastRun === null ||
+    Date.now() - new Date(stats.lastRun).getTime() > 48 * 60 * 60 * 1000;
+
+  return (
+    <div className="space-y-2 mb-3">
+      {staleAgent && (
+        <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-300">
+          Agent hasn't run in 2+ days — check GitHub Actions
+        </div>
+      )}
+      <div className="flex flex-wrap gap-4 px-1 text-xs text-fg-muted">
+        <span>
+          Last run:{" "}
+          <span className="text-fg">
+            {stats.lastRun ? formatDate(stats.lastRun) : "never"}
+          </span>
+        </span>
+        <span>
+          Pipeline:{" "}
+          <span className="text-fg">{stats.pipelineCount}</span>
+        </span>
+        <span>
+          Drafts pending:{" "}
+          <span className="text-fg">{stats.draftsCount}</span>
+        </span>
+        <span>
+          Errors:{" "}
+          <span
+            className={
+              stats.errorsCount > 0 ? "text-red-400" : "text-fg"
+            }
+          >
+            {stats.errorsCount}
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 type Props = {
   refreshKey: number;
   onError: (msg: string) => void;
@@ -42,68 +153,64 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
     };
   }, [refreshKey, onError]);
 
-  if (contacts === null) {
-    return (
-      <div className="rounded-xl border border-border bg-surface p-10 text-center text-sm text-fg-muted">
-        Loading…
-      </div>
-    );
-  }
-
-  if (contacts.length === 0) {
-    return (
-      <div className="rounded-xl border border-border bg-surface p-10 text-center">
-        <p className="text-sm text-fg-muted">
-          No contacts yet — add your first one above
-        </p>
-      </div>
-    );
-  }
-
   return (
     <>
-      <div className="rounded-xl border border-border bg-surface overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-surface-2 text-left text-xs uppercase tracking-wider text-fg-muted">
-              <tr>
-                <th className="px-4 py-3 font-medium">Name</th>
-                <th className="px-4 py-3 font-medium">Company</th>
-                <th className="px-4 py-3 font-medium">Mode</th>
-                <th className="px-4 py-3 font-medium">Stage</th>
-                <th className="px-4 py-3 font-medium">Reply</th>
-                <th className="px-4 py-3 font-medium hidden sm:table-cell">
-                  Added
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {contacts.map((c) => (
-                <tr
-                  key={c.id}
-                  onClick={() => setSelected(c)}
-                  className="cursor-pointer hover:bg-surface-2 transition"
-                >
-                  <td className="px-4 py-3 text-fg">{c.name ?? "—"}</td>
-                  <td className="px-4 py-3 text-fg-muted">{c.company ?? "—"}</td>
-                  <td className="px-4 py-3">
-                    <ModePill mode={c.mode} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <StagePill stage={c.stage} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <ReplyPill status={c.reply_status} />
-                  </td>
-                  <td className="px-4 py-3 text-fg-dim hidden sm:table-cell">
-                    {formatDate(c.created_at)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <StatusBar refreshKey={refreshKey} />
+
+      {contacts === null ? (
+        <div className="rounded-xl border border-border bg-surface p-10 text-center text-sm text-fg-muted">
+          Loading…
         </div>
-      </div>
+      ) : contacts.length === 0 ? (
+        <div className="rounded-xl border border-border bg-surface p-10 text-center">
+          <p className="text-sm text-fg-muted">
+            No contacts yet — add your first one above
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-border bg-surface overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-2 text-left text-xs uppercase tracking-wider text-fg-muted">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Name</th>
+                  <th className="px-4 py-3 font-medium">Company</th>
+                  <th className="px-4 py-3 font-medium">Mode</th>
+                  <th className="px-4 py-3 font-medium">Stage</th>
+                  <th className="px-4 py-3 font-medium">Reply</th>
+                  <th className="px-4 py-3 font-medium hidden sm:table-cell">
+                    Added
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {contacts.map((c) => (
+                  <tr
+                    key={c.id}
+                    onClick={() => setSelected(c)}
+                    className="cursor-pointer hover:bg-surface-2 transition"
+                  >
+                    <td className="px-4 py-3 text-fg">{c.name ?? "—"}</td>
+                    <td className="px-4 py-3 text-fg-muted">{c.company ?? "—"}</td>
+                    <td className="px-4 py-3">
+                      <ModePill mode={c.mode} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <StagePill stage={c.stage} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <ReplyPill status={c.reply_status} />
+                    </td>
+                    <td className="px-4 py-3 text-fg-dim hidden sm:table-cell">
+                      {formatDate(c.created_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {selected && (
         <SidePanel

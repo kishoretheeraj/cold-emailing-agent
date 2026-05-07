@@ -121,3 +121,101 @@ describe("POST /api/extract", () => {
     expect(userMessage).toContain("Dana from Clearbond does customs SaaS");
   });
 });
+
+describe("POST /api/extract — field validation", () => {
+  it("returns 422 when name is missing", async () => {
+    const noName = { ...sampleExtraction, name: null };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(noName) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toMatch(/name/i);
+    expect(json.error).toMatch(/manually/i);
+  });
+
+  it("returns 422 when email is missing", async () => {
+    const noEmail = { ...sampleExtraction, email: null };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(noEmail) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toMatch(/email/i);
+  });
+
+  it("returns 422 when email has no @", async () => {
+    const badEmail = { ...sampleExtraction, email: "notanemail" };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(badEmail) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when company is missing", async () => {
+    const noCompany = { ...sampleExtraction, company: null };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(noCompany) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toMatch(/company/i);
+  });
+
+  it("auto-corrects invalid mode to outreach", async () => {
+    const badMode = { ...sampleExtraction, mode: "unknown" };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(badMode) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.mode).toBe("outreach");
+  });
+
+  it("auto-corrects invalid tier to 2", async () => {
+    const badTier = { ...sampleExtraction, tier: 99 };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(badTier) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.tier).toBe(2);
+  });
+
+  it("auto-corrects null dartmouth to false", async () => {
+    const noDartmouth = { ...sampleExtraction, dartmouth: null };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(noDartmouth) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.dartmouth).toBe(false);
+  });
+
+  it("returns 422 listing multiple missing fields", async () => {
+    const bare = { ...sampleExtraction, name: null, email: null };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(bare) }],
+    });
+
+    const res = await POST(makeRequest({ text: "x" }));
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toMatch(/name/i);
+    expect(json.error).toMatch(/email/i);
+  });
+});

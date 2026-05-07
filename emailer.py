@@ -57,7 +57,13 @@ def _call_claude(prompt):
         try:
             with urllib.request.urlopen(req, timeout=30, context=_ssl_ctx) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            return data["content"][0]["text"].strip()
+            try:
+                text = data["content"][0]["text"].strip()
+            except (KeyError, IndexError, TypeError) as exc:
+                raise ValueError(f"Claude response malformed: {exc}") from exc
+            if not text:
+                raise ValueError("Claude returned empty text")
+            return text
         except urllib.error.HTTPError as exc:
             if attempt < 2 and (exc.code in (429, 529) or 500 <= exc.code < 600):
                 time.sleep(2 ** (attempt + 1))

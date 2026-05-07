@@ -107,6 +107,60 @@ def test_create_draft_raises_on_non_ok(mocker):
     fake_imap.logout.assert_called_once()
 
 
+def test_create_draft_skips_when_duplicate_exists(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.select.return_value = ("OK", [b"1"])
+    fake_imap.search.return_value = ("OK", [b"5"])  # existing draft found
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.create_draft("dana@example.com", "subject", "body",
+                                contact_id=1, stage="new")
+
+    assert result is None
+    fake_imap.append.assert_not_called()
+    fake_imap.logout.assert_called_once()
+
+
+def test_create_draft_proceeds_when_no_duplicate(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.select.return_value = ("OK", [b"1"])
+    fake_imap.search.return_value = ("OK", [b""])  # no existing draft
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.create_draft("dana@example.com", "subject", "body",
+                                contact_id=1, stage="new")
+
+    assert result is not None
+    fake_imap.append.assert_called_once()
+
+
+def test_create_draft_adds_idempotency_header_when_key_provided(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.select.return_value = ("OK", [b"1"])
+    fake_imap.search.return_value = ("OK", [b""])
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.create_draft("dana@example.com", "subject", "body",
+                       contact_id=42, stage="first_touch_drafted")
+
+    raw_msg = fake_imap.append.call_args.args[3]
+    assert b"X-Cold-Email-Key:" in raw_msg
+
+
+def test_create_draft_without_contact_id_skips_idempotency_check(mocker):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.append.return_value = ("OK", [b"appended"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.create_draft("dana@example.com", "subject", "body")
+
+    # No search was performed — idempotency check is opt-in
+    fake_imap.search.assert_not_called()
+    assert result is not None
+
+
 # ── create_gmail_label_if_not_exists ─────────────────────────────────────────
 
 

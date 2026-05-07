@@ -70,6 +70,32 @@ def test_update_contact_omits_followup_when_none(fake_client):
     assert "followup_date" not in payload
 
 
+def test_update_contact_conditional_adds_stage_filter(fake_client):
+    db.update_contact(7, "first_touch_drafted", expected_stage="new")
+
+    # First .eq("id", 7) is called on the update chain
+    eq_mock = fake_client.table.return_value.update.return_value.eq
+    eq_mock.assert_called_with("id", 7)
+    # Second .eq("stage", "new") is chained on the first eq's return value
+    eq_mock.return_value.eq.assert_called_with("stage", "new")
+
+
+def test_update_contact_logs_warning_on_stage_mismatch(fake_client, mocker):
+    # Simulate 0 rows updated (stage was changed externally).
+    exec_result = MagicMock()
+    exec_result.data = []
+    (
+        fake_client.table.return_value.update.return_value.eq.return_value.eq
+        .return_value.execute.return_value
+    ) = exec_result
+
+    mock_log = mocker.patch.object(db, "log")
+    db.update_contact(7, "first_touch_drafted", expected_stage="new")
+
+    mock_log.warning.assert_called_once()
+    assert "7" in mock_log.warning.call_args.args[0]
+
+
 # ── close_contact ────────────────────────────────────────────────────────────
 
 

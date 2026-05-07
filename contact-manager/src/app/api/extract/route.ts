@@ -46,6 +46,44 @@ export async function POST(req: Request) {
       );
     }
 
+    // Validate required fields — return a clear per-field error rather than
+    // inserting malformed data into Supabase.
+    const missing: string[] = [];
+    if (!parsed.name || typeof parsed.name !== "string" || !parsed.name.trim()) {
+      missing.push("name");
+    }
+    if (
+      !parsed.email ||
+      typeof parsed.email !== "string" ||
+      !parsed.email.includes("@")
+    ) {
+      missing.push("email");
+    }
+    if (
+      !parsed.company ||
+      typeof parsed.company !== "string" ||
+      !parsed.company.trim()
+    ) {
+      missing.push("company");
+    }
+    if (missing.length > 0) {
+      const errors = missing
+        .map((f) => `Could not extract ${f} — please add it manually`)
+        .join("; ");
+      return Response.json({ error: errors, raw }, { status: 422 });
+    }
+
+    // Auto-correct optional fields to safe defaults rather than storing garbage.
+    if (!["outreach", "applied"].includes(parsed.mode as string)) {
+      parsed = { ...parsed, mode: "outreach" };
+    }
+    if (![1, 2, 3].includes(parsed.tier as number)) {
+      parsed = { ...parsed, tier: 2 };
+    }
+    if (typeof parsed.dartmouth !== "boolean") {
+      parsed = { ...parsed, dartmouth: false };
+    }
+
     return Response.json({ data: parsed });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "unknown error";

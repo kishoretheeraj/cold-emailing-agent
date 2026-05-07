@@ -288,13 +288,17 @@ def test_run_drafts_and_labels_a_new_contact(mocker):
 
     agent.run()
 
-    # First-touch: no in_reply_to
-    create_draft.assert_called_once_with("dana@example.com", "subj", "body")
+    # First-touch: no in_reply_to; contact_id and stage passed for idempotency
+    args, kwargs = create_draft.call_args
+    assert args == ("dana@example.com", "subj", "body")
+    assert kwargs.get("contact_id") == 1
+    assert kwargs.get("stage") == "new"
     apply_label.assert_called_once_with("Cold Outreach/First Touch")
     update_contact.assert_called_once()
-    args, _ = update_contact.call_args
-    assert args[0] == 1  # contact id
-    assert args[1] == "first_touch_drafted"
+    pos_args, kw_args = update_contact.call_args
+    assert pos_args[0] == 1  # contact id
+    assert pos_args[1] == "first_touch_drafted"
+    assert kw_args.get("expected_stage") == "new"
     # Thread info saved after first touch
     save_thread_info.assert_called_once_with(1, "<mid@gmail.com>", "subj")
 
@@ -339,11 +343,12 @@ def test_run_followup_passes_thread_headers(mocker):
 
     agent.run()
 
-    # Follow-up must be sent with in_reply_to
-    create_draft.assert_called_once_with(
-        "dana@example.com", "Re: quick intro", "follow body",
-        in_reply_to="<orig@gmail.com>",
-    )
+    # Follow-up must be sent with in_reply_to and idempotency kwargs
+    args, kwargs = create_draft.call_args
+    assert args == ("dana@example.com", "Re: quick intro", "follow body")
+    assert kwargs.get("in_reply_to") == "<orig@gmail.com>"
+    assert kwargs.get("contact_id") == 1
+    assert kwargs.get("stage") == "first_touch_sent"
     # Thread info not re-saved for follow-ups
     save_thread_info.assert_not_called()
 
@@ -371,3 +376,30 @@ def test_run_exits_one_on_errors(mocker):
     with pytest.raises(SystemExit) as excinfo:
         agent.run()
     assert excinfo.value.code == 1
+
+
+def test_run_skips_already_processed_today(mocker):
+    contact = _build_contact(last_emailed=str(date.today()))
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    create_draft = mocker.patch("agent.create_draft")
+    update_contact = mocker.patch("agent.update_contact")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    create_draft.assert_not_called()
+    update_contact.assert_not_called()
+
+
+def test_run_skips_when_duplicate_draft_exists(mocker):
+    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
+    mocker.patch("agent.generate_email", return_value=("subj", "body"))
+    # create_draft returns None → duplicate found
+    mocker.patch("agent.create_draft", return_value=None)
+    update_contact = mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    update_contact.assert_not_called()
