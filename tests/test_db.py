@@ -183,6 +183,32 @@ def test_get_thread_info_returns_empty_dict_when_no_row(fake_client):
 # ── get_client lazy caching ──────────────────────────────────────────────────
 
 
+# ── load_prompts ─────────────────────────────────────────────────────────────
+
+
+def test_load_prompts_returns_key_value_dict(fake_client):
+    chain = fake_client.table.return_value.select.return_value
+    chain.execute.return_value.data = [
+        {"key": "outreach_prompt", "value": "Be a great emailer"},
+        {"key": "sender_profile", "value": "Name: Kishore"},
+    ]
+    result = db.load_prompts()
+    assert result == {
+        "outreach_prompt": "Be a great emailer",
+        "sender_profile": "Name: Kishore",
+    }
+    fake_client.table.assert_called_with("prompts")
+
+
+def test_load_prompts_returns_empty_dict_when_no_rows(fake_client):
+    chain = fake_client.table.return_value.select.return_value
+    chain.execute.return_value.data = []
+    assert db.load_prompts() == {}
+
+
+# ── get_client lazy caching ──────────────────────────────────────────────────
+
+
 def test_get_client_caches_instance(monkeypatch):
     # Clear the cached singleton, then verify _create_patched is called once.
     monkeypatch.setattr(db, "_client", None)

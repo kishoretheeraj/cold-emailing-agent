@@ -126,3 +126,8 @@ def get_thread_info(contact_id):
     ).eq("id", contact_id).execute())
     rows = result.data or []
     return rows[0] if rows else {}
+
+def load_prompts():
+    """Load all rows from the prompts table at agent startup."""
+    result = _retry(lambda: get_client().table("prompts").select("key, value").execute())
+    return {r["key"]: r["value"] for r in (result.data or [])}

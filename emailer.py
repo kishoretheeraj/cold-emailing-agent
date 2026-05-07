@@ -75,38 +75,42 @@ def _call_claude(prompt):
                 continue
             raise
 
-def generate_email(contact, action, original_subject=None):
+def generate_email(contact, action, original_subject=None, prompts=None):
     """
     Generate email body + subject for a contact based on the action.
     Returns (subject, body) tuple.
     For follow-up actions, skips Claude subject generation and returns
     'Re: {original_subject}' so follow-ups stay in the same thread.
+    If prompts dict is provided, its values override the config.py defaults.
     """
+    _prompts = prompts or {}
     mode = contact.get("mode", "outreach")
     dart = _is_dartmouth(contact)
     dart_instr = DARTMOUTH_INSTRUCTION if dart else ""
 
     if action in ("send_first_touch", "send_followup1",
                   "send_followup2", "send_breakup"):
-        body = _generate_outreach(contact, action, dart_instr)
+        body = _generate_outreach(contact, action, dart_instr, _prompts)
     elif action == "send_applied_intro":
-        body = _generate_applied_intro(contact, dart_instr)
+        body = _generate_applied_intro(contact, dart_instr, _prompts)
     elif action == "send_applied_followup":
-        body = _generate_applied_followup(contact, dart_instr)
+        body = _generate_applied_followup(contact, dart_instr, _prompts)
     else:
         raise ValueError(f"Unknown action: {action}")
 
     if action in _FIRST_TOUCH_ACTIONS:
-        subject = _generate_subject(contact, mode, body)
+        subject = _generate_subject(contact, mode, body, _prompts)
     else:
         subject = "Re: " + (original_subject or "")
     return subject, body
 
-def _generate_outreach(contact, action, dart_instr):
+def _generate_outreach(contact, action, dart_instr, prompts):
     template = ACTION_TO_TEMPLATE[action]
     tier = str(contact.get("tier", 2))
-    prompt = OUTREACH_PROMPT.format(
-        profile=SENDER_PROFILE,
+    profile = prompts.get("sender_profile", SENDER_PROFILE)
+    tpl = prompts.get("outreach_prompt", OUTREACH_PROMPT)
+    prompt = tpl.format(
+        profile=profile,
         name=contact.get("name", ""),
         company=contact.get("company", ""),
         role=contact.get("role", ""),
@@ -119,10 +123,12 @@ def _generate_outreach(contact, action, dart_instr):
     )
     return _call_claude(prompt)
 
-def _generate_applied_intro(contact, dart_instr):
+def _generate_applied_intro(contact, dart_instr, prompts):
     applied = contact.get("applied_date") or str(date.today())
-    prompt = APPLIED_INTRO_PROMPT.format(
-        profile=SENDER_PROFILE,
+    profile = prompts.get("sender_profile", SENDER_PROFILE)
+    tpl = prompts.get("applied_intro_prompt", APPLIED_INTRO_PROMPT)
+    prompt = tpl.format(
+        profile=profile,
         name=contact.get("name", ""),
         role=contact.get("role", ""),
         company=contact.get("company", ""),
@@ -133,9 +139,11 @@ def _generate_applied_intro(contact, dart_instr):
     )
     return _call_claude(prompt)
 
-def _generate_applied_followup(contact, dart_instr):
-    prompt = APPLIED_FOLLOWUP_PROMPT.format(
-        profile=SENDER_PROFILE,
+def _generate_applied_followup(contact, dart_instr, prompts):
+    profile = prompts.get("sender_profile", SENDER_PROFILE)
+    tpl = prompts.get("applied_followup_prompt", APPLIED_FOLLOWUP_PROMPT)
+    prompt = tpl.format(
+        profile=profile,
         name=contact.get("name", ""),
         role=contact.get("role", ""),
         company=contact.get("company", ""),
@@ -144,8 +152,9 @@ def _generate_applied_followup(contact, dart_instr):
     )
     return _call_claude(prompt)
 
-def _generate_subject(contact, mode, body):
-    prompt = SUBJECT_PROMPT.format(
+def _generate_subject(contact, mode, body, prompts):
+    tpl = prompts.get("subject_prompt", SUBJECT_PROMPT)
+    prompt = tpl.format(
         name=contact.get("name", ""),
         company=contact.get("company", ""),
         mode=mode,

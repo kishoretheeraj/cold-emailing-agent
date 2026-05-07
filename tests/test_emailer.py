@@ -186,3 +186,80 @@ def test_outreach_prompt_omits_dartmouth_when_not_alumni(mocker):
     emailer.generate_email(contact, "send_first_touch")
 
     assert "ALUMNI CONNECTION DETECTED" not in captured_prompts[0]
+
+
+# ── Custom prompts override ───────────────────────────────────────────────────
+
+
+def test_generate_email_uses_custom_outreach_prompt(mocker):
+    captured = []
+    mocker.patch.object(
+        emailer, "_call_claude",
+        side_effect=lambda p: (captured.append(p), "body")[1],
+    )
+    custom_tpl = (
+        "CUSTOM {profile} {name} {company} {role} {detail} "
+        "{tier} {tier_instruction} {template} {template_instruction} "
+        "{dartmouth_instruction}"
+    )
+    emailer.generate_email(
+        _outreach_contact(), "send_first_touch",
+        prompts={"outreach_prompt": custom_tpl},
+    )
+    assert captured[0].startswith("CUSTOM")
+
+
+def test_generate_email_uses_custom_sender_profile(mocker):
+    captured = []
+    mocker.patch.object(
+        emailer, "_call_claude",
+        side_effect=lambda p: (captured.append(p), "body")[1],
+    )
+    emailer.generate_email(
+        _outreach_contact(), "send_first_touch",
+        prompts={"sender_profile": "Name: Jane"},
+    )
+    assert "Name: Jane" in captured[0]
+
+
+def test_generate_email_falls_back_to_config_when_prompts_empty(mocker):
+    captured = []
+    mocker.patch.object(
+        emailer, "_call_claude",
+        side_effect=lambda p: (captured.append(p), "body")[1],
+    )
+    emailer.generate_email(_outreach_contact(), "send_first_touch", prompts={})
+    # Config default contains the OUTREACH_PROMPT rules text
+    assert "Sound human" in captured[0]
+
+
+def test_generate_email_custom_applied_intro_prompt(mocker):
+    captured = []
+    mocker.patch.object(
+        emailer, "_call_claude",
+        side_effect=lambda p: (captured.append(p), "body")[1],
+    )
+    custom_tpl = (
+        "APPLIED {profile} {name} {role} {company} "
+        "{job_title} {job_description} {applied_date} {dartmouth_instruction}"
+    )
+    emailer.generate_email(
+        _applied_contact(), "send_applied_intro",
+        prompts={"applied_intro_prompt": custom_tpl},
+    )
+    assert captured[0].startswith("APPLIED")
+
+
+def test_generate_email_custom_subject_prompt(mocker):
+    captured = []
+    mocker.patch.object(
+        emailer, "_call_claude",
+        side_effect=lambda p: (captured.append(p), "subject line")[1],
+    )
+    custom_subj = "SUBJ {name} {company} {mode} {job_title} {body}"
+    emailer.generate_email(
+        _outreach_contact(), "send_first_touch",
+        prompts={"subject_prompt": custom_subj},
+    )
+    subject_prompt = captured[1]  # second call is subject
+    assert subject_prompt.startswith("SUBJ")

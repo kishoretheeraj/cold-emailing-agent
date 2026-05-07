@@ -17,6 +17,7 @@ type Stats = {
   pipelineCount: number;
   draftsCount: number;
   errorsCount: number;
+  promptsUpdatedToday: boolean;
 };
 
 function StatusBar({
@@ -67,7 +68,23 @@ function StatusBar({
         const errorsCount =
           (errNotesRes.count ?? 0) + (errStuckRes.count ?? 0);
 
-        setStats({ lastRun, pipelineCount, draftsCount, errorsCount });
+        // Best-effort: check if any prompt was updated in the last 24 hours.
+        let promptsUpdatedToday = false;
+        try {
+          const { data: pd } = await supabase
+            .from("prompts")
+            .select("updated_at")
+            .order("updated_at", { ascending: false })
+            .limit(1);
+          const lu = (pd as { updated_at: string }[] | null)?.[0]?.updated_at;
+          promptsUpdatedToday = lu
+            ? Date.now() - new Date(lu).getTime() < 24 * 60 * 60 * 1000
+            : false;
+        } catch {
+          // prompts table may not exist yet
+        }
+
+        setStats({ lastRun, pipelineCount, draftsCount, errorsCount, promptsUpdatedToday });
       } catch {
         // Stats are non-blocking — a failed fetch just leaves the bar hidden.
       }
@@ -89,6 +106,11 @@ function StatusBar({
       {staleAgent && (
         <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-300">
           Agent hasn't run in 2+ days — check GitHub Actions
+        </div>
+      )}
+      {stats.promptsUpdatedToday && (
+        <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-300">
+          Prompts updated today — next agent run will use new versions
         </div>
       )}
       <div className="flex flex-wrap gap-4 px-1 text-xs text-fg-muted">

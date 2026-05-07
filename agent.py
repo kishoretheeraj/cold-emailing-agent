@@ -21,7 +21,7 @@ from datetime import date
 
 from config import FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts
 from emailer import generate_email
 from gmail import create_draft, apply_label_to_latest_draft
 
@@ -140,6 +140,14 @@ def run():
     today = date.today()
     start = time.time()
 
+    # Load live prompts and sender profile from Supabase; fall back to config.py defaults.
+    try:
+        prompts = load_prompts()
+        log.info(f"Loaded prompts from Supabase ({len(prompts)} keys)")
+    except Exception as exc:
+        prompts = {}
+        log.warning(f"Using default prompts from config.py (load failed: {exc})")
+
     contacts = get_all_contacts()
     outreach_count = sum(1 for c in contacts if c.get("mode", "outreach") == "outreach")
     applied_count  = sum(1 for c in contacts if c.get("mode") == "applied")
@@ -181,7 +189,7 @@ def run():
                 original_subject = thread_info.get("original_subject")
 
             # Generate email
-            subject, body = generate_email(contact, action, original_subject)
+            subject, body = generate_email(contact, action, original_subject, prompts=prompts)
 
             # Create Gmail draft (with threading headers for follow-ups).
             # Returns None if a duplicate draft already exists for today.

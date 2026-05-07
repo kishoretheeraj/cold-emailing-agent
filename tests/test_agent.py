@@ -391,6 +391,38 @@ def test_run_skips_already_processed_today(mocker):
     update_contact.assert_not_called()
 
 
+def test_run_loads_prompts_and_passes_to_generate_email(mocker):
+    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
+    mocker.patch("agent.load_prompts", return_value={"outreach_prompt": "LIVE"})
+    generate_email = mocker.patch("agent.generate_email", return_value=("s", "b"))
+    mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    _, kwargs = generate_email.call_args
+    assert kwargs.get("prompts") == {"outreach_prompt": "LIVE"}
+
+
+def test_run_falls_back_to_empty_prompts_on_load_failure(mocker):
+    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
+    mocker.patch("agent.load_prompts", side_effect=RuntimeError("db down"))
+    generate_email = mocker.patch("agent.generate_email", return_value=("s", "b"))
+    mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()  # must not raise
+
+    _, kwargs = generate_email.call_args
+    assert kwargs.get("prompts") == {}
+
+
 def test_run_skips_when_duplicate_draft_exists(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
     mocker.patch("agent.generate_email", return_value=("subj", "body"))

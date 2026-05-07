@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Link from "next/link";
 import { SmartInput } from "./SmartInput";
 import { StructuredForm } from "./StructuredForm";
 import { ContactsList } from "./ContactsList";
@@ -33,13 +34,21 @@ export function App() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 sm:px-6 py-8 sm:py-12 space-y-10">
-      <header className="space-y-1">
-        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-fg">
-          Cold Email Ops
-        </h1>
-        <p className="text-sm text-fg-muted">
-          Add a contact below — the agent drafts a personalized email tomorrow at 8am.
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-fg">
+            Cold Email Ops
+          </h1>
+          <p className="text-sm text-fg-muted">
+            Add a contact below — the agent drafts a personalized email tomorrow at 8am.
+          </p>
+        </div>
+        <Link
+          href="/prompts"
+          className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
+        >
+          Prompts & Profile
+        </Link>
       </header>
 
       <section className="space-y-5">

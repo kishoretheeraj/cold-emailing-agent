@@ -13,6 +13,9 @@ SUPABASE_ANON_KEY  = os.environ["SUPABASE_ANON_KEY"]
 # ── Models ─────────────────────────────────────────────────────────────────────
 EMAIL_MODEL = "claude-sonnet-4-6"
 
+# These are fallback defaults. Live prompts (including sender_profile) are stored
+# in the Supabase prompts table and override these at runtime.
+
 # ── Sender profile ─────────────────────────────────────────────────────────────
 SENDER_PROFILE = """
 Name: Kishore
@@ -68,6 +71,8 @@ DARTMOUTH_INSTRUCTION = (
     "Reference the shared Dartmouth/Tuck/Thayer connection naturally and early. "
     "Use a peer-to-peer tone, not a stranger-to-stranger tone. Soften the ask."
 )
+
+# ── Prompt templates (fallbacks — Supabase values take precedence) ────────────
 
 # ── Mode A prompt ──────────────────────────────────────────────────────────────
 OUTREACH_PROMPT = """You are writing a cold outreach email for a job seeker.
