@@ -126,12 +126,8 @@ describe("ContactsList — side panel", () => {
     await waitFor(() => screen.getByText("Dana Ehrlich"));
     await user.click(screen.getByText("Dana Ehrlich"));
 
-    // Panel shows the email + the Update Status block (heading + button match,
-    // so use the role-specific button query).
-    expect(
-      screen.getByRole("button", { name: /Update Status/i })
-    ).toBeInTheDocument();
-    // Check that detail panel rendered the email value
+    // Panel shows Edit button and the contact's email
+    expect(screen.getByRole("button", { name: /^Edit$/i })).toBeInTheDocument();
     expect(screen.getAllByText("dana@clearbond.com").length).toBeGreaterThan(0);
   });
 
@@ -153,10 +149,10 @@ describe("ContactsList — side panel", () => {
     expect(optionValues).not.toContain("first_touch_sent"); // outreach-only
   });
 
-  it("calls update + onSaved when the Update Status button is clicked", async () => {
+  it("calls update + onSaved when Save Changes is clicked in edit mode", async () => {
     const user = userEvent.setup();
     limitMock.mockResolvedValue({ data: [dana], error: null });
-    const updated = { ...dana, stage: "first_touch_sent", reply_status: "replied" };
+    const updated = { ...dana, company: "Clearbond Updated" };
     updateEqSelectSingleMock.mockResolvedValue({ data: updated, error: null });
 
     const onUpdated = vi.fn();
@@ -167,13 +163,21 @@ describe("ContactsList — side panel", () => {
     await waitFor(() => screen.getByText("Dana Ehrlich"));
     await user.click(screen.getByText("Dana Ehrlich"));
 
-    await user.click(screen.getByRole("button", { name: /Update Status/i }));
+    // Enter edit mode
+    await user.click(screen.getByRole("button", { name: /^Edit$/i }));
+
+    // Find company input and change it
+    const companyInput = screen.getByDisplayValue("Clearbond");
+    await user.clear(companyInput);
+    await user.type(companyInput, "Clearbond Updated");
+
+    await user.click(screen.getByRole("button", { name: /Save Changes/i }));
 
     await waitFor(() => expect(updateEqSelectSingleMock).toHaveBeenCalled());
     expect(onUpdated).toHaveBeenCalled();
   });
 
-  it("propagates update errors via onError", async () => {
+  it("propagates update errors via onError in edit mode", async () => {
     const user = userEvent.setup();
     limitMock.mockResolvedValue({ data: [dana], error: null });
     updateEqSelectSingleMock.mockResolvedValue({
@@ -189,7 +193,8 @@ describe("ContactsList — side panel", () => {
     await waitFor(() => screen.getByText("Dana Ehrlich"));
     await user.click(screen.getByText("Dana Ehrlich"));
 
-    await user.click(screen.getByRole("button", { name: /Update Status/i }));
+    await user.click(screen.getByRole("button", { name: /^Edit$/i }));
+    await user.click(screen.getByRole("button", { name: /Save Changes/i }));
 
     await waitFor(() =>
       expect(onError).toHaveBeenCalledWith(
@@ -208,13 +213,9 @@ describe("ContactsList — side panel", () => {
 
     await waitFor(() => screen.getByText("Dana Ehrlich"));
     await user.click(screen.getByText("Dana Ehrlich"));
-    expect(
-      screen.getByRole("button", { name: /Update Status/i })
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Edit$/i })).toBeInTheDocument();
 
     await user.click(screen.getByLabelText(/Close panel/i));
-    expect(
-      screen.queryByRole("button", { name: /Update Status/i })
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit$/i })).toBeNull();
   });
 });

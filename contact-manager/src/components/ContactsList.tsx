@@ -9,6 +9,7 @@ import {
   APPLIED_STAGES,
   REPLY_STATUSES,
 } from "@/lib/types";
+import { Label, TextInput, TextArea, ToggleSwitch, TierSelector } from "./Field";
 
 // ── Status bar ────────────────────────────────────────────────────────────────
 
@@ -379,32 +380,58 @@ function SidePanel({
   onSaved: (c: Contact) => void;
   onError: (msg: string) => void;
 }) {
-  const [stage, setStage] = useState(contact.stage ?? "new");
-  const [replyStatus, setReplyStatus] = useState<ReplyStatus>(
-    contact.reply_status ?? "no_reply"
-  );
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Contact>(contact);
   const [saving, setSaving] = useState(false);
 
-  // Sync when a different contact is selected
+  // Sync all state when a different contact is selected
   useEffect(() => {
-    setStage(contact.stage ?? "new");
-    setReplyStatus(contact.reply_status ?? "no_reply");
-  }, [contact.id, contact.stage, contact.reply_status]);
+    setEditing(false);
+    setDraft(contact);
+  }, [contact.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function updateDraft<K extends keyof Contact>(key: K, val: Contact[K]) {
+    setDraft((d) => ({ ...d, [key]: val }));
+  }
+
+  function cancelEdit() {
+    setDraft(contact);
+    setEditing(false);
+  }
 
   const stages =
-    contact.mode === "applied" ? APPLIED_STAGES : OUTREACH_STAGES;
+    (editing ? draft.mode : contact.mode) === "applied"
+      ? APPLIED_STAGES
+      : OUTREACH_STAGES;
 
   async function save() {
     setSaving(true);
     try {
       const { data, error } = await supabase
         .from("contacts")
-        .update({ stage, reply_status: replyStatus })
+        .update({
+          name: draft.name,
+          email: draft.email,
+          company: draft.company,
+          role: draft.role,
+          detail: draft.detail,
+          tier: draft.tier,
+          mode: draft.mode,
+          dartmouth: draft.dartmouth,
+          notes: draft.notes,
+          followup_date: draft.followup_date,
+          stage: draft.stage,
+          reply_status: draft.reply_status,
+          job_title: draft.job_title,
+          applied_date: draft.applied_date,
+          job_description: draft.job_description,
+        })
         .eq("id", contact.id)
         .select()
         .single();
       if (error) throw new Error(error.message);
       onSaved(data as Contact);
+      setEditing(false);
     } catch (err) {
       onError(err instanceof Error ? err.message : "update failed");
     } finally {
@@ -419,91 +446,299 @@ function SidePanel({
         onClick={onClose}
       />
       <aside className="w-full sm:w-[440px] bg-surface border-l border-border overflow-y-auto p-6 space-y-5">
+        {/* ── Header ── */}
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-fg">
-            {contact.name ?? "Contact"}
+            {editing ? (draft.name ?? "Contact") : (contact.name ?? "Contact")}
           </h2>
-          <button
-            onClick={onClose}
-            className="text-fg-muted hover:text-fg text-sm"
-            aria-label="Close panel"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-3">
+            {editing ? (
+              <button
+                onClick={cancelEdit}
+                className="text-sm text-fg-muted hover:text-fg"
+              >
+                Cancel
+              </button>
+            ) : (
+              <button
+                onClick={() => setEditing(true)}
+                className="text-sm text-fg-muted hover:text-fg"
+              >
+                Edit
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-fg-muted hover:text-fg text-sm"
+              aria-label="Close panel"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
-        <Detail label="Email" value={contact.email} />
-        <Detail label="Company" value={contact.company} />
-        <Detail label="Role" value={contact.role} />
-        <Detail label="Mode" value={contact.mode} />
-        <Detail label="Tier" value={contact.tier?.toString() ?? null} />
-        <Detail
-          label="Dartmouth"
-          value={contact.dartmouth ? "Yes" : "No"}
-        />
-        <Detail label="Detail" value={contact.detail} multiline />
-        {contact.mode === "applied" && (
-          <>
-            <Detail label="Job Title" value={contact.job_title} />
-            <Detail label="Applied Date" value={contact.applied_date} />
-            <Detail
-              label="Job Description"
-              value={contact.job_description}
-              multiline
+        {editing ? (
+          /* ── Edit mode ── */
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-4">
+              <PanelField label="Name">
+                <TextInput
+                  value={draft.name ?? ""}
+                  onChange={(e) => updateDraft("name", e.target.value)}
+                />
+              </PanelField>
+              <PanelField label="Email">
+                <TextInput
+                  type="email"
+                  value={draft.email ?? ""}
+                  onChange={(e) => updateDraft("email", e.target.value)}
+                />
+              </PanelField>
+              <PanelField label="Company">
+                <TextInput
+                  value={draft.company ?? ""}
+                  onChange={(e) => updateDraft("company", e.target.value)}
+                />
+              </PanelField>
+              <PanelField label="Role">
+                <TextInput
+                  value={draft.role ?? ""}
+                  onChange={(e) => updateDraft("role", e.target.value)}
+                />
+              </PanelField>
+            </div>
+
+            <PanelField label="Personalization detail">
+              <TextArea
+                value={draft.detail ?? ""}
+                onChange={(e) => updateDraft("detail", e.target.value)}
+                rows={3}
+              />
+            </PanelField>
+
+            <div>
+              <Label>Tier</Label>
+              <TierSelector
+                value={draft.tier ?? 2}
+                onChange={(v) => updateDraft("tier", v)}
+              />
+            </div>
+
+            <div>
+              <Label>Mode</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(["outreach", "applied"] as const).map((m) => {
+                  const active = (draft.mode ?? "outreach") === m;
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => updateDraft("mode", m)}
+                      className={`rounded-lg border px-3 py-2 text-xs capitalize transition ${
+                        active
+                          ? "border-indigo-500 bg-indigo-500/10 text-indigo-300"
+                          : "border-border bg-surface text-fg-muted hover:border-border-strong"
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <ToggleSwitch
+              on={draft.dartmouth ?? false}
+              onChange={(v) => updateDraft("dartmouth", v)}
+              label="Dartmouth / Tuck / Thayer / Irving connection"
             />
+
+            {draft.mode === "applied" && (
+              <>
+                <PanelField label="Job Title">
+                  <TextInput
+                    value={draft.job_title ?? ""}
+                    onChange={(e) => updateDraft("job_title", e.target.value)}
+                  />
+                </PanelField>
+                <PanelField label="Applied Date">
+                  <TextInput
+                    type="date"
+                    value={draft.applied_date ?? ""}
+                    onChange={(e) => updateDraft("applied_date", e.target.value)}
+                  />
+                </PanelField>
+                <PanelField label="Job Description">
+                  <TextArea
+                    value={draft.job_description ?? ""}
+                    onChange={(e) => updateDraft("job_description", e.target.value)}
+                    rows={5}
+                  />
+                </PanelField>
+              </>
+            )}
+
+            <PanelField label="Followup Date">
+              <TextInput
+                type="date"
+                value={draft.followup_date ?? ""}
+                onChange={(e) => updateDraft("followup_date", e.target.value)}
+              />
+            </PanelField>
+
+            <PanelField label="Notes">
+              <TextArea
+                value={draft.notes ?? ""}
+                onChange={(e) => updateDraft("notes", e.target.value)}
+                rows={2}
+              />
+            </PanelField>
+
+            <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
+              <h3 className="text-xs uppercase tracking-wider text-fg-muted">
+                Status
+              </h3>
+              <div>
+                <label className="block text-xs text-fg-muted mb-1">Stage</label>
+                <select
+                  value={draft.stage ?? "new"}
+                  onChange={(e) => updateDraft("stage", e.target.value)}
+                  className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg"
+                >
+                  {stages.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-fg-muted mb-1">Reply Status</label>
+                <select
+                  value={draft.reply_status ?? "no_reply"}
+                  onChange={(e) =>
+                    updateDraft("reply_status", e.target.value as ReplyStatus)
+                  }
+                  className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg"
+                >
+                  {REPLY_STATUSES.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={cancelEdit}
+                className="flex-1 rounded-md border border-border px-3 py-2 text-sm text-fg-muted hover:text-fg transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={save}
+                disabled={saving}
+                className="flex-1 rounded-md bg-indigo-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 disabled:bg-indigo-500/30"
+              >
+                {saving ? "Saving…" : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          /* ── View mode (unchanged) ── */
+          <>
+            <Detail label="Email" value={contact.email} />
+            <Detail label="Company" value={contact.company} />
+            <Detail label="Role" value={contact.role} />
+            <Detail label="Mode" value={contact.mode} />
+            <Detail label="Tier" value={contact.tier?.toString() ?? null} />
+            <Detail
+              label="Dartmouth"
+              value={contact.dartmouth ? "Yes" : "No"}
+            />
+            <Detail label="Detail" value={contact.detail} multiline />
+            {contact.mode === "applied" && (
+              <>
+                <Detail label="Job Title" value={contact.job_title} />
+                <Detail label="Applied Date" value={contact.applied_date} />
+                <Detail
+                  label="Job Description"
+                  value={contact.job_description}
+                  multiline
+                />
+              </>
+            )}
+            <Detail label="Followup Date" value={contact.followup_date} />
+            <Detail label="Notes" value={contact.notes} multiline />
+
+            <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
+              <h3 className="text-xs uppercase tracking-wider text-fg-muted">
+                Update Status
+              </h3>
+              <div>
+                <label className="block text-xs text-fg-muted mb-1">Stage</label>
+                <select
+                  value={contact.stage ?? "new"}
+                  onChange={(e) => {
+                    // Quick status update without entering full edit mode
+                    supabase
+                      .from("contacts")
+                      .update({ stage: e.target.value })
+                      .eq("id", contact.id)
+                      .select()
+                      .single()
+                      .then(({ data, error }) => {
+                        if (!error && data) onSaved(data as Contact);
+                        else if (error) onError(error.message);
+                      });
+                  }}
+                  className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg"
+                >
+                  {stages.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-fg-muted mb-1">Reply Status</label>
+                <select
+                  value={contact.reply_status ?? "no_reply"}
+                  onChange={(e) => {
+                    supabase
+                      .from("contacts")
+                      .update({ reply_status: e.target.value })
+                      .eq("id", contact.id)
+                      .select()
+                      .single()
+                      .then(({ data, error }) => {
+                        if (!error && data) onSaved(data as Contact);
+                        else if (error) onError(error.message);
+                      });
+                  }}
+                  className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg"
+                >
+                  {REPLY_STATUSES.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </>
         )}
-        <Detail label="Followup Date" value={contact.followup_date} />
-        <Detail label="Notes" value={contact.notes} multiline />
-
-        <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
-          <h3 className="text-xs uppercase tracking-wider text-fg-muted">
-            Update Status
-          </h3>
-
-          <div>
-            <label className="block text-xs text-fg-muted mb-1">Stage</label>
-            <select
-              value={stage}
-              onChange={(e) => setStage(e.target.value)}
-              className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg"
-            >
-              {stages.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs text-fg-muted mb-1">
-              Reply Status
-            </label>
-            <select
-              value={replyStatus}
-              onChange={(e) =>
-                setReplyStatus(e.target.value as ReplyStatus)
-              }
-              className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg"
-            >
-              {REPLY_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={save}
-            disabled={saving}
-            className="w-full rounded-md bg-indigo-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 disabled:bg-indigo-500/30"
-          >
-            {saving ? "Saving…" : "Update Status"}
-          </button>
-        </div>
       </aside>
+    </div>
+  );
+}
+
+function PanelField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      {children}
     </div>
   );
 }
