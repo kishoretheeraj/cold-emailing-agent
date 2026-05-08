@@ -218,13 +218,29 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {contacts.map((c) => (
+                {(() => {
+                  const bulkIds = getBulkGroupIds(contacts);
+                  return contacts.map((c) => (
                   <tr
                     key={c.id}
                     onClick={() => setSelected(c)}
                     className="cursor-pointer hover:bg-surface-2 transition"
                   >
-                    <td className="px-4 py-3 text-fg">{c.name ?? "—"}</td>
+                    <td className="px-4 py-3 text-fg">
+                      {c.name ?? "—"}
+                      {bulkIds.has(c.id) && (
+                        <span
+                          title={
+                            c.created_at
+                              ? `Imported ${new Date(c.created_at).toLocaleString()}`
+                              : "Bulk import"
+                          }
+                          className="ml-1.5 inline-flex items-center rounded px-1 py-0.5 text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 cursor-default"
+                        >
+                          Bulk
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-fg-muted">{c.company ?? "—"}</td>
                     <td className="px-4 py-3">
                       <ModePill mode={c.mode} />
@@ -239,7 +255,8 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
                       {formatDate(c.created_at)}
                     </td>
                   </tr>
-                ))}
+                  ));
+                })()}
               </tbody>
             </table>
           </div>
@@ -262,6 +279,23 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
       )}
     </>
   );
+}
+
+// ── Bulk batch detection ──────────────────────────────────────────────────────
+
+function getBulkGroupIds(contacts: Contact[]): Set<string> {
+  const ids = new Set<string>();
+  for (let i = 0; i < contacts.length; i++) {
+    for (let j = i + 1; j < contacts.length; j++) {
+      const t1 = new Date(contacts[i].created_at ?? 0).getTime();
+      const t2 = new Date(contacts[j].created_at ?? 0).getTime();
+      if (Math.abs(t1 - t2) <= 60_000) {
+        ids.add(contacts[i].id);
+        ids.add(contacts[j].id);
+      }
+    }
+  }
+  return ids;
 }
 
 // ── Pills ─────────────────────────────────────────────────────────────────────

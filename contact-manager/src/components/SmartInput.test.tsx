@@ -34,7 +34,10 @@ const sample = {
 
 function mockFetchOk(data: unknown) {
   vi.spyOn(global, "fetch").mockResolvedValueOnce(
-    new Response(JSON.stringify({ data }), { status: 200 })
+    new Response(
+      JSON.stringify({ contacts: [data], count: 1, is_bulk: false }),
+      { status: 200 }
+    )
   );
 }
 

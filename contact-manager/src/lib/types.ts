@@ -40,6 +40,12 @@ export type ExtractedContact = {
   job_description: string | null;
   applied_date: string | null;
   notes: string | null;
+  resume_url?: string | null;
+};
+
+export type ReviewContact = ExtractedContact & {
+  status: "pending" | "confirmed" | "skipped";
+  missing_email: boolean;
 };
 
 export { OUTREACH_STAGES, APPLIED_STAGES, REPLY_STATUSES } from "@/lib/constants";

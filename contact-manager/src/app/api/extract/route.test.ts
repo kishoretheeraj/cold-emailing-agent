@@ -41,7 +41,7 @@ beforeEach(() => {
 });
 
 describe("POST /api/extract", () => {
-  it("returns parsed JSON when Claude responds with raw JSON", async () => {
+  it("returns contacts array with is_bulk=false for a single contact", async () => {
     mockCreate.mockResolvedValueOnce({
       content: [{ type: "text", text: JSON.stringify(sampleExtraction) }],
     });
@@ -49,7 +49,26 @@ describe("POST /api/extract", () => {
     const res = await POST(makeRequest({ text: "Dana from Clearbond" }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.data).toEqual(sampleExtraction);
+    expect(json.is_bulk).toBe(false);
+    expect(json.count).toBe(1);
+    expect(json.contacts).toHaveLength(1);
+    expect(json.contacts[0].name).toBe("Dana");
+    expect(json.contacts[0].email).toBe("dana@example.com");
+    expect(json.contacts[0].missing_email).toBe(false);
+  });
+
+  it("returns is_bulk=true when Claude returns an array of contacts", async () => {
+    const two = [sampleExtraction, { ...sampleExtraction, name: "Eve", email: "eve@example.com" }];
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(two) }],
+    });
+
+    const res = await POST(makeRequest({ text: "Dana and Eve" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.is_bulk).toBe(true);
+    expect(json.count).toBe(2);
+    expect(json.contacts).toHaveLength(2);
   });
 
   it("strips ```json code fences from Claude response", async () => {
@@ -65,7 +84,7 @@ describe("POST /api/extract", () => {
     const res = await POST(makeRequest({ text: "anything" }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.data.name).toBe("Dana");
+    expect(json.contacts[0].name).toBe("Dana");
   });
 
   it("returns 400 when text is empty", async () => {
@@ -95,8 +114,7 @@ describe("POST /api/extract", () => {
     const res = await POST(makeRequest({ text: "x" }));
     expect(res.status).toBe(502);
     const json = await res.json();
-    expect(json.error).toMatch(/valid JSON/i);
-    expect(json.raw).toBe("not even close to JSON");
+    expect(json.error).toMatch(/Could not parse contacts/i);
   });
 
   it("returns 500 when the SDK throws", async () => {
@@ -123,7 +141,7 @@ describe("POST /api/extract", () => {
 });
 
 describe("POST /api/extract — field validation", () => {
-  it("returns 422 when name is missing", async () => {
+  it("returns 422 when name is missing (contact is skipped)", async () => {
     const noName = { ...sampleExtraction, name: null };
     mockCreate.mockResolvedValueOnce({
       content: [{ type: "text", text: JSON.stringify(noName) }],
@@ -132,33 +150,35 @@ describe("POST /api/extract — field validation", () => {
     const res = await POST(makeRequest({ text: "x" }));
     expect(res.status).toBe(422);
     const json = await res.json();
-    expect(json.error).toMatch(/name/i);
-    expect(json.error).toMatch(/manually/i);
+    expect(json.error).toMatch(/no valid contacts/i);
   });
 
-  it("returns 422 when email is missing", async () => {
+  it("marks contact with missing_email=true when email is absent (does not return 422)", async () => {
     const noEmail = { ...sampleExtraction, email: null };
     mockCreate.mockResolvedValueOnce({
       content: [{ type: "text", text: JSON.stringify(noEmail) }],
     });
 
     const res = await POST(makeRequest({ text: "x" }));
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.error).toMatch(/email/i);
+    expect(json.contacts[0].missing_email).toBe(true);
+    expect(json.contacts[0].email).toBeNull();
   });
 
-  it("returns 422 when email has no @", async () => {
+  it("marks contact with missing_email=true when email has no @", async () => {
     const badEmail = { ...sampleExtraction, email: "notanemail" };
     mockCreate.mockResolvedValueOnce({
       content: [{ type: "text", text: JSON.stringify(badEmail) }],
     });
 
     const res = await POST(makeRequest({ text: "x" }));
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.contacts[0].missing_email).toBe(true);
   });
 
-  it("returns 422 when company is missing", async () => {
+  it("returns 422 when company is missing (contact is skipped)", async () => {
     const noCompany = { ...sampleExtraction, company: null };
     mockCreate.mockResolvedValueOnce({
       content: [{ type: "text", text: JSON.stringify(noCompany) }],
@@ -167,7 +187,7 @@ describe("POST /api/extract — field validation", () => {
     const res = await POST(makeRequest({ text: "x" }));
     expect(res.status).toBe(422);
     const json = await res.json();
-    expect(json.error).toMatch(/company/i);
+    expect(json.error).toMatch(/no valid contacts/i);
   });
 
   it("auto-corrects invalid mode to outreach", async () => {
@@ -179,7 +199,7 @@ describe("POST /api/extract — field validation", () => {
     const res = await POST(makeRequest({ text: "x" }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.data.mode).toBe("outreach");
+    expect(json.contacts[0].mode).toBe("outreach");
   });
 
   it("auto-corrects invalid tier to 2", async () => {
@@ -191,7 +211,7 @@ describe("POST /api/extract — field validation", () => {
     const res = await POST(makeRequest({ text: "x" }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.data.tier).toBe(2);
+    expect(json.contacts[0].tier).toBe(2);
   });
 
   it("auto-corrects null dartmouth to false", async () => {
@@ -203,19 +223,23 @@ describe("POST /api/extract — field validation", () => {
     const res = await POST(makeRequest({ text: "x" }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.data.dartmouth).toBe(false);
+    expect(json.contacts[0].dartmouth).toBe(false);
   });
 
-  it("returns 422 listing multiple missing fields", async () => {
-    const bare = { ...sampleExtraction, name: null, email: null };
+  it("skips contacts missing name, keeps contacts with missing email marked", async () => {
+    const two = [
+      { ...sampleExtraction, name: null },           // skipped — no name
+      { ...sampleExtraction, email: null, name: "Eve" }, // kept — missing_email=true
+    ];
     mockCreate.mockResolvedValueOnce({
-      content: [{ type: "text", text: JSON.stringify(bare) }],
+      content: [{ type: "text", text: JSON.stringify(two) }],
     });
 
     const res = await POST(makeRequest({ text: "x" }));
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.error).toMatch(/name/i);
-    expect(json.error).toMatch(/email/i);
+    expect(json.contacts).toHaveLength(1);
+    expect(json.contacts[0].name).toBe("Eve");
+    expect(json.contacts[0].missing_email).toBe(true);
   });
 });
