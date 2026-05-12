@@ -18,6 +18,7 @@ emailer.py        # Claude prompts and email generation
 gmail.py          # IMAP draft creation + Gmail label management
 db.py             # Supabase client + thin query/update wrappers
 config.py         # All env-var reads + prompt templates + tier instructions
+constants.py      # Stage sequences, reply statuses, TERMINAL_REPLY_STATUSES, DRAFTED_STAGES
 notify_failure.py # Emailed to GMAIL_ADDRESS when a workflow step fails
 ```
 
@@ -100,11 +101,19 @@ Follow-up emails must land in the same Gmail thread as the original.
 
 - `create_draft()` in `gmail.py` generates a `Message-ID` via
   `email.utils.make_msgid()` and embeds it in the MIME message before IMAP
-  APPEND. It returns the ID to the caller. **Do not fetch the ID from IMAP
-  after append** — Gmail drafts have no server-assigned Message-ID until sent.
+  APPEND. It returns the Message-ID string, or `None` if a duplicate draft
+  already exists for this `contact_id`/`stage`/`date` combination. **Do not
+  fetch the ID from IMAP after append** — Gmail drafts have no server-assigned
+  Message-ID until sent.
 - `create_draft()` accepts `in_reply_to` and `references` kwargs. When
   `in_reply_to` is set, it adds `In-Reply-To` and `References` headers and
   auto-prefixes the subject with `Re: ` (unless it already starts with it).
+- **Idempotency key**: when `contact_id` and `stage` are passed, `create_draft()`
+  hashes `f"{contact_id}:{stage}:{date.today()}"` (SHA-256, first 16 hex chars)
+  and writes it as an `X-Cold-Email-Key` custom header. Before appending, it
+  searches `[Gmail]/Drafts` for that key; if found, it returns `None` without
+  creating a duplicate. `agent.py` treats a `None` return as "already drafted
+  today" and increments `skipped` instead of calling `update_contact()`.
 - `_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}` is
   defined in both `agent.py` and `emailer.py`. Keep them in sync manually if
   new first-touch actions are added.
@@ -141,6 +150,28 @@ Follow-up emails must land in the same Gmail thread as the original.
   monkey-patch in `db.py` widens it to also accept `sb_publishable_*` keys.
   **Do not remove this patch** — it is the only reason the publishable key
   format works.
+- **`prompts` table**: `db.load_prompts()` reads all rows at agent startup and
+  returns `{key: value}`. Keys used: `sender_profile`, `outreach_prompt`,
+  `applied_intro_prompt`, `applied_followup_prompt`, `subject_prompt`. If the
+  table is unreachable, `run()` falls back to an empty dict and `emailer.py`
+  uses the `config.py` defaults. Prompts can be edited live via the
+  contact-manager's Prompts & Profile page; changes take effect the next run.
+
+## GitHub Actions
+
+Two workflows live in `.github/workflows/`:
+
+- **`daily_agent.yml`** — runs `agent.py` Mon-Fri at 5:37am EST (cron
+  `37 10 * * 1-5`). Has a `check-duplicate` preflight job: if a
+  `workflow_dispatch` (manual) run already succeeded today, the scheduled
+  run is skipped to prevent double-drafting.
+- **`monitor.yml`** — runs `monitor.py` every 2 hours Mon-Fri at :23
+  (cron `23 */2 * * 1-5`).
+
+Both workflows: upload the relevant `.log` file as an artifact (30-day
+retention), and run `notify_failure.py` in an `if: failure()` step.
+Both support `workflow_dispatch` for manual triggers.
+Python version: **3.11**. Dependencies installed via `requirements.txt`.
 
 ## Agent run tracking
 
@@ -171,9 +202,10 @@ every run regardless of whether any drafts were created.
   intentionally ignores the return value.
 - Always wrap IMAP calls in `try/finally imap.logout()`. Connection cleanup
   is non-negotiable.
-- `create_draft()` returns the `Message-ID` it generated (always a non-None
-  string). Do not try to fetch the ID from IMAP after append — Gmail drafts
-  only receive a server Message-ID when actually sent.
+- `create_draft()` returns the `Message-ID` it generated, or `None` if a
+  duplicate was detected via `X-Cold-Email-Key`. Do not try to fetch the ID
+  from IMAP after append — Gmail drafts only receive a server Message-ID when
+  actually sent.
 
 ## Tests
 

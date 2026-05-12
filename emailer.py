@@ -75,6 +75,20 @@ def _call_claude(prompt):
                 continue
             raise
 
+def _normalize_body(text):
+    paragraphs = text.split("\n\n")
+    normalized = []
+    for para in paragraphs:
+        lines = [l for l in para.splitlines() if l.strip()]
+        if not lines:
+            continue
+        if any(l.lstrip().startswith(("•", "-", "*")) for l in lines):
+            normalized.append("\n".join(lines))
+        else:
+            normalized.append(" ".join(l.strip() for l in lines))
+    return "\n\n".join(normalized)
+
+
 def generate_email(contact, action, original_subject=None, prompts=None):
     """
     Generate email body + subject for a contact based on the action.
@@ -97,6 +111,8 @@ def generate_email(contact, action, original_subject=None, prompts=None):
         body = _generate_applied_followup(contact, dart_instr, _prompts)
     else:
         raise ValueError(f"Unknown action: {action}")
+
+    body = _normalize_body(body)
 
     if action in _FIRST_TOUCH_ACTIONS:
         subject = _generate_subject(contact, mode, body, _prompts)

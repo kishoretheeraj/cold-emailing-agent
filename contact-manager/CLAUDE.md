@@ -2,9 +2,10 @@
 
 # Cold Email Ops — Contact Manager
 
-A small Next.js app for adding contacts to the cold-email Supabase table that
-the Python agent reads every morning. Two input modes (Smart Input / Structured
-Form), a 20-row contacts list, and a side panel for status updates.
+A small Next.js app for managing the cold-email pipeline. Three main surfaces:
+Smart Input / Structured Form for adding contacts, a 20-row contacts list with
+a side panel for status updates, and a Prompts & Profile page for editing the
+live prompt templates stored in Supabase.
 
 When working in this repo, follow the rules below. They reflect how the code
 was actually written, not just style preferences.
@@ -31,17 +32,21 @@ src/
 │   ├── api/extract/route.ts   # Server-only Claude POST handler
 │   ├── globals.css             # @theme tokens + global resets
 │   ├── layout.tsx              # Inter font, dark theme
-│   └── page.tsx                # 1-line server component → <App />
+│   ├── page.tsx                # 1-line server component → <App />
+│   └── prompts/page.tsx        # Server wrapper → <PromptsEditor />
 ├── components/                 # All client components live here
 │   ├── App.tsx                 # Top-level shell + toast + refresh state
 │   ├── SmartInput.tsx          # Paste → /api/extract → editable preview → save
 │   ├── StructuredForm.tsx      # Two form sections: outreach + applied
 │   ├── ContactsList.tsx        # Last 20 rows + side panel + status update
 │   ├── Field.tsx               # Reusable Label/TextInput/TextArea/Toggle/Tier
+│   ├── PromptsEditor.tsx       # Edit + save live prompts from Supabase prompts table
 │   └── Toast.tsx               # 4-second auto-dismissing notification
 └── lib/
+    ├── constants.ts            # Stage sequences, reply statuses (TS mirror of Python constants.py)
+    ├── defaultPrompts.ts       # Hardcoded defaults + PROMPT_META for the PromptsEditor UI
     ├── supabase.ts             # Anon-key browser client
-    └── types.ts                # Contact + ReplyStatus + stage arrays
+    └── types.ts                # Contact, ExtractedContact, ReviewContact + re-exports from constants
 ```
 
 ## Coding conventions
@@ -92,6 +97,13 @@ src/
 - The contacts list reads with `.order("created_at", { ascending: false }).limit(20)`.
 - The side-panel update writes `.update({ stage, reply_status }).eq("id", id).select().single()`
   to get the updated row back for optimistic local state.
+- **`prompts` table** (`key TEXT, value TEXT, updated_at TIMESTAMPTZ`):
+  `PromptsEditor` reads all rows on mount and updates a single row with
+  `.update({ value, updated_at }).eq("key", key)`. Changes here feed directly
+  into the Python agent's `load_prompts()` call at the next run. If a key is
+  missing from the table, the agent falls back to the `config.py` defaults;
+  `defaultPrompts.ts` stores those same defaults so the "Reset to default"
+  button in the UI reflects what the agent will use.
 
 ## Color and stage display rules (kept in sync with the Python agent)
 
@@ -103,8 +115,9 @@ src/
 - `reply_status === "dead"` → dim red
 
 These map to CSS custom properties in `globals.css`. If you add a stage,
-update both `OUTREACH_STAGES` / `APPLIED_STAGES` in `src/lib/types.ts` and
-the color rules in `ContactsList.tsx::stageStyles`.
+update `OUTREACH_STAGES` / `APPLIED_STAGES` in `src/lib/constants.ts` (the
+arrays are re-exported from `types.ts`) and the color rules in
+`ContactsList.tsx::stageStyles`.
 
 ## Tests (Vitest)
 
