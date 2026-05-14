@@ -35,10 +35,11 @@ src/
 │   ├── page.tsx                # 1-line server component → <App />
 │   └── prompts/page.tsx        # Server wrapper → <PromptsEditor />
 ├── components/                 # All client components live here
-│   ├── App.tsx                 # Top-level shell + toast + refresh state
-│   ├── SmartInput.tsx          # Paste → /api/extract → editable preview → save
+│   ├── App.tsx                 # Top-level shell + toast + refresh + bulkImportWindow state
+│   ├── SmartInput.tsx          # Paste → /api/extract → preview (single) or ReviewFlow (bulk)
+│   ├── ReviewFlow.tsx          # Full bulk review flow: reviewing/summary/importing/done/error
 │   ├── StructuredForm.tsx      # Two form sections: outreach + applied
-│   ├── ContactsList.tsx        # Last 20 rows + side panel + status update
+│   ├── ContactsList.tsx        # Last 20 rows + side panel + status update + Bulk badge
 │   ├── Field.tsx               # Reusable Label/TextInput/TextArea/Toggle/Tier
 │   ├── PromptsEditor.tsx       # Edit + save live prompts from Supabase prompts table
 │   └── Toast.tsx               # 4-second auto-dismissing notification
@@ -46,7 +47,8 @@ src/
     ├── constants.ts            # Stage sequences, reply statuses (TS mirror of Python constants.py)
     ├── defaultPrompts.ts       # Hardcoded defaults + PROMPT_META for the PromptsEditor UI
     ├── supabase.ts             # Anon-key browser client
-    └── types.ts                # Contact, ExtractedContact, ReviewContact + re-exports from constants
+    └── types.ts                # Contact, ExtractedContact, ReviewContact, BulkExtractResponse,
+                                # BulkImportWindow, ContactReviewStatus + re-exports from constants
 ```
 
 ## Coding conventions
@@ -77,17 +79,35 @@ src/
 - Validation runs on the click handler (not on blur). On failure, call the
   `onError` prop instead of throwing — toasts render through `App`.
 - After a successful insert, call `onAdded()` so `App` bumps `refreshKey`
-  and the contacts list re-fetches.
+  and the contacts list re-fetches. `onAdded` accepts an optional
+  `BulkImportWindow` arg: `onAdded(window?: BulkImportWindow) => void`.
+  Pass it from `ReviewFlow`'s Done screen to light up the Bulk badge in
+  `ContactsList`. Single-contact flows call `onAdded()` with no arg.
+- **`ReviewFlow` architecture**: `SmartInput` owns `reviewContacts` state.
+  `ReviewFlow` reads contacts from props and writes edits back via
+  `onUpdate(index, updatedContact)`. It does not keep a local copy.
+- **Inline style exception for dynamic widths**: a computed CSS width
+  (e.g. progress bar `${pct}%`) cannot be a static Tailwind class. Use a
+  scoped `<style>` tag injection (the same technique `App.tsx` uses for
+  `@keyframes fadein`) rather than an inline `style` prop.
 
 ## API route conventions
 
 - Server-only routes live in `src/app/api/<name>/route.ts`.
 - Use `export const runtime = "nodejs"` (Anthropic SDK requires Node).
+- Use `export const maxDuration = 30` on `/api/extract` (bulk needs headroom).
 - Never expose `ANTHROPIC_API_KEY` to the browser. Anything that uses it
   must go through a server route.
 - Validate the body shape and return `400` for missing input, `502` if a
   downstream service returns malformed data, `500` for unexpected SDK errors.
 - Strip ` ```json` code fences from Claude responses before `JSON.parse`.
+- `/api/extract` always returns `BulkExtractResponse` (`{ contacts, count,
+  is_bulk }`), even for a single contact (`count: 1, is_bulk: false`).
+  Input validation: body > 20000 chars → 400; > 50 `@` signs → 400.
+  Missing name/company marks `missing_required: true` + `required_missing_fields`
+  on the contact — does NOT skip or 422. Missing/invalid email marks
+  `missing_email: true`. Empty final array → 502. SDK throw → 500
+  `{ error: "extraction service unavailable" }`.
 
 ## Supabase patterns
 
@@ -97,6 +117,14 @@ src/
 - The contacts list reads with `.order("created_at", { ascending: false }).limit(20)`.
 - The side-panel update writes `.update({ stage, reply_status }).eq("id", id).select().single()`
   to get the updated row back for optimistic local state.
+- **Bulk insert payload** (ReviewFlow): `{ name, email, company, role, detail,
+  tier, mode, dartmouth, notes, resume_url, stage: "new", reply_status: "no_reply" }`.
+  Do NOT set `message_id`, `original_subject`, `last_emailed`, `followup_date`,
+  `template_current`, `job_title`, `job_description`, `company_applied`, `applied_date`
+  — those are agent-managed or applied-mode-specific.
+- **`resume_url` column**: `TEXT`, nullable, added 2026-05-14. Present on the
+  `contacts` table, `Contact` type, `ExtractedContact` type, ReviewFlow insert
+  payload, and the side-panel edit form in `ContactsList`.
 - **`prompts` table** (`key TEXT, value TEXT, updated_at TIMESTAMPTZ`):
   `PromptsEditor` reads all rows on mount and updates a single row with
   `.update({ value, updated_at }).eq("key", key)`. Changes here feed directly
@@ -164,8 +192,17 @@ arrays are re-exported from `types.ts`) and the color rules in
 - **Don't introduce a state-management library.** If state-sharing gets
   awkward, lift state to `App.tsx` first.
 - **Don't break the `/api/extract` JSON contract** without updating the
-  `ExtractedContact` type in `src/lib/types.ts` and the SmartInput preview
-  card.
+  `ExtractedContact` type in `src/lib/types.ts`, the `SmartInput` preview
+  card (single-contact path), and `ReviewFlow` (bulk path).
+- **Bulk badge** in `ContactsList` is driven by `bulkImportWindow` (a
+  `BulkImportWindow` held in `App` state, cleared on page refresh). It is
+  NOT persisted to Supabase. Do not add a DB column for it.
+- **`ContactReviewStatus`** (`"pending" | "confirmed" | "skipped"`) is a
+  named type in `types.ts`. `ReviewContact` extends `ExtractedContact` and
+  adds `status: ContactReviewStatus`. The `missing_email`, `missing_required`,
+  and `required_missing_fields` flags live on `ExtractedContact` (not
+  separately on `ReviewContact`) so the route can set them before the UI
+  maps the response to `ReviewContact`.
 
 ## Build / deploy
 
