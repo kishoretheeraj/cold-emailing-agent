@@ -6,6 +6,7 @@ import { SmartInput } from "./SmartInput";
 import { StructuredForm } from "./StructuredForm";
 import { ContactsList } from "./ContactsList";
 import { Toast, type ToastTone } from "./Toast";
+import type { BulkImportWindow } from "@/lib/types";
 
 type InputMode = "smart" | "form";
 
@@ -15,9 +16,11 @@ export function App() {
   const [toast, setToast] = useState<
     { msg: string; tone: ToastTone } | null
   >(null);
+  const [bulkImportWindow, setBulkImportWindow] = useState<BulkImportWindow | null>(null);
 
-  const onAdded = useCallback(() => {
+  const onAdded = useCallback((window?: BulkImportWindow) => {
     setRefreshKey((k) => k + 1);
+    if (window) setBulkImportWindow(window);
     setToast({
       msg: "Contact added — agent picks this up tomorrow 8am",
       tone: "success",
@@ -89,6 +92,7 @@ export function App() {
           refreshKey={refreshKey}
           onError={onError}
           onUpdated={onUpdated}
+          bulkImportWindow={bulkImportWindow}
         />
       </section>
 

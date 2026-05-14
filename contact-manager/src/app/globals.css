@@ -58,8 +58,3 @@ input, textarea, select, button {
 .slide-from-right { animation: slide-from-right 0.2s ease-out; }
 .slide-from-left  { animation: slide-from-left  0.2s ease-out; }
 
-/* Done-screen confetti burst */
-@keyframes confetti-fall {
-  0%   { transform: translateY(-0.5rem) rotate(0deg) scale(1);   opacity: 1; }
-  100% { transform: translateY(4rem)    rotate(720deg) scale(0.4); opacity: 0; }
-}

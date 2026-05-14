@@ -24,6 +24,7 @@ export type Contact = {
   applied_date: string | null;
   followup_date: string | null;
   notes: string | null;
+  resume_url?: string | null;
   created_at?: string;
 };
 
@@ -41,11 +42,26 @@ export type ExtractedContact = {
   applied_date: string | null;
   notes: string | null;
   resume_url?: string | null;
+  missing_email?: boolean;
+  missing_required?: boolean;
+  required_missing_fields?: string[];
 };
 
+export type BulkExtractResponse = {
+  contacts: ExtractedContact[];
+  count: number;
+  is_bulk: boolean;
+};
+
+export type ContactReviewStatus = "pending" | "confirmed" | "skipped";
+
 export type ReviewContact = ExtractedContact & {
-  status: "pending" | "confirmed" | "skipped";
-  missing_email: boolean;
+  status: ContactReviewStatus;
+};
+
+export type BulkImportWindow = {
+  startedAt: number;
+  endedAt: number;
 };
 
 export { OUTREACH_STAGES, APPLIED_STAGES, REPLY_STATUSES } from "@/lib/constants";

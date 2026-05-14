@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import {
   type Contact,
   type ReplyStatus,
+  type BulkImportWindow,
   OUTREACH_STAGES,
   APPLIED_STAGES,
   REPLY_STATUSES,
@@ -160,9 +161,10 @@ type Props = {
   refreshKey: number;
   onError: (msg: string) => void;
   onUpdated: () => void;
+  bulkImportWindow?: BulkImportWindow | null;
 };
 
-export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
+export function ContactsList({ refreshKey, onError, onUpdated, bulkImportWindow }: Props) {
   const [contacts, setContacts] = useState<Contact[] | null>(null);
   const [selected, setSelected] = useState<Contact | null>(null);
 
@@ -219,9 +221,7 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {(() => {
-                  const bulkIds = getBulkGroupIds(contacts);
-                  return contacts.map((c) => (
+                {contacts.map((c) => (
                   <tr
                     key={c.id}
                     onClick={() => setSelected(c)}
@@ -229,14 +229,14 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
                   >
                     <td className="px-4 py-3 text-fg">
                       {c.name ?? "—"}
-                      {bulkIds.has(c.id) && (
+                      {isBulkContact(c, bulkImportWindow) && (
                         <span
                           title={
                             c.created_at
-                              ? `Imported ${new Date(c.created_at).toLocaleString()}`
+                              ? new Date(c.created_at).toISOString()
                               : "Bulk import"
                           }
-                          className="ml-1.5 inline-flex items-center rounded px-1 py-0.5 text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 cursor-default"
+                          className="ml-1.5 inline-flex items-center rounded px-1 py-0.5 text-xs bg-surface-2 text-fg-dim border border-border cursor-default"
                         >
                           Bulk
                         </span>
@@ -256,8 +256,7 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
                       {formatDate(c.created_at)}
                     </td>
                   </tr>
-                  ));
-                })()}
+                ))}
               </tbody>
             </table>
           </div>
@@ -282,21 +281,15 @@ export function ContactsList({ refreshKey, onError, onUpdated }: Props) {
   );
 }
 
-// ── Bulk batch detection ──────────────────────────────────────────────────────
+// ── Bulk badge detection ──────────────────────────────────────────────────────
 
-function getBulkGroupIds(contacts: Contact[]): Set<string> {
-  const ids = new Set<string>();
-  for (let i = 0; i < contacts.length; i++) {
-    for (let j = i + 1; j < contacts.length; j++) {
-      const t1 = new Date(contacts[i].created_at ?? 0).getTime();
-      const t2 = new Date(contacts[j].created_at ?? 0).getTime();
-      if (Math.abs(t1 - t2) <= 60_000) {
-        ids.add(contacts[i].id);
-        ids.add(contacts[j].id);
-      }
-    }
-  }
-  return ids;
+function isBulkContact(
+  c: Contact,
+  window: BulkImportWindow | null | undefined
+): boolean {
+  if (!window || !c.created_at) return false;
+  const t = new Date(c.created_at).getTime();
+  return t > window.startedAt - 5000 && t < window.endedAt + 5000;
 }
 
 // ── Pills ─────────────────────────────────────────────────────────────────────
@@ -419,6 +412,7 @@ function SidePanel({
           mode: draft.mode,
           dartmouth: draft.dartmouth,
           notes: draft.notes,
+          resume_url: draft.resume_url ?? null,
           followup_date: draft.followup_date,
           stage: draft.stage,
           reply_status: draft.reply_status,
@@ -583,6 +577,13 @@ function SidePanel({
                 type="date"
                 value={draft.followup_date ?? ""}
                 onChange={(e) => updateDraft("followup_date", e.target.value)}
+              />
+            </PanelField>
+
+            <PanelField label="Resume Link">
+              <TextInput
+                value={draft.resume_url ?? ""}
+                onChange={(e) => updateDraft("resume_url", e.target.value)}
               />
             </PanelField>
 

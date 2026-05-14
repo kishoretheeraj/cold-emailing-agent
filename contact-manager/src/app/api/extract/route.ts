@@ -2,51 +2,104 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ExtractedContact } from "@/lib/types";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
-const PROMPT = `Analyze the pasted text. If it contains ONE contact, return a single JSON object. If it contains MULTIPLE contacts (indicated by multiple names, emails, or contact blocks), return a JSON array of contact objects.
+const PROMPT = `Analyze the pasted text. If it contains ONE contact, return a single JSON object. If it contains MULTIPLE contacts (multiple distinct names with their own emails or contact blocks), return a JSON array.
 
-For each contact extract:
-- name (string) — first + last name only, strip T'XX or D'XX suffix
-- email (string) — primary email address, null if not found
-- company (string)
-- role (string) — from Title field
-- detail (string) — generate a one-line personalization hook based on their role, company, and industry. Make it specific and useful for a cold email opener. Do not use filler like 'experienced leader'.
-- tier (integer 1-3) — default 2
-- mode (string) — default 'outreach'
-- dartmouth (boolean) — true if T'XX, D'XX, Tuck, Thayer, Dartmouth, or Irving appears anywhere near their name or in the text
-- notes (string) — if dartmouth is true, set to 'Tuck Class of [year]' where year is derived from T'XX (T'06 = 2006, T'96 = 1996, T'64 = 1964). Otherwise null.
-- resume_url (string or null) — any Google Drive or resume link found
+For each contact extract these fields:
+- name: string. First and last name only. Strip T'XX, D'XX, parenthetical nicknames, and honorifics (Mr/Ms/Dr).
+- email: string or null. Primary email address. Null if absent.
+- company: string or null. Null if absent.
+- role: string or null. From Title or equivalent field.
+- detail: string. One line personalization hook. Be SPECIFIC only if the input provides context (recent news, mutual interest, role history). If the input is minimal (just title and company), return a short factual hook such as 'President at Acme Corp'. Do NOT invent specifics.
+- tier: integer 1, 2, or 3. Default 2.
+- mode: always 'outreach' for bulk paste. Never output 'applied' from a paste, because applied mode requires a job description that is not present in bulk pasted text.
+- dartmouth: boolean. True ONLY if T'XX, D'XX, Tuck, Thayer, Dartmouth, or Irving appears in the SAME contact block (not a page header or footer that applies to every contact). When in doubt, false.
+- notes: string or null. If dartmouth is true and a T'YY pattern appears, set notes to 'Tuck Class of YYYY' using this rule:
+    Let CY = the last 2 digits of the current year (2026 gives 26).
+    If YY is less than or equal to CY + 5: year is 20YY.
+      Examples: T'24 maps to 2024, T'29 maps to 2029.
+    If YY is greater than CY + 5: year is 19YY.
+      Examples: T'64 maps to 1964, T'96 maps to 1996.
+  Otherwise null.
+- resume_url: string or null. Any Google Drive or resume link.
 
-Ignore: addresses, phone numbers, fax numbers, function field, industry field.
+Ignore: addresses, phone numbers, fax numbers, Function field, Industry field.
 
-Return ONLY valid JSON. No explanation, no markdown fences, no preamble. Single contact = object. Multiple contacts = array.`;
+Return ONLY valid JSON. No explanation, no markdown, no preamble, no trailing text. Single contact returns a JSON object. Multiple contacts return a JSON array.
 
-type RawContact = ExtractedContact & { missing_email?: boolean };
+Example single-contact output:
+{"name":"Jane Doe","email":"jane@acme.com","company":"Acme","role":"CEO","detail":"CEO at Acme since 2019","tier":2,"mode":"outreach","dartmouth":false,"notes":null,"resume_url":null}`;
 
-function normalizeContact(c: Record<string, unknown>): RawContact {
-  const contact = { ...(c as RawContact) };
-  if (!["outreach", "applied"].includes(contact.mode as string)) {
-    contact.mode = "outreach";
-  }
-  if (![1, 2, 3].includes(contact.tier as number)) {
-    contact.tier = 2;
-  }
-  if (typeof contact.dartmouth !== "boolean") {
-    contact.dartmouth = false;
-  }
-  return contact;
+function normalizeContact(c: Record<string, unknown>): ExtractedContact {
+  const rawName = typeof c.name === "string" ? c.name.trim() : null;
+  const rawCompany = typeof c.company === "string" ? c.company.trim() : null;
+
+  const requiredMissingFields: string[] = [];
+  if (!rawName) requiredMissingFields.push("name");
+  if (!rawCompany) requiredMissingFields.push("company");
+  const missingRequired = requiredMissingFields.length > 0;
+
+  const rawEmail = typeof c.email === "string" ? c.email.trim() : null;
+  const missingEmail = !rawEmail || !rawEmail.includes("@");
+
+  let mode: "outreach" | "applied" = "outreach";
+  if (c.mode === "applied") mode = "applied";
+
+  let tier = 2;
+  if (c.tier === 1 || c.tier === 2 || c.tier === 3) tier = c.tier;
+
+  const dartmouth = typeof c.dartmouth === "boolean" ? c.dartmouth : false;
+
+  return {
+    name: rawName ?? "",
+    email: missingEmail ? null : rawEmail,
+    company: rawCompany ?? null,
+    role: typeof c.role === "string" ? c.role : null,
+    detail: typeof c.detail === "string" ? c.detail : null,
+    tier,
+    mode,
+    dartmouth,
+    job_title: null,
+    job_description: null,
+    applied_date: null,
+    notes: typeof c.notes === "string" ? c.notes : null,
+    resume_url: typeof c.resume_url === "string" ? c.resume_url : null,
+    missing_email: missingEmail,
+    ...(missingRequired
+      ? { missing_required: true, required_missing_fields: requiredMissingFields }
+      : {}),
+  };
 }
 
 export async function POST(req: Request) {
+  let text: string;
   try {
-    const { text } = (await req.json()) as { text?: string };
+    const body = (await req.json()) as { text?: string };
+    text = body.text ?? "";
+  } catch {
+    return Response.json({ error: "text is required" }, { status: 400 });
+  }
 
-    if (!text || !text.trim()) {
-      return Response.json({ error: "text is required" }, { status: 400 });
-    }
+  if (!text || !text.trim()) {
+    return Response.json({ error: "text is required" }, { status: 400 });
+  }
+  if (text.length > 20000) {
+    return Response.json(
+      { error: "input too large; paste no more than 20000 characters" },
+      { status: 400 }
+    );
+  }
+  if ((text.match(/@/g) ?? []).length > 50) {
+    return Response.json(
+      { error: "too many contacts; max 50 per paste" },
+      { status: 400 }
+    );
+  }
 
+  try {
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 4000,
@@ -62,37 +115,24 @@ export async function POST(req: Request) {
     try {
       parsed = JSON.parse(cleaned);
     } catch {
-      // Retry: strip any remaining fences more aggressively
       cleaned = cleaned.replace(/```[\s\S]*?```/g, "").trim();
       try {
         parsed = JSON.parse(cleaned);
       } catch {
-        return Response.json({ error: "Could not parse contacts", raw }, { status: 502 });
+        return Response.json({ error: "upstream parse failure" }, { status: 502 });
       }
     }
 
     const rawList = Array.isArray(parsed) ? parsed : [parsed];
-    const contacts: RawContact[] = [];
+    const contacts: ExtractedContact[] = [];
 
     for (const c of rawList) {
       if (typeof c !== "object" || c === null) continue;
-      const contact = normalizeContact(c as Record<string, unknown>);
-      // name and company are required — skip the contact entirely if missing
-      if (!contact.name?.toString().trim()) continue;
-      if (!contact.company?.toString().trim()) continue;
-      // email is required — mark as missing rather than skipping
-      if (!contact.email?.toString().includes("@")) {
-        contacts.push({ ...contact, email: null, missing_email: true });
-      } else {
-        contacts.push({ ...contact, missing_email: false });
-      }
+      contacts.push(normalizeContact(c as Record<string, unknown>));
     }
 
     if (contacts.length === 0) {
-      return Response.json(
-        { error: "No valid contacts found — name and company are required for each" },
-        { status: 422 }
-      );
+      return Response.json({ error: "no contacts extracted" }, { status: 502 });
     }
 
     return Response.json({
@@ -100,8 +140,10 @@ export async function POST(req: Request) {
       count: contacts.length,
       is_bulk: contacts.length > 1,
     });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "unknown error";
-    return Response.json({ error: message }, { status: 500 });
+  } catch {
+    return Response.json(
+      { error: "extraction service unavailable" },
+      { status: 500 }
+    );
   }
 }
