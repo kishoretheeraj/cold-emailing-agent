@@ -170,6 +170,21 @@ describe("PromptSection", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
+  it("Reset does nothing when user cancels the confirm dialog", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+
+    render(
+      <PromptSection prompt={basePrompt} onSaved={vi.fn()} onError={vi.fn()} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Reset to default" }));
+
+    // Draft stays at original value — not changed to default_value
+    expect(screen.getByRole("textbox")).toHaveValue("Hello {name} at {company}");
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it("resets draft to new prompt.value when prop changes", () => {
     const { rerender } = render(
       <PromptSection prompt={basePrompt} onSaved={vi.fn()} onError={vi.fn()} />

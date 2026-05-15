@@ -46,7 +46,7 @@ export function PromptSection({
   }
 
   function handleReset() {
-    if (!prompt.default_value) return;
+    if (prompt.default_value === null) return;
     if (
       !window.confirm(
         "Reset this prompt to its default? Your current changes will be lost."
