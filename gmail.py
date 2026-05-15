@@ -101,3 +101,29 @@ def apply_label_to_latest_draft(label_name):
             imap.copy(nums[-1].decode(), f'"{label_name}"')
     finally:
         imap.logout()
+
+
+# ── Sent-mail search ───────────────────────────────────────────────────────────
+
+def find_sent_for_thread(message_id, since_date, mode):
+    """
+    Returns True if a message exists in [Gmail]/Sent Mail that
+    either has the given Message-ID (mode='first_touch') or has
+    In-Reply-To set to the given message_id (mode='followup'),
+    sent on or after since_date.
+    """
+    since_str = since_date.strftime("%d-%b-%Y")
+    header = "Message-ID" if mode == "first_touch" else "In-Reply-To"
+    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    try:
+        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        imap.select('"[Gmail]/Sent Mail"', readonly=True)
+        status, data = imap.search(None, "SINCE", since_str, "HEADER", header, message_id)
+        result = status == "OK" and bool(data[0])
+        log.info(f"[SENT-CHECK] | {message_id} | {mode} | found={result}")
+        return result
+    except Exception as exc:
+        log.warning(f"[SENT-CHECK] | IMAP error | {message_id} | {exc}")
+        return False
+    finally:
+        imap.logout()

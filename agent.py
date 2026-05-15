@@ -116,6 +116,15 @@ NEXT_STAGE = {
     "send_applied_followup": "applied_followup_drafted",
 }
 
+DRAFTED_TO_SENT = {
+    "first_touch_drafted":      "first_touch_sent",
+    "followup1_drafted":        "followup1_sent",
+    "followup2_drafted":        "followup2_sent",
+    "breakup_drafted":          "breakup_sent",
+    "applied_intro_drafted":    "applied_intro_sent",
+    "applied_followup_drafted": "applied_followup_sent",
+}
+
 NEXT_TEMPLATE = {
     "send_first_touch":      "cold_intro",
     "send_followup1":        "follow_up_1",

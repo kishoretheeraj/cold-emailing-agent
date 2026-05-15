@@ -13,12 +13,12 @@ was actually written, not just style preferences.
 
 ```
 agent.py          # Daily run: pick contacts, draft, label, update Supabase
-monitor.py        # Reply detector — runs every 2 hours, sets reply_status=replied
+monitor.py        # Reply detector + sent-draft detector — runs every 2 hours, auto-flips *_drafted→*_sent
 emailer.py        # Claude prompts and email generation
 gmail.py          # IMAP draft creation + Gmail label management
 db.py             # Supabase client + thin query/update wrappers
 config.py         # All env-var reads + prompt templates + tier instructions
-constants.py      # Stage sequences, reply statuses, TERMINAL_REPLY_STATUSES, DRAFTED_STAGES
+constants.py      # Stage sequences, reply statuses, TERMINAL_REPLY_STATUSES, DRAFTED_STAGES, TERMINAL_DRAFTED_STAGES
 notify_failure.py # Emailed to GMAIL_ADDRESS when a workflow step fails
 ```
 
@@ -59,8 +59,9 @@ Actions artifacts and downstream scripts read it.
 - A contact is **skipped** the moment `reply_status` becomes anything other
   than `no_reply`. The agent must never email someone who has already replied.
 - Stage progression is **strict**: `new → *_drafted → *_sent → ...`. The
-  user is the one who flips `*_drafted` to `*_sent` (after they hit Send in
-  Gmail). The agent never auto-flips.
+  `monitor.py` sent-draft detector auto-flips `*_drafted → *_sent` when it
+  finds the email in Gmail Sent Mail. The user can also flip manually.
+  The agent never auto-flips.
 - `breakup_sent` and `applied_followup_sent` are **terminal**.
 - `followup_date` is checked with `<=`, not `<`, so a follow-up due "today"
   is sent today.
@@ -74,11 +75,16 @@ Actions artifacts and downstream scripts read it.
 `emailer.ACTION_TO_TEMPLATE` must keep matching keys. There's a test
 (`test_action_maps_have_consistent_keys`) that fails if they drift.
 
+`agent.DRAFTED_TO_SENT` maps every `*_drafted` stage to its `*_sent`
+successor. `monitor.detect_sent_drafts()` uses this map exclusively —
+do not duplicate the mapping elsewhere.
+
 When you add a new action:
-1. Add it to all four maps.
-2. Add the action's prompt template to `config.py` if it's outreach.
-3. Add a `decide_*` branch that returns the action.
-4. Add `Cold Outreach/<Label>` formatted label.
+1. Add it to all four action maps (`NEXT_STAGE`, `NEXT_TEMPLATE`, `ACTION_LABEL`, `emailer.ACTION_TO_TEMPLATE`).
+2. Add the `*_drafted → *_sent` entry to `agent.DRAFTED_TO_SENT`.
+3. Add the action's prompt template to `config.py` if it's outreach.
+4. Add a `decide_*` branch that returns the action.
+5. Add `Cold Outreach/<Label>` formatted label.
 
 ## Best-effort labeling rule
 
@@ -196,6 +202,7 @@ every run regardless of whether any drafts were created.
 ## IMAP patterns
 
 - `[Gmail]/Drafts` mailbox name is double-quoted: `'"[Gmail]/Drafts"'`.
+- `[Gmail]/Sent Mail` mailbox name is double-quoted: `'"[Gmail]/Sent Mail"'`.
 - Label folder names are double-quoted: `f'"{label_name}"'`.
 - `imap.create()` returns `('NO', [b'[ALREADYEXISTS]...'])` if the label
   exists. **This is not an exception** — `create_gmail_label_if_not_exists`
@@ -206,6 +213,37 @@ every run regardless of whether any drafts were created.
   duplicate was detected via `X-Cold-Email-Key`. Do not try to fetch the ID
   from IMAP after append — Gmail drafts only receive a server Message-ID when
   actually sent.
+- `find_sent_for_thread(message_id, since_date, mode)` searches `[Gmail]/Sent Mail`
+  with `readonly=True`. Use `mode="first_touch"` to match on `Message-ID`,
+  `mode="followup"` to match on `In-Reply-To`. Returns `True/False`, never raises.
+
+## Sent-draft auto-detection
+
+`monitor.detect_sent_drafts()` runs at the start of every monitor cycle,
+before reply detection. It flips contacts from `*_drafted` to `*_sent`
+automatically when the user sends a draft from Gmail.
+
+Key invariants:
+- **Best-effort, per-contact**: any per-contact failure (IMAP error, Supabase
+  error, missing message_id) logs a warning and continues to the next contact.
+  A single failure never aborts the loop or blocks reply detection.
+- **`message_id` required**: contacts with `message_id=None` are skipped with
+  an info log. The agent populates `message_id` when it creates the first draft.
+- **Cadence reuse**: `followup_date` is set using `FOLLOWUP_DAYS[action]` from
+  `config.py` — the exact same values the agent uses. Look up the action via
+  the inverse of `NEXT_STAGE`. Do not hardcode day counts here.
+- **Terminal stages**: `breakup_drafted` and `applied_followup_drafted` are in
+  `TERMINAL_DRAFTED_STAGES`. When flipped, `followup_date` is cleared to `None`
+  (via `update_contact(..., clear_followup_date=True)`).
+- **`update_contact` change**: `db.update_contact` now accepts `clear_followup_date=False`.
+  When `True`, it explicitly sets `followup_date=None` in the Supabase update.
+  All existing callers are unaffected (default is `False`).
+- **`detect_replies()` independence**: `run()` wraps `detect_sent_drafts()` in
+  `try/except` so a catastrophic failure there never blocks reply detection.
+- **v1 limitation**: depends on Gmail preserving the draft's `Message-ID` on
+  send. Scheduled-send drafts and heavily-edited first-touch drafts may not be
+  detected. If the monitor log shows `found=False` after sending, Gmail may
+  have rewritten the Message-ID — a subject+recipient fallback would be v2.
 
 ## Tests
 
@@ -219,6 +257,8 @@ every run regardless of whether any drafts were created.
   to replace functions on a module under test.
 - Decision-logic tests use `pytest.mark.parametrize` to enumerate stages
   and replies. Match this pattern when adding cases.
+- `tests/test_sent_detection.py` — parametrized tests for `detect_sent_drafts()`.
+- `tests/test_sent_search.py` — tests for `gmail.find_sent_for_thread()`.
 
 ## When changing things
 

@@ -66,7 +66,8 @@ def get_all_contacts():
     result = _retry(lambda: get_client().table("contacts").select("*").execute())
     return result.data or []
 
-def update_contact(contact_id, stage, followup_days=None, template=None, expected_stage=None):
+def update_contact(contact_id, stage, followup_days=None, template=None,
+                   expected_stage=None, clear_followup_date=False):
     """Update contact stage, followup_date, and last_emailed after a draft is created."""
     updates = {
         "stage": stage,
@@ -74,6 +75,8 @@ def update_contact(contact_id, stage, followup_days=None, template=None, expecte
     }
     if followup_days is not None:
         updates["followup_date"] = str(date.today() + timedelta(days=followup_days))
+    elif clear_followup_date:
+        updates["followup_date"] = None
     if template:
         updates["template_current"] = template
 
@@ -102,6 +105,18 @@ def get_sent_contacts():
         .select("*")
         .eq("reply_status", "no_reply")
         .like("stage", "%_sent%")
+        .execute()
+    ))
+    return result.data or []
+
+def get_drafted_contacts():
+    """Fetch contacts whose stage is currently in a *_drafted state."""
+    from constants import DRAFTED_STAGES
+    result = _retry(lambda: (
+        get_client()
+        .table("contacts")
+        .select("*")
+        .in_("stage", DRAFTED_STAGES)
         .execute()
     ))
     return result.data or []

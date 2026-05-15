@@ -22,6 +22,7 @@ def _contact(**overrides):
 
 
 def test_run_with_no_contacts_does_not_open_imap(mocker, capsys):
+    mocker.patch.object(monitor, "detect_sent_drafts")
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[])
     imap_factory = mocker.patch.object(monitor.imaplib, "IMAP4_SSL")
 
@@ -36,6 +37,7 @@ def test_run_with_no_contacts_does_not_open_imap(mocker, capsys):
 
 
 def test_run_detects_reply_updates_status_and_labels(mocker, capsys):
+    mocker.patch.object(monitor, "detect_sent_drafts")
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
     update_status = mocker.patch.object(monitor, "update_reply_status")
     create_label = mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
@@ -67,6 +69,7 @@ def test_run_detects_reply_updates_status_and_labels(mocker, capsys):
 
 
 def test_run_no_reply_does_not_update(mocker, capsys):
+    mocker.patch.object(monitor, "detect_sent_drafts")
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
     update_status = mocker.patch.object(monitor, "update_reply_status")
     mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
@@ -87,6 +90,7 @@ def test_run_no_reply_does_not_update(mocker, capsys):
 
 
 def test_run_continues_when_individual_label_copy_fails(mocker):
+    mocker.patch.object(monitor, "detect_sent_drafts")
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
     update_status = mocker.patch.object(monitor, "update_reply_status")
     mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
@@ -106,6 +110,7 @@ def test_run_continues_when_individual_label_copy_fails(mocker):
 
 
 def test_run_logs_out_even_on_search_error(mocker):
+    mocker.patch.object(monitor, "detect_sent_drafts")
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
     mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
 
@@ -117,6 +122,22 @@ def test_run_logs_out_even_on_search_error(mocker):
         monitor.run()
 
     fake_imap.logout.assert_called_once()
+
+
+# ── Independence: detect_sent_drafts failure must not block detect_replies ───
+
+
+def test_run_continues_to_reply_detection_if_sent_detection_raises(mocker, capsys):
+    mocker.patch.object(monitor, "detect_sent_drafts",
+                        side_effect=RuntimeError("detect_sent_drafts exploded"))
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[])
+    imap_factory = mocker.patch.object(monitor.imaplib, "IMAP4_SSL")
+
+    # Must not raise; detect_replies still runs (fast-path with 0 contacts)
+    monitor.run()
+
+    out = capsys.readouterr().out
+    assert "0 replies found, 0 contacts checked" in out
 
 
 # ── Constant invariants ──────────────────────────────────────────────────────
