@@ -64,4 +64,14 @@ export type BulkImportWindow = {
   endedAt: number;
 };
 
+export type Prompt = {
+  key: string;
+  value: string;
+  description: string | null;
+  display_title: string;
+  default_value: string | null;
+  sort_order: number;
+  updated_at: string;
+};
+
 export { OUTREACH_STAGES, APPLIED_STAGES, REPLY_STATUSES } from "@/lib/constants";
