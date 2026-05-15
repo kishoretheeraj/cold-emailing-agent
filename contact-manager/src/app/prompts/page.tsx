@@ -1,7 +1,7 @@
-import { PromptsEditor } from "@/components/PromptsEditor";
+import { PromptsPage } from "@/components/PromptsPage";
 
 export const metadata = { title: "Prompts & Profile — Cold Email Ops" };
 
-export default function PromptsPage() {
-  return <PromptsEditor />;
+export default function Page() {
+  return <PromptsPage />;
 }
