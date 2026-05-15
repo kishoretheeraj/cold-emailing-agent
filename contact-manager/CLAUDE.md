@@ -33,7 +33,7 @@ src/
 │   ├── globals.css             # @theme tokens + global resets
 │   ├── layout.tsx              # Inter font, dark theme
 │   ├── page.tsx                # 1-line server component → <App />
-│   └── prompts/page.tsx        # Server wrapper → <PromptsEditor />
+│   └── prompts/page.tsx        # Server wrapper → <PromptsPage />
 ├── components/                 # All client components live here
 │   ├── App.tsx                 # Top-level shell + toast + refresh + bulkImportWindow state
 │   ├── SmartInput.tsx          # Paste → /api/extract → preview (single) or ReviewFlow (bulk)
@@ -41,14 +41,15 @@ src/
 │   ├── StructuredForm.tsx      # Two form sections: outreach + applied
 │   ├── ContactsList.tsx        # Last 20 rows + side panel + status update + Bulk badge
 │   ├── Field.tsx               # Reusable Label/TextInput/TextArea/Toggle/Tier
-│   ├── PromptsEditor.tsx       # Edit + save live prompts from Supabase prompts table
+│   ├── PromptsPage.tsx         # Schema-driven page: fetches prompts rows, renders PromptSection per row
+│   ├── PromptSection.tsx       # Per-row edit/save/reset component; owns draft + saving state
 │   └── Toast.tsx               # 4-second auto-dismissing notification
 └── lib/
     ├── constants.ts            # Stage sequences, reply statuses (TS mirror of Python constants.py)
-    ├── defaultPrompts.ts       # Hardcoded defaults + PROMPT_META for the PromptsEditor UI
+    ├── promptVariables.ts      # extractVariables(template) → string[] of {placeholder} names
     ├── supabase.ts             # Anon-key browser client
     └── types.ts                # Contact, ExtractedContact, ReviewContact, BulkExtractResponse,
-                                # BulkImportWindow, ContactReviewStatus + re-exports from constants
+                                # BulkImportWindow, ContactReviewStatus, Prompt + re-exports from constants
 ```
 
 ## Coding conventions
@@ -125,13 +126,18 @@ src/
 - **`resume_url` column**: `TEXT`, nullable, added 2026-05-14. Present on the
   `contacts` table, `Contact` type, `ExtractedContact` type, ReviewFlow insert
   payload, and the side-panel edit form in `ContactsList`.
-- **`prompts` table** (`key TEXT, value TEXT, updated_at TIMESTAMPTZ`):
-  `PromptsEditor` reads all rows on mount and updates a single row with
-  `.update({ value, updated_at }).eq("key", key)`. Changes here feed directly
-  into the Python agent's `load_prompts()` call at the next run. If a key is
-  missing from the table, the agent falls back to the `config.py` defaults;
-  `defaultPrompts.ts` stores those same defaults so the "Reset to default"
-  button in the UI reflects what the agent will use.
+- **`prompts` table** (`key TEXT, value TEXT, description TEXT, display_title TEXT NOT NULL, default_value TEXT, sort_order INTEGER, updated_at TIMESTAMPTZ`):
+  Schema-driven — `PromptsPage` fetches all rows ordered by `sort_order` and
+  renders a `PromptSection` per row automatically. `PromptSection` saves with
+  `.update({ value, updated_at }).eq("key", key).select().single()` and returns
+  the updated row to the parent via `onSaved`. Changes feed directly into the
+  Python agent's `load_prompts()` call at the next run. If a key is missing, the
+  agent falls back to `config.py` defaults. **Adding a new prompt requires only
+  an INSERT into the `prompts` table — no UI code changes.** `default_value`
+  stores the factory default for the Reset button; if null, Reset is hidden.
+  Sort-order convention: gaps of 10 (existing keys use 10/20/30/40/50); future
+  keys planned at 25 (`critic_prompt`), 28 (`research_injection`), 90/95
+  (`retrospective_*`).
 
 ## Color and stage display rules (kept in sync with the Python agent)
 
@@ -184,6 +190,10 @@ arrays are re-exported from `types.ts`) and the color rules in
 
 ## When changing things
 
+- **Don't add hardcoded prompt sections to the UI.** The Prompts page is
+  schema-driven — new prompt keys appear automatically when a row is inserted
+  into the `prompts` table with `display_title`, `description`, `default_value`,
+  and `sort_order` set. Never add a new `PromptSection` manually.
 - **Don't introduce server actions** for inserts/updates. The current pattern
   uses the supabase-js client from the browser with the anon key. Switching
   would require auth/RLS changes that are out of scope.
