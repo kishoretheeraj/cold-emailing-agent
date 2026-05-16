@@ -17,6 +17,7 @@ from config import (
     OUTREACH_PROMPT, APPLIED_INTRO_PROMPT,
     APPLIED_FOLLOWUP_PROMPT, SUBJECT_PROMPT,
     CRITIC_PROMPT_DEFAULT, CRITIC_PASS_THRESHOLD,
+    RESEARCH_TIERS, RESEARCH_INJECTION_DEFAULT,
 )
 
 log = logging.getLogger(__name__)
@@ -39,10 +40,11 @@ def _is_dartmouth(contact):
     detail = (contact.get("detail") or "").lower()
     return any(kw in detail for kw in DARTMOUTH_KEYWORDS)
 
-def _call_claude(prompt):
+def _call_claude(prompt, model=None, max_tokens=1000):
+    _model = model or EMAIL_MODEL
     payload = json.dumps({
-        "model": EMAIL_MODEL,
-        "max_tokens": 1000,
+        "model": _model,
+        "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -106,11 +108,58 @@ def generate_email(contact, action, original_subject=None, prompts=None):
     dart = _is_dartmouth(contact)
     dart_instr = DARTMOUTH_INSTRUCTION if dart else ""
 
+    # ── Research injection ─────────────────────────────────────────────────────
+    research_brief = ""
+    is_first_touch = action in _FIRST_TOUCH_ACTIONS
+    tier = contact.get("tier")
+    is_research_tier = tier in RESEARCH_TIERS
+
+    if is_first_touch and is_research_tier:
+        try:
+            import research
+            sender_profile_text = _prompts.get("sender_profile", SENDER_PROFILE)
+            research_brief = research.get_research_brief(
+                contact,
+                sender_profile_text,
+                _prompts,
+            )
+        except Exception as exc:
+            log.warning(
+                f"[RESEARCH] | {contact.get('name')} | "
+                f"{contact.get('company')} | "
+                f"unexpected pipeline failure: {exc}"
+            )
+            research_brief = ""
+
+    research_block = ""
+    if research_brief:
+        injection_template = _prompts.get(
+            "research_injection",
+            RESEARCH_INJECTION_DEFAULT,
+        )
+        try:
+            research_block = injection_template.format(brief_text=research_brief)
+        except Exception as exc:
+            log.warning(
+                f"[RESEARCH] | {contact.get('name')} | "
+                f"{contact.get('company')} | "
+                f"injection template format failed: {exc}"
+            )
+            research_block = ""
+
+    log.info(
+        f"[OUTREACH] | {contact.get('name')} | "
+        f"{contact.get('company')} | tier={tier} | "
+        f"has_brief={bool(research_brief)}"
+    )
+
     if action in ("send_first_touch", "send_followup1",
                   "send_followup2", "send_breakup"):
-        body = _generate_outreach(contact, action, dart_instr, _prompts)
+        body = _generate_outreach(contact, action, dart_instr, _prompts,
+                                  research_block=research_block)
     elif action == "send_applied_intro":
-        body = _generate_applied_intro(contact, dart_instr, _prompts)
+        body = _generate_applied_intro(contact, dart_instr, _prompts,
+                                       research_block=research_block)
     elif action == "send_applied_followup":
         body = _generate_applied_followup(contact, dart_instr, _prompts)
     else:
@@ -131,12 +180,14 @@ def generate_email(contact, action, original_subject=None, prompts=None):
             if action == "send_first_touch":
                 new_body = _normalize_body(
                     _generate_outreach(contact, action, dart_instr, _prompts,
-                                       extra_instruction=feedback)
+                                       extra_instruction=feedback,
+                                       research_block=research_block)
                 )
             else:
                 new_body = _normalize_body(
                     _generate_applied_intro(contact, dart_instr, _prompts,
-                                            extra_instruction=feedback)
+                                            extra_instruction=feedback,
+                                            research_block=research_block)
                 )
             new_subject = _generate_subject(contact, mode, new_body, _prompts)
             return new_subject, new_body
@@ -148,7 +199,7 @@ def generate_email(contact, action, original_subject=None, prompts=None):
 
     return subject, body
 
-def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None):
+def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None, research_block=""):
     template = ACTION_TO_TEMPLATE[action]
     tier = str(contact.get("tier", 2))
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -165,11 +216,13 @@ def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=N
         template_instruction=TEMPLATE_INSTRUCTIONS.get(template, ""),
         dartmouth_instruction=dart_instr,
     )
+    if research_block:
+        prompt += research_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return _call_claude(prompt)
 
-def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None):
+def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
     applied = contact.get("applied_date") or str(date.today())
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("applied_intro_prompt", APPLIED_INTRO_PROMPT)
@@ -183,6 +236,8 @@ def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None
         applied_date=applied,
         dartmouth_instruction=dart_instr,
     )
+    if research_block:
+        prompt += research_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return _call_claude(prompt)
