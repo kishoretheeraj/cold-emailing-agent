@@ -15,6 +15,7 @@ os.environ.setdefault("GMAIL_ADDRESS", "test@example.com")
 os.environ.setdefault("GMAIL_APP_PASSWORD", "test password")
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_ANON_KEY", "sb_publishable_test_key")
+os.environ.setdefault("TAVILY_API_KEY", "test-tavily-key")
 
 # Make the project root importable so `import agent`, `import db`, etc. work.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
