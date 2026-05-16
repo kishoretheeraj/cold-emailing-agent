@@ -159,3 +159,55 @@ def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None):
     if failure_reason:
         row["failure_reason"] = failure_reason
     _retry(lambda: get_client().table("agent_runs").insert(row).execute())
+
+# ── research_cache helpers ─────────────────────────────────────────────────────
+
+def get_research_cache(cache_key):
+    """
+    Selects from research_cache by cache_key (the
+    'name_lower|company_lower' string built by the caller).
+    Returns dict with brief_text, brief_json, cached_at on hit,
+    None on miss.
+    """
+    result = _retry(lambda: (
+        get_client()
+        .table("research_cache")
+        .select("brief_text, brief_json, cached_at")
+        .eq("cache_key", cache_key)
+        .execute()
+    ))
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def set_research_cache(cache_key, contact_name, contact_company,
+                       brief_text, brief_json):
+    """
+    Upserts into research_cache. Best-effort: on error log
+    warning, return False. Returns True on success.
+    """
+    from datetime import datetime, timezone
+    try:
+        _retry(lambda: (
+            get_client()
+            .table("research_cache")
+            .upsert(
+                {
+                    "cache_key": cache_key,
+                    "contact_name": contact_name,
+                    "contact_company": contact_company,
+                    "brief_text": brief_text,
+                    "brief_json": brief_json,
+                    "cached_at": datetime.now(timezone.utc).isoformat(),
+                },
+                on_conflict="cache_key",
+            )
+            .execute()
+        ))
+        return True
+    except Exception as exc:
+        log.warning(
+            f"[RESEARCH] | {contact_name} | {contact_company} | "
+            f"cache write failed: {exc}"
+        )
+        return False

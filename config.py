@@ -13,6 +13,21 @@ SUPABASE_ANON_KEY  = os.environ["SUPABASE_ANON_KEY"]
 # ── Models ─────────────────────────────────────────────────────────────────────
 EMAIL_MODEL = "claude-sonnet-4-6"
 
+# ── Research (Tavily) ──────────────────────────────────────────────────────────
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+# No raise if missing. Research is an enhancement. If the key is absent,
+# the agent logs a warning and generates emails without a brief.
+
+RESEARCH_CACHE_TTL_DAYS = 7
+RESEARCH_MAX_QUERIES = 5
+RESEARCH_MAX_QUERY_LEN = 80
+RESEARCH_TAVILY_RESULTS_PER_QUERY = 3
+RESEARCH_HARDCODED_FALLBACK_QUERY = "{company} news 2026"
+RESEARCH_TIERS = {1, 2}
+
+RESEARCH_QUERY_MODEL = "claude-haiku-4-5-20251001"
+RESEARCH_CURATE_MODEL = "claude-haiku-4-5-20251001"
+
 # These are fallback defaults. Live prompts (including sender_profile) are stored
 # in the Supabase prompts table and override these at runtime.
 
@@ -237,3 +252,96 @@ code fences, no preamble:
 # Drafts scoring >= this pass without retry.
 # Drafts scoring < this trigger one regeneration with feedback.
 CRITIC_PASS_THRESHOLD = 6
+
+# ── Research prompt defaults ───────────────────────────────────────────────────
+RESEARCH_QUERY_DEFAULT = """You generate web search queries to help a job seeker write a personalized cold outreach email.
+
+THE SENDER (writing the email):
+{sender_profile}
+
+THE CONTACT (recipient):
+- Name: {name}
+- Company: {company}
+- Role: {role}
+- Detail (what the sender already knows): {detail}
+- Notes: {notes}
+- Dartmouth alumni: {dartmouth}
+- Tier: {tier}
+
+Your job: generate 1 to 5 web search queries that would surface recent, specific, professional context about this contact.
+
+PRIORITY ORDER (most important to least):
+1. About the PERSON specifically (recent talks, articles, interviews, podcast appearances, role changes, news quotes). The person is the priority. Use the contact name combined with the company name to disambiguate from people with similar names.
+2. About the COMPANY where the person works (recent funding, product launches, hiring, strategic shifts, news coverage).
+3. About a SHARED CONTEXT (only if dartmouth is true: look for the person's Dartmouth or Tuck connection).
+
+ABOUT QUERIES:
+- Every person-targeted query MUST include the company name to avoid matching unrelated people with the same name. Example: 'John Smith Palm Desert Networks podcast' NOT just 'John Smith podcast'.
+- Each query should target a different angle. Do NOT generate 5 near-duplicate queries.
+- Prefer recent context: include '2026' or '2025' in queries where freshness matters.
+- Do NOT include 'LinkedIn', 'twitter', or 'X.com' in queries. Those platforms block search engines and rarely return useful recent activity. Instead, look for podcast appearances, panel talks, articles, interviews, press quotes, or company news that may mention the person.
+- Do NOT search for personal life, family, hobbies, or opinions on non-professional topics. Professional context only.
+- If the contact has thin info (only name and company, no detail or notes), 2 queries is enough. If detail/notes/dartmouth are rich, up to 5 queries are warranted.
+
+ABOUT LENGTH: each query MUST be 80 characters or fewer.
+
+Return ONLY a JSON array of strings, nothing else. No markdown, no fences, no preamble.
+
+Example output for a contact with detail field 'Built fintech compliance dashboards for 12 banks':
+["John Smith Palm Desert Networks interview 2026",
+ "John Smith Palm Desert Networks fintech compliance",
+ "Palm Desert Networks news 2026",
+ "Palm Desert Networks compliance dashboards banks"]
+
+If the contact has insufficient info to generate ANY useful queries, return an empty array: []"""
+
+RESEARCH_CURATE_DEFAULT = """You synthesize web search results into a brief, disambiguated context note that a job seeker can use to personalize a cold email.
+
+CRITICAL DISAMBIGUATION RULE:
+Some search results may be about a DIFFERENT person who happens to share the contact's name. Before including ANY fact, verify it is clearly about THIS contact, identified by:
+  - The contact's name AND
+  - Their actual current company AND
+  - A role consistent with what we know about them
+If a result is ambiguous (could be about this person or someone else), DO NOT include it. Better to return an empty brief than to include a fact about the wrong person.
+
+THE CONTACT (authoritative facts; results that contradict these are about a different person):
+- Name: {name}
+- Company: {company}
+- Role: {role}
+- What the sender already knows: {detail}
+
+RAW SEARCH RESULTS:
+{raw_results}
+
+YOUR OUTPUT FORMAT:
+
+Return a short markdown-formatted brief, structured as:
+
+Person:
+- <fact 1 about the contact, 1 sentence, with source domain in parens>
+- <fact 2, if available>
+
+Company:
+- <fact 1 about the company, 1 sentence, with source domain in parens>
+- <fact 2, if available>
+
+Omit a section entirely if no facts of that type passed the disambiguation rule. Maximum 4 bullets total across both sections. Each bullet under 25 words.
+
+Better generic than wrong. If results are ambiguous, off-topic, or about a different person, return exactly the string:
+NO_RELIABLE_BRIEF
+
+Do not include 'Note:' caveats. Do not editorialize. Just facts in bullets, or NO_RELIABLE_BRIEF."""
+
+RESEARCH_INJECTION_DEFAULT = """
+
+RECENT WEB CONTEXT for the contact (auxiliary; the contact record above is authoritative):
+
+{brief_text}
+
+RULES FOR USING THIS CONTEXT:
+- Use a fact from the brief ONLY if it is specific, recent, and clearly relevant to your outreach purpose. Verifiable details like a named product, a specific event, a recent role change, a funding round, a quote.
+- If the brief is generic or thin, IGNORE it. Use the contact's detail field instead.
+- If the brief contradicts the contact record above (different role, different company, conflicting facts), DISCARD the brief entirely. Use the contact record.
+- Do NOT invent facts. Do NOT embellish. If you would have to stretch to use the brief, do not use it.
+- Better generic than wrong. A safe email with a soft hook beats a confident email with a fabricated detail.
+"""
