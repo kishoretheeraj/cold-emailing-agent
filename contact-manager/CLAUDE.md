@@ -207,11 +207,14 @@ vi.mock("sonner", () => ({
 
 - Variables used inside `vi.mock()` factories must be hoisted with `vi.hoisted()`.
 - Reset mocks in `beforeEach`, not afterEach.
+- **App shell test** (`App.test.tsx`): always assert that persistent nav links (e.g.
+  "Prompts & Profile") exist with the correct `href`. When rewriting App.tsx, verify this
+  test still passes before committing.
 
 ## Tests (Playwright e2e)
 
 - Run: `npm run test:e2e`.
-- Tests live in `tests/e2e/`. Six critical-path smoke tests only.
+- Tests live in `tests/e2e/`. Eight smoke tests; files run alphabetically.
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
@@ -219,6 +222,9 @@ vi.mock("sonner", () => ({
 - Do NOT hit the real Supabase from e2e tests.
 - Do NOT change `NEXT_PUBLIC_SUPABASE_URL` for e2e runs — `page.route()` intercepts at
   the browser level regardless of which URL is compiled into the bundle.
+- **Shell regression test**: `00-shell.spec.ts` runs first and asserts top-level chrome
+  (heading, nav links, mode buttons). If you add a new persistent nav element, add an
+  assertion here. If you remove one intentionally, update this test.
 
 ## When changing things
 
