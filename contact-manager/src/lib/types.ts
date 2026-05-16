@@ -26,6 +26,9 @@ export type Contact = {
   notes: string | null;
   resume_url?: string | null;
   created_at?: string;
+  message_id: string | null;
+  last_emailed: string | null;
+  deleted_at: string | null;
 };
 
 export type ExtractedContact = {
@@ -74,4 +77,64 @@ export type Prompt = {
   updated_at: string;
 };
 
-export { OUTREACH_STAGES, APPLIED_STAGES, REPLY_STATUSES } from "@/lib/constants";
+export const OUTREACH_STAGES = [
+  "new",
+  "first_touch_drafted",
+  "first_touch_sent",
+  "followup1_drafted",
+  "followup1_sent",
+  "followup2_drafted",
+  "followup2_sent",
+  "breakup_drafted",
+  "breakup_sent",
+  "closed",
+];
+
+export const APPLIED_STAGES = [
+  "new",
+  "applied_intro_drafted",
+  "applied_intro_sent",
+  "applied_followup_drafted",
+  "applied_followup_sent",
+  "closed",
+];
+
+export const REPLY_STATUSES: ReplyStatus[] = [
+  "no_reply",
+  "replied",
+  "interested",
+  "call_scheduled",
+  "dead",
+];
+
+export type ContactsQueryFilters = {
+  nameOrCompany: string;
+  stages: string[];
+  tiers: number[];
+  modes: ("outreach" | "applied")[];
+  dartmouthOnly: boolean;
+};
+
+export const EMPTY_FILTERS: ContactsQueryFilters = {
+  nameOrCompany: "",
+  stages: [],
+  tiers: [],
+  modes: [],
+  dartmouthOnly: false,
+};
+
+export function filtersEqual(
+  a: ContactsQueryFilters,
+  b: ContactsQueryFilters
+): boolean {
+  return (
+    a.nameOrCompany === b.nameOrCompany &&
+    a.stages.length === b.stages.length &&
+    a.stages.every((s, i) => s === b.stages[i]) &&
+    a.tiers.length === b.tiers.length &&
+    a.tiers.every((t, i) => t === b.tiers[i]) &&
+    a.modes.length === b.modes.length &&
+    a.modes.every((m, i) => m === b.modes[i]) &&
+    a.dartmouthOnly === b.dartmouthOnly
+  );
+}

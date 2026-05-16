@@ -2,20 +2,15 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { PromptSection } from "./PromptSection";
-import { Toast, type ToastTone } from "./Toast";
 import type { Prompt } from "@/lib/types";
 
 export function PromptsPage() {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<{
-    kind: ToastTone;
-    message: string;
-  } | null>(null);
-
   useEffect(() => {
     async function load() {
       const { data, error: err } = await supabase
@@ -37,11 +32,11 @@ export function PromptsPage() {
     setPrompts((prev) =>
       prev.map((p) => (p.key === updated.key ? updated : p))
     );
-    setToast({ kind: "success", message: "Saved" });
+    toast.success("Saved");
   }
 
   function handleError(message: string) {
-    setToast({ kind: "error", message });
+    toast.error(message);
   }
 
   return (
@@ -96,13 +91,6 @@ export function PromptsPage() {
           />
         ))}
 
-      {toast && (
-        <Toast
-          message={toast.message}
-          tone={toast.kind}
-          onClose={() => setToast(null)}
-        />
-      )}
     </div>
   );
 }

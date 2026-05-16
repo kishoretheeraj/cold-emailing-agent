@@ -1,0 +1,47 @@
+[
+  {
+    "key": "sender_profile",
+    "value": "I am a Tuck MBA student looking to break into venture capital.",
+    "description": "Who you are",
+    "display_title": "Sender Profile",
+    "default_value": null,
+    "sort_order": 1,
+    "updated_at": "2026-05-01T10:00:00Z"
+  },
+  {
+    "key": "outreach_prompt",
+    "value": "Write a short cold outreach email.",
+    "description": "Outreach template",
+    "display_title": "Outreach Prompt",
+    "default_value": null,
+    "sort_order": 2,
+    "updated_at": "2026-05-01T10:00:00Z"
+  },
+  {
+    "key": "applied_intro_prompt",
+    "value": "Write an introduction for a job application.",
+    "description": "Applied intro template",
+    "display_title": "Applied Intro Prompt",
+    "default_value": null,
+    "sort_order": 3,
+    "updated_at": "2026-05-01T10:00:00Z"
+  },
+  {
+    "key": "applied_followup_prompt",
+    "value": "Write a follow-up for a job application.",
+    "description": "Applied follow-up template",
+    "display_title": "Applied Followup Prompt",
+    "default_value": null,
+    "sort_order": 4,
+    "updated_at": "2026-05-01T10:00:00Z"
+  },
+  {
+    "key": "subject_prompt",
+    "value": "Write a subject line for the email.",
+    "description": "Subject line template",
+    "display_title": "Subject Prompt",
+    "default_value": null,
+    "sort_order": 5,
+    "updated_at": "2026-05-01T10:00:00Z"
+  }
+]

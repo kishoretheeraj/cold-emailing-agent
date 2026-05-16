@@ -2,27 +2,34 @@
 
 # Cold Email Ops — Contact Manager
 
-A small Next.js app for managing the cold-email pipeline. Three main surfaces:
-Smart Input / Structured Form for adding contacts, a 20-row contacts list with
-a side panel for status updates, and a Prompts & Profile page for editing the
-live prompt templates stored in Supabase.
+A Next.js app for adding contacts to the cold-email Supabase table that the Python agent
+reads every morning. Two input modes (Smart Input / Structured Form), an infinite-scroll
+contacts list with search/filter, and a Vaul side sheet for status updates and soft delete.
 
-When working in this repo, follow the rules below. They reflect how the code
-was actually written, not just style preferences.
+When working in this repo, follow the rules below. They reflect how the code was actually
+written, not just style preferences.
 
 ---
 
 ## Stack and versions
 
-- **Next.js 16** with the App Router. (Treat anything from earlier Next docs
-  with suspicion — see `AGENTS.md`.)
-- **React 19**. Use `"use client"` for any component that touches state, refs,
-  effects, or browser APIs.
-- **Tailwind CSS v4**. Theme tokens go in `@theme {}` inside `globals.css`,
-  **not** in `tailwind.config.js`.
+- **Next.js 16** with the App Router. (Treat anything from earlier Next docs with suspicion
+  — see `AGENTS.md`.)
+- **React 19**. Use `"use client"` for any component that touches state, refs, effects, or
+  browser APIs.
+- **Tailwind CSS v4**. Theme tokens go in `@theme {}` inside `globals.css`, **not** in
+  `tailwind.config.js`. No config file exists.
 - **TypeScript strict mode**. Don't use `any` — use `unknown` and narrow.
 - **@supabase/supabase-js** in the browser; no service role key in the client.
 - **@anthropic-ai/sdk** server-side only, behind `/api/extract`.
+- **Sonner** for toasts. Import `{ toast }` from `"sonner"` and call `toast.success()` /
+  `toast.error()`. No homemade Toast component.
+- **Vaul** for the contact side sheet (`direction="right"`). Wrappers in
+  `src/components/ui/Sheet.tsx`.
+- **Radix UI** for accessible primitives: Tooltip (`@radix-ui/react-tooltip`), Select
+  (`@radix-ui/react-select`). Wrappers in `src/components/ui/`.
+- **Lucide React** for icons.
+- **Playwright** for e2e smoke tests. Run with `npm run test:e2e`.
 
 ## Module layout
 
@@ -30,201 +37,214 @@ was actually written, not just style preferences.
 src/
 ├── app/
 │   ├── api/extract/route.ts   # Server-only Claude POST handler
-│   ├── globals.css             # @theme tokens + global resets
-│   ├── layout.tsx              # Inter font, dark theme
-│   ├── page.tsx                # 1-line server component → <App />
-│   └── prompts/page.tsx        # Server wrapper → <PromptsPage />
-├── components/                 # All client components live here
-│   ├── App.tsx                 # Top-level shell + toast + refresh + bulkImportWindow state
-│   ├── SmartInput.tsx          # Paste → /api/extract → preview (single) or ReviewFlow (bulk)
-│   ├── ReviewFlow.tsx          # Full bulk review flow: reviewing/summary/importing/done/error
+│   ├── globals.css             # @theme tokens + global resets + Vaul overrides
+│   ├── layout.tsx              # Inter font, dark theme, AppProviders wrapper
+│   └── page.tsx                # 1-line server component → <App />
+├── components/
+│   ├── ui/                     # In-house primitive wrappers (NO shadcn)
+│   │   ├── Badge.tsx           # Semantic color variants
+│   │   ├── Skeleton.tsx        # Loading placeholder
+│   │   ├── EmptyState.tsx      # Centered empty-state layout
+│   │   ├── Tooltip.tsx         # Radix Tooltip wrapper + TooltipProvider re-export
+│   │   ├── Select.tsx          # Radix Select wrapper (SelectTrigger, SelectItem, etc.)
+│   │   ├── Sheet.tsx           # Vaul Drawer direction=right (SheetContent, SheetBody…)
+│   │   └── ConfirmModal.tsx    # Radix Dialog wrapper for confirmation prompts
+│   ├── App.tsx                 # Top-level shell + refreshKey + sonner toast calls
+│   ├── AppProviders.tsx        # "use client" wrapper: TooltipProvider + Toaster
+│   ├── SmartInput.tsx          # Paste → /api/extract → editable preview → save
 │   ├── StructuredForm.tsx      # Two form sections: outreach + applied
-│   ├── ContactsList.tsx        # Last 20 rows + side panel + status update + Bulk badge
-│   ├── Field.tsx               # Reusable Label/TextInput/TextArea/Toggle/Tier
-│   ├── PromptsPage.tsx         # Schema-driven page: fetches prompts rows, renders PromptSection per row
-│   ├── PromptSection.tsx       # Per-row edit/save/reset component; owns draft + saving state
-│   └── Toast.tsx               # 4-second auto-dismissing notification
+│   ├── ContactsList.tsx        # Infinite-scroll list + filters + Vaul sheet + soft delete
+│   ├── ContactsFilters.tsx     # Search input + tier/mode pills + stage select + dartmouth
+│   └── Field.tsx               # Label / TextInput / TextArea / ToggleSwitch / TierSelector
 └── lib/
-    ├── constants.ts            # Stage sequences, reply statuses (TS mirror of Python constants.py)
-    ├── promptVariables.ts      # extractVariables(template) → string[] of {placeholder} names
-    ├── supabase.ts             # Anon-key browser client
-    └── types.ts                # Contact, ExtractedContact, ReviewContact, BulkExtractResponse,
-                                # BulkImportWindow, ContactReviewStatus, Prompt + re-exports from constants
+    ├── supabase.ts             # Anon-key browser client singleton
+    └── types.ts                # Contact + ReplyStatus + stage arrays + filter types
+tests/
+└── e2e/                        # Playwright smoke tests (6 critical-path tests)
+    ├── helpers.ts              # mockSupabase() — page.route() Supabase interception
+    ├── fixtures/               # contacts.json (50 rows) + prompts.json
+    └── *.spec.ts               # 01-list-loads through 06-drafted-delete-warning
 ```
 
 ## Coding conventions
 
-- **Server vs. client.** Default to server components. `page.tsx` is a server
-  component that just imports the client `App`. Client components must start
-  with `"use client";` on line 1 (no blank line above).
-- **No emojis in shipped code or copy.** This applies to UI text, console
-  logs, and comments.
-- **No em dashes inside email-related copy or prompts.** This is enforced by
-  the agent's prompt rules, mirror it here.
-- **Tailwind utility classes only** — no inline `style` props except the
-  side-panel pill colors which use `color-mix(in srgb, ...)` for subtle
-  alpha blending. Do not introduce CSS modules or styled-components.
-- **Theme tokens.** Use the custom palette: `bg-bg`, `bg-surface`,
-  `bg-surface-2`, `border-border`, `border-border-strong`, `text-fg`,
-  `text-fg-muted`, `text-fg-dim`, plus the indigo scale for the primary.
-  These are defined in `globals.css`.
+- **Server vs. client.** Default to server components. `page.tsx` is a server component
+  that just imports the client `App`. Client components must start with `"use client";` on
+  line 1 (no blank line above).
+- **No emojis in shipped code or copy.**
+- **No em dashes inside email-related copy or prompts.**
+- **Tailwind utility classes only** — no inline `style` props. No CSS modules.
+- **Theme tokens.** Use the custom palette: `bg-bg`, `bg-surface`, `bg-surface-2`,
+  `border-border`, `border-border-strong`, `text-fg`, `text-fg-muted`, `text-fg-dim`, plus
+  indigo / red / amber / emerald scales for semantic color. All defined in `globals.css`.
 - **No new top-level CSS files.** Extend `globals.css` if needed.
-- **No additional state libraries** (Redux, Zustand, etc.). Local `useState`
-  + prop drilling is enough for this app.
+- **No additional state libraries** (Redux, Zustand, etc.).
 
 ## Component patterns
 
-- Forms use the helper components in `Field.tsx` (`Label`, `TextInput`,
-  `TextArea`, `ToggleSwitch`, `TierSelector`). Don't reinvent these.
-- Required fields show a `*` via `<Label required>...</Label>`.
-- Validation runs on the click handler (not on blur). On failure, call the
-  `onError` prop instead of throwing — toasts render through `App`.
-- After a successful insert, call `onAdded()` so `App` bumps `refreshKey`
-  and the contacts list re-fetches. `onAdded` accepts an optional
-  `BulkImportWindow` arg: `onAdded(window?: BulkImportWindow) => void`.
-  Pass it from `ReviewFlow`'s Done screen to light up the Bulk badge in
-  `ContactsList`. Single-contact flows call `onAdded()` with no arg.
-- **`ReviewFlow` architecture**: `SmartInput` owns `reviewContacts` state.
-  `ReviewFlow` reads contacts from props and writes edits back via
-  `onUpdate(index, updatedContact)`. It does not keep a local copy.
-- **Inline style exception for dynamic widths**: a computed CSS width
-  (e.g. progress bar `${pct}%`) cannot be a static Tailwind class. Use a
-  scoped `<style>` tag injection (the same technique `App.tsx` uses for
-  `@keyframes fadein`) rather than an inline `style` prop.
+- Forms use helpers from `Field.tsx`. `ToggleSwitch` props: `on` + `onChange` + `label`
+  (NOT `value` — don't mix up).
+- Toast via sonner: `toast.success(msg)` / `toast.error(msg)` directly in components, or
+  passed as `onSuccess` / `onError` props from `App.tsx`.
+- Side sheet: render `<Sheet>` + `<SheetContent>` from `@/components/ui/Sheet`. One Sheet
+  instance per page, open controlled by selectedContact state.
+- Confirm dialogs: use `<ConfirmModal>` from `@/components/ui/ConfirmModal`. Props:
+  `open`, `title`, `body`, `confirmLabel`, `confirmVariant`, `onConfirm`, `onCancel`,
+  `loading`.
+- Tooltips: wrap trigger in `<Tooltip content="...">`. `TooltipProvider` is at the root
+  (in AppProviders.tsx) — don't add another one.
 
 ## API route conventions
 
 - Server-only routes live in `src/app/api/<name>/route.ts`.
 - Use `export const runtime = "nodejs"` (Anthropic SDK requires Node).
-- Use `export const maxDuration = 30` on `/api/extract` (bulk needs headroom).
-- Never expose `ANTHROPIC_API_KEY` to the browser. Anything that uses it
-  must go through a server route.
-- Validate the body shape and return `400` for missing input, `502` if a
-  downstream service returns malformed data, `500` for unexpected SDK errors.
+- Never expose `ANTHROPIC_API_KEY` to the browser.
+- Validate the body shape: `400` for missing input, `502` for malformed downstream data,
+  `500` for unexpected SDK errors.
 - Strip ` ```json` code fences from Claude responses before `JSON.parse`.
-- `/api/extract` always returns `BulkExtractResponse` (`{ contacts, count,
-  is_bulk }`), even for a single contact (`count: 1, is_bulk: false`).
-  Input validation: body > 20000 chars → 400; > 50 `@` signs → 400.
-  Missing name/company marks `missing_required: true` + `required_missing_fields`
-  on the contact — does NOT skip or 422. Missing/invalid email marks
-  `missing_email: true`. Empty final array → 502. SDK throw → 500
-  `{ error: "extraction service unavailable" }`.
 
 ## Supabase patterns
 
-- All client-side reads/writes go through the singleton `supabase` client
-  exported from `src/lib/supabase.ts`.
+- All client-side reads/writes go through the singleton exported from `src/lib/supabase.ts`.
 - Inserts always set `stage: "new"` and `reply_status: "no_reply"`.
-- The contacts list reads with `.order("created_at", { ascending: false }).limit(20)`.
-- The side-panel update writes `.update({ stage, reply_status }).eq("id", id).select().single()`
-  to get the updated row back for optimistic local state.
-- **Bulk insert payload** (ReviewFlow): `{ name, email, company, role, detail,
-  tier, mode, dartmouth, notes, resume_url, stage: "new", reply_status: "no_reply" }`.
-  Do NOT set `message_id`, `original_subject`, `last_emailed`, `followup_date`,
-  `template_current`, `job_title`, `job_description`, `company_applied`, `applied_date`
-  — those are agent-managed or applied-mode-specific.
-- **`resume_url` column**: `TEXT`, nullable, added 2026-05-14. Present on the
-  `contacts` table, `Contact` type, `ExtractedContact` type, ReviewFlow insert
-  payload, and the side-panel edit form in `ContactsList`.
-- **`prompts` table** (`key TEXT, value TEXT, description TEXT, display_title TEXT NOT NULL, default_value TEXT, sort_order INTEGER, updated_at TIMESTAMPTZ`):
-  Schema-driven — `PromptsPage` fetches all rows ordered by `sort_order` and
-  renders a `PromptSection` per row automatically. `PromptSection` saves with
-  `.update({ value, updated_at }).eq("key", key).select().single()` and returns
-  the updated row to the parent via `onSaved`. Changes feed directly into the
-  Python agent's `load_prompts()` call at the next run. If a key is missing, the
-  agent falls back to `config.py` defaults. **Adding a new prompt requires only
-  an INSERT into the `prompts` table — no UI code changes.** `default_value`
-  stores the factory default for the Reset button; if null, Reset is hidden.
-  Sort-order convention: gaps of 10 (existing keys use 10/20/30/40/50); future
-  keys planned at 25 (`critic_prompt`), 28 (`research_injection`), 90/95
-  (`retrospective_*`).
+- **Contact list query** (keyset pagination, PAGE_SIZE=30):
+  ```ts
+  supabase.from("contacts")
+    .select("*")
+    .is("deleted_at", null)   // soft delete filter — always include
+    // ...optional filter methods (.or, .in, .eq, .lt)...
+    .order("created_at", { ascending: false })
+    .limit(30)                // limit always LAST — after all filters
+  ```
+  Do not call `.limit()` before `.or()` / `.in()` / `.lt()` — the chain must resolve at `.limit()`.
+- **Soft delete**: `supabase.from("contacts").update({ deleted_at: new Date().toISOString() }).eq("id", id)`. Never hard-delete.
+- **Optimistic updates** (stage/tier changes): mutate local state first, then issue the
+  Supabase update. On error, revert local state and call `onError`.
+- **Notes autosave**: save on blur (`onBlur`). No debounce needed for single-event triggers.
+- The contacts table has RLS **disabled**. The anon key can read/write all columns. Keep
+  in mind when adding new columns — no RLS policy changes needed but also no row-level
+  security.
 
 ## Color and stage display rules (kept in sync with the Python agent)
 
-- Stage `new` → grey
-- Stage contains `_drafted` → blue
-- Stage contains `_sent` → green
-- Stage `closed` → dim grey
-- `reply_status` ∈ {`replied`, `interested`, `call_scheduled`} → bright green
-- `reply_status === "dead"` → dim red
+Stage display uses Badge variants in `ContactsList.tsx::stageVariant`:
+- `_drafted` suffix → amber Badge
+- `_sent` suffix → indigo Badge
+- `positive_reply`, `engaged`, `_replied` → emerald Badge
+- `closed`, `bounced`, `unsubscribed` → muted Badge
+- Otherwise → default Badge
 
-These map to CSS custom properties in `globals.css`. If you add a stage,
-update `OUTREACH_STAGES` / `APPLIED_STAGES` in `src/lib/constants.ts` (the
-arrays are re-exported from `types.ts`) and the color rules in
-`ContactsList.tsx::stageStyles`.
+Tier display: T1 → indigo, T2 → default, T3 → muted.
+
+If you add a stage, update `OUTREACH_STAGES` / `APPLIED_STAGES` in `types.ts` and
+`STAGE_LABELS` map in `ContactsList.tsx`.
 
 ## Tests (Vitest)
 
-- Run with `npm test`. Watch mode: `npm run test:watch`.
-- Test files live next to the code: `Foo.test.tsx` next to `Foo.tsx`.
+- Run: `npm test`. Watch: `npm run test:watch`.
+- Test files colocate with source: `Foo.test.tsx` next to `Foo.tsx`.
 - Vitest config: `vitest.config.ts` (jsdom + React plugin + `@/` alias).
-- Setup: `vitest.setup.ts` registers `@testing-library/jest-dom` and stubs
-  the three env vars.
-- Test files are excluded from the production `tsconfig.json` build but
-  included in `tsconfig.test.json` for IDE support.
+- Setup file: `vitest.setup.ts` — registers jest-dom, stubs env vars, installs a plain-
+  function IntersectionObserver mock (NOT `vi.fn()` — see below).
 
 ### Mocking conventions
 
-- Mock the supabase client at the import boundary:
-  ```ts
-  vi.mock("@/lib/supabase", () => ({
-    supabase: { from: vi.fn(() => ({ insert: insertMock })) },
-  }));
-  ```
-- Mock the Anthropic SDK as a class via `vi.hoisted`:
-  ```ts
-  const { mockCreate } = vi.hoisted(() => ({ mockCreate: vi.fn() }));
-  vi.mock("@anthropic-ai/sdk", () => ({
-    default: class FakeAnthropic { messages = { create: mockCreate }; },
-  }));
-  ```
-- Mock `fetch` per-test with `vi.spyOn(global, "fetch").mockResolvedValueOnce(...)`.
-- Reset mocks in `beforeEach`.
+**Supabase chain mock** — the new query builder calls methods in a specific order and
+`.limit()` must be the terminal resolver. Use a shared `readChain` object:
+```ts
+const { limitMock, updateEqMock } = vi.hoisted(() => ({
+  limitMock: vi.fn(),
+  updateEqMock: vi.fn(),
+}));
 
-### Coverage expectations
+vi.mock("@/lib/supabase", () => {
+  const readChain: Record<string, unknown> = {};
+  for (const m of ["is", "order", "or", "in", "eq", "lt"]) {
+    readChain[m] = vi.fn(() => readChain);
+  }
+  readChain.limit = limitMock;
+  return {
+    supabase: {
+      from: vi.fn(() => ({
+        select: vi.fn(() => readChain),
+        update: vi.fn(() => ({ eq: updateEqMock })),
+      })),
+    },
+  };
+});
+```
 
-- New form fields require validation tests in the relevant form component test.
-- New stage values require an entry in `types.test.ts`'s sanity checks.
-- New API routes require a `route.test.ts` covering: valid input, malformed
-  input (400), upstream failure (5xx), and downstream parse failure (502).
+**IntersectionObserver mock** — must be a plain function (not `vi.fn()`). `vi.restoreAllMocks()`
+in afterEach will reset a `vi.fn()` implementation, breaking tests that capture the IO
+callback. Install a plain function in `vitest.setup.ts` and override with another plain
+function per-test if you need to capture the callback:
+```ts
+// vitest.setup.ts — base stub
+global.IntersectionObserver = function() {
+  return { observe() {}, disconnect() {}, unobserve() {} };
+} as unknown as typeof IntersectionObserver;
+
+// In individual test file — capturing version
+let ioCallback: (...) => void;
+global.IntersectionObserver = function(cb) {
+  ioCallback = cb;
+  return { observe() {}, disconnect() {}, unobserve() {} };
+} as unknown as typeof IntersectionObserver;
+```
+
+**Radix / Vaul mocks** — these use portals. In tests that render components using Sheet
+or ConfirmModal, mock the primitives so they render into the jsdom body without portal
+quirks. See `ContactsList.test.tsx` for complete Vaul + Radix Dialog + Radix Select mock
+examples.
+
+**Sonner mock:**
+```ts
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+  Toaster: () => null,
+}));
+```
+
+- Variables used inside `vi.mock()` factories must be hoisted with `vi.hoisted()`.
+- Reset mocks in `beforeEach`, not afterEach.
+
+## Tests (Playwright e2e)
+
+- Run: `npm run test:e2e`.
+- Tests live in `tests/e2e/`. Six critical-path smoke tests only.
+- **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
+  `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
+  and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
+- Fixtures: `tests/e2e/fixtures/contacts.json` (50 rows) and `prompts.json`.
+- Do NOT hit the real Supabase from e2e tests.
+- Do NOT change `NEXT_PUBLIC_SUPABASE_URL` for e2e runs — `page.route()` intercepts at
+  the browser level regardless of which URL is compiled into the bundle.
 
 ## When changing things
 
-- **Don't add hardcoded prompt sections to the UI.** The Prompts page is
-  schema-driven — new prompt keys appear automatically when a row is inserted
-  into the `prompts` table with `display_title`, `description`, `default_value`,
-  and `sort_order` set. Never add a new `PromptSection` manually.
-- **Don't introduce server actions** for inserts/updates. The current pattern
-  uses the supabase-js client from the browser with the anon key. Switching
-  would require auth/RLS changes that are out of scope.
-- **Don't add a service-role key path.** The anon key + RLS is the security
-  model.
-- **Don't introduce a state-management library.** If state-sharing gets
-  awkward, lift state to `App.tsx` first.
-- **Don't break the `/api/extract` JSON contract** without updating the
-  `ExtractedContact` type in `src/lib/types.ts`, the `SmartInput` preview
-  card (single-contact path), and `ReviewFlow` (bulk path).
-- **Bulk badge** in `ContactsList` is driven by `bulkImportWindow` (a
-  `BulkImportWindow` held in `App` state, cleared on page refresh). It is
-  NOT persisted to Supabase. Do not add a DB column for it.
-- **`ContactReviewStatus`** (`"pending" | "confirmed" | "skipped"`) is a
-  named type in `types.ts`. `ReviewContact` extends `ExtractedContact` and
-  adds `status: ContactReviewStatus`. The `missing_email`, `missing_required`,
-  and `required_missing_fields` flags live on `ExtractedContact` (not
-  separately on `ReviewContact`) so the route can set them before the UI
-  maps the response to `ReviewContact`.
+- **Don't introduce server actions** for inserts/updates.
+- **Don't add a service-role key path.**
+- **Don't introduce a state-management library.**
+- **Don't break the `/api/extract` JSON contract** without updating `ExtractedContact` in
+  `types.ts`.
+- **Don't hard-delete contacts.** Always soft delete via `deleted_at`.
+- **Don't introduce shadcn/ui** or any component library. The in-house `src/components/ui/`
+  primitives are intentional and sufficient.
+- **Don't add a new CSS file.** Extend `globals.css`.
+- **Always include `.is("deleted_at", null)`** in any query that reads the contacts list.
 
 ## Build / deploy
 
-- `npm run build` runs typecheck + production build. Must pass before deploy.
-- `vercel deploy --prod` to deploy. Env vars are stored in Vercel dashboard.
+- `npm run build` — typecheck + production build. Must pass.
+- `npm test` — Vitest unit tests. Must pass.
+- `npm run test:e2e` — Playwright smoke tests. Must pass.
+- `vercel deploy --prod` to deploy. Env vars in Vercel dashboard.
 - Three env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-  `ANTHROPIC_API_KEY`. The first two are intentionally public (RLS protects
-  the data); the third is server-only.
+  `ANTHROPIC_API_KEY`. The first two are public (no RLS — be aware). Third is server-only.
 
 ## Style: comments and docs
 
 - Don't add comments that restate the code.
-- Do add a short comment when documenting a non-obvious workaround (e.g.,
-  why `vi.hoisted` is necessary in route.test.ts).
+- Do add a short comment for non-obvious workarounds (e.g., why `vi.hoisted` is needed,
+  why `.limit()` must be last in the query chain).
 - Don't write docstrings on tiny helper components.

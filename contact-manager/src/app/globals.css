@@ -46,15 +46,7 @@ input, textarea, select, button {
   outline-offset: 2px;
 }
 
-/* Bulk-review card slide animations */
-@keyframes slide-from-right {
-  from { opacity: 0; transform: translateX(2.5rem); }
-  to   { opacity: 1; transform: translateX(0); }
+/* Hide Vaul drag handle for right-direction drawer */
+[data-vaul-drawer-direction="right"] [data-vaul-handle] {
+  display: none;
 }
-@keyframes slide-from-left {
-  from { opacity: 0; transform: translateX(-2.5rem); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-.slide-from-right { animation: slide-from-right 0.2s ease-out; }
-.slide-from-left  { animation: slide-from-left  0.2s ease-out; }
-

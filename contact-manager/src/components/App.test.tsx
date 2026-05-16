@@ -2,23 +2,97 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// Mock the supabase chain — the contacts list calls it on mount.
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+  Toaster: () => null,
+}));
+
+// Mock all Radix / Vaul primitives used transitively by ContactsList
+vi.mock("vaul", () => ({
+  Drawer: {
+    Root: ({ children, open }: { children: React.ReactNode; open?: boolean }) =>
+      open ? <>{children}</> : null,
+    Portal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Overlay: () => <div />,
+    Content: ({ children }: { children: React.ReactNode }) => (
+      <div role="dialog">{children}</div>
+    ),
+    Trigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Close: ({ children, onClick, "aria-label": ariaLabel }: { children?: React.ReactNode; onClick?: () => void; "aria-label"?: string }) => (
+      <button type="button" onClick={onClick} aria-label={ariaLabel}>
+        {children}
+      </button>
+    ),
+    Title: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+    Description: ({ children }: { children: React.ReactNode }) => (
+      <p>{children}</p>
+    ),
+  },
+}));
+
+vi.mock("@radix-ui/react-dialog", () => ({
+  Root: ({ children, open }: { children: React.ReactNode; open?: boolean }) =>
+    open ? <>{children}</> : null,
+  Portal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Overlay: () => <div />,
+  Content: ({ children }: { children: React.ReactNode }) => (
+    <div role="dialog">{children}</div>
+  ),
+  Title: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+  Description: ({ children, asChild }: { children: React.ReactNode; asChild?: boolean }) =>
+    asChild ? <>{children}</> : <p>{children}</p>,
+  Close: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock("@radix-ui/react-tooltip", () => ({
+  Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Root: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Trigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Portal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Content: () => null,
+  Arrow: () => null,
+  TooltipProvider: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
+}));
+
+vi.mock("@radix-ui/react-select", () => ({
+  Root: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Trigger: ({ children }: { children: React.ReactNode }) => (
+    <button type="button">{children}</button>
+  ),
+  Value: () => null,
+  Icon: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Portal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Content: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Viewport: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Group: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Label: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Item: ({ children }: { children: React.ReactNode }) => (
+    <div role="option">{children}</div>
+  ),
+  ItemText: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  ItemIndicator: () => null,
+  Separator: () => <hr />,
+}));
+
+// Supabase mock — matches new query chain:
+// .from("contacts").select("*").is(...).order(...).limit(30)
 const limitMock = vi.fn();
 vi.mock("@/lib/supabase", () => ({
   supabase: {
     from: vi.fn(() => ({
       select: vi.fn(() => ({
-        order: vi.fn(() => ({
-          limit: limitMock,
+        is: vi.fn(() => ({
+          order: vi.fn(() => ({
+            limit: limitMock,
+            or: vi.fn(() => ({ order: vi.fn(() => ({ limit: limitMock })) })),
+          })),
         })),
       })),
       insert: vi.fn().mockResolvedValue({ error: null }),
       update: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          select: vi.fn(() => ({
-            single: vi.fn().mockResolvedValue({ data: {}, error: null }),
-          })),
-        })),
+        eq: vi.fn().mockResolvedValue({ error: null }),
       })),
     })),
   },
@@ -35,7 +109,9 @@ describe("App shell", () => {
   it("renders header and both mode buttons", async () => {
     render(<App />);
     expect(screen.getByText("Cold Email Ops")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Smart Input" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Smart Input" })
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Structured Form" })
     ).toBeInTheDocument();
@@ -51,11 +127,9 @@ describe("App shell", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Structured Form" }));
-    // The Outreach Contact section button shows up only in Structured Form
     expect(
       screen.getByRole("button", { name: /Outreach Contact/i })
     ).toBeInTheDocument();
-    // Smart Input textarea is no longer present
     expect(screen.queryByPlaceholderText(/Examples:/)).toBeNull();
   });
 

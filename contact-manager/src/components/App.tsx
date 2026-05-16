@@ -1,108 +1,79 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import Link from "next/link";
+import { toast } from "sonner";
 import { SmartInput } from "./SmartInput";
 import { StructuredForm } from "./StructuredForm";
 import { ContactsList } from "./ContactsList";
-import { Toast, type ToastTone } from "./Toast";
-import type { BulkImportWindow } from "@/lib/types";
 
 type InputMode = "smart" | "form";
 
 export function App() {
   const [mode, setMode] = useState<InputMode>("smart");
   const [refreshKey, setRefreshKey] = useState(0);
-  const [toast, setToast] = useState<
-    { msg: string; tone: ToastTone } | null
-  >(null);
-  const [bulkImportWindow, setBulkImportWindow] = useState<BulkImportWindow | null>(null);
 
-  const onAdded = useCallback((window?: BulkImportWindow) => {
+  const onAdded = useCallback(() => {
     setRefreshKey((k) => k + 1);
-    if (window) setBulkImportWindow(window);
-    setToast({
-      msg: "Contact added — agent picks this up tomorrow 8am",
-      tone: "success",
-    });
+    toast.success("Contact added — agent picks this up tomorrow 8am");
   }, []);
 
   const onError = useCallback((msg: string) => {
-    setToast({ msg, tone: "error" });
+    toast.error(msg);
   }, []);
 
-  const onUpdated = useCallback(() => {
-    setToast({ msg: "Status updated", tone: "success" });
+  const onSuccess = useCallback((msg: string) => {
+    toast.success(msg);
   }, []);
 
   return (
-    <div className="mx-auto max-w-4xl px-4 sm:px-6 py-8 sm:py-12 space-y-10">
-      <header className="flex items-start justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-fg">
-            Cold Email Ops
-          </h1>
-          <p className="text-sm text-fg-muted">
+    <div className="mx-auto max-w-5xl px-4 sm:px-6 py-8 space-y-6">
+      <header className="flex items-baseline justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-fg">Cold Email Ops</h1>
+          <p className="text-sm text-fg-muted mt-0.5">
             Add a contact below — the agent drafts a personalized email tomorrow at 8am.
           </p>
         </div>
-        <Link
-          href="/prompts"
-          className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
-        >
-          Prompts & Profile
-        </Link>
       </header>
 
-      <section className="space-y-5">
-        <div className="inline-flex rounded-lg border border-border bg-surface p-1">
-          <ModeButton
-            active={mode === "smart"}
-            label="Smart Input"
-            onClick={() => setMode("smart")}
-          />
-          <ModeButton
-            active={mode === "form"}
-            label="Structured Form"
-            onClick={() => setMode("form")}
-          />
-        </div>
+      <section>
+        <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
+          <div className="inline-flex rounded-lg border border-border bg-bg p-1">
+            <ModeButton
+              active={mode === "smart"}
+              label="Smart Input"
+              onClick={() => setMode("smart")}
+            />
+            <ModeButton
+              active={mode === "form"}
+              label="Structured Form"
+              onClick={() => setMode("form")}
+            />
+          </div>
 
-        <div
-          key={mode}
-          className="animate-[fadein_180ms_ease-out]"
-          style={{
-            animationName: "fadein",
-          }}
-        >
-          {mode === "smart" ? (
-            <SmartInput onAdded={onAdded} onError={onError} />
-          ) : (
-            <StructuredForm onAdded={onAdded} onError={onError} />
-          )}
+          <div
+            key={mode}
+            className="animate-[fadein_180ms_ease-out]"
+            style={{
+              animationName: "fadein",
+            }}
+          >
+            {mode === "smart" ? (
+              <SmartInput onAdded={onAdded} onError={onError} />
+            ) : (
+              <StructuredForm onAdded={onAdded} onError={onError} />
+            )}
+          </div>
         </div>
       </section>
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-fg">Recent contacts</h2>
-          <span className="text-xs text-fg-dim">last 20</span>
-        </div>
+      <section>
         <ContactsList
           refreshKey={refreshKey}
           onError={onError}
-          onUpdated={onUpdated}
-          bulkImportWindow={bulkImportWindow}
+          onSuccess={onSuccess}
         />
       </section>
-
-      {toast && (
-        <Toast
-          message={toast.msg}
-          tone={toast.tone}
-          onClose={() => setToast(null)}
-        />
-      )}
 
       <style>{`
         @keyframes fadein {

@@ -1,66 +1,61 @@
 # Cold Email Ops — Contact Manager
 
-A Next.js app that adds contacts to the Supabase table the Python cold-email
-agent reads every morning at 8am EST.
-
-**Live:** https://contact-manager-steel-eight.vercel.app
+A Next.js web app for managing the contacts that feed into the [cold-emailing-agent](https://github.com/kishoretheeraj/cold-emailing-agent) pipeline.
 
 ## What it does
 
-- **Smart Input mode** — paste a LinkedIn bio, JD, or casual description.
-  Claude extracts structured fields and shows an editable preview before save.
-- **Structured Form mode** — separate sections for outreach contacts and
-  hiring-manager (applied) contacts.
-- **Contacts list** — last 20 added, with a side panel for stage and
-  `reply_status` updates. Color-coded by stage and reply state.
+- **Add contacts** via Smart Input (paste raw text, Claude extracts fields) or a Structured Form
+- **Browse contacts** with infinite-scroll pagination, full-text search, and tier/mode/stage filters
+- **Update status** — change stage and reply status optimistically from a Vaul side sheet
+- **Soft delete** contacts (recoverable; preserves draft history)
+
+The Python agent reads from the same Supabase table every morning at 8am and drafts Gmail emails for any contacts in a draftable stage.
 
 ## Stack
 
-- Next.js 16 (App Router) + React 19
-- Tailwind CSS v4 with custom dark theme (indigo primary)
-- `@supabase/supabase-js` for client-side reads and writes
-- `@anthropic-ai/sdk` server-only via `/api/extract` route
-- Vitest + React Testing Library + jsdom for tests
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 16 + React 19 (App Router) |
+| Styling | Tailwind CSS v4 |
+| Database | Supabase (shared with the agent) |
+| Toasts | Sonner |
+| Side sheet | Vaul (`direction="right"`) |
+| Primitives | Radix UI (Tooltip, Select, Dialog) |
+| Icons | Lucide React |
+| Unit tests | Vitest + Testing Library (82 tests) |
+| E2E tests | Playwright (6 smoke tests) |
+| AI extraction | Anthropic Claude via `/api/extract` |
 
-## Run locally
+## Setup
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in the three values
-npm run dev
 ```
 
-Three env vars are required:
+Create `.env.local`:
 
-| Variable | Where it's used |
-|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Browser + server |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Browser + server |
-| `ANTHROPIC_API_KEY` | Server-only (`/api/extract`) |
+```
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+ANTHROPIC_API_KEY=your_anthropic_key
+```
+
+```bash
+npm run dev
+```
 
 ## Tests
 
 ```bash
-npm test                # 52 tests, ~85% line coverage
-npm run test:coverage   # full coverage report
+npm test            # Vitest unit tests (82 tests)
+npm run test:e2e    # Playwright e2e smoke tests (6 tests)
+npm run test:all    # both
 ```
-
-All Supabase and Anthropic calls are mocked — tests run hermetically.
 
 ## Deploy
 
-This subdirectory is configured as a Vercel project with `Root Directory`
-set to `contact-manager`. Pushes to `main` that touch files inside this
-directory trigger an auto-deploy.
+Connect this repo to Vercel and set the three env vars in the Vercel dashboard.
 
-To deploy manually from your machine:
+## Related
 
-```bash
-vercel deploy --prod
-```
-
-## Conventions
-
-See [`CLAUDE.md`](./CLAUDE.md) and [`AGENTS.md`](./AGENTS.md) for the rules
-this project follows. Future changes (by humans or by Claude) should
-respect both files.
+- [cold-emailing-agent](https://github.com/kishoretheeraj/cold-emailing-agent) — Python automation that reads this Supabase table and drafts Gmail emails daily
