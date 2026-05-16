@@ -9,3 +9,4 @@ monitor.log
 htmlcov/
 coverage.xml
 .pytest_cache/
+.playwright-mcp/

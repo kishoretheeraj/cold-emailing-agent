@@ -50,9 +50,9 @@ format:
 2026-04-21 08:00 EST | <event marker> | <details>
 ```
 
-The marker is one of: `START`, `DONE`, `[OUTREACH]`, `[APPLIED]`, or a level
-tag from a warning/error. Don't change the timestamp format — the GitHub
-Actions artifacts and downstream scripts read it.
+The marker is one of: `START`, `DONE`, `[OUTREACH]`, `[APPLIED]`, `[CRITIC]`,
+or a level tag from a warning/error. Don't change the timestamp format — the
+GitHub Actions artifacts and downstream scripts read it.
 
 ## Decision logic invariants
 
@@ -158,10 +158,11 @@ Follow-up emails must land in the same Gmail thread as the original.
   format works.
 - **`prompts` table**: `db.load_prompts()` reads all rows at agent startup and
   returns `{key: value}`. Keys used: `sender_profile`, `outreach_prompt`,
-  `applied_intro_prompt`, `applied_followup_prompt`, `subject_prompt`. If the
-  table is unreachable, `run()` falls back to an empty dict and `emailer.py`
-  uses the `config.py` defaults. Prompts can be edited live via the
-  contact-manager's Prompts & Profile page; changes take effect the next run.
+  `applied_intro_prompt`, `applied_followup_prompt`, `subject_prompt`,
+  `critic_prompt`. If the table is unreachable, `run()` falls back to an empty
+  dict and `emailer.py` uses the `config.py` defaults. Prompts can be edited
+  live via the contact-manager's Prompts & Profile page; changes take effect
+  the next run.
 
 ## GitHub Actions
 
@@ -259,6 +260,30 @@ Key invariants:
   and replies. Match this pattern when adding cases.
 - `tests/test_sent_detection.py` — parametrized tests for `detect_sent_drafts()`.
 - `tests/test_sent_search.py` — tests for `gmail.find_sent_for_thread()`.
+- `tests/test_critic.py` — tests for `_run_critic` and `critique_and_revise`.
+- `tests/test_emailer_tier1.py` — parametrized gating + end-to-end retry tests for the Tier 1 critic loop.
+
+## Critic loop (v1)
+
+`emailer.critique_and_revise()` runs on Tier 1 first-touch emails only
+(`send_first_touch` and `send_applied_intro` when `contact["tier"] == 1`).
+All other tiers and all follow-up actions skip it entirely.
+
+- **Threshold**: `CRITIC_PASS_THRESHOLD = 6` (in `config.py`). Drafts scoring
+  `>= 6` are returned unchanged. Drafts scoring `< 6` trigger one regeneration
+  via `extra_instruction` kwarg on the body generator. Max 2 generation
+  attempts total — never loop.
+- **Prompt**: `critic_prompt` key in the Supabase `prompts` table
+  (`sort_order=25`, between Outreach Email and Applied Intro on `/prompts`).
+  `CRITIC_PROMPT_DEFAULT` in `config.py` is the fallback.
+- **Failure safety**: any error inside `_run_critic` (format error, Claude
+  error, JSON parse failure) returns the pass-through fallback
+  `{"score": 7, "failed_criteria": [], "feedback": ""}` and logs a warning.
+  Critic failures never block draft creation.
+- **Log marker**: `[CRITIC] | name | company | score=N | failed=[...] | retried=<bool>`
+  appears exactly once per Tier 1 first-touch draft.
+- **Cost**: adds 1 critic Claude call per Tier 1 first-touch, plus 1 optional
+  regeneration call. Subject is also regenerated on retry.
 
 ## When changing things
 
