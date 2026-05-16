@@ -139,4 +139,11 @@ describe("App shell", () => {
       expect(screen.getByText(/No contacts yet/i)).toBeInTheDocument()
     );
   });
+
+  it("renders Prompts & Profile nav link pointing to /prompts", () => {
+    render(<App />);
+    const link = screen.getByRole("link", { name: /prompts/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/prompts");
+  });
 });
