@@ -1,4 +1,5 @@
 import json
+import logging
 import ssl
 import time
 import urllib.error
@@ -15,7 +16,10 @@ from config import (
     TIER_INSTRUCTIONS, TEMPLATE_INSTRUCTIONS,
     OUTREACH_PROMPT, APPLIED_INTRO_PROMPT,
     APPLIED_FOLLOWUP_PROMPT, SUBJECT_PROMPT,
+    CRITIC_PROMPT_DEFAULT, CRITIC_PASS_THRESHOLD,
 )
+
+log = logging.getLogger(__name__)
 
 # ── Action → template name mapping ────────────────────────────────────────────
 _FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
@@ -118,9 +122,33 @@ def generate_email(contact, action, original_subject=None, prompts=None):
         subject = _generate_subject(contact, mode, body, _prompts)
     else:
         subject = "Re: " + (original_subject or "")
+
+    if action in _FIRST_TOUCH_ACTIONS and contact.get("tier") == 1:
+        critic_prompt_text = _prompts.get("critic_prompt", CRITIC_PROMPT_DEFAULT)
+        sender_profile_text = _prompts.get("sender_profile", SENDER_PROFILE)
+
+        def regenerate(feedback):
+            if action == "send_first_touch":
+                new_body = _normalize_body(
+                    _generate_outreach(contact, action, dart_instr, _prompts,
+                                       extra_instruction=feedback)
+                )
+            else:
+                new_body = _normalize_body(
+                    _generate_applied_intro(contact, dart_instr, _prompts,
+                                            extra_instruction=feedback)
+                )
+            new_subject = _generate_subject(contact, mode, new_body, _prompts)
+            return new_subject, new_body
+
+        subject, body = critique_and_revise(
+            subject, body, contact, sender_profile_text,
+            critic_prompt_text, regenerate
+        )
+
     return subject, body
 
-def _generate_outreach(contact, action, dart_instr, prompts):
+def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None):
     template = ACTION_TO_TEMPLATE[action]
     tier = str(contact.get("tier", 2))
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -137,9 +165,11 @@ def _generate_outreach(contact, action, dart_instr, prompts):
         template_instruction=TEMPLATE_INSTRUCTIONS.get(template, ""),
         dartmouth_instruction=dart_instr,
     )
+    if extra_instruction is not None:
+        prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return _call_claude(prompt)
 
-def _generate_applied_intro(contact, dart_instr, prompts):
+def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None):
     applied = contact.get("applied_date") or str(date.today())
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("applied_intro_prompt", APPLIED_INTRO_PROMPT)
@@ -153,6 +183,8 @@ def _generate_applied_intro(contact, dart_instr, prompts):
         applied_date=applied,
         dartmouth_instruction=dart_instr,
     )
+    if extra_instruction is not None:
+        prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return _call_claude(prompt)
 
 def _generate_applied_followup(contact, dart_instr, prompts):
@@ -179,3 +211,100 @@ def _generate_subject(contact, mode, body, prompts):
     )
     subject = _call_claude(prompt)
     return subject.strip().strip('"').strip("'")
+
+# ── Critic loop ────────────────────────────────────────────────────────────────
+
+def _run_critic(subject, body, contact, sender_profile, critic_prompt_text):
+    parts = []
+    for label, key in [
+        ("Name", "name"), ("Company", "company"), ("Role", "role"),
+        ("Detail", "detail"),
+    ]:
+        val = contact.get(key)
+        if val:
+            parts.append(f"{label}: {val}")
+    tier = contact.get("tier")
+    if tier:
+        parts.append(f"Tier: {tier}")
+    if contact.get("dartmouth"):
+        parts.append("Dartmouth: yes")
+    contact_context = "\n".join(parts)
+
+    _fallback = {"score": 7, "failed_criteria": [], "feedback": ""}
+
+    try:
+        formatted = critic_prompt_text.format(
+            sender_profile=sender_profile,
+            contact_context=contact_context,
+            subject=subject,
+            body=body,
+        )
+    except KeyError as exc:
+        log.warning(f"[CRITIC] prompt format error: {exc}")
+        return _fallback
+
+    try:
+        raw = _call_claude(formatted)
+    except Exception as exc:
+        log.warning(f"[CRITIC] _call_claude error: {exc}")
+        return _fallback
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+
+    try:
+        return json.loads(text)
+    except Exception as exc:
+        log.warning(f"[CRITIC] JSON parse error: {exc}")
+        return _fallback
+
+
+def critique_and_revise(subject, body, contact, sender_profile,
+                        critic_prompt_text, regenerate_fn):
+    """
+    Runs the critic on (subject, body). If score >= CRITIC_PASS_THRESHOLD,
+    returns (subject, body) unchanged.
+    Otherwise calls regenerate_fn(feedback) once to regenerate
+    with the critic's feedback included, and returns the
+    regenerated (subject, body).
+
+    regenerate_fn is a callable that takes a string feedback
+    and returns (new_subject, new_body). It is the caller's
+    responsibility to compose the original prompt with the
+    feedback appended.
+
+    Never raises. Always returns a (subject, body) tuple. If
+    regenerate_fn raises, returns the original (subject, body)
+    and logs a warning.
+    """
+    name = contact.get("name", "")
+    company = contact.get("company", "")
+    result = _run_critic(subject, body, contact, sender_profile, critic_prompt_text)
+    retried = False
+
+    if result.get("score", 7) >= CRITIC_PASS_THRESHOLD:
+        log.info(
+            f"[CRITIC] | {name} | {company} | "
+            f"score={result['score']} | "
+            f"failed={result['failed_criteria']} | "
+            f"retried={retried}"
+        )
+        return subject, body
+
+    try:
+        subject, body = regenerate_fn(result.get("feedback", ""))
+        retried = True
+    except Exception as exc:
+        log.warning(f"[CRITIC] regenerate error for {name} | {company}: {exc}")
+
+    log.info(
+        f"[CRITIC] | {name} | {company} | "
+        f"score={result['score']} | "
+        f"failed={result['failed_criteria']} | "
+        f"retried={retried}"
+    )
+    return subject, body

@@ -189,3 +189,51 @@ RULES:
 - Lowercase preferred
 - No clickbait
 - Return ONLY the subject line, nothing else"""
+
+# ── Critic loop ────────────────────────────────────────────────────────────────
+CRITIC_PROMPT_DEFAULT = """You are a strict editor reviewing
+cold email drafts before they go out. Your job is to catch
+drafts that sound generic, AI-written, or off-voice for the
+sender.
+
+The sender is:
+{sender_profile}
+
+The contact context is:
+{contact_context}
+
+The draft to review:
+Subject: {subject}
+Body:
+{body}
+
+Evaluate against these criteria. Each is binary pass/fail:
+
+1. Personalization: the body references something specific from
+the contact context (their role, company, the detail hook,
+a Tuck connection). Not just their name and company.
+2. Voice match: warm, confident, conversational. NOT corporate.
+NOT overly polite. NOT 'I hope this finds you well' style.
+3. No filler: zero unnecessary intro phrases. The first sentence
+does work, not throat-clearing.
+4. No AI tells: no em dashes, no 'I wanted to reach out', no
+'I hope this email finds you well', no 'Just wanted to ping',
+no 'I trust this message finds you', no excessive politeness.
+5. Specific ask: ends with a clear, specific next step. Not
+'let me know if you have time' or 'would love to chat'.
+6. Length: under 120 words for the body. Tight.
+7. Format: ends with the sender sign-off exactly as defined
+in the sender profile.
+
+Return a single JSON object, nothing else. No markdown, no
+code fences, no preamble:
+
+{{"score": <integer 0 to 7, count of criteria passed>,
+  "failed_criteria": [<list of criterion numbers that failed>],
+  "feedback": "<one or two sentences telling the writer
+               specifically what to fix, written as a direct
+               instruction>"}}"""
+
+# Drafts scoring >= this pass without retry.
+# Drafts scoring < this trigger one regeneration with feedback.
+CRITIC_PASS_THRESHOLD = 6
