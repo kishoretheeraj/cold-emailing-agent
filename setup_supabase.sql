@@ -58,6 +58,19 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 CREATE INDEX IF NOT EXISTS idx_contacts_stage_followup ON contacts(stage, followup_date);
 CREATE INDEX IF NOT EXISTS idx_contacts_mode ON contacts(mode);
 
+-- Research cache — brief per (contact_name, company) pair, 7-day TTL
+CREATE TABLE IF NOT EXISTS research_cache (
+  cache_key       TEXT PRIMARY KEY,   -- "{name_lower}|{company_lower}"
+  contact_name    TEXT NOT NULL,
+  contact_company TEXT NOT NULL,
+  brief_text      TEXT NOT NULL,      -- synthesised brief; "" = no footprint found
+  brief_json      JSONB NOT NULL,     -- raw Tavily payload + queries for debugging
+  cached_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_cache_cached_at
+  ON research_cache (cached_at);
+
 -- Auto-update updated_at on any row change
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$

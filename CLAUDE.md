@@ -15,6 +15,7 @@ was actually written, not just style preferences.
 agent.py          # Daily run: pick contacts, draft, label, update Supabase
 monitor.py        # Reply detector + sent-draft detector — runs every 2 hours, auto-flips *_drafted→*_sent
 emailer.py        # Claude prompts and email generation
+research.py       # Tavily web research pipeline — query gen, curation, caching (Tier 1+2 first-touch only)
 gmail.py          # IMAP draft creation + Gmail label management
 db.py             # Supabase client + thin query/update wrappers
 config.py         # All env-var reads + prompt templates + tier instructions
@@ -51,6 +52,7 @@ format:
 ```
 
 The marker is one of: `START`, `DONE`, `[OUTREACH]`, `[APPLIED]`, `[CRITIC]`,
+`[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`, `[RESEARCH-C]`,
 or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it.
 
@@ -137,7 +139,13 @@ Follow-up emails must land in the same Gmail thread as the original.
 
 - **Anthropic API** (`emailer._call_claude`): retries on HTTP 429, 529, any
   5xx, and `urllib.error.URLError`, up to 3 attempts with 2 s / 4 s backoff.
-  Other 4xx (auth, bad request) raise immediately.
+  Other 4xx (auth, bad request) raise immediately. Accepts optional `model=None`
+  and `max_tokens=1000` params — all existing callers omit these and get the
+  defaults (`EMAIL_MODEL`, 1000 tokens). `research.py` passes `RESEARCH_QUERY_MODEL`
+  / `RESEARCH_CURATE_MODEL` (both Haiku) with lower token ceilings (300 / 500).
+- **Tavily** (`research.py`): `_get_client()` lazily initialises a singleton
+  `TavilyClient`. All failures inside `get_research_brief` degrade to `""` —
+  the function never raises. Absent `TAVILY_API_KEY` short-circuits immediately.
 - **Supabase** (`db._retry`): every query/update is wrapped in a 3-attempt
   retry with the same 2 s / 4 s backoff. Catches broad `Exception` — Supabase
   blips are transient; the retry budget is small.
@@ -157,12 +165,19 @@ Follow-up emails must land in the same Gmail thread as the original.
   **Do not remove this patch** — it is the only reason the publishable key
   format works.
 - **`prompts` table**: `db.load_prompts()` reads all rows at agent startup and
-  returns `{key: value}`. Keys used: `sender_profile`, `outreach_prompt`,
-  `applied_intro_prompt`, `applied_followup_prompt`, `subject_prompt`,
-  `critic_prompt`. If the table is unreachable, `run()` falls back to an empty
-  dict and `emailer.py` uses the `config.py` defaults. Prompts can be edited
-  live via the contact-manager's Prompts & Profile page; changes take effect
-  the next run.
+  returns `{key: value}`. Keys used by the agent: `sender_profile`,
+  `outreach_prompt`, `applied_intro_prompt`, `applied_followup_prompt`,
+  `subject_prompt`, `critic_prompt`, `research_query_prompt`,
+  `research_curate_prompt`, `research_injection`. If the table is unreachable,
+  `run()` falls back to an empty dict and each module uses its `config.py`
+  defaults. Prompts can be edited live via the contact-manager's Prompts &
+  Profile page; changes take effect the next run.
+- **`research_cache` table**: keyed by `"{name_lower}|{company_lower}"`. Stores
+  `brief_text` (may be `""` for no-footprint contacts), `brief_json` (raw Tavily
+  payload), and `cached_at`. TTL is 7 days (`RESEARCH_CACHE_TTL_DAYS`). Caching
+  empty briefs is intentional — prevents re-querying Tavily for contacts with no
+  public footprint every run. `db.get_research_cache` / `db.set_research_cache`
+  are the only accessors; both use `db._retry`.
 
 ## GitHub Actions
 
@@ -179,6 +194,11 @@ Both workflows: upload the relevant `.log` file as an artifact (30-day
 retention), and run `notify_failure.py` in an `if: failure()` step.
 Both support `workflow_dispatch` for manual triggers.
 Python version: **3.11**. Dependencies installed via `requirements.txt`.
+
+`daily_agent.yml` requires these secrets: `ANTHROPIC_API_KEY`, `GMAIL_ADDRESS`,
+`GMAIL_APP_PASSWORD`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `TAVILY_API_KEY`.
+`monitor.yml` does **not** receive `TAVILY_API_KEY` — monitor never imports
+`research`.
 
 ## Agent run tracking
 
@@ -262,6 +282,11 @@ Key invariants:
 - `tests/test_sent_search.py` — tests for `gmail.find_sent_for_thread()`.
 - `tests/test_critic.py` — tests for `_run_critic` and `critique_and_revise`.
 - `tests/test_emailer_tier1.py` — parametrized gating + end-to-end retry tests for the Tier 1 critic loop.
+- `tests/test_research_queries.py` — `_generate_queries` unit tests.
+- `tests/test_research_tavily.py` — `_run_tavily` and `_run_hardcoded_fallback` unit tests.
+- `tests/test_research_curate.py` — `_curate_brief` unit tests (includes disambiguation guard).
+- `tests/test_research_brief.py` — `get_research_brief` integration tests (cache TTL, pipeline, never-raises parametrize).
+- `tests/test_emailer_research.py` — research gating (tier/action matrix) and injection behavior in `generate_email`.
 
 ## Critic loop (v1)
 
@@ -284,6 +309,51 @@ All other tiers and all follow-up actions skip it entirely.
   appears exactly once per Tier 1 first-touch draft.
 - **Cost**: adds 1 critic Claude call per Tier 1 first-touch, plus 1 optional
   regeneration call. Subject is also regenerated on retry.
+
+## Research pipeline (v1)
+
+`research.get_research_brief(contact, sender_profile, prompts)` runs for Tier 1
+and Tier 2 first-touch actions only (`send_first_touch`, `send_applied_intro`).
+Follow-ups and Tier 3 skip research entirely. The brief is injected into the
+outreach/applied-intro prompt before body generation and persists through any
+critic retry.
+
+**Pipeline steps:**
+1. **Cache check** — `research_cache` keyed by `name_lower|company_lower`. Hit
+   within 7 days: return `brief_text` immediately, no Tavily or Claude calls.
+2. **Query generation** — Haiku (`RESEARCH_QUERY_MODEL`) generates 1-5 Tavily
+   search queries, person-first (every query includes the company name to
+   disambiguate). Returns JSON array. Hard-capped at `RESEARCH_MAX_QUERIES=5`,
+   each query truncated to `RESEARCH_MAX_QUERY_LEN=80` chars.
+3. **Tavily execution** — `search_depth="basic"`, `max_results=3` per query.
+   Per-query failures skip silently. If query gen returns `[]`, the hardcoded
+   fallback `"{company} news 2026"` fires.
+4. **Brief curation** — Haiku (`RESEARCH_CURATE_MODEL`) synthesises raw results
+   into a short markdown brief. Applies a strict disambiguation rule: any fact
+   that could refer to a different person with the same name is excluded. Returns
+   `NO_RELIABLE_BRIEF` (mapped to `""`) if results are ambiguous or off-topic.
+5. **Cache write** — `brief_text` cached even when `""` to prevent re-querying
+   no-footprint contacts on the next run.
+
+**Log markers (all in `agent.log`):**
+- `[RESEARCH-Q]` — queries generated by Haiku
+- `[RESEARCH-T]` — Tavily execution results
+- `[RESEARCH-F]` — hardcoded fallback fired (query gen returned `[]`)
+- `[RESEARCH-C]` — curator output (`reliable=True/False`)
+- `[RESEARCH]` — top-level summary (`path=cache|fresh`)
+- `[OUTREACH] | name | company | tier=N | has_brief=True/False` — emitted from
+  `emailer.generate_email` for every first-touch, showing whether a brief was
+  injected
+
+**Worst-case failure mode**: Tavily returns facts about a different person with
+the same name. The curation step is the guard against this — if you see wrong
+facts in a draft, tighten `research_curate_prompt` in `/prompts` and add a
+failure example. Never trust a confident-sounding brief without verifying a
+specific fact against a real source before sending.
+
+**Cost** (approximate): ~1-2 USD/month extra Anthropic spend at typical volume
+(two Haiku calls per researched contact). Tavily free tier: 1000 credits/month;
+~3 queries per contact = ~30 credits per 10 first-touches.
 
 ## When changing things
 

@@ -149,3 +149,33 @@ Tone: Warm, confident, conversational. Simple English. No em dashes. No filler.
 Sign-off: Kishore / MEM '26 | Dartmouth$$)
 
 ON CONFLICT (key) DO NOTHING;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Research pipeline prompts (added 2026-05-16)
+-- sort_order 26/27/28 — sit between Critic Prompt (25) and Applied Intro (30)
+-- These appear automatically on /prompts; no UI changes needed.
+-- Full prompt text is in config.py: RESEARCH_QUERY_DEFAULT, RESEARCH_CURATE_DEFAULT,
+-- RESEARCH_INJECTION_DEFAULT. Copy those strings into the value/default_value
+-- columns below for a fresh install, or run the migration SQL from the plan.
+-- ─────────────────────────────────────────────────────────────────────────────
+INSERT INTO prompts (key, value, description, display_title, default_value, sort_order)
+VALUES
+  ('research_query_prompt',
+   '',   -- replace with RESEARCH_QUERY_DEFAULT from config.py
+   'Decides what to search the web for, given a contact. Person-first, company as fallback. Returns JSON array of 1-5 search queries.',
+   'Research Queries',
+   '',   -- same as value
+   26),
+  ('research_curate_prompt',
+   '',   -- replace with RESEARCH_CURATE_DEFAULT from config.py
+   'Synthesizes Tavily search results into a tight, disambiguated brief. Returns empty if results are ambiguous or off-target.',
+   'Research Brief Curation',
+   '',   -- same as value
+   27),
+  ('research_injection',
+   '',   -- replace with RESEARCH_INJECTION_DEFAULT from config.py
+   'Wraps the curated brief and appends it to the Outreach Email user message for Tier 1 and Tier 2 first-touches.',
+   'Research Brief Injection',
+   '',   -- same as value
+   28)
+ON CONFLICT (key) DO NOTHING;
