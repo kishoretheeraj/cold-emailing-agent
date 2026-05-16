@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { SmartInput } from "./SmartInput";
 import { StructuredForm } from "./StructuredForm";
@@ -27,13 +28,19 @@ export function App() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 sm:px-6 py-8 space-y-6">
-      <header className="flex items-baseline justify-between">
+      <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold text-fg">Cold Email Ops</h1>
           <p className="text-sm text-fg-muted mt-0.5">
             Add a contact below — the agent drafts a personalized email tomorrow at 8am.
           </p>
         </div>
+        <Link
+          href="/prompts"
+          className="shrink-0 flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
+        >
+          Prompts & Profile
+        </Link>
       </header>
 
       <section>
