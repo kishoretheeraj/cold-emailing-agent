@@ -280,7 +280,7 @@ def test_run_drafts_and_labels_a_new_contact(mocker):
         return_value=[_build_contact()],
     )
     mocker.patch("agent.generate_email", return_value=("subj", "body"))
-    create_draft = mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
+    create_draft = mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     apply_label = mocker.patch("agent.apply_label_to_latest_draft")
     update_contact = mocker.patch("agent.update_contact")
     save_thread_info = mocker.patch("agent.save_thread_info")
@@ -300,14 +300,14 @@ def test_run_drafts_and_labels_a_new_contact(mocker):
     assert pos_args[1] == "first_touch_drafted"
     assert kw_args.get("expected_stage") == "new"
     # Thread info saved after first touch
-    save_thread_info.assert_called_once_with(1, "<mid@gmail.com>", "subj")
+    save_thread_info.assert_called_once_with(1, "<mid@gmail.com>", "subj", gmail_thread_id=17850200168)
 
 
 
 def test_run_does_not_block_on_label_failure(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
     mocker.patch("agent.generate_email", return_value=("s", "b"))
-    mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
+    mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     mocker.patch(
         "agent.apply_label_to_latest_draft",
         side_effect=RuntimeError("imap down"),
@@ -335,7 +335,7 @@ def test_run_followup_passes_thread_headers(mocker):
         return_value={"message_id": "<orig@gmail.com>", "original_subject": "quick intro"},
     )
     mocker.patch("agent.generate_email", return_value=("Re: quick intro", "follow body"))
-    create_draft = mocker.patch("agent.create_draft", return_value="<fup@gmail.com>")
+    create_draft = mocker.patch("agent.create_draft", return_value=("<fup@gmail.com>", None))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
     save_thread_info = mocker.patch("agent.save_thread_info")
@@ -395,7 +395,7 @@ def test_run_loads_prompts_and_passes_to_generate_email(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
     mocker.patch("agent.load_prompts", return_value={"outreach_prompt": "LIVE"})
     generate_email = mocker.patch("agent.generate_email", return_value=("s", "b"))
-    mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
+    mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
     mocker.patch("agent.save_thread_info")
@@ -411,7 +411,7 @@ def test_run_falls_back_to_empty_prompts_on_load_failure(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
     mocker.patch("agent.load_prompts", side_effect=RuntimeError("db down"))
     generate_email = mocker.patch("agent.generate_email", return_value=("s", "b"))
-    mocker.patch("agent.create_draft", return_value="<mid@gmail.com>")
+    mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
     mocker.patch("agent.save_thread_info")
@@ -427,7 +427,7 @@ def test_run_skips_when_duplicate_draft_exists(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
     mocker.patch("agent.generate_email", return_value=("subj", "body"))
     # create_draft returns None → duplicate found
-    mocker.patch("agent.create_draft", return_value=None)
+    mocker.patch("agent.create_draft", return_value=(None, None))
     update_contact = mocker.patch("agent.update_contact")
     mocker.patch("agent.save_thread_info")
     mocker.patch("agent.time.sleep")

@@ -27,7 +27,10 @@ from db import (
     log_agent_event, update_classifier_status, insert_email_message, load_prompts,
     update_message_id,
 )
-from gmail import create_gmail_label_if_not_exists, find_sent_for_thread, find_sent_by_subject
+from gmail import (
+    create_gmail_label_if_not_exists, find_sent_for_thread,
+    find_sent_by_subject, find_sent_by_thread_id,
+)
 from emailer import _call_claude
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -72,14 +75,24 @@ def detect_sent_drafts():
         if since_date is None:
             since_date = date.today() - timedelta(days=60)
 
-        try:
-            actual_mid = find_sent_for_thread(message_id, since_date, mode)
-        except Exception as exc:
-            log.warning(f"[SENT-CHECK] | {name} | {company} | unexpected error: {exc}")
-            continue
+        actual_mid = None
 
-        # Fallback: Gmail sometimes rewrites the Message-ID when a draft is sent.
-        # Search by subject so detection still works even when the ID changed.
+        # Priority 1: X-GM-THRID — Gmail's stable thread ID, survives message_id rewrites.
+        if not actual_mid and contact.get("gmail_thread_id"):
+            try:
+                actual_mid = find_sent_by_thread_id(contact["gmail_thread_id"], since_date)
+            except Exception as exc:
+                log.warning(f"[SENT-CHECK] | {name} | {company} | thrid error: {exc}")
+
+        # Priority 2: Message-ID header search.
+        if not actual_mid:
+            try:
+                actual_mid = find_sent_for_thread(message_id, since_date, mode)
+            except Exception as exc:
+                log.warning(f"[SENT-CHECK] | {name} | {company} | unexpected error: {exc}")
+                continue
+
+        # Priority 3: subject fragment fallback (first_touch only — last resort).
         if not actual_mid and mode == "first_touch":
             original_subject = contact.get("original_subject", "")
             if original_subject:

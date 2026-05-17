@@ -202,6 +202,37 @@ def test_subject_fallback_not_used_for_followup_mode(mocker):
     subj_search.assert_not_called()
 
 
+def test_thread_id_search_takes_priority_over_message_id(mocker):
+    """When gmail_thread_id is stored, X-GM-THRID search fires first and skips Message-ID search."""
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact(stage="first_touch_drafted",
+                                               gmail_thread_id=17850200168)])
+    thrid_search = mocker.patch.object(monitor, "find_sent_by_thread_id", return_value=MID)
+    mid_search = mocker.patch.object(monitor, "find_sent_for_thread")
+    mocker.patch.object(monitor, "update_contact")
+    mocker.patch.object(monitor, "update_message_id")
+
+    monitor.detect_sent_drafts()
+
+    thrid_search.assert_called_once()
+    mid_search.assert_not_called()
+
+
+def test_thread_id_search_falls_through_to_message_id(mocker):
+    """If X-GM-THRID search returns None, fall through to Message-ID search."""
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact(stage="first_touch_drafted",
+                                               gmail_thread_id=17850200168)])
+    mocker.patch.object(monitor, "find_sent_by_thread_id", return_value=None)
+    mid_search = mocker.patch.object(monitor, "find_sent_for_thread", return_value=MID)
+    mocker.patch.object(monitor, "update_contact")
+    mocker.patch.object(monitor, "update_message_id")
+
+    monitor.detect_sent_drafts()
+
+    mid_search.assert_called_once()
+
+
 def test_message_id_not_updated_for_followup_mode(mocker):
     """message_id update only runs for first_touch mode, not followups."""
     mocker.patch.object(monitor, "get_drafted_contacts",

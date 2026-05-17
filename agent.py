@@ -205,13 +205,13 @@ def run():
             # Returns None if a duplicate draft already exists for today.
             current_stage = contact.get("stage")
             if thread_message_id:
-                message_id = create_draft(
+                message_id, thread_id = create_draft(
                     contact["email"], subject, body,
                     in_reply_to=thread_message_id,
                     contact_id=contact["id"], stage=current_stage,
                 )
             else:
-                message_id = create_draft(
+                message_id, thread_id = create_draft(
                     contact["email"], subject, body,
                     contact_id=contact["id"], stage=current_stage,
                 )
@@ -224,7 +224,7 @@ def run():
 
             # Persist thread info after the first email so follow-ups can thread
             if action in _FIRST_TOUCH_ACTIONS and message_id:
-                save_thread_info(contact["id"], message_id, subject)
+                save_thread_info(contact["id"], message_id, subject, gmail_thread_id=thread_id)
 
             # Apply Gmail label to the draft (best-effort — never blocks)
             label = ACTION_LABEL.get(action)

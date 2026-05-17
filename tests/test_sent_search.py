@@ -126,3 +126,66 @@ def test_since_date_formatted_correctly(mocker):
 
     args = fake_imap.search.call_args.args
     assert "01-May-2026" in args
+
+
+# ── find_sent_by_thread_id ────────────────────────────────────────────────────
+
+THRID = 17850200168
+
+
+def _make_thrid_imap(search_status="OK", search_data=b"5"):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.select.return_value = ("OK", [b"1"])
+    fake_imap.search.return_value = (search_status, [search_data])
+    fake_imap.fetch.return_value = FETCH_RESPONSE
+    return fake_imap
+
+
+def test_thread_id_search_uses_xgm_thrid(mocker):
+    fake_imap = _make_thrid_imap()
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.find_sent_by_thread_id(THRID, SINCE)
+
+    args = fake_imap.search.call_args.args
+    assert "X-GM-THRID" in args
+    assert str(THRID) in args
+
+
+def test_thread_id_search_returns_actual_mid_when_found(mocker):
+    fake_imap = _make_thrid_imap()
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.find_sent_by_thread_id(THRID, SINCE)
+
+    assert result == MID
+
+
+def test_thread_id_search_returns_none_when_not_found(mocker):
+    fake_imap = _make_thrid_imap(search_status="OK", search_data=b"")
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.find_sent_by_thread_id(THRID, SINCE)
+
+    assert result is None
+
+
+def test_thread_id_search_returns_none_on_imap_error(mocker):
+    fake_imap = MagicMock()
+    fake_imap.login.side_effect = Exception("imap is down")
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.find_sent_by_thread_id(THRID, SINCE)
+
+    assert result is None
+
+
+def test_thread_id_search_logout_on_error(mocker):
+    fake_imap = MagicMock()
+    fake_imap.select.return_value = ("OK", [b"1"])
+    fake_imap.search.side_effect = Exception("timeout")
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.find_sent_by_thread_id(THRID, SINCE)
+
+    fake_imap.logout.assert_called_once()

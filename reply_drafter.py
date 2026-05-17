@@ -88,7 +88,7 @@ def draft_reply(contact, reply_body_text, prompts):
         subject = ("Re: " + original_subject) if original_subject else "Re: your message"
 
         thread_message_id = contact.get("message_id")
-        message_id = create_draft(
+        message_id, _thread_id = create_draft(
             contact.get("email"),
             subject,
             body,

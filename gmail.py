@@ -2,6 +2,7 @@ import hashlib
 import html
 import imaplib
 import logging
+import re
 import time
 from datetime import date
 from email.mime.multipart import MIMEMultipart
@@ -26,9 +27,10 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
                  subject_prefix=True, contact_id=None, stage=None):
     """
     Create a Gmail draft via IMAP. Never sends — draft only.
-    Generates and sets a Message-ID on the draft so follow-ups can reference
-    it for threading. Returns the Message-ID string, or None if a duplicate
-    draft already exists for this contact_id/stage/date combination.
+    Returns (message_id, gmail_thread_id). gmail_thread_id is Gmail's stable
+    X-GM-THRID integer — persists even if Gmail rewrites the Message-ID on send,
+    so it is the primary key for reliable sent detection. Returns (None, None)
+    if a duplicate draft already exists for this contact_id/stage/date combination.
     When in_reply_to is provided, adds In-Reply-To/References headers and
     prefixes subject with 'Re: ' (unless already set or subject_prefix=False).
     """
@@ -50,7 +52,7 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
             status, data = imap.search(None, "HEADER", "X-Cold-Email-Key", key)
             if status == "OK" and data[0]:
                 log.info(f"draft already exists | key={key} | contact={contact_id}")
-                return None
+                return None, None
 
         # Generate before append so we own the ID and can return it immediately.
         # Gmail honours a pre-set Message-ID when the user clicks Send.
@@ -76,7 +78,25 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
         )
         if status != "OK":
             raise RuntimeError(f"IMAP APPEND failed: {status} {data}")
-        return mid
+
+        # Capture Gmail's X-GM-THRID via the APPENDUID the server returns.
+        # X-GM-THRID survives Gmail rewriting the Message-ID on send and is
+        # the primary key for reliable sent detection.
+        gmail_thread_id = None
+        if data and data[0]:
+            uid_match = re.search(rb'APPENDUID\s+\d+\s+(\d+)', data[0])
+            if uid_match:
+                append_uid = uid_match.group(1).decode()
+                try:
+                    imap.select('"[Gmail]/Drafts"', readonly=True)
+                    _, thrid_data = imap.fetch(append_uid, "(X-GM-THRID)")
+                    thrid_match = re.search(r'X-GM-THRID\s+(\d+)', str(thrid_data))
+                    if thrid_match:
+                        gmail_thread_id = int(thrid_match.group(1))
+                except Exception:
+                    pass  # Best-effort; detection falls back to message_id search
+
+        return mid, gmail_thread_id
     finally:
         imap.logout()
 
@@ -171,6 +191,41 @@ def find_sent_by_subject(subject, since_date):
         return actual_mid
     except Exception as exc:
         log.warning(f"[SENT-CHECK-SUBJ] | IMAP error | {term!r} | {exc}")
+        return None
+    finally:
+        imap.logout()
+
+
+def find_sent_by_thread_id(gmail_thread_id, since_date):
+    """
+    Primary sent-detection path: search [Gmail]/Sent Mail by Gmail's X-GM-THRID.
+    This survives Gmail rewriting the Message-ID on send. Returns the actual
+    Message-ID of the found email, or None.
+    """
+    since_str = since_date.strftime("%d-%b-%Y")
+    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    try:
+        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        imap.select('"[Gmail]/Sent Mail"', readonly=True)
+        status, data = imap.search(None, "X-GM-THRID", str(gmail_thread_id), "SINCE", since_str)
+        if status != "OK" or not data[0]:
+            log.info(f"[SENT-CHECK-THRID] | {gmail_thread_id} | found=False")
+            return None
+        nums = data[0].split()
+        actual_mid = None
+        status2, msg_data = imap.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
+        if status2 == "OK" and msg_data and msg_data[0]:
+            raw = msg_data[0][1]
+            if isinstance(raw, bytes):
+                raw = raw.decode(errors="replace")
+            for line in raw.splitlines():
+                if line.lower().startswith("message-id:"):
+                    actual_mid = line.split(":", 1)[1].strip()
+                    break
+        log.info(f"[SENT-CHECK-THRID] | {gmail_thread_id} | found={actual_mid is not None} | mid={actual_mid}")
+        return actual_mid
+    except Exception as exc:
+        log.warning(f"[SENT-CHECK-THRID] | IMAP error | {gmail_thread_id} | {exc}")
         return None
     finally:
         imap.logout()
