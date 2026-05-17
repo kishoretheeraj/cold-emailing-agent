@@ -1,4 +1,4 @@
-"""Tests for monitor.py — reply detection loop with mocked IMAP and Supabase."""
+"""Tests for monitor.py — new header-based reply detection, phase isolation."""
 
 from unittest.mock import MagicMock
 
@@ -13,135 +13,203 @@ def _contact(**overrides):
         "name": "Dana",
         "company": "Clearbond",
         "email": "dana@example.com",
+        "message_id": "<orig123@gmail.com>",
+        "stage": "first_touch_sent",
+        "classifier_status": None,
     }
     base.update(overrides)
     return base
 
 
-# ── Empty fast path ──────────────────────────────────────────────────────────
+def _fake_imap(msg_nums=b"1", search_status="OK"):
+    fake = MagicMock()
+    fake.login.return_value = ("OK", [b"Logged in"])
+    fake.select.return_value = ("OK", [b""])
+    fake.search.return_value = (search_status, [msg_nums])
+    fake.logout.return_value = ("OK", [b""])
+    return fake
 
 
-def test_run_with_no_contacts_does_not_open_imap(mocker, capsys):
+# ── Empty fast-path ────────────────────────────────────────────────────────────
+
+def test_no_contacts_with_message_id_skips_imap(mocker):
+    mocker.patch.object(monitor, "detect_sent_drafts")
+    mocker.patch.object(monitor, "get_sent_contacts",
+                        return_value=[_contact(message_id=None)])
+    imap_cls = mocker.patch.object(monitor.imaplib, "IMAP4_SSL")
+
+    monitor.run()
+
+    imap_cls.assert_not_called()
+
+
+def test_empty_contacts_skips_imap(mocker):
     mocker.patch.object(monitor, "detect_sent_drafts")
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[])
-    imap_factory = mocker.patch.object(monitor.imaplib, "IMAP4_SSL")
+    imap_cls = mocker.patch.object(monitor.imaplib, "IMAP4_SSL")
 
     monitor.run()
 
-    imap_factory.assert_not_called()
-    captured = capsys.readouterr().out
-    assert "0 replies found, 0 contacts checked" in captured
+    imap_cls.assert_not_called()
 
 
-# ── Reply detected path ──────────────────────────────────────────────────────
+# ── Header-based match ─────────────────────────────────────────────────────────
 
-
-def test_run_detects_reply_updates_status_and_labels(mocker, capsys):
+def test_in_reply_to_match_classifies_and_stores(mocker):
+    contact = _contact()
     mocker.patch.object(monitor, "detect_sent_drafts")
-    mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
-    update_status = mocker.patch.object(monitor, "update_reply_status")
-    create_label = mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
-
-    fake_imap = MagicMock()
-    fake_imap.search.return_value = ("OK", [b"5 7"])
-    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake_imap)
-
-    monitor.run()
-
-    fake_imap.login.assert_called_once_with(
-        monitor.GMAIL_ADDRESS, monitor.GMAIL_APP_PASSWORD
-    )
-    fake_imap.select.assert_called_once_with("INBOX")
-    create_label.assert_called_once_with(fake_imap, monitor.REPLIED_LABEL)
-    fake_imap.search.assert_called_once_with(None, 'FROM "dana@example.com"')
-
-    update_status.assert_called_once_with(1, "replied")
-    # Labeled both UIDs returned by SEARCH
-    assert fake_imap.copy.call_args_list[0].args == ("5", '"Cold Outreach/Replied"')
-    assert fake_imap.copy.call_args_list[1].args == ("7", '"Cold Outreach/Replied"')
-
-    fake_imap.logout.assert_called_once()
-    out = capsys.readouterr().out
-    assert "1 replies found, 1 contacts checked" in out
-
-
-# ── No reply path ────────────────────────────────────────────────────────────
-
-
-def test_run_no_reply_does_not_update(mocker, capsys):
-    mocker.patch.object(monitor, "detect_sent_drafts")
-    mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
-    update_status = mocker.patch.object(monitor, "update_reply_status")
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])
     mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
 
-    fake_imap = MagicMock()
-    fake_imap.search.return_value = ("OK", [b""])
-    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake_imap)
+    fake = _fake_imap()
+    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake)
+
+    # _fetch_headers returns a message whose In-Reply-To matches our stored message_id
+    mock_msg = MagicMock()
+    mock_msg.get.side_effect = lambda h, d="": {
+        "In-Reply-To": "<orig123@gmail.com>",
+        "References": "",
+        "Auto-Submitted": "no",
+        "X-Auto-Response-Suppress": "",
+        "Message-ID": "<reply456@gmail.com>",
+        "Subject": "Re: intro",
+        "Date": "Fri, 16 May 2026 10:00:00 +0000",
+    }.get(h, d)
+    mocker.patch.object(monitor, "_fetch_headers", return_value=mock_msg)
+    mocker.patch.object(monitor, "_fetch_body_text", return_value="Sounds great!")
+    mocker.patch.object(monitor, "_classify_reply", return_value="positive_reply")
+    mock_insert = mocker.patch.object(monitor, "insert_email_message")
+    mock_update_cs = mocker.patch.object(monitor, "update_classifier_status")
+    mocker.patch.object(monitor, "log_agent_event")
+    mocker.patch.object(monitor, "_draft_reply_responses")
 
     monitor.run()
 
-    update_status.assert_not_called()
-    fake_imap.copy.assert_not_called()
-    out = capsys.readouterr().out
-    assert "0 replies found, 1 contacts checked" in out
+    mock_insert.assert_called_once()
+    mock_update_cs.assert_called_once_with(1, "positive_reply")
 
 
-# ── Label-failure resilience ─────────────────────────────────────────────────
-
-
-def test_run_continues_when_individual_label_copy_fails(mocker):
+def test_no_header_match_skips_contact(mocker):
+    contact = _contact()
     mocker.patch.object(monitor, "detect_sent_drafts")
-    mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
-    update_status = mocker.patch.object(monitor, "update_reply_status")
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])
     mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
 
-    fake_imap = MagicMock()
-    fake_imap.search.return_value = ("OK", [b"1"])
-    fake_imap.copy.side_effect = RuntimeError("transient gmail glitch")
-    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake_imap)
+    fake = _fake_imap()
+    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake)
 
-    # Must not raise — labeling individual messages is best-effort.
+    mock_msg = MagicMock()
+    mock_msg.get.side_effect = lambda h, d="": {
+        "In-Reply-To": "<unrelated@other.com>",
+        "References": "",
+        "Auto-Submitted": "no",
+        "X-Auto-Response-Suppress": "",
+    }.get(h, d)
+    mocker.patch.object(monitor, "_fetch_headers", return_value=mock_msg)
+    mock_update_cs = mocker.patch.object(monitor, "update_classifier_status")
+    mocker.patch.object(monitor, "_draft_reply_responses")
+
     monitor.run()
 
-    update_status.assert_called_once_with(1, "replied")
+    mock_update_cs.assert_not_called()
 
 
-# ── Always logs out ──────────────────────────────────────────────────────────
-
-
-def test_run_logs_out_even_on_search_error(mocker):
+def test_auto_reply_header_bypasses_claude(mocker):
+    contact = _contact()
     mocker.patch.object(monitor, "detect_sent_drafts")
-    mocker.patch.object(monitor, "get_sent_contacts", return_value=[_contact()])
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])
     mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
 
-    fake_imap = MagicMock()
-    fake_imap.search.side_effect = RuntimeError("network down")
-    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake_imap)
+    fake = _fake_imap()
+    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake)
 
-    with pytest.raises(RuntimeError):
-        monitor.run()
+    mock_msg = MagicMock()
+    mock_msg.get.side_effect = lambda h, d="": {
+        "In-Reply-To": "<orig123@gmail.com>",
+        "References": "",
+        "Auto-Submitted": "auto-replied",
+        "X-Auto-Response-Suppress": "",
+        "Message-ID": "<autoreply@gmail.com>",
+        "Subject": "Out of office",
+        "Date": "Fri, 16 May 2026 10:00:00 +0000",
+    }.get(h, d)
+    mocker.patch.object(monitor, "_fetch_headers", return_value=mock_msg)
+    mock_classify = mocker.patch.object(monitor, "_classify_reply")
+    mocker.patch.object(monitor, "insert_email_message")
+    mock_update_cs = mocker.patch.object(monitor, "update_classifier_status")
+    mocker.patch.object(monitor, "log_agent_event")
+    mocker.patch.object(monitor, "_draft_reply_responses")
 
-    fake_imap.logout.assert_called_once()
+    monitor.run()
+
+    mock_classify.assert_not_called()
+    mock_update_cs.assert_called_once_with(1, "auto_reply")
 
 
-# ── Independence: detect_sent_drafts failure must not block detect_replies ───
+def test_already_classified_contact_skipped(mocker):
+    contact = _contact(classifier_status="positive_reply")
+    mocker.patch.object(monitor, "detect_sent_drafts")
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])
+    mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
+
+    fake = _fake_imap()
+    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake)
+
+    mock_msg = MagicMock()
+    mock_msg.get.side_effect = lambda h, d="": {
+        "In-Reply-To": "<orig123@gmail.com>",
+        "References": "",
+        "Auto-Submitted": "no",
+        "X-Auto-Response-Suppress": "",
+    }.get(h, d)
+    mocker.patch.object(monitor, "_fetch_headers", return_value=mock_msg)
+    mock_update_cs = mocker.patch.object(monitor, "update_classifier_status")
+    mocker.patch.object(monitor, "_draft_reply_responses")
+
+    monitor.run()
+
+    mock_update_cs.assert_not_called()
 
 
-def test_run_continues_to_reply_detection_if_sent_detection_raises(mocker, capsys):
+# ── Phase isolation ────────────────────────────────────────────────────────────
+
+def test_sent_detection_failure_does_not_block_reply_detection(mocker):
     mocker.patch.object(monitor, "detect_sent_drafts",
-                        side_effect=RuntimeError("detect_sent_drafts exploded"))
+                        side_effect=RuntimeError("sent detection exploded"))
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[])
-    imap_factory = mocker.patch.object(monitor.imaplib, "IMAP4_SSL")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
+    imap_cls = mocker.patch.object(monitor.imaplib, "IMAP4_SSL")
 
-    # Must not raise; detect_replies still runs (fast-path with 0 contacts)
+    # Must not raise — detect_replies still runs (fast-path, no contacts)
     monitor.run()
 
-    out = capsys.readouterr().out
-    assert "0 replies found, 0 contacts checked" in out
+    imap_cls.assert_not_called()
 
 
-# ── Constant invariants ──────────────────────────────────────────────────────
+def test_per_message_exception_continues_loop(mocker):
+    contact = _contact()
+    mocker.patch.object(monitor, "detect_sent_drafts")
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])
+    mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
+
+    fake = _fake_imap(msg_nums=b"1 2")
+    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake)
+
+    # First message raises; second should still be processed
+    mocker.patch.object(monitor, "_fetch_headers",
+                        side_effect=[RuntimeError("fetch error"), MagicMock()])
+    mocker.patch.object(monitor, "_draft_reply_responses")
+
+    # Must not raise
+    monitor.run()
 
 
-def test_replied_label_matches_format():
+# ── Constant invariant ─────────────────────────────────────────────────────────
+
+def test_replied_label_format():
     assert monitor.REPLIED_LABEL.startswith("Cold Outreach/")

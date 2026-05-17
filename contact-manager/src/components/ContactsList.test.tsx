@@ -148,6 +148,10 @@ let ioCallback: IOCallback | null = null;
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
+vi.mock("@/components/ThreadView", () => ({
+  ThreadView: () => null,
+}));
+
 // vi.hoisted ensures these are available inside vi.mock factory (which is hoisted)
 const { limitMock, updateEqMock } = vi.hoisted(() => ({
   limitMock: vi.fn(),

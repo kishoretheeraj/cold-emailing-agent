@@ -30,6 +30,14 @@ TERMINAL_REPLY_STATUSES = ["replied", "interested", "call_scheduled", "dead"]
 
 # ── Derived sets ──────────────────────────────────────────────────────────────
 
-DRAFTED_STAGES = [s for s in OUTREACH_STAGES + APPLIED_STAGES if "drafted" in s]
+# ── Reply stages (set by reply_drafter; detected by monitor sent-detection) ────
 
-TERMINAL_DRAFTED_STAGES = {"breakup_drafted", "applied_followup_drafted"}
+REPLY_STAGES = ["reply_drafted", "reply_sent"]
+
+# ── Derived sets ──────────────────────────────────────────────────────────────
+
+DRAFTED_STAGES = [
+    s for s in OUTREACH_STAGES + APPLIED_STAGES + REPLY_STAGES if "drafted" in s
+]
+
+TERMINAL_DRAFTED_STAGES = {"breakup_drafted", "applied_followup_drafted", "reply_drafted"}

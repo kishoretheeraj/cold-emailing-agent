@@ -35,12 +35,20 @@ export function App() {
             Add a contact below — the agent drafts a personalized email tomorrow at 8am.
           </p>
         </div>
-        <Link
-          href="/prompts"
-          className="shrink-0 flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
-        >
-          Prompts & Profile
-        </Link>
+        <nav className="shrink-0 flex items-center gap-2">
+          <Link
+            href="/prompts"
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
+          >
+            Prompts & Profile
+          </Link>
+          <Link
+            href="/runs"
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
+          >
+            Activity
+          </Link>
+        </nav>
       </header>
 
       <section>

@@ -12,6 +12,8 @@ SUPABASE_ANON_KEY  = os.environ["SUPABASE_ANON_KEY"]
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 EMAIL_MODEL = "claude-sonnet-4-6"
+REPLY_CLASSIFICATION_MODEL = "claude-haiku-4-5-20251001"
+REPLY_RESPONSE_MODEL = "claude-sonnet-4-6"
 
 # ── Research (Tavily) ──────────────────────────────────────────────────────────
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
@@ -331,6 +333,41 @@ Better generic than wrong. If results are ambiguous, off-topic, or about a diffe
 NO_RELIABLE_BRIEF
 
 Do not include 'Note:' caveats. Do not editorialize. Just facts in bullets, or NO_RELIABLE_BRIEF."""
+
+REPLY_CLASSIFICATION_DEFAULT = """Classify this email reply. Return a single JSON object with one key "classifier_status" and one of these values:
+- positive_reply: genuine interest, wants to talk, asks questions, or is clearly engaged
+- soft_yes: mild positive signal, open to connecting but non-committal
+- hard_no: explicit rejection or disinterest
+- auto_reply: out-of-office, vacation auto-reply, or bounce notification
+- out_of_office: person is away but no explicit rejection
+- unrelated: reply is unrelated to the original outreach (wrong thread, spam, etc.)
+
+Reply to classify:
+{reply_body}
+
+Return ONLY the JSON object, nothing else. Example: {{"classifier_status": "positive_reply"}}"""
+
+REPLY_RESPONSE_DEFAULT = """Write a brief, warm reply to this email. You are Kishore responding to someone who expressed interest in connecting.
+
+SENDER PROFILE:
+{profile}
+
+CONTACT:
+- Name: {name}
+- Company: {company}
+- Role: {role}
+
+THEIR REPLY:
+{reply_body}
+
+RULES:
+- Max 80 words
+- Acknowledge what they said specifically
+- Suggest a concrete next step (short call, specific time, calendly link placeholder)
+- No em dashes
+- No filler phrases
+- Sound like a real person, not a template
+- Do NOT include subject line or name sign-off"""
 
 RESEARCH_INJECTION_DEFAULT = """
 

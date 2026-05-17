@@ -13,8 +13,10 @@ was actually written, not just style preferences.
 
 ```
 agent.py          # Daily run: pick contacts, draft, label, update Supabase
-monitor.py        # Reply detector + sent-draft detector — runs every 2 hours, auto-flips *_drafted→*_sent
-emailer.py        # Claude prompts and email generation
+monitor.py        # Four-phase monitor: sent-detection, reply-detection, classification, reply-drafting
+emailer.py        # Claude prompts and email generation (includes pre-flight integration)
+preflight.py      # Six deterministic checks run before every draft; hard block on failure with one retry
+reply_drafter.py  # Generates reply drafts for positive_reply/soft_yes contacts; no critic, no auto-send
 research.py       # Tavily web research pipeline — query gen, curation, caching (Tier 1+2 first-touch only)
 gmail.py          # IMAP draft creation + Gmail label management
 db.py             # Supabase client + thin query/update wrappers
@@ -383,3 +385,98 @@ Use this banner shape for top-level sections inside files:
 ```
 
 Replace the title; keep the trailing dashes consistent.
+
+## Pre-flight checks (preflight.py)
+
+Six deterministic checks run on every generated body after Claude returns, before the critic and before any Gmail draft is created. On failure, one automatic regeneration with the error list as extra instruction. If the retry also fails: log to `agent_events` with `status="blocked_preflight"` and raise `ValueError` — no draft is created.
+
+Checks (all six are separate functions with distinct error messages):
+1. `check_placeholder_braces` — flags `{UPPER_CASE}` tokens
+2. `check_unfilled_brackets` — flags `[Title Case]` tokens
+3. `check_first_name_presence` — contact's first name must appear in the body
+4. `check_wrong_company` — flags watchlist companies in body that don't match contact's company (schema-driven: `guardrail_company_list` prompt key, newline-delimited)
+5. `check_stale_year` — flags `year < current_year` within 50-char window of future-tense phrases
+6. `check_forbidden_phrases` — substring match against `forbidden_phrases` prompt key, newline-delimited
+
+Pre-flight runs on ALL actions (outreach, follow-up, reply). Critic runs only on Tier 1 first-touch. Pre-flight is the inner gate; critic is the outer gate.
+
+In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("db.log_agent_event")` are required in any test that calls `generate_email()`.
+
+## Reply pipeline (monitor.py)
+
+`monitor.run()` now has four sequential phases, each wrapped in `try/except` so failure in one never blocks the next:
+1. `detect_sent_drafts()` — unchanged
+2. `detect_replies(prompts)` — header-based IMAP INBOX scan; returns list of newly-classified contacts
+3. (called inside detect_replies) `_classify_reply()` — Claude Haiku classifies reply body → `classifier_status`
+4. `_draft_reply_responses(classified, prompts)` — calls `reply_drafter.draft_reply()` for positive_reply/soft_yes contacts
+
+**Reply detection invariants:**
+- Matches via `In-Reply-To` header first, then walks `References` chain. No FROM fallback.
+- Skip message if no header matches any stored `contacts.message_id`.
+- Auto-reply bypass: if `Auto-Submitted` header is not "no" or `X-Auto-Response-Suppress` is present, classify as `auto_reply` without calling Claude.
+- Skip contact if `classifier_status` is already set (idempotent across 2-hour runs).
+- `email_messages` insert is upsert on `message_id` (ON CONFLICT DO NOTHING).
+- One IMAP connection for all contacts in the INBOX phase. `readonly=True` for the SINCE search; switches to read-write only for label copy.
+
+## Reply drafting (reply_drafter.py)
+
+`draft_reply(contact, reply_body_text, prompts)`:
+- Generates reply body via `REPLY_RESPONSE_MODEL` (Sonnet).
+- Runs pre-flight; one retry on failure; hard block with `agent_events` log if still failing.
+- **Never calls the critic loop.**
+- Creates Gmail draft via `create_draft()` with `in_reply_to=contact.message_id`.
+- Stores draft in `email_messages` as `direction="outgoing"`.
+- Applies label `Cold Outreach/Reply` (best-effort).
+- Updates stage to `reply_drafted` via `update_contact(clear_followup_date=True)` — reply is terminal.
+- Skips silently if `classifier_status` not in `{"positive_reply", "soft_yes"}`.
+- Skips if already in `reply_drafted` or `reply_sent`.
+
+## New Supabase tables
+
+**`email_messages`** — durable copy of every sent/received email per contact.
+- `contact_id INTEGER FK→contacts(id) ON DELETE CASCADE`
+- `direction TEXT` ('outgoing'|'incoming')
+- `UNIQUE(message_id) WHERE message_id IS NOT NULL` — idempotency index
+- Index on `(contact_id, sent_at DESC)`
+- RLS disabled. Access via `db.insert_email_message()` and `db.get_email_messages(contact_id)`.
+
+**`agent_events`** — per-action audit log (preflight, classify_reply, draft_reply, etc.).
+- `run_id INTEGER FK→agent_runs(id) ON DELETE SET NULL` (nullable — events outside cron runs still log)
+- `status TEXT` ('running'|'success'|'failed'|'blocked_preflight')
+- `blocked_checks JSONB` — list of failed pre-flight check strings
+- Indexes on `(started_at DESC)`, `status`, `contact_id`
+- RLS disabled. Access via `db.log_agent_event()` (best-effort, never raises) and `db.get_agent_events(limit=100)`.
+
+## New contacts column
+
+**`contacts.classifier_status TEXT nullable`** — written by monitor's reply classifier; never by user or agent. User manages `reply_status` separately. "Needs response" filter: `classifier_status IN ('positive_reply','soft_yes') AND reply_status NOT IN ('interested','call_scheduled','dead')`.
+
+## Reply stages
+
+`REPLY_STAGES = ["reply_drafted", "reply_sent"]` in `constants.py`. These are included in `DRAFTED_STAGES` (comprehension extended to include `REPLY_STAGES`). `reply_drafted` is in `TERMINAL_DRAFTED_STAGES`. `DRAFTED_TO_SENT` in `agent.py` includes `"reply_drafted": "reply_sent"`.
+
+**`REPLY_STAGES` is a mirrored constant** — update both `constants.py` (Python) and `types.ts` (TypeScript) if adding new reply stages.
+
+## New prompt keys (Supabase prompts table)
+
+| key | sort_order | purpose |
+|-----|-----------|---------|
+| `reply_classification_prompt` | 60 | Claude Haiku classifier prompt; returns `{"classifier_status": "..."}` JSON |
+| `reply_response_prompt` | 61 | Reply body template for `reply_drafter.py` |
+| `forbidden_phrases` | 62 | Newline-delimited banned substrings for pre-flight check 6 |
+| `guardrail_company_list` | 63 | Newline-delimited company watchwords for pre-flight check 4 |
+
+## New db.py functions
+
+- `log_agent_event(event_type, contact_id, status, ...)` — best-effort insert to agent_events; never raises
+- `get_agent_events(limit=100)` — ordered by started_at DESC; used by /runs page
+- `update_classifier_status(contact_id, value)` — sets classifier_status; used by monitor
+- `insert_email_message(contact_id, direction, sent_at, ...)` — upsert on message_id; used by agent (outgoing) and monitor (incoming)
+- `get_email_messages(contact_id)` — ordered by sent_at ASC; used by thread view in contact sheet
+
+## New config.py constants
+
+- `REPLY_CLASSIFICATION_MODEL = "claude-haiku-4-5-20251001"` — Haiku for reply classification
+- `REPLY_RESPONSE_MODEL = "claude-sonnet-4-6"` — Sonnet for reply body generation
+- `REPLY_CLASSIFICATION_DEFAULT` — fallback classification prompt
+- `REPLY_RESPONSE_DEFAULT` — fallback reply response template

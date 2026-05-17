@@ -17,6 +17,7 @@ export type Contact = {
   mode: Mode | null;
   stage: string | null;
   reply_status: ReplyStatus | null;
+  classifier_status: string | null;
   dartmouth: boolean | null;
   job_title: string | null;
   job_description: string | null;
@@ -29,6 +30,32 @@ export type Contact = {
   message_id: string | null;
   last_emailed: string | null;
   deleted_at: string | null;
+};
+
+export type EmailMessage = {
+  id: number;
+  contact_id: number;
+  direction: "outgoing" | "incoming";
+  subject: string | null;
+  body: string | null;
+  sent_at: string;
+  message_id: string | null;
+  in_reply_to: string | null;
+  stage_at_send: string | null;
+  raw_headers: Record<string, unknown> | null;
+};
+
+export type AgentEvent = {
+  id: number;
+  run_id: number | null;
+  event_type: string;
+  contact_id: number | null;
+  status: string;
+  error_message: string | null;
+  blocked_checks: string[] | null;
+  tokens_used: number | null;
+  started_at: string;
+  completed_at: string | null;
 };
 
 export type ExtractedContact = {
@@ -77,6 +104,8 @@ export type Prompt = {
   updated_at: string;
 };
 
+export const REPLY_STAGES = ["reply_drafted", "reply_sent"];
+
 export const OUTREACH_STAGES = [
   "new",
   "first_touch_drafted",
@@ -113,6 +142,7 @@ export type ContactsQueryFilters = {
   tiers: number[];
   modes: ("outreach" | "applied")[];
   dartmouthOnly: boolean;
+  needsResponseOnly: boolean;
 };
 
 export const EMPTY_FILTERS: ContactsQueryFilters = {
@@ -121,6 +151,7 @@ export const EMPTY_FILTERS: ContactsQueryFilters = {
   tiers: [],
   modes: [],
   dartmouthOnly: false,
+  needsResponseOnly: false,
 };
 
 export function filtersEqual(
@@ -135,6 +166,7 @@ export function filtersEqual(
     a.tiers.every((t, i) => t === b.tiers[i]) &&
     a.modes.length === b.modes.length &&
     a.modes.every((m, i) => m === b.modes[i]) &&
-    a.dartmouthOnly === b.dartmouthOnly
+    a.dartmouthOnly === b.dartmouthOnly &&
+    a.needsResponseOnly === b.needsResponseOnly
   );
 }

@@ -175,6 +175,13 @@ export function ContactsFilters({ filters, onChange }: Props) {
           onChange={(v) => onChange({ ...filters, dartmouthOnly: v })}
           label="Dartmouth alumni only"
         />
+
+        {/* Needs response toggle */}
+        <ToggleSwitch
+          on={filters.needsResponseOnly}
+          onChange={(v) => onChange({ ...filters, needsResponseOnly: v })}
+          label="Needs response"
+        />
       </div>
 
       {/* Row 3: clear button */}

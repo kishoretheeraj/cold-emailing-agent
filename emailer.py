@@ -167,6 +167,37 @@ def generate_email(contact, action, original_subject=None, prompts=None):
 
     body = _normalize_body(body)
 
+    # ── Pre-flight checks (all actions) ───────────────────────────────────────
+    import preflight
+    from db import log_agent_event as _log_event
+    _name = contact.get("name", "")
+    _company = contact.get("company", "")
+    _pf_failures = preflight.check(body, contact, _prompts)
+    if _pf_failures:
+        _pf_extra = "Fix these issues before rewriting: " + "; ".join(_pf_failures)
+        try:
+            if action in ("send_first_touch", "send_followup1",
+                          "send_followup2", "send_breakup"):
+                body = _normalize_body(_generate_outreach(
+                    contact, action, dart_instr, _prompts,
+                    extra_instruction=_pf_extra, research_block=research_block))
+            elif action == "send_applied_intro":
+                body = _normalize_body(_generate_applied_intro(
+                    contact, dart_instr, _prompts,
+                    extra_instruction=_pf_extra, research_block=research_block))
+            else:
+                body = _normalize_body(_generate_applied_followup(
+                    contact, dart_instr, _prompts, extra_instruction=_pf_extra))
+            _pf_failures = preflight.check(body, contact, _prompts)
+        except Exception as exc:
+            log.warning(f"[PREFLIGHT] | {_name} | {_company} | retry error: {exc}")
+    if _pf_failures:
+        _log_event("preflight", contact_id=contact.get("id"),
+                   status="blocked_preflight", blocked_checks=_pf_failures)
+        log.warning(f"[PREFLIGHT] | {_name} | {_company} | BLOCKED | {_pf_failures}")
+        raise ValueError(f"pre-flight blocked: {'; '.join(_pf_failures)}")
+    _log_event("preflight", contact_id=contact.get("id"), status="success")
+
     if action in _FIRST_TOUCH_ACTIONS:
         subject = _generate_subject(contact, mode, body, _prompts)
     else:
@@ -242,7 +273,7 @@ def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return _call_claude(prompt)
 
-def _generate_applied_followup(contact, dart_instr, prompts):
+def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=None):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("applied_followup_prompt", APPLIED_FOLLOWUP_PROMPT)
     prompt = tpl.format(
@@ -253,6 +284,8 @@ def _generate_applied_followup(contact, dart_instr, prompts):
         job_title=contact.get("job_title", "the role"),
         dartmouth_instruction=dart_instr,
     )
+    if extra_instruction is not None:
+        prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return _call_claude(prompt)
 
 def _generate_subject(contact, mode, body, prompts):

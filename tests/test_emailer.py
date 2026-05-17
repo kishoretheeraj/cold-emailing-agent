@@ -5,6 +5,13 @@ import pytest
 import emailer
 
 
+@pytest.fixture(autouse=True)
+def _patch_preflight_and_db(mocker):
+    """Patch preflight and db.log_agent_event for all generate_email tests."""
+    mocker.patch("preflight.check", return_value=[])
+    mocker.patch("db.log_agent_event")
+
+
 # ── _is_dartmouth ────────────────────────────────────────────────────────────
 
 

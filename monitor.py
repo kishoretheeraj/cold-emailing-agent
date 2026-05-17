@@ -1,28 +1,33 @@
 """
-Reply Monitor — checks Gmail INBOX for replies from sent contacts.
-Also detects when you send a draft from Gmail and flips the contact's stage
-from *_drafted to *_sent automatically, with follow-up dates set using the
-agent's normal cadence.
-Runs every 2 hours Mon-Fri via GitHub Actions.
+Reply Monitor — runs every 2 hours Mon-Fri via GitHub Actions.
 
 Workflow:
-  1. Detect sent drafts: check Sent Mail for contacts in *_drafted stage.
-  2. Fetch contacts where reply_status='no_reply' AND stage contains '_sent'
-  3. For each contact, search INBOX for any email FROM their address
-  4. If found: update reply_status='replied' in Supabase + label the email
-  5. agent.py skips these contacts automatically next morning
+  1. detect_sent_drafts  — flip *_drafted → *_sent when Sent Mail evidence found
+  2. detect_replies      — scan INBOX via In-Reply-To/References header matching
+  3. _classify_replies   — Claude Haiku classifies each new reply; writes classifier_status
+  4. _draft_reply_responses — creates Gmail drafts for positive_reply/soft_yes contacts
 """
 
+import email
+import email.policy
 import imaplib
+import json
 import sys
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 
 from agent import DRAFTED_TO_SENT, NEXT_STAGE, _parse_date
-from config import FOLLOWUP_DAYS, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+from config import (
+    FOLLOWUP_DAYS, GMAIL_ADDRESS, GMAIL_APP_PASSWORD,
+    REPLY_CLASSIFICATION_MODEL, REPLY_CLASSIFICATION_DEFAULT,
+)
 from constants import TERMINAL_DRAFTED_STAGES
-from db import get_drafted_contacts, get_sent_contacts, update_contact, update_reply_status
+from db import (
+    get_drafted_contacts, get_sent_contacts, update_contact, update_reply_status,
+    log_agent_event, update_classifier_status, insert_email_message, load_prompts,
+)
 from gmail import create_gmail_label_if_not_exists, find_sent_for_thread
+from emailer import _call_claude
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -38,15 +43,12 @@ log = logging.getLogger(__name__)
 
 REPLIED_LABEL = "Cold Outreach/Replied"
 
-# ── Sent-draft detection ──────────────────────────────────────────────────────
+# ── Sent-draft detection ───────────────────────────────────────────────────────
 
 def detect_sent_drafts():
     """
-    For every contact in a *_drafted stage with a non-null
-    message_id, check Sent Mail for evidence the user sent it.
-    If found, advance the stage to *_sent and set followup_date
-    using the same cadence the agent uses for that transition.
-    Best-effort: failures log and continue.
+    For every contact in a *_drafted stage with a non-null message_id, check
+    Sent Mail for evidence the user sent it. Best-effort per contact.
     """
     contacts = get_drafted_contacts()
     checked = 0
@@ -83,7 +85,6 @@ def detect_sent_drafts():
             log.warning(f"[SENT-CHECK] | {name} | {company} | unknown stage: {stage}")
             continue
 
-        # Look up follow-up days from FOLLOWUP_DAYS via the inverse of NEXT_STAGE.
         action = next((a for a, s in NEXT_STAGE.items() if s == stage), None)
         followup_days = FOLLOWUP_DAYS.get(action) if action else None
         terminal = stage in TERMINAL_DRAFTED_STAGES
@@ -112,61 +113,226 @@ def detect_sent_drafts():
     log.info(f"DONE | sent-detection | checked={checked} flipped={flipped}")
 
 
+# ── IMAP helpers ───────────────────────────────────────────────────────────────
+
+def _fetch_headers(imap, num):
+    """Fetch and parse headers for a single INBOX message number."""
+    status, data = imap.fetch(num, "(BODY[HEADER])")
+    if status != "OK" or not data or not data[0]:
+        return {}
+    raw = data[0][1] if isinstance(data[0], tuple) else b""
+    msg = email.message_from_bytes(raw, policy=email.policy.compat32)
+    return msg
+
+
+def _header_val(msg, name):
+    """Return a decoded header value or empty string."""
+    val = msg.get(name, "")
+    return str(val).strip() if val else ""
+
+
+def _is_auto_reply(msg):
+    """Return True if the message is an automated reply."""
+    auto_sub = _header_val(msg, "Auto-Submitted").lower()
+    if auto_sub and auto_sub != "no":
+        return True
+    if _header_val(msg, "X-Auto-Response-Suppress"):
+        return True
+    return False
+
+
+def _fetch_body_text(imap, num):
+    """Return the plain-text body of a message, truncated to 2000 chars."""
+    status, data = imap.fetch(num, "(BODY[TEXT])")
+    if status != "OK" or not data or not data[0]:
+        return ""
+    raw = data[0][1] if isinstance(data[0], tuple) else b""
+    try:
+        return raw.decode("utf-8", errors="replace")[:2000]
+    except Exception:
+        return ""
+
+
+def _match_message(msg, by_message_id):
+    """
+    Return the matched contact for an INBOX message, or None.
+    Checks In-Reply-To first, then walks the References chain.
+    """
+    in_reply_to = _header_val(msg, "In-Reply-To").strip("<>")
+    if in_reply_to and in_reply_to in by_message_id:
+        return by_message_id[in_reply_to]
+
+    references = _header_val(msg, "References")
+    for ref in references.split():
+        ref_id = ref.strip("<>")
+        if ref_id and ref_id in by_message_id:
+            return by_message_id[ref_id]
+
+    return None
+
+
+# ── Reply classification ───────────────────────────────────────────────────────
+
+def _classify_reply(body_text, contact, prompts):
+    """Call Claude Haiku to classify a reply. Returns classifier_status string."""
+    _fallback = "unrelated"
+    tpl = prompts.get("reply_classification_prompt", REPLY_CLASSIFICATION_DEFAULT)
+    try:
+        prompt = tpl.format(reply_body=body_text[:1500])
+        raw = _call_claude(prompt, model=REPLY_CLASSIFICATION_MODEL, max_tokens=100)
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("```", 2)[1].lstrip("json").strip()
+        data = json.loads(text)
+        return data.get("classifier_status", _fallback)
+    except Exception as exc:
+        log.warning(f"[CLASSIFY] error: {exc}")
+        return _fallback
+
+
 # ── Reply detection ────────────────────────────────────────────────────────────
 
-def detect_replies():
+def detect_replies(prompts=None):
     """
-    Search Gmail INBOX for replies from contacts in *_sent stages.
-    Updates reply_status to 'replied' and labels matching emails.
+    Scan INBOX for replies to our sent emails, matching via In-Reply-To and
+    References headers against stored message_ids. Classifies each match.
+    Best-effort per message.
     """
+    _prompts = prompts or {}
     contacts = get_sent_contacts()
 
     log.info(f"START | reply-detection | {len(contacts)} contacts to check")
-
     if not contacts:
-        log.info("DONE | 0 replies found | 0 contacts checked")
-        print("\nSummary: 0 replies found, 0 contacts checked")
-        return
+        log.info("DONE | reply-detection | 0 contacts")
+        return []
+
+    # Build lookup: stored message_id → contact
+    by_message_id = {}
+    for c in contacts:
+        mid = (c.get("message_id") or "").strip("<>")
+        if mid:
+            by_message_id[mid] = c
+
+    if not by_message_id:
+        log.info("DONE | reply-detection | no contacts with message_id")
+        return []
+
+    newly_classified = []
 
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        imap.select("INBOX")
+        imap.select("INBOX", readonly=True)
         create_gmail_label_if_not_exists(imap, REPLIED_LABEL)
 
-        replies = 0
+        since_str = (date.today() - timedelta(days=60)).strftime("%d-%b-%Y")
+        status, data = imap.search(None, f'SINCE "{since_str}"')
+        if status != "OK" or not data[0]:
+            log.info("DONE | reply-detection | inbox empty or search failed")
+            return []
 
-        for contact in contacts:
-            name    = contact.get("name", "Unknown")
-            company = contact.get("company", "Unknown")
-            email   = contact.get("email", "")
+        msg_nums = data[0].split()
+        log.info(f"[REPLY-DETECTION] | scanning {len(msg_nums)} inbox messages")
 
-            status, data = imap.search(None, f'FROM "{email}"')
-
-            if status == "OK" and data[0]:
-                msg_nums = data[0].split()
-                if msg_nums:
-                    update_reply_status(contact["id"], "replied")
-
-                    # Label every reply message so they're visible under
-                    # Cold Outreach/Replied inside Gmail
-                    for num in msg_nums:
-                        try:
-                            imap.copy(num.decode(), f'"{REPLIED_LABEL}"')
-                        except Exception as exc:
-                            log.warning(f"{name} | {company} | label warning: {exc}")
-
-                    log.info(f"{name} | {company} | reply DETECTED")
-                    replies += 1
+        for num in msg_nums:
+            try:
+                msg = _fetch_headers(imap, num)
+                contact = _match_message(msg, by_message_id)
+                if contact is None:
                     continue
 
-            log.info(f"{name} | {company} | no reply")
+                name = contact.get("name", "Unknown")
+                company = contact.get("company", "Unknown")
+
+                # Skip if already classified this cycle
+                if contact.get("classifier_status") is not None:
+                    log.info(f"[REPLY] | {name} | {company} | already classified, skip")
+                    continue
+
+                is_auto = _is_auto_reply(msg)
+                body_text = "" if is_auto else _fetch_body_text(imap, num)
+
+                # Store in email_messages (idempotent)
+                incoming_mid = _header_val(msg, "Message-ID").strip("<>")
+                in_reply_to_hdr = _header_val(msg, "In-Reply-To").strip("<>")
+                date_hdr = _header_val(msg, "Date")
+                try:
+                    sent_at = email.utils.parsedate_to_datetime(date_hdr).isoformat()
+                except Exception:
+                    sent_at = datetime.now(timezone.utc).isoformat()
+
+                insert_email_message(
+                    contact_id=contact["id"],
+                    direction="incoming",
+                    sent_at=sent_at,
+                    subject=_header_val(msg, "Subject"),
+                    body=body_text,
+                    message_id=incoming_mid or None,
+                    in_reply_to=in_reply_to_hdr or None,
+                    stage_at_send=contact.get("stage"),
+                    raw_headers={"auto_reply": is_auto},
+                )
+
+                # Classify
+                if is_auto:
+                    status_val = "auto_reply"
+                    log.info(f"[REPLY] | {name} | {company} | auto-reply header detected")
+                else:
+                    status_val = _classify_reply(body_text, contact, _prompts)
+
+                update_classifier_status(contact["id"], status_val)
+                log_agent_event("classify_reply", contact_id=contact["id"],
+                                status="success")
+
+                # Copy to label (best-effort)
+                try:
+                    imap.select("INBOX")
+                    imap.copy(num.decode() if isinstance(num, bytes) else num,
+                              f'"{REPLIED_LABEL}"')
+                except Exception as exc:
+                    log.warning(f"[REPLY] | {name} | {company} | label warning: {exc}")
+
+                # Update contact's classifier_status in memory for draft phase
+                contact["classifier_status"] = status_val
+                newly_classified.append(contact)
+
+                log.info(
+                    f"[REPLY] | {name} | {company} | "
+                    f"classifier_status={status_val}"
+                )
+
+            except Exception as exc:
+                log.warning(f"[REPLY] | message {num} | error: {exc}")
+                continue
 
     finally:
         imap.logout()
 
-    log.info(f"DONE | {replies} replies found | {len(contacts)} contacts checked")
-    print(f"\nSummary: {replies} replies found, {len(contacts)} contacts checked")
+    log.info(f"DONE | reply-detection | {len(newly_classified)} new replies classified")
+    return newly_classified
+
+
+# ── Reply draft responses ──────────────────────────────────────────────────────
+
+def _draft_reply_responses(classified_contacts, prompts):
+    """Create Gmail reply drafts for positive_reply and soft_yes contacts."""
+    import reply_drafter
+
+    for contact in classified_contacts:
+        name = contact.get("name", "Unknown")
+        company = contact.get("company", "Unknown")
+        cs = contact.get("classifier_status", "")
+        if cs not in reply_drafter.DRAFTABLE_STATUSES:
+            continue
+        try:
+            # Retrieve body from email_messages for the latest incoming message
+            from db import get_email_messages
+            messages = get_email_messages(contact["id"])
+            incoming = [m for m in messages if m.get("direction") == "incoming"]
+            reply_body_text = incoming[-1]["body"] if incoming else ""
+            reply_drafter.draft_reply(contact, reply_body_text, prompts)
+        except Exception as exc:
+            log.warning(f"[REPLY-DRAFT] | {name} | {company} | error: {exc}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -174,12 +340,27 @@ def detect_replies():
 def run():
     log.info("START | monitor run")
 
+    prompts = {}
+    try:
+        prompts = load_prompts() or {}
+    except Exception as exc:
+        log.warning(f"[MONITOR] prompts load failed, using defaults: {exc}")
+
     try:
         detect_sent_drafts()
     except Exception as exc:
         log.warning(f"sent-detection | unexpected failure: {exc}")
 
-    detect_replies()
+    try:
+        classified = detect_replies(prompts=prompts)
+    except Exception as exc:
+        log.warning(f"reply-detection | unexpected failure: {exc}")
+        classified = []
+
+    try:
+        _draft_reply_responses(classified, prompts)
+    except Exception as exc:
+        log.warning(f"reply-drafting | unexpected failure: {exc}")
 
 
 if __name__ == "__main__":

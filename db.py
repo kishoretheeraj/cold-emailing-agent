@@ -160,6 +160,106 @@ def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None):
         row["failure_reason"] = failure_reason
     _retry(lambda: get_client().table("agent_runs").insert(row).execute())
 
+# ── agent_events helpers ───────────────────────────────────────────────────────
+
+def log_agent_event(event_type, contact_id=None, status="success", run_id=None,
+                    error_message=None, blocked_checks=None, tokens_used=None,
+                    completed_at=None):
+    """Insert a row into agent_events. Best-effort — never raises."""
+    from datetime import datetime, timezone
+    row = {"event_type": event_type, "status": status}
+    if contact_id is not None:
+        row["contact_id"] = contact_id
+    if run_id is not None:
+        row["run_id"] = run_id
+    if error_message:
+        row["error_message"] = error_message
+    if blocked_checks is not None:
+        row["blocked_checks"] = blocked_checks
+    if tokens_used is not None:
+        row["tokens_used"] = tokens_used
+    if completed_at is not None:
+        row["completed_at"] = completed_at
+    else:
+        row["completed_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _retry(lambda: get_client().table("agent_events").insert(row).execute())
+    except Exception as exc:
+        log.warning(f"[agent_events] insert failed: {exc}")
+
+
+def get_agent_events(limit=100):
+    """Fetch recent agent_events ordered by started_at desc."""
+    result = _retry(lambda: (
+        get_client()
+        .table("agent_events")
+        .select("*")
+        .order("started_at", desc=True)
+        .limit(limit)
+        .execute()
+    ))
+    return result.data or []
+
+
+def update_classifier_status(contact_id, classifier_status):
+    """Update classifier_status for a single contact."""
+    _retry(lambda: get_client().table("contacts").update({
+        "classifier_status": classifier_status,
+    }).eq("id", contact_id).execute())
+
+
+# ── email_messages helpers ─────────────────────────────────────────────────────
+
+def insert_email_message(contact_id, direction, sent_at, subject=None, body=None,
+                         message_id=None, in_reply_to=None, stage_at_send=None,
+                         raw_headers=None):
+    """Insert an outgoing or incoming message. Skips silently if message_id already exists."""
+    from datetime import datetime, timezone
+    row = {
+        "contact_id": contact_id,
+        "direction": direction,
+        "sent_at": sent_at if isinstance(sent_at, str) else sent_at.isoformat(),
+    }
+    if subject is not None:
+        row["subject"] = subject
+    if body is not None:
+        row["body"] = body
+    if message_id is not None:
+        row["message_id"] = message_id
+    if in_reply_to is not None:
+        row["in_reply_to"] = in_reply_to
+    if stage_at_send is not None:
+        row["stage_at_send"] = stage_at_send
+    if raw_headers is not None:
+        row["raw_headers"] = raw_headers
+    try:
+        # ON CONFLICT DO NOTHING via upsert — unique index on message_id (non-null)
+        if message_id is not None:
+            _retry(lambda: (
+                get_client()
+                .table("email_messages")
+                .upsert(row, on_conflict="message_id", ignore_duplicates=True)
+                .execute()
+            ))
+        else:
+            _retry(lambda: get_client().table("email_messages").insert(row).execute())
+    except Exception as exc:
+        log.warning(f"[email_messages] insert failed for contact {contact_id}: {exc}")
+
+
+def get_email_messages(contact_id):
+    """Fetch all messages for a contact ordered by sent_at asc."""
+    result = _retry(lambda: (
+        get_client()
+        .table("email_messages")
+        .select("*")
+        .eq("contact_id", contact_id)
+        .order("sent_at", desc=False)
+        .execute()
+    ))
+    return result.data or []
+
+
 # ── research_cache helpers ─────────────────────────────────────────────────────
 
 def get_research_cache(cache_key):

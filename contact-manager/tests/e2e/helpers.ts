@@ -165,4 +165,31 @@ export async function mockSupabase(page: Page) {
       await route.continue();
     }
   });
+
+  // Intercept GET /rest/v1/email_messages
+  await page.route(/\/rest\/v1\/email_messages(\?.*)?$/, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // Intercept GET /rest/v1/agent_events
+  await page.route(/\/rest\/v1\/agent_events(\?.*)?$/, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+        headers: { "Content-Range": "0-0/0" },
+      });
+    } else {
+      await route.continue();
+    }
+  });
 }

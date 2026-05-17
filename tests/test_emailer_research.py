@@ -7,6 +7,12 @@ import emailer
 import research
 
 
+@pytest.fixture(autouse=True)
+def _patch_preflight_and_db(mocker):
+    mocker.patch("preflight.check", return_value=[])
+    mocker.patch("db.log_agent_event")
+
+
 def _outreach_contact(**overrides):
     base = {
         "name": "Dana",

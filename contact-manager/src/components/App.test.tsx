@@ -146,4 +146,11 @@ describe("App shell", () => {
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute("href", "/prompts");
   });
+
+  it("renders Activity nav link pointing to /runs", () => {
+    render(<App />);
+    const link = screen.getByRole("link", { name: /activity/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/runs");
+  });
 });

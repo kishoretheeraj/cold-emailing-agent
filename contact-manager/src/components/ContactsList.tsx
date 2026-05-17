@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/Select";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { TextArea, TierSelector } from "@/components/Field";
+import { ThreadView } from "@/components/ThreadView";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -154,8 +155,14 @@ function buildContactsQuery(filters: ContactsQueryFilters, cursor: string | null
   if (filters.tiers.length > 0) q = q.in("tier", filters.tiers);
   if (filters.modes.length > 0) q = q.in("mode", filters.modes);
   if (filters.dartmouthOnly) q = q.eq("dartmouth", true);
+  if (filters.needsResponseOnly) {
+    q = q
+      .in("classifier_status", ["positive_reply", "soft_yes"])
+      .not("reply_status", "in", "(interested,call_scheduled,dead)");
+  }
   if (cursor) q = q.lt("created_at", cursor);
 
+  // .limit() must be last — resolves the query chain
   return q.order("created_at", { ascending: false }).limit(PAGE_SIZE);
 }
 
@@ -635,6 +642,17 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                     </select>
                   </div>
 
+                  {selectedContact.classifier_status && (
+                    <div>
+                      <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                        Auto-classified
+                      </label>
+                      <p className="text-sm text-fg-muted">
+                        {selectedContact.classifier_status.replace(/_/g, " ")}
+                      </p>
+                    </div>
+                  )}
+
                   <div>
                     <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
                       Tier
@@ -733,6 +751,15 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                     </div>
                   </>
                 )}
+
+                {/* Email thread */}
+                <div className="h-px bg-border my-4" />
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-fg-dim mb-3">
+                    Email thread
+                  </div>
+                  <ThreadView contactId={selectedContact.id} />
+                </div>
 
                 <div className="h-px bg-border my-4" />
 

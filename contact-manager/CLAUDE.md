@@ -37,6 +37,7 @@ written, not just style preferences.
 src/
 ├── app/
 │   ├── api/extract/route.ts   # Server-only Claude POST handler
+│   ├── runs/page.tsx          # Activity page — agent_events table, 10s auto-refresh
 │   ├── globals.css             # @theme tokens + global resets + Vaul overrides
 │   ├── layout.tsx              # Inter font, dark theme, AppProviders wrapper
 │   └── page.tsx                # 1-line server component → <App />
@@ -54,16 +55,17 @@ src/
 │   ├── SmartInput.tsx          # Paste → /api/extract → editable preview → save
 │   ├── StructuredForm.tsx      # Two form sections: outreach + applied
 │   ├── ContactsList.tsx        # Infinite-scroll list + filters + Vaul sheet + soft delete
-│   ├── ContactsFilters.tsx     # Search input + tier/mode pills + stage select + dartmouth
+│   ├── ContactsFilters.tsx     # Search input + tier/mode pills + stage select + dartmouth + needs-response
+│   ├── ThreadView.tsx          # Email thread history shown inside the Vaul side sheet
 │   └── Field.tsx               # Label / TextInput / TextArea / ToggleSwitch / TierSelector
 └── lib/
     ├── supabase.ts             # Anon-key browser client singleton
     └── types.ts                # Contact + ReplyStatus + stage arrays + filter types
 tests/
-└── e2e/                        # Playwright smoke tests (6 critical-path tests)
-    ├── helpers.ts              # mockSupabase() — page.route() Supabase interception
+└── e2e/                        # Playwright smoke tests (15 tests total)
+    ├── helpers.ts              # mockSupabase() — intercepts contacts, prompts, email_messages, agent_events
     ├── fixtures/               # contacts.json (50 rows) + prompts.json
-    └── *.spec.ts               # 01-list-loads through 06-drafted-delete-warning
+    └── *.spec.ts               # 00-shell through 09-runs-page
 ```
 
 ## Coding conventions
@@ -214,7 +216,7 @@ vi.mock("sonner", () => ({
 ## Tests (Playwright e2e)
 
 - Run: `npm run test:e2e`.
-- Tests live in `tests/e2e/`. Eight smoke tests; files run alphabetically.
+- Tests live in `tests/e2e/`. Fifteen smoke tests; files run alphabetically (00–09).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
@@ -254,3 +256,54 @@ vi.mock("sonner", () => ({
 - Do add a short comment for non-obvious workarounds (e.g., why `vi.hoisted` is needed,
   why `.limit()` must be last in the query chain).
 - Don't write docstrings on tiny helper components.
+
+## New tables (Sprint 2 — 2026-05-16)
+
+Two new Supabase tables are readable by the frontend. Both have RLS disabled.
+
+**`email_messages`** — outgoing and incoming emails per contact, written by the Python agent and monitor.
+- `direction`: `"outgoing"` | `"incoming"`
+- `sent_at`: timestamptz, used for chronological ordering
+- Used by `ThreadView.tsx` in the Vaul side sheet.
+- Query pattern: `.from("email_messages").select("*").eq("contact_id", id).order("sent_at", { ascending: true })` — no `.limit()`, `.order()` is terminal.
+
+**`agent_events`** — per-action audit log written by the Python agent/monitor (preflight blocks, reply classification, draft creation).
+- `status`: `"success"` | `"failed"` | `"blocked_preflight"` | `"running"`
+- `event_type`: `"preflight"` | `"classify_reply"` | `"draft_reply"` | `"critic"` | `"sent_detection"`
+- Used by `/runs` page (`app/runs/page.tsx`).
+- Query pattern: `.from("agent_events").select("*").order("started_at", { ascending: false }).limit(100)` — `.limit()` is terminal.
+- Badge query (7-day failures): `.select("id", { count: "exact", head: true }).in("status", [...]).gte("started_at", since)` — this returns a thenable, not a limit-terminated chain.
+
+## New types (types.ts)
+
+- `Contact.classifier_status: string | null` — auto-set by monitor; never by user. Distinct from `reply_status` (user-managed).
+- `REPLY_STAGES = ["reply_drafted", "reply_sent"]` — **mirrored constant**: must also be updated in Python `constants.py` if changed.
+- `ContactsQueryFilters.needsResponseOnly: boolean` — filter: `classifier_status IN (positive_reply, soft_yes) AND reply_status NOT IN (interested, call_scheduled, dead)`.
+- `EmailMessage` type — mirrors `email_messages` table.
+- `AgentEvent` type — mirrors `agent_events` table.
+
+## ThreadView component
+
+`ThreadView.tsx` renders inside the Vaul side sheet in `ContactsList.tsx`. It fetches `email_messages` for the selected contact on mount. Outgoing messages are right-aligned indigo; incoming are left-aligned muted. Bodies >300 chars are truncated with an expand toggle.
+
+**Testing**: `ContactsList.test.tsx` mocks `ThreadView` to `null` to avoid triggering the `email_messages` Supabase query inside the test's mock chain:
+```ts
+vi.mock("@/components/ThreadView", () => ({ ThreadView: () => null }));
+```
+The `ThreadView.test.tsx` file provides its own isolated mock of the supabase chain.
+
+## /runs page (app/runs/page.tsx)
+
+Client component. Fetches `agent_events` on mount and every 10 seconds via `setInterval`. Status filter chips (All / Success / Failed / Blocked) filter the in-memory list. Shows a 7-day failure badge in the header. Empty state when no events. Route: `/runs`, heading reads "Activity".
+
+**Mocking in tests**: the `agent_events` list query uses `limitMock` as the terminal call; the count (badge) query uses a thenable `countChain`. These are separate chains distinguished by whether `select()` receives `{ count: "exact" }`.
+
+## e2e helpers update
+
+`tests/e2e/helpers.ts` `mockSupabase()` now intercepts four tables:
+- `/rest/v1/contacts` — returns fixture or handles PATCH/DELETE
+- `/rest/v1/prompts` — returns prompts fixture
+- `/rest/v1/email_messages` — returns `[]` (empty thread)
+- `/rest/v1/agent_events` — returns `[]` with `Content-Range: 0-0/0`
+
+When writing new e2e tests that need non-empty `email_messages` or `agent_events`, add a `page.route()` override **before** calling `mockSupabase(page)` or add a dedicated helper fixture.

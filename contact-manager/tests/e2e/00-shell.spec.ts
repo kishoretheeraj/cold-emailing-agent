@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
   await mockSupabase(page);
 });
 
-test("main page has expected chrome: title, nav link, input toggle", async ({
+test("main page has expected chrome: title, nav links, input toggle", async ({
   page,
 }) => {
   await page.goto("/");
@@ -15,6 +15,10 @@ test("main page has expected chrome: title, nav link, input toggle", async ({
   const promptsLink = page.getByRole("link", { name: /prompts/i });
   await expect(promptsLink).toBeVisible();
   await expect(promptsLink).toHaveAttribute("href", "/prompts");
+
+  const runsLink = page.getByRole("link", { name: /activity/i });
+  await expect(runsLink).toBeVisible();
+  await expect(runsLink).toHaveAttribute("href", "/runs");
 
   await expect(page.getByRole("button", { name: "Smart Input" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Structured Form" })).toBeVisible();

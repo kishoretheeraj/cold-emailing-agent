@@ -123,6 +123,7 @@ DRAFTED_TO_SENT = {
     "breakup_drafted":          "breakup_sent",
     "applied_intro_drafted":    "applied_intro_sent",
     "applied_followup_drafted": "applied_followup_sent",
+    "reply_drafted":            "reply_sent",
 }
 
 NEXT_TEMPLATE = {
