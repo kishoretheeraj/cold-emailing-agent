@@ -1,4 +1,5 @@
 import hashlib
+import html
 import imaplib
 import logging
 import time
@@ -10,6 +11,15 @@ from email.utils import make_msgid
 from config import GMAIL_ADDRESS, GMAIL_APP_PASSWORD
 
 log = logging.getLogger(__name__)
+
+
+def _body_to_html(text):
+    """Convert normalized plain-text body to HTML so Gmail renders at full column width."""
+    parts = []
+    for para in text.split("\n\n"):
+        escaped = html.escape(para).replace("\n", "<br>\n")
+        parts.append(f"<p>{escaped}</p>")
+    return "\n".join(parts)
 
 
 def create_draft(to_email, subject, body, in_reply_to=None, references=None,
@@ -56,7 +66,7 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = references or in_reply_to
-        msg.attach(MIMEText(body, "plain"))
+        msg.attach(MIMEText(_body_to_html(body), "html"))
 
         status, data = imap.append(
             '"[Gmail]/Drafts"',
