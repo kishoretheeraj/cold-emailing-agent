@@ -170,6 +170,38 @@ def test_message_id_not_updated_when_unchanged(mocker):
     update_mid.assert_not_called()
 
 
+def test_subject_fallback_used_when_message_id_not_found(mocker):
+    """When Gmail rewrites the ID and primary search fails, subject fallback flips stage."""
+    fallback_mid = "<found-by-subject@m>"
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact(stage="first_touch_drafted",
+                                               original_subject="built insurance infra")])
+    mocker.patch.object(monitor, "find_sent_for_thread", return_value=None)
+    subj_search = mocker.patch.object(monitor, "find_sent_by_subject", return_value=fallback_mid)
+    update = mocker.patch.object(monitor, "update_contact")
+    update_mid = mocker.patch.object(monitor, "update_message_id")
+
+    monitor.detect_sent_drafts()
+
+    subj_search.assert_called_once()
+    update.assert_called_once()
+    update_mid.assert_called_once_with(42, fallback_mid)
+
+
+def test_subject_fallback_not_used_for_followup_mode(mocker):
+    """Subject fallback only runs for first_touch mode, not followups."""
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact(stage="followup1_drafted",
+                                               original_subject="built insurance infra")])
+    mocker.patch.object(monitor, "find_sent_for_thread", return_value=None)
+    subj_search = mocker.patch.object(monitor, "find_sent_by_subject")
+    mocker.patch.object(monitor, "update_contact")
+
+    monitor.detect_sent_drafts()
+
+    subj_search.assert_not_called()
+
+
 def test_message_id_not_updated_for_followup_mode(mocker):
     """message_id update only runs for first_touch mode, not followups."""
     mocker.patch.object(monitor, "get_drafted_contacts",

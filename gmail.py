@@ -115,6 +115,67 @@ def apply_label_to_latest_draft(label_name):
 
 # ── Sent-mail search ───────────────────────────────────────────────────────────
 
+def _ascii_subject_fragment(subject):
+    """
+    Return a short ASCII-safe substring suitable for IMAP SUBJECT search.
+    Stops at the first non-ASCII character (e.g. em dash) so the fragment
+    matches as a substring in the actual sent email subject regardless of
+    how Gmail normalised the special char.
+    """
+    import re
+    s = re.sub(r'^(Re:|Fwd:)\s*', '', subject, flags=re.IGNORECASE).strip()
+    # Take only the prefix up to the first non-ASCII character
+    ascii_prefix = ''
+    for c in s:
+        if ord(c) >= 128:
+            break
+        ascii_prefix += c
+    s = ascii_prefix.strip()
+    # Trim to 40 chars at a word boundary
+    if len(s) > 40:
+        s = s[:40].rsplit(' ', 1)[0]
+    return s.strip()
+
+
+def find_sent_by_subject(subject, since_date):
+    """
+    Fallback: search [Gmail]/Sent Mail by subject when the Message-ID search
+    finds nothing (e.g. Gmail rewrote the draft ID on send).
+    Returns the actual Message-ID of the earliest matching sent email, or None.
+    """
+    term = _ascii_subject_fragment(subject)
+    if not term:
+        return None
+    since_str = since_date.strftime("%d-%b-%Y")
+    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    try:
+        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        imap.select('"[Gmail]/Sent Mail"', readonly=True)
+        status, data = imap.search(None, "SINCE", since_str, "SUBJECT", f'"{term}"')
+        if status != "OK" or not data[0]:
+            log.info(f"[SENT-CHECK-SUBJ] | {term!r} | found=False")
+            return None
+        nums = data[0].split()
+        # Use the earliest result (nums[0]) — most likely the first-touch, not a follow-up.
+        status2, msg_data = imap.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
+        actual_mid = None
+        if status2 == "OK" and msg_data and msg_data[0]:
+            raw = msg_data[0][1]
+            if isinstance(raw, bytes):
+                raw = raw.decode(errors="replace")
+            for line in raw.splitlines():
+                if line.lower().startswith("message-id:"):
+                    actual_mid = line.split(":", 1)[1].strip()
+                    break
+        log.info(f"[SENT-CHECK-SUBJ] | {term!r} | found={actual_mid is not None} | mid={actual_mid}")
+        return actual_mid
+    except Exception as exc:
+        log.warning(f"[SENT-CHECK-SUBJ] | IMAP error | {term!r} | {exc}")
+        return None
+    finally:
+        imap.logout()
+
+
 def find_sent_for_thread(message_id, since_date, mode):
     """
     Returns the actual Message-ID of the found sent email, or None if not found.

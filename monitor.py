@@ -27,7 +27,7 @@ from db import (
     log_agent_event, update_classifier_status, insert_email_message, load_prompts,
     update_message_id,
 )
-from gmail import create_gmail_label_if_not_exists, find_sent_for_thread
+from gmail import create_gmail_label_if_not_exists, find_sent_for_thread, find_sent_by_subject
 from emailer import _call_claude
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -77,6 +77,13 @@ def detect_sent_drafts():
         except Exception as exc:
             log.warning(f"[SENT-CHECK] | {name} | {company} | unexpected error: {exc}")
             continue
+
+        # Fallback: Gmail sometimes rewrites the Message-ID when a draft is sent.
+        # Search by subject so detection still works even when the ID changed.
+        if not actual_mid and mode == "first_touch":
+            original_subject = contact.get("original_subject", "")
+            if original_subject:
+                actual_mid = find_sent_by_subject(original_subject, since_date)
 
         if not actual_mid:
             continue
