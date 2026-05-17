@@ -107,10 +107,10 @@ def apply_label_to_latest_draft(label_name):
 
 def find_sent_for_thread(message_id, since_date, mode):
     """
-    Returns True if a message exists in [Gmail]/Sent Mail that
-    either has the given Message-ID (mode='first_touch') or has
-    In-Reply-To set to the given message_id (mode='followup'),
-    sent on or after since_date.
+    Returns the actual Message-ID of the found sent email, or None if not found.
+    Searches [Gmail]/Sent Mail for a message with the given Message-ID (first_touch)
+    or In-Reply-To (followup), on or after since_date. The returned ID may differ
+    from message_id if Gmail rewrote it when the draft was sent.
     """
     since_str = since_date.strftime("%d-%b-%Y")
     header = "Message-ID" if mode == "first_touch" else "In-Reply-To"
@@ -118,12 +118,28 @@ def find_sent_for_thread(message_id, since_date, mode):
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         imap.select('"[Gmail]/Sent Mail"', readonly=True)
-        status, data = imap.search(None, "SINCE", since_str, "HEADER", header, message_id)
-        result = status == "OK" and bool(data[0])
-        log.info(f"[SENT-CHECK] | {message_id} | {mode} | found={result}")
-        return result
+        # message_id contains angle brackets (<abc@gmail.com>) which are IMAP
+        # special chars — must be double-quoted so the server parses them correctly.
+        status, data = imap.search(None, "SINCE", since_str, "HEADER", header, f'"{message_id}"')
+        if status != "OK" or not data[0]:
+            log.info(f"[SENT-CHECK] | {message_id} | {mode} | found=False")
+            return None
+        nums = data[0].split()
+        # Fetch the actual Message-ID — Gmail may rewrite it when sending a draft.
+        actual_mid = message_id
+        status2, msg_data = imap.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
+        if status2 == "OK" and msg_data and msg_data[0]:
+            raw = msg_data[0][1]
+            if isinstance(raw, bytes):
+                raw = raw.decode(errors="replace")
+            for line in raw.splitlines():
+                if line.lower().startswith("message-id:"):
+                    actual_mid = line.split(":", 1)[1].strip()
+                    break
+        log.info(f"[SENT-CHECK] | {message_id} | {mode} | found=True | actual={actual_mid}")
+        return actual_mid
     except Exception as exc:
         log.warning(f"[SENT-CHECK] | IMAP error | {message_id} | {exc}")
-        return False
+        return None
     finally:
         imap.logout()

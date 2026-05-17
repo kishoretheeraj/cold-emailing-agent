@@ -10,12 +10,17 @@ import gmail
 
 SINCE = date(2026, 5, 1)
 MID = "<test-message-id@mail.gmail.com>"
+FETCH_RESPONSE = (
+    "OK",
+    [(None, b"Message-ID: <test-message-id@mail.gmail.com>\r\n")],
+)
 
 
 def _make_imap(search_status="OK", search_data=b"5"):
     fake_imap = MagicMock(name="imap")
     fake_imap.select.return_value = ("OK", [b"1"])
     fake_imap.search.return_value = (search_status, [search_data])
+    fake_imap.fetch.return_value = FETCH_RESPONSE
     return fake_imap
 
 
@@ -27,7 +32,7 @@ def test_first_touch_searches_message_id_header(mocker):
 
     args = fake_imap.search.call_args.args
     assert "Message-ID" in args
-    assert MID in args
+    assert any(MID in a for a in args if isinstance(a, str))
 
 
 def test_followup_searches_in_reply_to_header(mocker):
@@ -38,35 +43,59 @@ def test_followup_searches_in_reply_to_header(mocker):
 
     args = fake_imap.search.call_args.args
     assert "In-Reply-To" in args
-    assert MID in args
+    assert any(MID in a for a in args if isinstance(a, str))
 
 
-def test_returns_true_when_search_finds_message(mocker):
+def test_message_id_is_quoted_in_search(mocker):
+    fake_imap = _make_imap()
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.find_sent_for_thread(MID, SINCE, mode="first_touch")
+
+    args = fake_imap.search.call_args.args
+    assert f'"{MID}"' in args
+
+
+def test_returns_actual_mid_when_found(mocker):
     fake_imap = _make_imap(search_status="OK", search_data=b"5")
     mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
 
     result = gmail.find_sent_for_thread(MID, SINCE, mode="first_touch")
 
-    assert result is True
+    assert result == MID
 
 
-def test_returns_false_when_search_is_empty(mocker):
+def test_returns_rewritten_mid_when_gmail_changes_it(mocker):
+    rewritten = "<rewritten-by-gmail@mail.gmail.com>"
+    fake_imap = _make_imap(search_status="OK", search_data=b"5")
+    fake_imap.fetch.return_value = (
+        "OK",
+        [(None, f"Message-ID: {rewritten}\r\n".encode())],
+    )
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.find_sent_for_thread(MID, SINCE, mode="first_touch")
+
+    assert result == rewritten
+
+
+def test_returns_none_when_search_is_empty(mocker):
     fake_imap = _make_imap(search_status="OK", search_data=b"")
     mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
 
     result = gmail.find_sent_for_thread(MID, SINCE, mode="first_touch")
 
-    assert result is False
+    assert result is None
 
 
-def test_returns_false_on_imap_exception(mocker):
+def test_returns_none_on_imap_exception(mocker):
     fake_imap = MagicMock()
     fake_imap.login.side_effect = Exception("imap is down")
     mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
 
     result = gmail.find_sent_for_thread(MID, SINCE, mode="first_touch")
 
-    assert result is False
+    assert result is None
 
 
 def test_logout_called_even_when_search_raises(mocker):

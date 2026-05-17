@@ -238,7 +238,10 @@ every run regardless of whether any drafts were created.
   actually sent.
 - `find_sent_for_thread(message_id, since_date, mode)` searches `[Gmail]/Sent Mail`
   with `readonly=True`. Use `mode="first_touch"` to match on `Message-ID`,
-  `mode="followup"` to match on `In-Reply-To`. Returns `True/False`, never raises.
+  `mode="followup"` to match on `In-Reply-To`. Returns the **actual Message-ID string**
+  from the found sent email (not the stored one — Gmail may rewrite it on send), or
+  `None` if not found. Never raises. The `message_id` search arg is double-quoted in
+  the IMAP command because angle brackets are IMAP special characters.
 
 ## Sent-draft auto-detection
 
@@ -473,6 +476,7 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 - `update_classifier_status(contact_id, value)` — sets classifier_status; used by monitor
 - `insert_email_message(contact_id, direction, sent_at, ...)` — upsert on message_id; used by agent (outgoing) and monitor (incoming)
 - `get_email_messages(contact_id)` — ordered by sent_at ASC; used by thread view in contact sheet
+- `update_message_id(contact_id, message_id)` — updates only `message_id`; called by `detect_sent_drafts` when Gmail rewrites the ID on send (threading fix)
 
 ## New config.py constants
 

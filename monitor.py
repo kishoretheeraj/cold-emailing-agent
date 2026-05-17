@@ -25,6 +25,7 @@ from constants import TERMINAL_DRAFTED_STAGES
 from db import (
     get_drafted_contacts, get_sent_contacts, update_contact, update_reply_status,
     log_agent_event, update_classifier_status, insert_email_message, load_prompts,
+    update_message_id,
 )
 from gmail import create_gmail_label_if_not_exists, find_sent_for_thread
 from emailer import _call_claude
@@ -72,12 +73,12 @@ def detect_sent_drafts():
             since_date = date.today() - timedelta(days=60)
 
         try:
-            found = find_sent_for_thread(message_id, since_date, mode)
+            actual_mid = find_sent_for_thread(message_id, since_date, mode)
         except Exception as exc:
             log.warning(f"[SENT-CHECK] | {name} | {company} | unexpected error: {exc}")
             continue
 
-        if not found:
+        if not actual_mid:
             continue
 
         new_stage = DRAFTED_TO_SENT.get(stage)
@@ -108,6 +109,15 @@ def detect_sent_drafts():
             f"[SENT-DETECTED] | {name} | {company} | "
             f"{stage} -> {new_stage} | followup_date={new_followup_date}"
         )
+
+        # If Gmail rewrote the Message-ID on send, update it so follow-ups thread correctly.
+        if mode == "first_touch" and actual_mid != message_id:
+            try:
+                update_message_id(contact["id"], actual_mid)
+                log.info(f"[SENT-DETECTED] | {name} | {company} | message_id updated: {actual_mid}")
+            except Exception as exc:
+                log.warning(f"[SENT-DETECTED] | {name} | {company} | message_id update failed: {exc}")
+
         flipped += 1
 
     log.info(f"DONE | sent-detection | checked={checked} flipped={flipped}")

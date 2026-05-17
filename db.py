@@ -134,6 +134,12 @@ def save_thread_info(contact_id, message_id, subject):
         "original_subject": subject,
     }).eq("id", contact_id).execute())
 
+def update_message_id(contact_id, message_id):
+    """Update message_id when the sent email's actual ID differs from the draft's."""
+    _retry(lambda: get_client().table("contacts").update({
+        "message_id": message_id,
+    }).eq("id", contact_id).execute())
+
 def get_thread_info(contact_id):
     """Return message_id and original_subject for a contact."""
     result = _retry(lambda: get_client().table("contacts").select(

@@ -90,6 +90,9 @@ def _normalize_body(text):
             continue
         if any(l.lstrip().startswith(("•", "-", "*")) for l in lines):
             normalized.append("\n".join(lines))
+        elif max(len(l.strip()) for l in lines) < 50:
+            # Short lines are intentional (sign-off, greeting) — preserve line breaks.
+            normalized.append("\n".join(l.strip() for l in lines))
         else:
             normalized.append(" ".join(l.strip() for l in lines))
     return "\n\n".join(normalized)
