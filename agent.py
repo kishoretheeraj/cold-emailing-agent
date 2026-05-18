@@ -17,11 +17,11 @@ User workflow:
 import sys
 import time
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 
 from config import FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run, insert_email_message
 from emailer import generate_email
 from gmail import create_draft, apply_label_to_latest_draft
 
@@ -225,6 +225,18 @@ def run():
             # Persist thread info after the first email so follow-ups can thread
             if action in _FIRST_TOUCH_ACTIONS and message_id:
                 save_thread_info(contact["id"], message_id, subject, gmail_thread_id=thread_id)
+
+            # Store the full draft in email_messages for the ThreadView
+            insert_email_message(
+                contact_id=contact["id"],
+                direction="outgoing",
+                sent_at=datetime.now(timezone.utc).isoformat(),
+                subject=subject,
+                body=body,
+                message_id=message_id,
+                in_reply_to=thread_message_id,
+                stage_at_send=current_stage,
+            )
 
             # Apply Gmail label to the draft (best-effort — never blocks)
             label = ACTION_LABEL.get(action)

@@ -89,6 +89,48 @@ describe("ThreadView", () => {
     });
   });
 
+  it("shows human-readable stage label for known stage_at_send values", async () => {
+    selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+      cb({
+        data: [
+          makeMsg({ stage_at_send: "new" }),
+          makeMsg({ id: 2, stage_at_send: "first_touch_sent" }),
+          makeMsg({ id: 3, stage_at_send: "followup1_sent" }),
+          makeMsg({ id: 4, stage_at_send: "followup2_sent" }),
+        ],
+      });
+      return Promise.resolve();
+    });
+
+    render(<ThreadView contactId={42} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("First Touch")).toBeTruthy();
+      expect(screen.getByText("Follow-up 1")).toBeTruthy();
+      expect(screen.getByText("Follow-up 2")).toBeTruthy();
+      expect(screen.getByText("Breakup")).toBeTruthy();
+    });
+  });
+
+  it("omits stage label for incoming messages and unknown stage values", async () => {
+    selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+      cb({
+        data: [
+          makeMsg({ direction: "incoming", stage_at_send: "new" }),
+          makeMsg({ id: 2, direction: "outgoing", stage_at_send: "some_unknown_stage" }),
+        ],
+      });
+      return Promise.resolve();
+    });
+
+    render(<ThreadView contactId={42} />);
+
+    await waitFor(() => screen.getByText("You"));
+    // "First Touch" label must not appear: incoming direction suppresses it, and
+    // the unknown stage has no mapping.
+    expect(screen.queryByText("First Touch")).toBeNull();
+  });
+
   it("truncates long bodies and shows expand toggle", async () => {
     const longBody = "x".repeat(400);
     selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {

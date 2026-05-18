@@ -284,6 +284,7 @@ def test_run_drafts_and_labels_a_new_contact(mocker):
     apply_label = mocker.patch("agent.apply_label_to_latest_draft")
     update_contact = mocker.patch("agent.update_contact")
     save_thread_info = mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
     mocker.patch("agent.time.sleep")
 
     agent.run()
@@ -314,6 +315,7 @@ def test_run_does_not_block_on_label_failure(mocker):
     )
     update_contact = mocker.patch("agent.update_contact")
     mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
     mocker.patch("agent.time.sleep")
 
     # Must not raise — labeling is best-effort.
@@ -339,6 +341,7 @@ def test_run_followup_passes_thread_headers(mocker):
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
     save_thread_info = mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
     mocker.patch("agent.time.sleep")
 
     agent.run()
@@ -399,6 +402,7 @@ def test_run_loads_prompts_and_passes_to_generate_email(mocker):
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
     mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
     mocker.patch("agent.time.sleep")
 
     agent.run()
@@ -415,6 +419,7 @@ def test_run_falls_back_to_empty_prompts_on_load_failure(mocker):
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
     mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
     mocker.patch("agent.time.sleep")
 
     agent.run()  # must not raise
@@ -435,3 +440,70 @@ def test_run_skips_when_duplicate_draft_exists(mocker):
     agent.run()
 
     update_contact.assert_not_called()
+
+
+def test_run_stores_first_touch_draft_in_email_messages(mocker):
+    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
+    mocker.patch("agent.generate_email", return_value=("First Touch Subject", "Hello Dana"))
+    mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    insert_email_message = mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    insert_email_message.assert_called_once()
+    _, kwargs = insert_email_message.call_args
+    assert kwargs["contact_id"] == 1
+    assert kwargs["direction"] == "outgoing"
+    assert kwargs["subject"] == "First Touch Subject"
+    assert kwargs["body"] == "Hello Dana"
+    assert kwargs["message_id"] == "<mid@gmail.com>"
+    assert kwargs["in_reply_to"] is None      # first-touch has no thread to reply to
+    assert kwargs["stage_at_send"] == "new"   # stage before the draft was created
+
+
+def test_run_stores_followup_draft_with_in_reply_to(mocker):
+    contact = _build_contact(
+        stage="first_touch_sent",
+        followup_date=str(date.today() - timedelta(days=1)),
+        message_id="<orig@gmail.com>",
+        original_subject="quick intro",
+    )
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    mocker.patch(
+        "agent.get_thread_info",
+        return_value={"message_id": "<orig@gmail.com>", "original_subject": "quick intro"},
+    )
+    mocker.patch("agent.generate_email", return_value=("Re: quick intro", "Follow-up body"))
+    mocker.patch("agent.create_draft", return_value=("<fup@gmail.com>", None))
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    insert_email_message = mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    insert_email_message.assert_called_once()
+    _, kwargs = insert_email_message.call_args
+    assert kwargs["direction"] == "outgoing"
+    assert kwargs["message_id"] == "<fup@gmail.com>"
+    assert kwargs["in_reply_to"] == "<orig@gmail.com>"
+    assert kwargs["stage_at_send"] == "first_touch_sent"
+
+
+def test_run_duplicate_draft_does_not_store_email_message(mocker):
+    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
+    mocker.patch("agent.generate_email", return_value=("subj", "body"))
+    mocker.patch("agent.create_draft", return_value=(None, None))
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    insert_email_message = mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    insert_email_message.assert_not_called()
