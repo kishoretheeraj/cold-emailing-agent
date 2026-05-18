@@ -36,8 +36,9 @@ written, not just style preferences.
 ```
 src/
 ├── app/
-│   ├── api/extract/route.ts   # Server-only Claude POST handler
-│   ├── runs/page.tsx          # Activity page — agent_events table, 10s auto-refresh
+│   ├── api/extract/route.ts   # Server-only Claude POST handler (prompt LOCKED — see below)
+│   ├── prompts/page.tsx        # 7-line server shell → <PromptsPage />
+│   ├── runs/page.tsx           # Activity page — agent_events table, 10s auto-refresh
 │   ├── globals.css             # @theme tokens + global resets + Vaul overrides
 │   ├── layout.tsx              # Inter font, dark theme, AppProviders wrapper
 │   └── page.tsx                # 1-line server component → <App />
@@ -57,14 +58,18 @@ src/
 │   ├── ContactsList.tsx        # Infinite-scroll list + filters + Vaul sheet + soft delete
 │   ├── ContactsFilters.tsx     # Search input + tier/mode pills + stage select + dartmouth + needs-response
 │   ├── ThreadView.tsx          # Email thread history shown inside the Vaul side sheet
+│   ├── PromptsPage.tsx         # "use client" — fetches all prompts, sticky search, 7 collapsible categories
+│   ├── PromptCategory.tsx      # "use client" — collapsible section header + PromptSection list
+│   ├── PromptSection.tsx       # "use client" — individual prompt card with save/reset
 │   └── Field.tsx               # Label / TextInput / TextArea / ToggleSwitch / TierSelector
 └── lib/
     ├── supabase.ts             # Anon-key browser client singleton
+    ├── promptCategories.ts     # CATEGORY_ORDER, PROMPT_CATEGORY_MAP — TS-only, no DB column
     └── types.ts                # Contact + ReplyStatus + stage arrays + filter types
 tests/
 └── e2e/                        # Playwright smoke tests (15 tests total)
     ├── helpers.ts              # mockSupabase() — intercepts contacts, prompts, email_messages, agent_events
-    ├── fixtures/               # contacts.json (50 rows) + prompts.json
+    ├── fixtures/               # contacts.json (50 rows) + prompts.json (13 fixture rows)
     └── *.spec.ts               # 00-shell through 09-runs-page
 ```
 
@@ -298,11 +303,19 @@ Client component. Fetches `agent_events` on mount and every 10 seconds via `setI
 
 **Mocking in tests**: the `agent_events` list query uses `limitMock` as the terminal call; the count (badge) query uses a thenable `countChain`. These are separate chains distinguished by whether `select()` receives `{ count: "exact" }`.
 
+## /prompts page (app/prompts/page.tsx)
+
+Client component (`PromptsPage.tsx`). Fetches all prompts ordered by `sort_order`. Sticky search (title + description). 7 collapsible categories via `PROMPT_CATEGORY_MAP` in `src/lib/promptCategories.ts`; unknown keys fall into "Shared". Only "Sender & Core" open by default; state persists in `localStorage` (`"prompts-open-categories"`). localStorage read in `useEffect` post-mount (SSR-safe skeleton pattern). `PromptCategory.tsx` is the collapsible section wrapper; `PromptSection.tsx` (individual card) unchanged.
+
+**Categorization drift:** When adding new prompt rows to Supabase, add the key to `promptCategories.ts` — omitted keys silently land in "Shared".
+
+**Locked prompt:** `/api/extract` prompt (`route.ts`) is hardcoded, not in the prompts table. Bound to `ExtractedContact` JSON schema — editing it requires a `types.ts` update and code deploy in sync.
+
 ## e2e helpers update
 
 `tests/e2e/helpers.ts` `mockSupabase()` now intercepts four tables:
 - `/rest/v1/contacts` — returns fixture or handles PATCH/DELETE
-- `/rest/v1/prompts` — returns prompts fixture
+- `/rest/v1/prompts` — returns prompts fixture (14 fixture rows)
 - `/rest/v1/email_messages` — returns `[]` (empty thread)
 - `/rest/v1/agent_events` — returns `[]` with `Content-Range: 0-0/0`
 

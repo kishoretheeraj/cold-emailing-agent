@@ -6,6 +6,10 @@ export const maxDuration = 30;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
+// LOCKED — not migrated to the prompts table.
+// This prompt is bound to the ExtractedContact JSON schema validated by normalizeContact().
+// Changing the output shape requires updating ExtractedContact in types.ts in sync.
+// Editing via /prompts would decouple the prompt from its type contract without a code deploy.
 const PROMPT = `Analyze the pasted text. If it contains ONE contact, return a single JSON object. If it contains MULTIPLE contacts (multiple distinct names with their own emails or contact blocks), return a JSON array.
 
 For each contact extract these fields:

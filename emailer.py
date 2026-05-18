@@ -40,6 +40,37 @@ def _is_dartmouth(contact):
     detail = (contact.get("detail") or "").lower()
     return any(kw in detail for kw in DARTMOUTH_KEYWORDS)
 
+# ── Prompt helpers — read from Supabase prompts dict, fall back to config.py ──
+
+_TEMPLATE_TO_PROMPT_KEY = {
+    "cold_intro":  "outreach_first_touch_instruction",
+    "follow_up_1": "outreach_followup1_instruction",
+    "follow_up_2": "outreach_followup2_instruction",
+    "breakup":     "outreach_breakup_instruction",
+}
+
+def get_tier_instruction(prompts_dict, tier):
+    key = f"tier_{tier}_instruction"
+    if key in prompts_dict:
+        return prompts_dict[key]
+    log.warning(f"[WARN] prompt key {key} not in DB — using fallback")
+    return TIER_INSTRUCTIONS.get(tier, TIER_INSTRUCTIONS[2])
+
+def get_template_instruction(prompts_dict, template):
+    key = _TEMPLATE_TO_PROMPT_KEY.get(template)
+    if key and key in prompts_dict:
+        return prompts_dict[key]
+    log.warning(f"[WARN] prompt key for template '{template}' not in DB — using fallback")
+    return TEMPLATE_INSTRUCTIONS.get(template, "")
+
+def get_dartmouth_instruction(prompts_dict, dart):
+    if not dart:
+        return ""
+    if "dartmouth_instruction" in prompts_dict:
+        return prompts_dict["dartmouth_instruction"]
+    log.warning("[WARN] prompt key dartmouth_instruction not in DB — using fallback")
+    return DARTMOUTH_INSTRUCTION
+
 def _call_claude(prompt, model=None, max_tokens=1000):
     _model = model or EMAIL_MODEL
     payload = json.dumps({
@@ -112,7 +143,7 @@ def generate_email(contact, action, original_subject=None, prompts=None):
     _prompts = prompts or {}
     mode = contact.get("mode", "outreach")
     dart = _is_dartmouth(contact)
-    dart_instr = DARTMOUTH_INSTRUCTION if dart else ""
+    dart_instr = get_dartmouth_instruction(_prompts, dart)
 
     # ── Research injection ─────────────────────────────────────────────────────
     research_brief = ""
@@ -248,9 +279,9 @@ def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=N
         role=contact.get("role", ""),
         detail=contact.get("detail", ""),
         tier=tier,
-        tier_instruction=TIER_INSTRUCTIONS.get(int(tier), TIER_INSTRUCTIONS[2]),
+        tier_instruction=get_tier_instruction(prompts, int(tier)),
         template=template,
-        template_instruction=TEMPLATE_INSTRUCTIONS.get(template, ""),
+        template_instruction=get_template_instruction(prompts, template),
         dartmouth_instruction=dart_instr,
     )
     if research_block:
