@@ -148,6 +148,7 @@ If you add a stage, update `OUTREACH_STAGES` / `APPLIED_STAGES` in `types.ts` an
 
 ## Tests (Vitest)
 
+- **Every code change must ship with tests.** New functions get a test file or new cases in the nearest existing test file. Bug fixes get a regression test that would have caught the bug. No exceptions for "trivial" changes — if it's worth changing, it's worth a test.
 - Run: `npm test`. Watch: `npm run test:watch`.
 - Test files colocate with source: `Foo.test.tsx` next to `Foo.tsx`.
 - Vitest config: `vitest.config.ts` (jsdom + React plugin + `@/` alias).

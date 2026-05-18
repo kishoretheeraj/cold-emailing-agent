@@ -7,6 +7,7 @@ vi.mock("@/lib/supabase", () => ({
   supabase: {
     from: vi.fn(() => ({ insert: insertMock })),
   },
+  resolveInsertError: vi.fn((err: { message: string }) => Promise.resolve(err.message)),
 }));
 
 import { ReviewFlow } from "./ReviewFlow";

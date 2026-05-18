@@ -273,6 +273,7 @@ Key invariants:
 
 ## Tests
 
+- **Every code change must ship with tests.** New functions get a test file or new cases in the nearest existing test file. Bug fixes get a regression test that would have caught the bug. No exceptions for "trivial" changes — if it's worth changing, it's worth a test.
 - Run tests with `python3 -m pytest`.
 - Tests live in `tests/`. `conftest.py` sets fake env vars before any
   module is imported (because `config.py` reads `os.environ` at import time

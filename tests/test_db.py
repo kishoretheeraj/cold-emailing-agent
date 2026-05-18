@@ -18,10 +18,10 @@ def fake_client(mocker):
 
 
 def _execute_returns(client, data):
-    """Make `client.table(..).select(..).execute()` (and similar chains) return `data`."""
-    client.table.return_value.select.return_value.execute.return_value.data = data
-    # Chain with eq() for filtered selects
-    client.table.return_value.select.return_value.eq.return_value.like.return_value.execute.return_value.data = (
+    """Make `client.table(..).select(..).is_(..).execute()` (and similar chains) return `data`."""
+    client.table.return_value.select.return_value.is_.return_value.execute.return_value.data = data
+    # Chain with eq() + like() for filtered selects (get_sent_contacts)
+    client.table.return_value.select.return_value.is_.return_value.eq.return_value.like.return_value.execute.return_value.data = (
         data
     )
 
@@ -111,25 +111,25 @@ def test_close_contact_sets_closed(fake_client):
 
 def test_get_sent_contacts_filters_correctly(fake_client):
     chain = (
-        fake_client.table.return_value.select.return_value.eq.return_value.like.return_value
+        fake_client.table.return_value.select.return_value.is_.return_value.eq.return_value.like.return_value
     )
     chain.execute.return_value.data = [{"id": 1}]
 
     rows = db.get_sent_contacts()
 
     fake_client.table.assert_called_with("contacts")
-    # Verify the eq + like chain was used with the right args
-    fake_client.table.return_value.select.return_value.eq.assert_called_with(
+    fake_client.table.return_value.select.return_value.is_.assert_called_with("deleted_at", "null")
+    fake_client.table.return_value.select.return_value.is_.return_value.eq.assert_called_with(
         "reply_status", "no_reply"
     )
-    fake_client.table.return_value.select.return_value.eq.return_value.like.assert_called_with(
+    fake_client.table.return_value.select.return_value.is_.return_value.eq.return_value.like.assert_called_with(
         "stage", "%_sent%"
     )
     assert rows == [{"id": 1}]
 
 
 def test_get_sent_contacts_returns_empty(fake_client):
-    fake_client.table.return_value.select.return_value.eq.return_value.like.return_value.execute.return_value.data = (
+    fake_client.table.return_value.select.return_value.is_.return_value.eq.return_value.like.return_value.execute.return_value.data = (
         None
     )
     assert db.get_sent_contacts() == []

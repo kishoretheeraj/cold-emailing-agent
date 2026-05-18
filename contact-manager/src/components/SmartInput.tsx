@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { supabase, resolveInsertError } from "@/lib/supabase";
 import type { ExtractedContact, ReviewContact, BulkImportWindow } from "@/lib/types";
 import { Label, TextInput, TextArea, ToggleSwitch, TierSelector } from "./Field";
 import { ReviewFlow } from "./ReviewFlow";
@@ -83,7 +83,7 @@ export function SmartInput({
         reply_status: "no_reply",
       };
       const { error } = await supabase.from("contacts").insert(row);
-      if (error) throw new Error(error.message);
+      if (error) throw new Error(await resolveInsertError(error, row.email as string ?? ""));
       setText("");
       setPreview(null);
       onAdded();

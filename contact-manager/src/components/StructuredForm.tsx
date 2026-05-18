@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { supabase, resolveInsertError } from "@/lib/supabase";
 import {
   Label,
   TextInput,
@@ -88,7 +88,7 @@ function OutreachForm({
         stage: "new",
         reply_status: "no_reply",
       });
-      if (error) throw new Error(error.message);
+      if (error) throw new Error(await resolveInsertError(error, email));
       setName("");
       setEmail("");
       setCompany("");
@@ -220,7 +220,7 @@ function AppliedForm({
         stage: "new",
         reply_status: "no_reply",
       });
-      if (error) throw new Error(error.message);
+      if (error) throw new Error(await resolveInsertError(error, email));
       setName("");
       setEmail("");
       setCompany("");

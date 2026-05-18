@@ -63,7 +63,7 @@ def get_client():
 
 def get_all_contacts():
     """Fetch all contacts from Supabase."""
-    result = _retry(lambda: get_client().table("contacts").select("*").execute())
+    result = _retry(lambda: get_client().table("contacts").select("*").is_("deleted_at", "null").execute())
     return result.data or []
 
 def update_contact(contact_id, stage, followup_days=None, template=None,
@@ -103,6 +103,7 @@ def get_sent_contacts():
         get_client()
         .table("contacts")
         .select("*")
+        .is_("deleted_at", "null")
         .eq("reply_status", "no_reply")
         .like("stage", "%_sent%")
         .execute()
@@ -116,6 +117,7 @@ def get_drafted_contacts():
         get_client()
         .table("contacts")
         .select("*")
+        .is_("deleted_at", "null")
         .in_("stage", DRAFTED_STAGES)
         .execute()
     ))

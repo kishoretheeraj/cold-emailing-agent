@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { supabase } from "@/lib/supabase";
+import { supabase, resolveInsertError } from "@/lib/supabase";
 import type { ReviewContact, BulkImportWindow } from "@/lib/types";
 import { Label, TextInput, TierSelector } from "./Field";
 
@@ -205,7 +205,7 @@ export function ReviewFlow({
             stage: "new",
             reply_status: "no_reply",
           });
-          if (error) throw new Error(error.message);
+          if (error) throw new Error(await resolveInsertError(error, c.email ?? ""));
           setImportResults((rs) =>
             rs.map((r, j) => (j === i ? { ...r, ok: true } : r))
           );
@@ -247,7 +247,7 @@ export function ReviewFlow({
           stage: "new",
           reply_status: "no_reply",
         });
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await resolveInsertError(error, c.email ?? ""));
         setImportResults((rs) =>
           rs.map((r, j) => (j === i ? { ...r, ok: true, error: undefined } : r))
         );
