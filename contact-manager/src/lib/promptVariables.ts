@@ -60,3 +60,24 @@ export function getUnknownVariables(key: string, template: string): string[] {
   if (!valid) return [];
   return getPythonFormatPlaceholders(template).filter((p) => !valid.has(p));
 }
+
+// Prompts whose Claude output is parsed as structured JSON by the Python code.
+// `keys` = the JSON keys the code reads (renaming any of these breaks the run).
+// `label` = human-readable description of the expected output format.
+export const PROMPT_OUTPUT_SCHEMAS: Record<
+  string,
+  { keys: readonly string[]; label: string }
+> = {
+  critic_prompt: {
+    keys: ["verdict", "rewrite_required", "score", "killed_by", "failed_soft_criteria", "feedback"],
+    label: "Critic evaluation JSON",
+  },
+  reply_classification_prompt: {
+    keys: ["classifier_status"],
+    label: "Reply classification JSON",
+  },
+  research_query_prompt: {
+    keys: [],
+    label: "JSON array of search query strings",
+  },
+};

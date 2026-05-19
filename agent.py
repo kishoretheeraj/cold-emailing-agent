@@ -175,6 +175,28 @@ def _validate_prompts(prompts):
     return problems
 
 
+# Keys the code reads from each JSON-output prompt's Claude response.
+# If a key disappears from the prompt text it means the schema likely changed.
+_PROMPT_OUTPUT_KEYS = {
+    "critic_prompt": ["rewrite_required", "verdict", "killed_by", "failed_soft_criteria"],
+    "reply_classification_prompt": ["classifier_status"],
+}
+
+def _validate_prompt_output_schemas(prompts):
+    """Return list of error strings if a JSON-output prompt no longer mentions expected keys."""
+    problems = []
+    for key, required_keys in _PROMPT_OUTPUT_KEYS.items():
+        value = prompts.get(key, "")
+        if not value:
+            continue  # empty → using config.py fallback, which is known-good
+        missing = [k for k in required_keys if k not in value]
+        if missing:
+            problems.append(
+                f"{key}: output schema may have changed — keys no longer in prompt: {missing}"
+            )
+    return problems
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run():
@@ -195,6 +217,13 @@ def run():
         for err in prompt_errors:
             log.error(f"[PROMPT-VALIDATION] {err}")
         raise ValueError(f"Prompt validation failed: {prompt_errors}")
+
+    # Abort if a JSON-output prompt's expected keys are no longer present in its text.
+    schema_errors = _validate_prompt_output_schemas(prompts)
+    if schema_errors:
+        for err in schema_errors:
+            log.error(f"[OUTPUT-SCHEMA] {err}")
+        raise ValueError(f"Output schema validation failed: {schema_errors}")
 
     contacts = get_all_contacts()
     outreach_count = sum(1 for c in contacts if c.get("mode", "outreach") == "outreach")

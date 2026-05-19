@@ -550,3 +550,52 @@ def test_run_aborts_on_invalid_prompt(mocker):
         agent.run()
 
     get_contacts.assert_not_called()
+
+
+# ── _validate_prompt_output_schemas ───────────────────────────────────────────
+
+def test_validate_output_schemas_clean_returns_empty():
+    # critic_prompt contains the expected keys — no problem
+    good = {"critic_prompt": "return rewrite_required verdict killed_by failed_soft_criteria"}
+    assert agent._validate_prompt_output_schemas(good) == []
+
+
+def test_validate_output_schemas_missing_key_flagged():
+    # critic_prompt has had a key renamed — should flag it
+    bad = {"critic_prompt": "return verdict and some_new_key but not the old ones"}
+    problems = agent._validate_prompt_output_schemas(bad)
+    assert len(problems) == 1
+    assert "critic_prompt" in problems[0]
+    assert "rewrite_required" in problems[0]
+
+
+def test_validate_output_schemas_empty_prompt_skipped():
+    # empty prompt → using config.py fallback, no warning needed
+    assert agent._validate_prompt_output_schemas({"critic_prompt": ""}) == []
+
+
+def test_validate_output_schemas_absent_prompt_skipped():
+    # prompt not in dict at all → using fallback
+    assert agent._validate_prompt_output_schemas({}) == []
+
+
+def test_validate_output_schemas_reply_classification_checked():
+    bad = {"reply_classification_prompt": "return some_status but not the right key"}
+    problems = agent._validate_prompt_output_schemas(bad)
+    assert any("reply_classification_prompt" in p for p in problems)
+    assert any("classifier_status" in p for p in problems)
+
+
+def test_run_aborts_on_output_schema_mismatch(mocker):
+    # critic_prompt missing expected keys → run aborts before get_all_contacts
+    mocker.patch("agent.load_prompts", return_value={
+        "critic_prompt": "return verdict and something_new, no rewrite_required key here"
+    })
+    mocker.patch("agent.record_run")
+    get_contacts = mocker.patch("agent.get_all_contacts")
+
+    import pytest
+    with pytest.raises(ValueError, match="Output schema validation failed"):
+        agent.run()
+
+    get_contacts.assert_not_called()

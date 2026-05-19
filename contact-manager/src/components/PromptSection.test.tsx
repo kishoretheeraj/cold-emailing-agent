@@ -94,6 +94,31 @@ describe("PromptSection", () => {
     expect(screen.queryByText(/Unknown placeholder/)).toBeNull();
   });
 
+  it("shows output contract box for critic_prompt with expected key badges", () => {
+    render(
+      <PromptSection
+        prompt={{ ...basePrompt, key: "critic_prompt", value: "some critic prompt text" }}
+        onSaved={vi.fn()}
+        onError={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/Output contract/)).toBeInTheDocument();
+    expect(screen.getByText("rewrite_required")).toBeInTheDocument();
+    expect(screen.getByText("verdict")).toBeInTheDocument();
+    expect(screen.getByText("killed_by")).toBeInTheDocument();
+  });
+
+  it("does not show output contract box for outreach_prompt", () => {
+    render(
+      <PromptSection
+        prompt={{ ...basePrompt, key: "outreach_prompt", value: "some outreach prompt" }}
+        onSaved={vi.fn()}
+        onError={vi.fn()}
+      />
+    );
+    expect(screen.queryByText(/Output contract/)).toBeNull();
+  });
+
   it("Save button disabled when draft equals prompt.value", () => {
     render(
       <PromptSection prompt={basePrompt} onSaved={vi.fn()} onError={vi.fn()} />

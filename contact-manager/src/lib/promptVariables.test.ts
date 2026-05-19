@@ -3,6 +3,7 @@ import {
   extractVariables,
   getPythonFormatPlaceholders,
   getUnknownVariables,
+  PROMPT_OUTPUT_SCHEMAS,
 } from "./promptVariables";
 
 describe("extractVariables", () => {
@@ -89,5 +90,35 @@ describe("getUnknownVariables", () => {
     expect(
       getUnknownVariables("subject_prompt", "{bad_one} {name} {bad_two}")
     ).toEqual(["bad_one", "bad_two"]);
+  });
+});
+
+describe("PROMPT_OUTPUT_SCHEMAS", () => {
+  it("critic_prompt has the expected output keys", () => {
+    const schema = PROMPT_OUTPUT_SCHEMAS["critic_prompt"];
+    expect(schema).toBeDefined();
+    expect(schema.keys).toContain("rewrite_required");
+    expect(schema.keys).toContain("verdict");
+    expect(schema.keys).toContain("killed_by");
+    expect(schema.keys).toContain("failed_soft_criteria");
+    expect(schema.keys).toContain("score");
+    expect(schema.keys).toContain("feedback");
+  });
+
+  it("reply_classification_prompt has classifier_status key", () => {
+    const schema = PROMPT_OUTPUT_SCHEMAS["reply_classification_prompt"];
+    expect(schema).toBeDefined();
+    expect(schema.keys).toContain("classifier_status");
+  });
+
+  it("research_query_prompt has empty keys (array output, not object)", () => {
+    const schema = PROMPT_OUTPUT_SCHEMAS["research_query_prompt"];
+    expect(schema).toBeDefined();
+    expect(schema.keys).toHaveLength(0);
+    expect(schema.label).toMatch(/array/i);
+  });
+
+  it("outreach_prompt is not in output schemas (plain text output)", () => {
+    expect(PROMPT_OUTPUT_SCHEMAS["outreach_prompt"]).toBeUndefined();
   });
 });

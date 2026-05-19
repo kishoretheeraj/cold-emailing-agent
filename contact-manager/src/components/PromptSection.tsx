@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { TextArea } from "./Field";
-import { extractVariables, getUnknownVariables } from "@/lib/promptVariables";
+import { extractVariables, getUnknownVariables, PROMPT_OUTPUT_SCHEMAS } from "@/lib/promptVariables";
 import type { Prompt } from "@/lib/types";
 
 export function PromptSection({
@@ -24,6 +24,7 @@ export function PromptSection({
 
   const variables = extractVariables(draft);
   const unknownVars = getUnknownVariables(prompt.key, draft);
+  const outputSchema = PROMPT_OUTPUT_SCHEMAS[prompt.key] ?? null;
   const isDirty = draft !== prompt.value;
   const canReset =
     prompt.default_value !== null && draft !== prompt.default_value;
@@ -114,6 +115,26 @@ export function PromptSection({
               </code>
             ))}
           </div>
+        </div>
+      )}
+
+      {outputSchema && (
+        <div className="rounded-md border border-blue-500/30 bg-blue-500/8 px-3 py-2 mb-3">
+          <p className="text-xs font-medium text-blue-400 mb-1">
+            Output contract — agent parses this prompt&apos;s response as {outputSchema.label}
+          </p>
+          {outputSchema.keys.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {outputSchema.keys.map((k) => (
+                <code
+                  key={k}
+                  className="rounded border border-blue-500/30 bg-blue-500/8 px-1.5 py-0.5 text-xs text-blue-300 font-mono"
+                >
+                  {k}
+                </code>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
