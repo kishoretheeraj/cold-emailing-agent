@@ -166,6 +166,7 @@ Follow-up emails must land in the same Gmail thread as the original.
 - **Failure notification** (`notify_failure.py`): both workflows have an
   `if: failure()` step that runs this script. It emails `GMAIL_ADDRESS` via
   Gmail SMTP using `GMAIL_APP_PASSWORD` — no new secrets required.
+- **Prompt validation** (`agent._validate_prompts`): called at the top of `run()` right after `load_prompts()`. Checks every formattable prompt against `_PROMPT_VALID_KEYS` (a dict of prompt key → valid format kwargs, mirroring each `tpl.format(...)` call site). If any prompt contains a `{placeholder}` the code never provides, it logs `[PROMPT-VALIDATION] <key>: unknown placeholder(s) [...]` and raises `ValueError` before contacting Supabase, Tavily, or Anthropic — zero wasted API credits. The valid-key map lives in `agent._PROMPT_VALID_KEYS` (Python) and `src/lib/promptVariables.PROMPT_VALID_KEYS` (TypeScript, used by the contact-manager UI). **Keep both in sync** if you add a new prompt or change a format() call site.
 
 ## Supabase patterns
 

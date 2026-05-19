@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { TextArea } from "./Field";
-import { extractVariables } from "@/lib/promptVariables";
+import { extractVariables, getUnknownVariables } from "@/lib/promptVariables";
 import type { Prompt } from "@/lib/types";
 
 export function PromptSection({
@@ -23,6 +23,7 @@ export function PromptSection({
   }, [prompt.value]);
 
   const variables = extractVariables(draft);
+  const unknownVars = getUnknownVariables(prompt.key, draft);
   const isDirty = draft !== prompt.value;
   const canReset =
     prompt.default_value !== null && draft !== prompt.default_value;
@@ -95,6 +96,24 @@ export function PromptSection({
               {`{${v}}`}
             </code>
           ))}
+        </div>
+      )}
+
+      {unknownVars.length > 0 && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 mb-3">
+          <p className="text-xs font-medium text-amber-400 mb-1">
+            Unknown placeholder{unknownVars.length > 1 ? "s" : ""} — will cause a runtime error when the agent runs
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {unknownVars.map((v) => (
+              <code
+                key={v}
+                className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-300 font-mono"
+              >
+                {`{${v}}`}
+              </code>
+            ))}
+          </div>
         </div>
       )}
 

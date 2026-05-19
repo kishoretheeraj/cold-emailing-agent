@@ -144,6 +144,37 @@ ACTION_LABEL = {
     "send_applied_followup": "Cold Outreach/Applied Follow-up",
 }
 
+# ── Prompt validation ──────────────────────────────────────────────────────────
+
+# Exact kwargs each prompt's .format() call receives (mirrors emailer.py / research.py).
+_PROMPT_VALID_KEYS = {
+    "outreach_prompt":           {"profile","name","company","role","detail","tier","tier_instruction","template","template_instruction","dartmouth_instruction"},
+    "applied_intro_prompt":      {"profile","name","role","company","job_title","job_description","applied_date","dartmouth_instruction"},
+    "applied_followup_prompt":   {"profile","name","role","company","job_title","dartmouth_instruction"},
+    "subject_prompt":            {"name","company","mode","job_title","body"},
+    "critic_prompt":             {"sender_profile","contact_context","subject","body"},
+    "research_injection":        {"brief_text"},
+    "research_query_prompt":     {"sender_profile","name","company","role","detail","notes","dartmouth","tier"},
+    "research_curate_prompt":    {"name","company","role","detail","raw_results"},
+    "reply_response_prompt":     {"profile","name","company","role","reply_body"},
+    "reply_classification_prompt": {"reply_body"},
+}
+
+def _validate_prompts(prompts):
+    """Return list of error strings for any prompt that has an unknown {placeholder}."""
+    import re
+    problems = []
+    for key, valid in _PROMPT_VALID_KEYS.items():
+        value = prompts.get(key)
+        if not value:
+            continue
+        placeholders = re.findall(r'(?<!\{)\{([^{}]+)\}(?!\})', value)
+        unknown = [p for p in placeholders if p not in valid]
+        if unknown:
+            problems.append(f"{key}: unknown placeholder(s) {unknown}")
+    return problems
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run():
@@ -157,6 +188,13 @@ def run():
     except Exception as exc:
         prompts = {}
         log.warning(f"Using default prompts from config.py (load failed: {exc})")
+
+    # Abort before any API calls if a prompt has an unknown placeholder.
+    prompt_errors = _validate_prompts(prompts)
+    if prompt_errors:
+        for err in prompt_errors:
+            log.error(f"[PROMPT-VALIDATION] {err}")
+        raise ValueError(f"Prompt validation failed: {prompt_errors}")
 
     contacts = get_all_contacts()
     outreach_count = sum(1 for c in contacts if c.get("mode", "outreach") == "outreach")
@@ -188,6 +226,8 @@ def run():
             log.info(f"{mode_tag} {name} | {company} | skip | {reason}")
             skipped += 1
             continue
+
+        time.sleep(3)
 
         try:
             # Fetch stored thread info for follow-ups
@@ -265,9 +305,6 @@ def run():
 
             log.info(f"{mode_tag} {name} | {company} | {action} | DRAFTED {extra}")
             drafted += 1
-
-            # Small pause between contacts to avoid rate limits
-            time.sleep(2)
 
         except Exception as exc:
             log.error(f"{mode_tag} {name} | {company} | {action} | ERROR: {exc}")

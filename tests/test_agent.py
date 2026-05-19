@@ -507,3 +507,46 @@ def test_run_duplicate_draft_does_not_store_email_message(mocker):
     agent.run()
 
     insert_email_message.assert_not_called()
+
+
+# ── _validate_prompts ──────────────────────────────────────────────────────────
+
+def test_validate_prompts_clean_returns_empty():
+    assert agent._validate_prompts({}) == []
+
+
+def test_validate_prompts_unknown_placeholder_flagged():
+    problems = agent._validate_prompts({"subject_prompt": "Hello {First Name} from {name}"})
+    assert len(problems) == 1
+    assert "subject_prompt" in problems[0]
+    assert "First Name" in problems[0]
+
+
+def test_validate_prompts_valid_keys_not_flagged():
+    assert agent._validate_prompts({"subject_prompt": "Hello {name} at {company}"}) == []
+
+
+def test_validate_prompts_escaped_braces_not_flagged():
+    # {{First Name}} is a literal in Python format strings, not a placeholder
+    assert agent._validate_prompts({"subject_prompt": "read {{First Name}} as a tell, use {name}"}) == []
+
+
+def test_validate_prompts_multiple_prompts_all_checked():
+    problems = agent._validate_prompts({
+        "subject_prompt": "{name} — good",
+        "outreach_prompt": "{bad_key} in outreach",
+    })
+    assert len(problems) == 1
+    assert "outreach_prompt" in problems[0]
+
+
+def test_run_aborts_on_invalid_prompt(mocker):
+    mocker.patch("agent.load_prompts", return_value={"subject_prompt": "text with {First Name}"})
+    mocker.patch("agent.record_run")
+    get_contacts = mocker.patch("agent.get_all_contacts")
+
+    import pytest
+    with pytest.raises(ValueError, match="Prompt validation failed"):
+        agent.run()
+
+    get_contacts.assert_not_called()

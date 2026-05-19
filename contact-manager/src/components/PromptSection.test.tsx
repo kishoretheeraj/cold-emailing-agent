@@ -61,14 +61,37 @@ describe("PromptSection", () => {
   it("shows variables row with deduplicated placeholders from draft", () => {
     render(
       <PromptSection
-        prompt={{ ...basePrompt, value: "{x} {y} {x}" }}
+        prompt={{ ...basePrompt, value: "{name} {company} {name}" }}
         onSaved={vi.fn()}
         onError={vi.fn()}
       />
     );
-    expect(screen.getByText("{x}")).toBeInTheDocument();
-    expect(screen.getByText("{y}")).toBeInTheDocument();
-    expect(screen.getAllByText("{x}")).toHaveLength(1);
+    expect(screen.getByText("{name}")).toBeInTheDocument();
+    expect(screen.getByText("{company}")).toBeInTheDocument();
+    expect(screen.getAllByText("{name}")).toHaveLength(1);
+  });
+
+  it("shows amber warning for unknown placeholders", () => {
+    render(
+      <PromptSection
+        prompt={{ ...basePrompt, value: "{name} and {First Name}" }}
+        onSaved={vi.fn()}
+        onError={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/Unknown placeholder/)).toBeInTheDocument();
+    expect(screen.getByText("{First Name}")).toBeInTheDocument();
+  });
+
+  it("does not show warning when all placeholders are valid", () => {
+    render(
+      <PromptSection
+        prompt={{ ...basePrompt, value: "{name} at {company}" }}
+        onSaved={vi.fn()}
+        onError={vi.fn()}
+      />
+    );
+    expect(screen.queryByText(/Unknown placeholder/)).toBeNull();
   });
 
   it("Save button disabled when draft equals prompt.value", () => {

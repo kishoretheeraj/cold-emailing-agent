@@ -1,5 +1,5 @@
 // Matches single-brace {identifier} only; \w+ requires word chars so
-// patterns with spaces (e.g., {{multi word}}) never match.
+// patterns with spaces (e.g., {First Name}) never match.
 export function extractVariables(template: string): string[] {
   const matches = template.matchAll(/\{(\w+)\}/g);
   const seen = new Set<string>();
@@ -11,4 +11,52 @@ export function extractVariables(template: string): string[] {
     }
   }
   return out;
+}
+
+// Exact set of keys each Python prompt passes to .format(**kwargs).
+// Prompts not listed here are either not formatted or use config.py defaults only.
+export const PROMPT_VALID_KEYS: Record<string, ReadonlySet<string>> = {
+  outreach_prompt: new Set([
+    "profile", "name", "company", "role", "detail", "tier",
+    "tier_instruction", "template", "template_instruction", "dartmouth_instruction",
+  ]),
+  applied_intro_prompt: new Set([
+    "profile", "name", "role", "company", "job_title", "job_description",
+    "applied_date", "dartmouth_instruction",
+  ]),
+  applied_followup_prompt: new Set([
+    "profile", "name", "role", "company", "job_title", "dartmouth_instruction",
+  ]),
+  subject_prompt: new Set(["name", "company", "mode", "job_title", "body"]),
+  critic_prompt: new Set(["sender_profile", "contact_context", "subject", "body"]),
+  research_injection: new Set(["brief_text"]),
+  research_query_prompt: new Set([
+    "sender_profile", "name", "company", "role", "detail", "notes", "dartmouth", "tier",
+  ]),
+  research_curate_prompt: new Set(["name", "company", "role", "detail", "raw_results"]),
+  reply_response_prompt: new Set(["profile", "name", "company", "role", "reply_body"]),
+  reply_classification_prompt: new Set(["reply_body"]),
+};
+
+// Extracts ALL single-brace placeholders Python's str.format() would try to substitute,
+// including ones with spaces like {First Name}. Skips escaped doubles {{...}}.
+export function getPythonFormatPlaceholders(template: string): string[] {
+  const matches = template.matchAll(/(?<!\{)\{([^{}]+)\}(?!\})/g);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of matches) {
+    if (!seen.has(m[1])) {
+      seen.add(m[1]);
+      out.push(m[1]);
+    }
+  }
+  return out;
+}
+
+// Returns placeholders in `template` that Python's .format() would try to fill
+// but the code never provides for this prompt key. Empty array = no issues.
+export function getUnknownVariables(key: string, template: string): string[] {
+  const valid = PROMPT_VALID_KEYS[key];
+  if (!valid) return [];
+  return getPythonFormatPlaceholders(template).filter((p) => !valid.has(p));
 }
