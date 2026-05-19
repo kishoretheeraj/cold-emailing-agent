@@ -334,6 +334,7 @@ def run():
 
             log.info(f"{mode_tag} {name} | {company} | {action} | DRAFTED {extra}")
             drafted += 1
+            time.sleep(60)  # respect 30k tpm limit between consecutive contacts
 
         except Exception as exc:
             log.error(f"{mode_tag} {name} | {company} | {action} | ERROR: {exc}")

@@ -74,8 +74,15 @@ def draft_reply(contact, reply_body_text, prompts):
                 role=contact.get("role", ""),
                 reply_body=reply_body_text,
             ) + f"\nREVISION INSTRUCTION:\n{'; '.join(failures)}"
-            body = _normalize_body(_call_claude(retry_full, model=REPLY_RESPONSE_MODEL, system=profile))
-            failures = preflight.check(body, contact, prompts)
+            try:
+                body = _normalize_body(_call_claude(retry_full, model=REPLY_RESPONSE_MODEL, system=profile))
+                failures = preflight.check(body, contact, prompts)
+            except Exception as exc:
+                log.warning(
+                    f"[REPLY-DRAFT] | {name} | {company} | preflight retry raised ({exc}) — "
+                    f"allowing draft with unrevised body"
+                )
+                failures = []  # transient error — don't falsely block the contact
 
         if failures:
             log_agent_event("draft_reply", contact_id=contact_id,

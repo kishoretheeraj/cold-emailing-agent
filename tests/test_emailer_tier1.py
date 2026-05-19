@@ -159,3 +159,39 @@ def test_generate_email_tier1_critic_retries_on_low_score(mocker):
     assert body == "Revised body."
     assert subject == "revised subject"
     assert mock_claude.call_count == 4
+
+
+# ── Part D: Preflight retry raises (e.g. rate-limit) — fall through ───────────
+
+
+def test_preflight_retry_exception_falls_through(mocker):
+    """If the preflight retry call raises (e.g. rate-limit 429), clear failures
+    and allow the draft rather than falsely blocking the contact."""
+    contact = _outreach_contact(tier=1)
+
+    mocker.patch("db.log_agent_event")
+    mocker.patch("emailer.time.sleep")
+    mock_claude = mocker.patch.object(
+        emailer, "_call_claude",
+        side_effect=[
+            "Original body.",               # call 1: body generation
+            Exception("429 too many requests"),  # call 2: retry body → raises
+            "A subject",                    # call 3: subject generation
+        ],
+    )
+    mocker.patch("preflight.check", side_effect=[
+        ["first_name_missing: 'Dana'"],  # original body fails preflight
+        # no second call — exception clears failures before the second check
+    ])
+    mocker.patch.object(
+        emailer, "_run_critic",
+        return_value={"verdict": "PASS", "score": 16, "rewrite_required": False,
+                      "killed_by": [], "failed_soft_criteria": [], "feedback": ""},
+    )
+
+    subject, body = emailer.generate_email(contact, "send_first_touch")
+
+    # Should not raise — fall through with the unrevised body
+    assert body == "Original body."
+    assert subject == "A subject"
+    assert mock_claude.call_count == 3

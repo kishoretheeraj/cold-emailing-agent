@@ -210,7 +210,11 @@ def generate_email(contact, action, original_subject=None, prompts=None):
                     contact, dart_instr, _prompts, extra_instruction=_pf_extra))
             _pf_failures = preflight.check(body, contact, _prompts)
         except Exception as exc:
-            log.warning(f"[PREFLIGHT] | {_name} | {_company} | retry error: {exc}")
+            log.warning(
+                f"[PREFLIGHT] | {_name} | {_company} | retry raised ({exc}) — "
+                f"allowing draft with unrevised body"
+            )
+            _pf_failures = []  # transient error — don't falsely block the contact
     if _pf_failures:
         _log_event("preflight", contact_id=contact.get("id"),
                    contact_name=contact.get("name"),
