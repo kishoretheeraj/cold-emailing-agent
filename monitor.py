@@ -16,6 +16,22 @@ import sys
 import logging
 from datetime import date, timedelta, datetime, timezone
 
+# ── Logging setup ──────────────────────────────────────────────────────────────
+# Must be called before any project imports — agent.py also calls basicConfig
+# at module level (for agent.log), and basicConfig is a no-op if root already
+# has handlers. Importing agent first would silently redirect all monitor logs
+# to agent.log instead of monitor.log.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s EST | %(message)s",
+    datefmt="%Y-%m-%d %H:%M",
+    handlers=[
+        logging.FileHandler("monitor.log"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+log = logging.getLogger(__name__)
+
 from agent import DRAFTED_TO_SENT, NEXT_STAGE, _parse_date
 from config import (
     FOLLOWUP_DAYS, GMAIL_ADDRESS, GMAIL_APP_PASSWORD,
@@ -32,18 +48,6 @@ from gmail import (
     find_sent_by_subject, find_sent_by_thread_id,
 )
 from emailer import _call_claude
-
-# ── Logging setup ──────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s EST | %(message)s",
-    datefmt="%Y-%m-%d %H:%M",
-    handlers=[
-        logging.FileHandler("monitor.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-log = logging.getLogger(__name__)
 
 REPLIED_LABEL = "Cold Outreach/Replied"
 
