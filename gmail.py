@@ -89,7 +89,7 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
                 append_uid = uid_match.group(1).decode()
                 try:
                     imap.select('"[Gmail]/Drafts"', readonly=True)
-                    _, thrid_data = imap.fetch(append_uid, "(X-GM-THRID)")
+                    _, thrid_data = imap.uid("FETCH", append_uid, "(X-GM-THRID)")
                     thrid_match = re.search(r'X-GM-THRID\s+(\d+)', str(thrid_data))
                     if thrid_match:
                         gmail_thread_id = int(thrid_match.group(1))

@@ -57,7 +57,8 @@ def test_create_draft_captures_gmail_thread_id(mocker):
     """When Gmail returns APPENDUID, create_draft fetches and returns X-GM-THRID."""
     fake_imap = MagicMock(name="imap")
     fake_imap.append.return_value = ("OK", [b"[APPENDUID 1234567 89012] (Success)"])
-    fake_imap.fetch.return_value = ("OK", [(b"89012 (X-GM-THRID 17850200168)", None)])
+    # Must mock imap.uid (not imap.fetch) — THRID is fetched via UID FETCH, not seqnum fetch.
+    fake_imap.uid.return_value = ("OK", [b"1 (X-GM-THRID 17850200168 UID 89012)"])
     mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
 
     _, thread_id = gmail.create_draft("dana@example.com", "subject", "body")
