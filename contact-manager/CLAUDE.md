@@ -4,7 +4,8 @@
 
 A Next.js app for adding contacts to the cold-email Supabase table that the Python agent
 reads every morning. Two input modes (Smart Input / Structured Form), an infinite-scroll
-contacts list with search/filter, and a Vaul side sheet for status updates and soft delete.
+contacts list with search/filter, and a Vaul side sheet for editing all contact fields and
+soft delete.
 
 When working in this repo, follow the rules below. They reflect how the code was actually
 written, not just style preferences.
@@ -127,7 +128,7 @@ tests/
 - **Soft delete**: `supabase.from("contacts").update({ deleted_at: new Date().toISOString() }).eq("id", id)`. Never hard-delete.
 - **Optimistic updates** (stage/tier changes): mutate local state first, then issue the
   Supabase update. On error, revert local state and call `onError`.
-- **Notes autosave**: save on blur (`onBlur`). No debounce needed for single-event triggers.
+- **Text field blur-save in the sheet**: all editable text fields (name, email, company, role, detail, resume_url, job_title, notes) save on blur via `handleBlurSave(field, localValue, label, revert)` in `ContactsList.tsx`. The `revert` callback restores the local React state on error. Mode and dartmouth save immediately on click (`handleModeChange`, `handleDartmouthChange`) using the same optimistic pattern as `handleTierChange`.
 - The contacts table has RLS **disabled**. The anon key can read/write all columns. Keep
   in mind when adding new columns — no RLS policy changes needed but also no row-level
   security.
