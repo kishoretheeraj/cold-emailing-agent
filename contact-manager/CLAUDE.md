@@ -221,6 +221,7 @@ vi.mock("sonner", () => ({
 
 ## Tests (Playwright e2e)
 
+- **MANDATORY before every push**: `npm run test:e2e` must pass before pushing any UI change to GitHub. A Claude Code PreToolUse hook enforces this automatically — it runs the full suite before every `git push` and blocks the push if any test fails. All 21 tests must be green.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Fifteen smoke tests; files run alphabetically (00–09).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in

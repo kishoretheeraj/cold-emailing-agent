@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git push*)",
+            "command": "/Users/kishoretheeraj/Documents/cold-email-agent/.claude/hooks/pre-push-e2e.sh",
+            "timeout": 120,
+            "statusMessage": "Running Playwright e2e tests before push..."
+          }
+        ]
+      }
+    ]
+  }
+}
