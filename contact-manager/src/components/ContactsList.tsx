@@ -50,18 +50,18 @@ const GRID_COLS = "grid-cols-[1fr_140px_60px_90px_100px_80px]";
 
 const STAGE_LABELS: Record<string, string> = {
   new: "New",
-  first_touch_drafted: "Draft 1",
-  first_touch_sent: "Sent 1",
-  followup1_drafted: "Draft 2",
-  followup1_sent: "Sent 2",
-  followup2_drafted: "Draft 3",
-  followup2_sent: "Sent 3",
-  breakup_drafted: "Draft Break",
-  breakup_sent: "Sent Break",
+  first_touch_drafted: "First Touch Draft",
+  first_touch_sent: "First Touch Sent",
+  followup1_drafted: "Followup 1 Draft",
+  followup1_sent: "Followup 1 Sent",
+  followup2_drafted: "Followup 2 Draft",
+  followup2_sent: "Followup 2 Sent",
+  breakup_drafted: "Breakup Draft",
+  breakup_sent: "Breakup Sent",
   applied_intro_drafted: "App Intro Draft",
   applied_intro_sent: "App Intro Sent",
-  applied_followup_drafted: "App F/U Draft",
-  applied_followup_sent: "App F/U Sent",
+  applied_followup_drafted: "App Followup Draft",
+  applied_followup_sent: "App Followup Sent",
   closed: "Closed",
   bounced: "Bounced",
   unsubscribed: "Unsub",
@@ -580,26 +580,32 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectGroup>
-                          <SelectLabel>Outreach</SelectLabel>
-                          {OUTREACH_STAGES.filter(
-                            (s) => s !== "closed"
-                          ).map((s) => (
-                            <SelectItem key={s} value={s}>
-                              {stageLabel(s)}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                        <SelectGroup>
-                          <SelectLabel>Applied</SelectLabel>
-                          {APPLIED_STAGES.filter(
-                            (s) => s !== "new" && s !== "closed"
-                          ).map((s) => (
-                            <SelectItem key={s} value={s}>
-                              {stageLabel(s)}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
+                        {selectedContact.mode !== "applied" && (
+                          <SelectGroup>
+                            <SelectLabel>Outreach</SelectLabel>
+                            {OUTREACH_STAGES.filter(
+                              (s) => s !== "closed"
+                            ).map((s) => (
+                              <SelectItem key={s} value={s}>
+                                {stageLabel(s)}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                        {selectedContact.mode !== "outreach" && (
+                          <SelectGroup>
+                            <SelectLabel>Applied</SelectLabel>
+                            {APPLIED_STAGES.filter(
+                              (s) =>
+                                s !== "closed" &&
+                                (selectedContact.mode === "applied" || s !== "new")
+                            ).map((s) => (
+                              <SelectItem key={s} value={s}>
+                                {stageLabel(s)}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
                         <SelectSeparator />
                         <SelectItem value="closed">Closed</SelectItem>
                       </SelectContent>
