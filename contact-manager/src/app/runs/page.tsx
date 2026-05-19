@@ -8,12 +8,42 @@ import type { AgentEvent } from "@/lib/types";
 const STATUS_CHIPS = ["all", "success", "failed", "blocked_preflight"] as const;
 type StatusFilter = (typeof STATUS_CHIPS)[number];
 
+const EVENT_TYPE_CHIPS = [
+  "all", "preflight", "critic", "sent_detected",
+  "classify_reply", "draft_reply", "research",
+] as const;
+type EventTypeFilter = (typeof EVENT_TYPE_CHIPS)[number];
+
 const STATUS_LABELS: Record<string, string> = {
   success: "Success",
   failed: "Failed",
   blocked_preflight: "Blocked",
   running: "Running",
 };
+
+function formatMetadata(
+  type: string,
+  meta: Record<string, unknown> | null
+): string {
+  if (!meta) return "—";
+  if (type === "preflight") {
+    const checks = meta.blocked_checks as string[] | undefined;
+    return checks?.[0] ?? "—";
+  }
+  if (type === "classify_reply")
+    return (meta.classifier_status as string | undefined) ?? "—";
+  if (type === "critic") {
+    const retried = meta.retried ? " retried" : "";
+    return `score=${meta.score} verdict=${meta.verdict}${retried}`;
+  }
+  if (type === "sent_detected")
+    return `via=${meta.method} → ${meta.new_stage}`;
+  if (type === "research") {
+    if (meta.cache_hit) return `cache_hit age=${meta.cache_age_days}d`;
+    return `queries=${meta.queries_generated} reliable=${meta.brief_reliable}`;
+  }
+  return JSON.stringify(meta).slice(0, 60);
+}
 
 function statusColor(status: string): string {
   if (status === "success") return "text-emerald-400";
@@ -34,6 +64,7 @@ function formatTs(ts: string): string {
 export default function RunsPage() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [eventTypeFilter, setEventTypeFilter] = useState<EventTypeFilter>("all");
   const [failureBadge, setFailureBadge] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
@@ -67,10 +98,9 @@ export default function RunsPage() {
     return () => clearInterval(id);
   }, [fetchEvents, fetchBadge]);
 
-  const filtered =
-    statusFilter === "all"
-      ? events
-      : events.filter((e) => e.status === statusFilter);
+  const filtered = events
+    .filter((e) => statusFilter === "all" || e.status === statusFilter)
+    .filter((e) => eventTypeFilter === "all" || e.event_type === eventTypeFilter);
 
   return (
     <div className="mx-auto max-w-5xl px-4 sm:px-6 py-8 space-y-6">
@@ -97,7 +127,7 @@ export default function RunsPage() {
       </header>
 
       {/* Status filter chips */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {STATUS_CHIPS.map((s) => (
           <button
             key={s}
@@ -110,6 +140,21 @@ export default function RunsPage() {
             }`}
           >
             {s === "all" ? "All" : s === "blocked_preflight" ? "Blocked" : s}
+          </button>
+        ))}
+        <span className="w-px h-4 bg-border" />
+        {EVENT_TYPE_CHIPS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setEventTypeFilter(t)}
+            className={`rounded-full px-3 py-1 text-xs border transition-colors ${
+              eventTypeFilter === t
+                ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
+                : "bg-surface text-fg-muted border-border hover:border-border-strong"
+            }`}
+          >
+            {t === "all" ? "All types" : t}
           </button>
         ))}
       </div>
@@ -149,13 +194,10 @@ export default function RunsPage() {
                     {STATUS_LABELS[e.status] ?? e.status}
                   </td>
                   <td className="px-4 py-3 text-xs text-fg-muted hidden sm:table-cell">
-                    {e.contact_id ?? "—"}
+                    {e.contact_name ?? (e.contact_id != null ? `#${e.contact_id}` : "—")}
                   </td>
                   <td className="px-4 py-3 text-xs text-fg-muted hidden md:table-cell max-w-xs truncate">
-                    {e.error_message ??
-                      (e.blocked_checks
-                        ? e.blocked_checks.slice(0, 1).join(", ")
-                        : "—")}
+                    {e.error_message ?? formatMetadata(e.event_type, e.metadata)}
                   </td>
                   <td className="px-4 py-3 text-xs text-fg-dim text-right whitespace-nowrap">
                     {formatTs(e.started_at)}

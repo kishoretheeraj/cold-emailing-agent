@@ -79,7 +79,8 @@ def draft_reply(contact, reply_body_text, prompts):
 
         if failures:
             log_agent_event("draft_reply", contact_id=contact_id,
-                            status="blocked_preflight", blocked_checks=failures)
+                            contact_name=name, status="blocked_preflight",
+                            metadata={"blocked_checks": failures})
             log.warning(f"[REPLY-DRAFT] | {name} | {company} | BLOCKED | {failures}")
             return
 
@@ -122,10 +123,10 @@ def draft_reply(contact, reply_body_text, prompts):
 
         update_contact(contact_id, "reply_drafted", clear_followup_date=True)
 
-        log_agent_event("draft_reply", contact_id=contact_id, status="success")
+        log_agent_event("draft_reply", contact_id=contact_id, contact_name=name, status="success")
         log.info(f"[REPLY-DRAFT] | {name} | {company} | DRAFTED | classifier_status={classifier_status}")
 
     except Exception as exc:
-        log_agent_event("draft_reply", contact_id=contact_id,
+        log_agent_event("draft_reply", contact_id=contact_id, contact_name=name,
                         status="failed", error_message=str(exc))
         log.warning(f"[REPLY-DRAFT] | {name} | {company} | error: {exc}")

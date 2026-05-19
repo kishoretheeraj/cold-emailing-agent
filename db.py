@@ -161,7 +161,7 @@ def load_prompts():
     result = _retry(lambda: get_client().table("prompts").select("key, value").execute())
     return {r["key"]: r["value"] for r in (result.data or [])}
 
-def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None):
+def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None, source="agent"):
     """Insert a row into agent_runs after every run, success or failure."""
     row = {
         "status": status,
@@ -169,6 +169,7 @@ def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None):
         "skipped": skipped,
         "errors": errors,
         "elapsed_seconds": elapsed,
+        "source": source,
     }
     if failure_reason:
         row["failure_reason"] = failure_reason
@@ -176,20 +177,22 @@ def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None):
 
 # ── agent_events helpers ───────────────────────────────────────────────────────
 
-def log_agent_event(event_type, contact_id=None, status="success", run_id=None,
-                    error_message=None, blocked_checks=None, tokens_used=None,
+def log_agent_event(event_type, contact_id=None, contact_name=None, status="success",
+                    run_id=None, error_message=None, metadata=None, tokens_used=None,
                     completed_at=None):
     """Insert a row into agent_events. Best-effort — never raises."""
     from datetime import datetime, timezone
     row = {"event_type": event_type, "status": status}
     if contact_id is not None:
         row["contact_id"] = contact_id
+    if contact_name is not None:
+        row["contact_name"] = contact_name
     if run_id is not None:
         row["run_id"] = run_id
     if error_message:
         row["error_message"] = error_message
-    if blocked_checks is not None:
-        row["blocked_checks"] = blocked_checks
+    if metadata is not None:
+        row["metadata"] = metadata
     if tokens_used is not None:
         row["tokens_used"] = tokens_used
     if completed_at is not None:
@@ -295,27 +298,30 @@ def get_research_cache(cache_key):
 
 
 def set_research_cache(cache_key, contact_name, contact_company,
-                       brief_text, brief_json):
+                       brief_text, brief_json,
+                       queries_generated=None, brief_reliable=None):
     """
     Upserts into research_cache. Best-effort: on error log
     warning, return False. Returns True on success.
     """
     from datetime import datetime, timezone
+    row = {
+        "cache_key": cache_key,
+        "contact_name": contact_name,
+        "contact_company": contact_company,
+        "brief_text": brief_text,
+        "brief_json": brief_json,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if queries_generated is not None:
+        row["queries_generated"] = queries_generated
+    if brief_reliable is not None:
+        row["brief_reliable"] = brief_reliable
     try:
         _retry(lambda: (
             get_client()
             .table("research_cache")
-            .upsert(
-                {
-                    "cache_key": cache_key,
-                    "contact_name": contact_name,
-                    "contact_company": contact_company,
-                    "brief_text": brief_text,
-                    "brief_json": brief_json,
-                    "cached_at": datetime.now(timezone.utc).isoformat(),
-                },
-                on_conflict="cache_key",
-            )
+            .upsert(row, on_conflict="cache_key")
             .execute()
         ))
         return True

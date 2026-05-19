@@ -50,9 +50,10 @@ export type AgentEvent = {
   run_id: number | null;
   event_type: string;
   contact_id: number | null;
+  contact_name: string | null;
   status: string;
   error_message: string | null;
-  blocked_checks: string[] | null;
+  metadata: Record<string, unknown> | null;
   tokens_used: number | null;
   started_at: string;
   completed_at: string | null;

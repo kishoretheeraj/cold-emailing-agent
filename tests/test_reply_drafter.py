@@ -102,8 +102,9 @@ def test_preflight_hard_block_no_draft(mocker):
     reply_drafter.draft_reply(_contact(), "Let's chat!", {})
     assert not mock_create.called
     mock_event.assert_called_once_with(
-        "draft_reply", contact_id=42,
-        status="blocked_preflight", blocked_checks=["first_name_missing: 'Alice'"],
+        "draft_reply", contact_id=42, contact_name="Alice",
+        status="blocked_preflight",
+        metadata={"blocked_checks": ["first_name_missing: 'Alice'"]},
     )
 
 

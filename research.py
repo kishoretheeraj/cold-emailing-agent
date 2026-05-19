@@ -263,6 +263,18 @@ def get_research_brief(contact, sender_profile, prompts):
                     f"[RESEARCH] | {name} | {company} | "
                     f"cache_hit | age={age_days}d"
                 )
+                db.log_agent_event(
+                    "research",
+                    contact_id=contact.get("id"),
+                    contact_name=name,
+                    status="success",
+                    metadata={
+                        "cache_hit": True,
+                        "cache_age_days": age_days,
+                        "brief_reliable": bool(cached["brief_text"]),
+                        "brief_length": len(cached["brief_text"]),
+                    },
+                )
                 return cached["brief_text"]
 
         queries = _generate_queries(contact, sender_profile, prompts)
@@ -272,11 +284,14 @@ def get_research_brief(contact, sender_profile, prompts):
             raw_results = _run_hardcoded_fallback(contact)
 
         brief_text = _curate_brief(contact, raw_results, prompts)
+        brief_reliable = bool(brief_text)
 
         db.set_research_cache(
             key, name, company,
             brief_text,
             {"raw_results": raw_results, "queries": queries},
+            queries_generated=len(queries),
+            brief_reliable=brief_reliable,
         )
 
         log.info(
@@ -284,6 +299,20 @@ def get_research_brief(contact, sender_profile, prompts):
             f"path=fresh | "
             f"queries={len(queries)} | results={len(raw_results)} | "
             f"brief_len={len(brief_text)}"
+        )
+
+        db.log_agent_event(
+            "research",
+            contact_id=contact.get("id"),
+            contact_name=name,
+            status="success",
+            metadata={
+                "cache_hit": False,
+                "queries_generated": len(queries),
+                "tavily_results": len(raw_results),
+                "brief_reliable": brief_reliable,
+                "brief_length": len(brief_text),
+            },
         )
 
         return brief_text

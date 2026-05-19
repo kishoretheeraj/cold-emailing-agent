@@ -56,9 +56,10 @@ function makeEvent(overrides: Partial<AgentEvent> = {}): AgentEvent {
     run_id: null,
     event_type: "preflight",
     contact_id: 42,
+    contact_name: null,
     status: "success",
     error_message: null,
-    blocked_checks: null,
+    metadata: null,
     tokens_used: null,
     started_at: "2026-05-16T10:00:00Z",
     completed_at: "2026-05-16T10:00:01Z",
@@ -102,13 +103,15 @@ describe("RunsPage", () => {
     const user = userEvent.setup();
     render(<RunsPage />);
 
-    await waitFor(() => screen.getByText("preflight"));
+    await waitFor(() =>
+      screen.getByRole("cell", { name: "preflight" })
+    );
 
     await user.click(screen.getByRole("button", { name: /^failed$/i }));
 
     await waitFor(() => {
-      expect(screen.queryByText("preflight")).toBeNull();
-      expect(screen.getByText("classify_reply")).toBeTruthy();
+      expect(screen.queryByRole("cell", { name: "preflight" })).toBeNull();
+      expect(screen.getByRole("cell", { name: "classify_reply" })).toBeTruthy();
     });
   });
 

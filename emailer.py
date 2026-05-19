@@ -213,10 +213,13 @@ def generate_email(contact, action, original_subject=None, prompts=None):
             log.warning(f"[PREFLIGHT] | {_name} | {_company} | retry error: {exc}")
     if _pf_failures:
         _log_event("preflight", contact_id=contact.get("id"),
-                   status="blocked_preflight", blocked_checks=_pf_failures)
+                   contact_name=contact.get("name"),
+                   status="blocked_preflight",
+                   metadata={"blocked_checks": _pf_failures})
         log.warning(f"[PREFLIGHT] | {_name} | {_company} | BLOCKED | {_pf_failures}")
         raise ValueError(f"pre-flight blocked: {'; '.join(_pf_failures)}")
-    _log_event("preflight", contact_id=contact.get("id"), status="success")
+    _log_event("preflight", contact_id=contact.get("id"),
+               contact_name=contact.get("name"), status="success")
 
     # Space out calls within a contact to avoid exhausting the TPM limit.
     # Body generation already consumed ~7k tokens; the subject + critic add 2–4 more
@@ -400,6 +403,7 @@ def critique_and_revise(subject, body, contact, sender_profile,
     regenerate_fn raises, returns the original (subject, body)
     and logs a warning.
     """
+    from db import log_agent_event as _log_event
     name = contact.get("name", "")
     company = contact.get("company", "")
     result = _run_critic(subject, body, contact, sender_profile, critic_prompt_text)
@@ -413,6 +417,16 @@ def critique_and_revise(subject, body, contact, sender_profile,
             f"failed_soft={result.get('failed_soft_criteria', [])} | "
             f"retried={retried}"
         )
+        _log_event("critic", contact_id=contact.get("id"),
+                   contact_name=contact.get("name"), status="success",
+                   metadata={
+                       "score": result.get("score"),
+                       "verdict": result.get("verdict"),
+                       "rewrite_required": False,
+                       "killed_by": result.get("killed_by", []),
+                       "failed_soft": result.get("failed_soft_criteria", []),
+                       "retried": False,
+                   })
         return subject, body
 
     try:
@@ -428,4 +442,14 @@ def critique_and_revise(subject, body, contact, sender_profile,
         f"failed_soft={result.get('failed_soft_criteria', [])} | "
         f"retried={retried}"
     )
+    _log_event("critic", contact_id=contact.get("id"),
+               contact_name=contact.get("name"), status="success",
+               metadata={
+                   "score": result.get("score"),
+                   "verdict": result.get("verdict"),
+                   "rewrite_required": result.get("rewrite_required"),
+                   "killed_by": result.get("killed_by", []),
+                   "failed_soft": result.get("failed_soft_criteria", []),
+                   "retried": retried,
+               })
     return subject, body

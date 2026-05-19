@@ -41,7 +41,7 @@ from constants import TERMINAL_DRAFTED_STAGES
 from db import (
     get_drafted_contacts, get_sent_contacts, update_contact, update_reply_status,
     log_agent_event, update_classifier_status, insert_email_message, load_prompts,
-    update_message_id,
+    update_message_id, record_run,
 )
 from gmail import (
     create_gmail_label_if_not_exists, find_sent_for_thread,
@@ -147,6 +147,9 @@ def detect_sent_drafts():
             f"[SENT-DETECTED] | {name} | {company} | "
             f"{stage} -> {new_stage} | via={detection_method} | followup_date={new_followup_date}"
         )
+        log_agent_event("sent_detected", contact_id=contact["id"], contact_name=name,
+                        status="success",
+                        metadata={"method": detection_method, "new_stage": new_stage})
 
         # If Gmail rewrote the Message-ID on send, update it so follow-ups thread correctly.
         if mode == "first_touch" and actual_mid != message_id:
@@ -349,7 +352,8 @@ def detect_replies(prompts=None):
 
                     update_classifier_status(contact["id"], status_val)
                     log_agent_event("classify_reply", contact_id=contact["id"],
-                                    status="success")
+                                    contact_name=contact.get("name"), status="success",
+                                    metadata={"classifier_status": status_val})
 
                     # Copy to label (best-effort)
                     try:
@@ -405,7 +409,10 @@ def _draft_reply_responses(classified_contacts, prompts):
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def run():
+    import time as _time
     log.info("START | monitor run")
+    _start = _time.time()
+    _errors = 0
 
     prompts = {}
     try:
@@ -417,17 +424,27 @@ def run():
         detect_sent_drafts()
     except Exception as exc:
         log.warning(f"sent-detection | unexpected failure: {exc}")
+        _errors += 1
 
     try:
         classified = detect_replies(prompts=prompts)
     except Exception as exc:
         log.warning(f"reply-detection | unexpected failure: {exc}")
         classified = []
+        _errors += 1
 
     try:
         _draft_reply_responses(classified, prompts)
     except Exception as exc:
         log.warning(f"reply-drafting | unexpected failure: {exc}")
+        _errors += 1
+
+    _elapsed = round(_time.time() - _start)
+    _status = "failure" if _errors else "success"
+    try:
+        record_run(_status, 0, 0, _errors, _elapsed, source="monitor")
+    except Exception as exc:
+        log.warning(f"[MONITOR] record_run failed: {exc}")
 
 
 if __name__ == "__main__":
