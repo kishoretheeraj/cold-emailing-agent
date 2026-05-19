@@ -139,12 +139,18 @@ Follow-up emails must land in the same Gmail thread as the original.
 
 ## Resilience patterns
 
-- **Anthropic API** (`emailer._call_claude`): retries on HTTP 429, 529, any
-  5xx, and `urllib.error.URLError`, up to 3 attempts with 2 s / 4 s backoff.
-  Other 4xx (auth, bad request) raise immediately. Accepts optional `model=None`
-  and `max_tokens=1000` params — all existing callers omit these and get the
-  defaults (`EMAIL_MODEL`, 1000 tokens). `research.py` passes `RESEARCH_QUERY_MODEL`
-  / `RESEARCH_CURATE_MODEL` (both Haiku) with lower token ceilings (300 / 500).
+- **Anthropic API** (`emailer._call_claude`): uses the official `anthropic` SDK
+  with `max_retries=2` (3 total attempts). The SDK auto-retries 429, 529, and
+  5xx; non-retryable 4xx raise immediately. Signature:
+  `_call_claude(prompt, model=None, max_tokens=1000, system=None)`. When `system`
+  is provided it is sent as a system-prompt block with `cache_control: ephemeral`
+  for prompt caching. All five generators (`_generate_outreach`,
+  `_generate_applied_intro`, `_generate_applied_followup`, `_generate_subject`,
+  `_run_critic`) pass the sender profile as `system`. `research.py` passes
+  `RESEARCH_QUERY_MODEL` / `RESEARCH_CURATE_MODEL` (both Haiku) with lower token
+  ceilings (300 / 500) and no `system` param.
+  Caching activates automatically when the system prompt reaches the 1024-token
+  Sonnet minimum (currently below threshold; grows as Supabase prompts are edited).
 - **Tavily** (`research.py`): `_get_client()` lazily initialises a singleton
   `TavilyClient`. All failures inside `get_research_brief` degrade to `""` —
   the function never raises. Absent `TAVILY_API_KEY` short-circuits immediately.
