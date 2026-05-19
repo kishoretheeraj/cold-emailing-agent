@@ -93,7 +93,7 @@ def test_run_critic_format_error(mocker, caplog):
 def test_run_critic_contact_context_correct(mocker):
     captured = []
 
-    def fake_claude(prompt):
+    def fake_claude(prompt, **kwargs):
         captured.append(prompt)
         return '{"score": 7, "failed_criteria": [], "feedback": ""}'
 
@@ -115,7 +115,7 @@ def test_run_critic_contact_context_correct(mocker):
 def test_run_critic_contact_context_omits_dartmouth_when_false(mocker):
     captured = []
 
-    def fake_claude(prompt):
+    def fake_claude(prompt, **kwargs):
         captured.append(prompt)
         return '{"score": 7, "failed_criteria": [], "feedback": ""}'
 
@@ -131,7 +131,7 @@ def test_run_critic_contact_context_omits_dartmouth_when_false(mocker):
 def test_run_critic_contact_context_omits_none_fields(mocker):
     captured = []
 
-    def fake_claude(prompt):
+    def fake_claude(prompt, **kwargs):
         captured.append(prompt)
         return '{"score": 7, "failed_criteria": [], "feedback": ""}'
 

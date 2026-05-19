@@ -167,7 +167,7 @@ def test_generate_email_followup_empty_original_subject(mocker):
 def test_outreach_prompt_includes_dartmouth_when_alumni(mocker):
     captured_prompts = []
 
-    def fake_claude(prompt):
+    def fake_claude(prompt, **kwargs):
         captured_prompts.append(prompt)
         return "fake response"
 
@@ -186,7 +186,7 @@ def test_outreach_prompt_omits_dartmouth_when_not_alumni(mocker):
     mocker.patch.object(
         emailer,
         "_call_claude",
-        side_effect=lambda p: (captured_prompts.append(p), "x")[1],
+        side_effect=lambda p, **kw: (captured_prompts.append(p), "x")[1],
     )
 
     contact = _outreach_contact(detail="Stanford GSB")
@@ -202,7 +202,7 @@ def test_generate_email_uses_custom_outreach_prompt(mocker):
     captured = []
     mocker.patch.object(
         emailer, "_call_claude",
-        side_effect=lambda p: (captured.append(p), "body")[1],
+        side_effect=lambda p, **kw: (captured.append(p), "body")[1],
     )
     custom_tpl = (
         "CUSTOM {profile} {name} {company} {role} {detail} "
@@ -220,7 +220,7 @@ def test_generate_email_uses_custom_sender_profile(mocker):
     captured = []
     mocker.patch.object(
         emailer, "_call_claude",
-        side_effect=lambda p: (captured.append(p), "body")[1],
+        side_effect=lambda p, **kw: (captured.append(p), "body")[1],
     )
     emailer.generate_email(
         _outreach_contact(), "send_first_touch",
@@ -233,7 +233,7 @@ def test_generate_email_falls_back_to_config_when_prompts_empty(mocker):
     captured = []
     mocker.patch.object(
         emailer, "_call_claude",
-        side_effect=lambda p: (captured.append(p), "body")[1],
+        side_effect=lambda p, **kw: (captured.append(p), "body")[1],
     )
     emailer.generate_email(_outreach_contact(), "send_first_touch", prompts={})
     # Config default contains the OUTREACH_PROMPT rules text
@@ -244,7 +244,7 @@ def test_generate_email_custom_applied_intro_prompt(mocker):
     captured = []
     mocker.patch.object(
         emailer, "_call_claude",
-        side_effect=lambda p: (captured.append(p), "body")[1],
+        side_effect=lambda p, **kw: (captured.append(p), "body")[1],
     )
     custom_tpl = (
         "APPLIED {profile} {name} {role} {company} "
@@ -261,7 +261,7 @@ def test_generate_email_custom_subject_prompt(mocker):
     captured = []
     mocker.patch.object(
         emailer, "_call_claude",
-        side_effect=lambda p: (captured.append(p), "subject line")[1],
+        side_effect=lambda p, **kw: (captured.append(p), "subject line")[1],
     )
     custom_subj = "SUBJ {name} {company} {mode} {job_title} {body}"
     emailer.generate_email(

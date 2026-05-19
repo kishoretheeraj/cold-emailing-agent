@@ -1,14 +1,8 @@
 import json
 import logging
-import ssl
-import time
-import urllib.error
-import urllib.request
 from datetime import date
 
-import certifi
-
-_ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+import anthropic
 
 from config import (
     ANTHROPIC_API_KEY, EMAIL_MODEL, SENDER_PROFILE,
@@ -21,6 +15,8 @@ from config import (
 )
 
 log = logging.getLogger(__name__)
+
+_claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=2)
 
 # ── Action → template name mapping ────────────────────────────────────────────
 _FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
@@ -71,46 +67,22 @@ def get_dartmouth_instruction(prompts_dict, dart):
     log.warning("[WARN] prompt key dartmouth_instruction not in DB — using fallback")
     return DARTMOUTH_INSTRUCTION
 
-def _call_claude(prompt, model=None, max_tokens=1000):
+def _call_claude(prompt, model=None, max_tokens=1000, system=None):
     _model = model or EMAIL_MODEL
-    payload = json.dumps({
-        "model": _model,
-        "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-        },
-        method="POST",
+    kwargs = dict(
+        model=_model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
     )
-    # Retry transient 429/529/5xx and network errors — Anthropic 529 (overload)
-    # sank a full run before; same backoff covers DNS/TLS/connection blips.
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=30, context=_ssl_ctx) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            try:
-                text = data["content"][0]["text"].strip()
-            except (KeyError, IndexError, TypeError) as exc:
-                raise ValueError(f"Claude response malformed: {exc}") from exc
-            if not text:
-                raise ValueError("Claude returned empty text")
-            return text
-        except urllib.error.HTTPError as exc:
-            if attempt < 2 and (exc.code in (429, 529) or 500 <= exc.code < 600):
-                time.sleep(2 ** (attempt + 1))
-                continue
-            raise
-        except urllib.error.URLError:
-            if attempt < 2:
-                time.sleep(2 ** (attempt + 1))
-                continue
-            raise
+    if system:
+        kwargs["system"] = [
+            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+        ]
+    resp = _claude.messages.create(**kwargs)
+    text = resp.content[0].text.strip()
+    if not text:
+        raise ValueError("Claude returned empty text")
+    return text
 
 def _normalize_body(text):
     paragraphs = text.split("\n\n")
@@ -288,7 +260,7 @@ def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=N
         prompt += research_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
-    return _call_claude(prompt)
+    return _call_claude(prompt, system=profile)
 
 def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
     applied = contact.get("applied_date") or str(date.today())
@@ -308,7 +280,7 @@ def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None
         prompt += research_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
-    return _call_claude(prompt)
+    return _call_claude(prompt, system=profile)
 
 def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=None):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -323,9 +295,10 @@ def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=N
     )
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
-    return _call_claude(prompt)
+    return _call_claude(prompt, system=profile)
 
 def _generate_subject(contact, mode, body, prompts):
+    profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("subject_prompt", SUBJECT_PROMPT)
     prompt = tpl.format(
         name=contact.get("name", ""),
@@ -334,7 +307,7 @@ def _generate_subject(contact, mode, body, prompts):
         job_title=contact.get("job_title", ""),
         body=body[:500],
     )
-    subject = _call_claude(prompt)
+    subject = _call_claude(prompt, system=profile)
     return subject.strip().strip('"').strip("'")
 
 # ── Critic loop ────────────────────────────────────────────────────────────────
@@ -369,7 +342,7 @@ def _run_critic(subject, body, contact, sender_profile, critic_prompt_text):
         return _fallback
 
     try:
-        raw = _call_claude(formatted)
+        raw = _call_claude(formatted, system=sender_profile)
     except Exception as exc:
         log.warning(f"[CRITIC] _call_claude error: {exc}")
         return _fallback
