@@ -4,6 +4,8 @@ from datetime import date
 
 import anthropic
 
+import time
+
 from config import (
     ANTHROPIC_API_KEY, EMAIL_MODEL, SENDER_PROFILE,
     DARTMOUTH_KEYWORDS, DARTMOUTH_INSTRUCTION,
@@ -11,12 +13,13 @@ from config import (
     OUTREACH_PROMPT, APPLIED_INTRO_PROMPT,
     APPLIED_FOLLOWUP_PROMPT, SUBJECT_PROMPT,
     CRITIC_PROMPT_DEFAULT, CRITIC_PASS_THRESHOLD,
+    INTER_CALL_SLEEP,
     RESEARCH_TIERS, RESEARCH_INJECTION_DEFAULT,
 )
 
 log = logging.getLogger(__name__)
 
-_claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=2)
+_claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=4)
 
 # ── Action → template name mapping ────────────────────────────────────────────
 _FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
@@ -214,6 +217,12 @@ def generate_email(contact, action, original_subject=None, prompts=None):
         log.warning(f"[PREFLIGHT] | {_name} | {_company} | BLOCKED | {_pf_failures}")
         raise ValueError(f"pre-flight blocked: {'; '.join(_pf_failures)}")
     _log_event("preflight", contact_id=contact.get("id"), status="success")
+
+    # Space out calls within a contact to avoid exhausting the TPM limit.
+    # Body generation already consumed ~7k tokens; the subject + critic add 2–4 more
+    # calls at similar cost. Sleep gives the per-minute window time to partially clear.
+    if action in _FIRST_TOUCH_ACTIONS:
+        time.sleep(INTER_CALL_SLEEP)
 
     if action in _FIRST_TOUCH_ACTIONS:
         subject = _generate_subject(contact, mode, body, _prompts)

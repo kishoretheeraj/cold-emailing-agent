@@ -7,9 +7,10 @@ import emailer
 
 @pytest.fixture(autouse=True)
 def _patch_preflight_and_db(mocker):
-    """Patch preflight and db.log_agent_event for all generate_email tests."""
+    """Patch preflight, db, and time.sleep for all generate_email tests."""
     mocker.patch("preflight.check", return_value=[])
     mocker.patch("db.log_agent_event")
+    mocker.patch("emailer.time.sleep")
 
 
 # ── _is_dartmouth ────────────────────────────────────────────────────────────

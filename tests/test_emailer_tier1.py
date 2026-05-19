@@ -71,6 +71,7 @@ def test_critic_gating(tier, action, expects_critic, mocker):
 
     mocker.patch("preflight.check", return_value=[])
     mocker.patch("db.log_agent_event")
+    mocker.patch("emailer.time.sleep")
     mocker.patch.object(
         emailer, "_call_claude",
         side_effect=["Email body text.", "quick subject"],
@@ -109,6 +110,7 @@ def test_generate_email_tier1_critic_passes_no_retry(mocker):
 
     mocker.patch("preflight.check", return_value=[])
     mocker.patch("db.log_agent_event")
+    mocker.patch("emailer.time.sleep")
     mock_claude = mocker.patch.object(
         emailer, "_call_claude",
         side_effect=["First body.", "great subject"],
@@ -135,6 +137,7 @@ def test_generate_email_tier1_critic_retries_on_low_score(mocker):
 
     mocker.patch("preflight.check", return_value=[])
     mocker.patch("db.log_agent_event")
+    mocker.patch("emailer.time.sleep")
     mock_claude = mocker.patch.object(
         emailer, "_call_claude",
         side_effect=[

@@ -11,6 +11,7 @@ import research
 def _patch_preflight_and_db(mocker):
     mocker.patch("preflight.check", return_value=[])
     mocker.patch("db.log_agent_event")
+    mocker.patch("emailer.time.sleep")
 
 
 def _outreach_contact(**overrides):
