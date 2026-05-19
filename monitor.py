@@ -100,7 +100,7 @@ def detect_sent_drafts():
         if not actual_mid and mode == "first_touch":
             original_subject = contact.get("original_subject", "")
             if original_subject:
-                actual_mid = find_sent_by_subject(original_subject, since_date)
+                actual_mid = find_sent_by_subject(original_subject, since_date, contact.get("email", ""))
 
         if not actual_mid:
             continue

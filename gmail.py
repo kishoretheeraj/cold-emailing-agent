@@ -157,10 +157,10 @@ def _ascii_subject_fragment(subject):
     return s.strip()
 
 
-def find_sent_by_subject(subject, since_date):
+def find_sent_by_subject(subject, since_date, to_email):
     """
-    Fallback: search [Gmail]/Sent Mail by subject when the Message-ID search
-    finds nothing (e.g. Gmail rewrote the draft ID on send).
+    Fallback: search [Gmail]/Sent Mail by subject + recipient when the Message-ID
+    search finds nothing (e.g. Gmail rewrote the draft ID on send).
     Returns the actual Message-ID of the earliest matching sent email, or None.
     """
     term = _ascii_subject_fragment(subject)
@@ -171,7 +171,7 @@ def find_sent_by_subject(subject, since_date):
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         imap.select('"[Gmail]/Sent Mail"', readonly=True)
-        status, data = imap.search(None, "SINCE", since_str, "SUBJECT", f'"{term}"')
+        status, data = imap.search(None, "SINCE", since_str, "TO", to_email, "SUBJECT", f'"{term}"')
         if status != "OK" or not data[0]:
             log.info(f"[SENT-CHECK-SUBJ] | {term!r} | found=False")
             return None

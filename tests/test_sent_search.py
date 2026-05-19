@@ -189,3 +189,102 @@ def test_thread_id_search_logout_on_error(mocker):
     gmail.find_sent_by_thread_id(THRID, SINCE)
 
     fake_imap.logout.assert_called_once()
+
+
+# ── find_sent_by_subject ──────────────────────────────────────────────────────
+
+TO = "contact@example.com"
+SUBJECT = "Fellow Dartmouth alum reaching out"
+SUBJ_FETCH = (
+    "OK",
+    [(None, b"Message-ID: <found-mid@mail.gmail.com>\r\n")],
+)
+
+
+def _make_subj_imap(search_status="OK", search_data=b"3"):
+    fake_imap = MagicMock(name="imap")
+    fake_imap.select.return_value = ("OK", [b"1"])
+    fake_imap.search.return_value = (search_status, [search_data])
+    fake_imap.fetch.return_value = SUBJ_FETCH
+    return fake_imap
+
+
+def test_subject_search_includes_to_filter(mocker):
+    fake_imap = _make_subj_imap()
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.find_sent_by_subject(SUBJECT, SINCE, to_email=TO)
+
+    args = fake_imap.search.call_args.args
+    assert "TO" in args
+    assert TO in args
+
+
+def test_subject_search_includes_subject_filter(mocker):
+    fake_imap = _make_subj_imap()
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.find_sent_by_subject(SUBJECT, SINCE, to_email=TO)
+
+    args = fake_imap.search.call_args.args
+    assert "SUBJECT" in args
+    # Fragment must appear quoted somewhere in the args
+    assert any("Fellow Dartmouth alum" in a for a in args if isinstance(a, str))
+
+
+def test_subject_search_returns_message_id_when_found(mocker):
+    fake_imap = _make_subj_imap()
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.find_sent_by_subject(SUBJECT, SINCE, to_email=TO)
+
+    assert result == "<found-mid@mail.gmail.com>"
+
+
+def test_subject_search_returns_none_when_no_match(mocker):
+    fake_imap = _make_subj_imap(search_status="OK", search_data=b"")
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.find_sent_by_subject(SUBJECT, SINCE, to_email=TO)
+
+    assert result is None
+
+
+def test_subject_search_returns_none_on_imap_error(mocker):
+    fake_imap = MagicMock()
+    fake_imap.login.side_effect = Exception("imap is down")
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    result = gmail.find_sent_by_subject(SUBJECT, SINCE, to_email=TO)
+
+    assert result is None
+
+
+def test_subject_search_logout_on_error(mocker):
+    fake_imap = MagicMock()
+    fake_imap.select.return_value = ("OK", [b"1"])
+    fake_imap.search.side_effect = Exception("timeout")
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.find_sent_by_subject(SUBJECT, SINCE, to_email=TO)
+
+    fake_imap.logout.assert_called_once()
+
+
+def test_subject_search_different_recipients_get_different_results(mocker):
+    """Two contacts with the same subject but different recipients must not collide."""
+    fake_imap_snow = _make_subj_imap(search_data=b"7")
+    fake_imap_snow.fetch.return_value = ("OK", [(None, b"Message-ID: <snow-mid@mail.gmail.com>\r\n")])
+
+    fake_imap_adams = _make_subj_imap(search_data=b"9")
+    fake_imap_adams.fetch.return_value = ("OK", [(None, b"Message-ID: <adams-mid@mail.gmail.com>\r\n")])
+
+    imap_instances = [fake_imap_snow, fake_imap_adams]
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", side_effect=imap_instances)
+
+    result_snow = gmail.find_sent_by_subject(SUBJECT, SINCE, to_email="george@keybank.com")
+    result_adams = gmail.find_sent_by_subject(SUBJECT, SINCE, to_email="claytonadams@mascoma.com")
+
+    assert result_snow == "<snow-mid@mail.gmail.com>"
+    assert result_adams == "<adams-mid@mail.gmail.com>"
+    assert result_snow != result_adams
