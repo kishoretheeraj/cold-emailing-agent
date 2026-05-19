@@ -477,12 +477,24 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 - Index on `(contact_id, sent_at DESC)`
 - RLS disabled. Access via `db.insert_email_message()` and `db.get_email_messages(contact_id)`.
 
-**`agent_events`** — per-action audit log (preflight, classify_reply, draft_reply, etc.).
-- `run_id INTEGER FK→agent_runs(id) ON DELETE SET NULL` (nullable — events outside cron runs still log)
+**`agent_events`** — per-action audit log (preflight, classify_reply, draft_reply, critic, sent_detected, research).
+- `run_id INTEGER FK→agent_runs(id) ON DELETE SET NULL` (nullable)
+- `contact_name TEXT nullable` — denormalized contact name; stored at write time so /runs page never needs a join
 - `status TEXT` ('running'|'success'|'failed'|'blocked_preflight')
-- `blocked_checks JSONB` — list of failed pre-flight check strings
+- `metadata JSONB nullable` — structured per-event data; shape varies by `event_type`:
+  - `preflight`: `{"blocked_checks": ["check_name", ...]}`
+  - `critic`: `{"score": N, "verdict": "PASS"|"FAIL", "rewrite_required": bool, "killed_by": [...], "failed_soft": [...], "retried": bool}`
+  - `sent_detected`: `{"method": "thrid"|"mid"|"subject", "new_stage": "first_touch_sent"|...}`
+  - `classify_reply`: `{"classifier_status": "positive_reply"|...}`
+  - `research`: `{"cache_hit": bool, "queries_generated": N, "tavily_results": N, "brief_reliable": bool, "brief_length": N}` (cache hits also include `"cache_age_days": N`)
 - Indexes on `(started_at DESC)`, `status`, `contact_id`
 - RLS disabled. Access via `db.log_agent_event()` (best-effort, never raises) and `db.get_agent_events(limit=100)`.
+
+**`agent_runs`** gains `source TEXT DEFAULT 'agent'` — values: `'agent'` (daily agent.py run) or `'monitor'` (monitor.py run). `monitor.run()` calls `record_run(source='monitor')` at the end of every cycle.
+
+**`research_cache`** gains `queries_generated INT` and `brief_reliable BOOLEAN` — populated by `db.set_research_cache()`. Allows querying which contacts had no reliable brief without unpacking `brief_json`.
+
+**`prompts_history`** — append-only audit log of every prompt value change. Populated automatically via a Supabase BEFORE UPDATE trigger on the `prompts` table (no application code needed). Columns: `id`, `key`, `old_value`, `new_value`, `changed_at`.
 
 ## New contacts column
 
@@ -529,12 +541,14 @@ Instruction-level keys (sort_orders 11–18) use `get_tier_instruction()`,
 
 ## New db.py functions
 
-- `log_agent_event(event_type, contact_id, status, ...)` — best-effort insert to agent_events; never raises
+- `log_agent_event(event_type, contact_id, contact_name, status, metadata, ...)` — best-effort insert to agent_events; never raises. `metadata` replaces the old `blocked_checks` param — pass a dict, not a list.
 - `get_agent_events(limit=100)` — ordered by started_at DESC; used by /runs page
 - `update_classifier_status(contact_id, value)` — sets classifier_status; used by monitor
 - `insert_email_message(contact_id, direction, sent_at, ...)` — upsert on message_id; used by agent (outgoing) and monitor (incoming)
 - `get_email_messages(contact_id)` — ordered by sent_at ASC; used by thread view in contact sheet
 - `update_message_id(contact_id, message_id)` — updates only `message_id`; called by `detect_sent_drafts` when Gmail rewrites the ID on send (threading fix)
+- `record_run(status, drafted, skipped, errors, elapsed, failure_reason, source)` — `source` defaults to `'agent'`; pass `source='monitor'` from monitor.py
+- `set_research_cache(..., queries_generated, brief_reliable)` — two new optional params populate the analytics columns
 
 ## New config.py constants
 
