@@ -367,6 +367,16 @@ specific fact against a real source before sending.
 (two Haiku calls per researched contact). Tavily free tier: 1000 credits/month;
 ~3 queries per contact = ~30 credits per 10 first-touches.
 
+## Definition of done
+
+Every feature or bug fix is not complete until all three of these are true:
+
+1. **Tests pass** — `python3 -m pytest` exits green. No exceptions for "trivial" changes.
+2. **CLAUDE.md updated** — if the change affects a documented behaviour (module layout, resilience pattern, decision invariant, prompt key, DB schema, test pattern), update the relevant section. Keep it concise; don't add new sections for things already derivable from the code.
+3. **Memory updated** — add or update the relevant file under `~/.claude/projects/.../memory/`. One entry per shipped feature. Update `MEMORY.md` index. Delete or correct stale entries.
+
+Do not commit until all three are done.
+
 ## When changing things
 
 - **Don't refactor `agent.py` decision logic** without updating the
