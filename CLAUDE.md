@@ -58,6 +58,13 @@ The marker is one of: `START`, `DONE`, `[OUTREACH]`, `[APPLIED]`, `[CRITIC]`,
 or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it.
 
+**Logging setup order invariant:** `logging.basicConfig` must be called before
+any project-module import in every script. `agent.py` calls `basicConfig` at
+module level (to claim `agent.log`); if `monitor.py` imports `agent` first,
+agent's handler wins the root-logger race and all monitor output silently goes
+to `agent.log`. Keep `basicConfig` + `log = getLogger(...)` at the top of each
+script, above all project imports.
+
 ## Decision logic invariants
 
 - A contact is **skipped** the moment `reply_status` becomes anything other
