@@ -11,6 +11,22 @@ _CRITIC_TPL = (
     "Profile: {sender_profile}\nContext: {contact_context}"
 )
 
+_PASS_RESULT = {
+    "verdict": "PASS", "score": 16, "rewrite_required": False,
+    "killed_by": [], "failed_soft_criteria": [],
+    "banned_phrases_found": [], "ai_tells_found": [], "feedback": "",
+}
+_FAIL_RESULT = {
+    "verdict": "FAIL", "score": 12, "rewrite_required": True,
+    "killed_by": ["K3"], "failed_soft_criteria": ["S2"],
+    "banned_phrases_found": [], "ai_tells_found": [], "feedback": "Hook is generic.",
+}
+_FALLBACK = {
+    "verdict": "PASS", "score": 16, "rewrite_required": False,
+    "killed_by": [], "failed_soft_criteria": [],
+    "banned_phrases_found": [], "ai_tells_found": [], "feedback": "",
+}
+
 
 def _contact(**overrides):
     base = {
@@ -32,28 +48,37 @@ def test_run_critic_valid_json(mocker):
     mocker.patch.object(
         emailer,
         "_call_claude",
-        return_value='{"score": 5, "failed_criteria": [1, 3], "feedback": "Add specifics."}',
+        return_value=(
+            '{"verdict":"FAIL","score":10,"rewrite_required":true,'
+            '"killed_by":["K1"],"failed_soft_criteria":["S3"],'
+            '"banned_phrases_found":[],"ai_tells_found":[],"feedback":"Too generic."}'
+        ),
     )
     result = emailer._run_critic(
         "Hey Jordan", "body text", _contact(), "Sender bio", _CRITIC_TPL
     )
-    assert result["score"] == 5
-    assert result["failed_criteria"] == [1, 3]
-    assert result["feedback"] == "Add specifics."
+    assert result["verdict"] == "FAIL"
+    assert result["score"] == 10
+    assert result["rewrite_required"] is True
+    assert result["killed_by"] == ["K1"]
+    assert result["feedback"] == "Too generic."
 
 
 def test_run_critic_markdown_fenced_json(mocker):
+    json_str = (
+        '{"verdict":"PASS","score":16,"rewrite_required":false,'
+        '"killed_by":[],"failed_soft_criteria":[],'
+        '"banned_phrases_found":[],"ai_tells_found":[],"feedback":""}'
+    )
     mocker.patch.object(
-        emailer,
-        "_call_claude",
-        return_value='```json\n{"score": 7, "failed_criteria": [], "feedback": ""}\n```',
+        emailer, "_call_claude", return_value=f"```json\n{json_str}\n```"
     )
     result = emailer._run_critic(
         "Hey Jordan", "body text", _contact(), "Sender bio", _CRITIC_TPL
     )
-    assert result["score"] == 7
-    assert result["failed_criteria"] == []
-    assert result["feedback"] == ""
+    assert result["verdict"] == "PASS"
+    assert result["rewrite_required"] is False
+    assert result["score"] == 16
 
 
 def test_run_critic_malformed_json(mocker, caplog):
@@ -62,7 +87,7 @@ def test_run_critic_malformed_json(mocker, caplog):
         result = emailer._run_critic(
             "Hey Jordan", "body text", _contact(), "Sender bio", _CRITIC_TPL
         )
-    assert result == {"score": 7, "failed_criteria": [], "feedback": ""}
+    assert result == _FALLBACK
     assert any("JSON parse error" in r.message for r in caplog.records)
 
 
@@ -74,19 +99,19 @@ def test_run_critic_call_claude_raises(mocker, caplog):
         result = emailer._run_critic(
             "Hey Jordan", "body text", _contact(), "Sender bio", _CRITIC_TPL
         )
-    assert result == {"score": 7, "failed_criteria": [], "feedback": ""}
+    assert result == _FALLBACK
     assert any("_call_claude error" in r.message for r in caplog.records)
 
 
 def test_run_critic_format_error(mocker, caplog):
     # Template with an unknown placeholder causes KeyError during .format()
     bad_tpl = "Subject: {subject}\nBody: {body}\n{unknown_placeholder}"
-    mocker.patch.object(emailer, "_call_claude", return_value='{"score": 7}')
+    mocker.patch.object(emailer, "_call_claude", return_value='{"verdict":"PASS"}')
     with caplog.at_level(logging.WARNING):
         result = emailer._run_critic(
             "Hey Jordan", "body text", _contact(), "Sender bio", bad_tpl
         )
-    assert result == {"score": 7, "failed_criteria": [], "feedback": ""}
+    assert result == _FALLBACK
     assert any("prompt format error" in r.message for r in caplog.records)
 
 
@@ -95,7 +120,8 @@ def test_run_critic_contact_context_correct(mocker):
 
     def fake_claude(prompt, **kwargs):
         captured.append(prompt)
-        return '{"score": 7, "failed_criteria": [], "feedback": ""}'
+        import json
+        return json.dumps(_PASS_RESULT)
 
     mocker.patch.object(emailer, "_call_claude", side_effect=fake_claude)
 
@@ -117,7 +143,8 @@ def test_run_critic_contact_context_omits_dartmouth_when_false(mocker):
 
     def fake_claude(prompt, **kwargs):
         captured.append(prompt)
-        return '{"score": 7, "failed_criteria": [], "feedback": ""}'
+        import json
+        return json.dumps(_PASS_RESULT)
 
     mocker.patch.object(emailer, "_call_claude", side_effect=fake_claude)
 
@@ -133,7 +160,8 @@ def test_run_critic_contact_context_omits_none_fields(mocker):
 
     def fake_claude(prompt, **kwargs):
         captured.append(prompt)
-        return '{"score": 7, "failed_criteria": [], "feedback": ""}'
+        import json
+        return json.dumps(_PASS_RESULT)
 
     mocker.patch.object(emailer, "_call_claude", side_effect=fake_claude)
 
@@ -149,12 +177,8 @@ def test_run_critic_contact_context_omits_none_fields(mocker):
 # ── critique_and_revise ───────────────────────────────────────────────────────
 
 
-def test_critique_and_revise_score_7_passes_unchanged(mocker):
-    mocker.patch.object(
-        emailer,
-        "_run_critic",
-        return_value={"score": 7, "failed_criteria": [], "feedback": ""},
-    )
+def test_critique_and_revise_pass_returns_unchanged(mocker):
+    mocker.patch.object(emailer, "_run_critic", return_value=_PASS_RESULT)
     regenerate_fn = mocker.MagicMock()
 
     subject, body = emailer.critique_and_revise(
@@ -167,30 +191,8 @@ def test_critique_and_revise_score_7_passes_unchanged(mocker):
     regenerate_fn.assert_not_called()
 
 
-def test_critique_and_revise_score_6_passes_unchanged(mocker):
-    mocker.patch.object(
-        emailer,
-        "_run_critic",
-        return_value={"score": 6, "failed_criteria": [3], "feedback": "Minor tweak."},
-    )
-    regenerate_fn = mocker.MagicMock()
-
-    subject, body = emailer.critique_and_revise(
-        "Original Subject", "Original body.",
-        _contact(), "Sender bio", _CRITIC_TPL, regenerate_fn,
-    )
-
-    assert subject == "Original Subject"
-    assert body == "Original body."
-    regenerate_fn.assert_not_called()
-
-
-def test_critique_and_revise_score_5_triggers_retry(mocker):
-    mocker.patch.object(
-        emailer,
-        "_run_critic",
-        return_value={"score": 5, "failed_criteria": [1, 4], "feedback": "Fix the ask."},
-    )
+def test_critique_and_revise_rewrite_required_triggers_retry(mocker):
+    mocker.patch.object(emailer, "_run_critic", return_value=_FAIL_RESULT)
     regenerate_fn = mocker.MagicMock(return_value=("New Subject", "New body."))
 
     subject, body = emailer.critique_and_revise(
@@ -200,15 +202,11 @@ def test_critique_and_revise_score_5_triggers_retry(mocker):
 
     assert subject == "New Subject"
     assert body == "New body."
-    regenerate_fn.assert_called_once_with("Fix the ask.")
+    regenerate_fn.assert_called_once_with("Hook is generic.")
 
 
 def test_critique_and_revise_regenerate_raises_returns_original(mocker, caplog):
-    mocker.patch.object(
-        emailer,
-        "_run_critic",
-        return_value={"score": 3, "failed_criteria": [1, 2, 3, 4], "feedback": "Too generic."},
-    )
+    mocker.patch.object(emailer, "_run_critic", return_value=_FAIL_RESULT)
     regenerate_fn = mocker.MagicMock(side_effect=Exception("boom"))
 
     with caplog.at_level(logging.WARNING):
@@ -223,11 +221,7 @@ def test_critique_and_revise_regenerate_raises_returns_original(mocker, caplog):
 
 
 def test_critique_and_revise_logs_critic_line_pass(mocker, caplog):
-    mocker.patch.object(
-        emailer,
-        "_run_critic",
-        return_value={"score": 7, "failed_criteria": [], "feedback": ""},
-    )
+    mocker.patch.object(emailer, "_run_critic", return_value=_PASS_RESULT)
     regenerate_fn = mocker.MagicMock()
 
     with caplog.at_level(logging.INFO):
@@ -242,11 +236,7 @@ def test_critique_and_revise_logs_critic_line_pass(mocker, caplog):
 
 
 def test_critique_and_revise_logs_critic_line_retry(mocker, caplog):
-    mocker.patch.object(
-        emailer,
-        "_run_critic",
-        return_value={"score": 4, "failed_criteria": [2, 5], "feedback": "Needs work."},
-    )
+    mocker.patch.object(emailer, "_run_critic", return_value=_FAIL_RESULT)
     regenerate_fn = mocker.MagicMock(return_value=("New Subject", "New body."))
 
     with caplog.at_level(logging.INFO):

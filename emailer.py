@@ -336,7 +336,11 @@ def _run_critic(subject, body, contact, sender_profile, critic_prompt_text):
         parts.append("Dartmouth: yes")
     contact_context = "\n".join(parts)
 
-    _fallback = {"score": 7, "failed_criteria": [], "feedback": ""}
+    _fallback = {
+        "verdict": "PASS", "score": 16, "rewrite_required": False,
+        "killed_by": [], "failed_soft_criteria": [],
+        "banned_phrases_found": [], "ai_tells_found": [], "feedback": "",
+    }
 
     try:
         formatted = critic_prompt_text.format(
@@ -392,11 +396,12 @@ def critique_and_revise(subject, body, contact, sender_profile,
     result = _run_critic(subject, body, contact, sender_profile, critic_prompt_text)
     retried = False
 
-    if result.get("score", 7) >= CRITIC_PASS_THRESHOLD:
+    if not result.get("rewrite_required", False):
         log.info(
             f"[CRITIC] | {name} | {company} | "
-            f"score={result['score']} | "
-            f"failed={result['failed_criteria']} | "
+            f"score={result.get('score', 16)} | "
+            f"killed_by={result.get('killed_by', [])} | "
+            f"failed_soft={result.get('failed_soft_criteria', [])} | "
             f"retried={retried}"
         )
         return subject, body
@@ -409,8 +414,9 @@ def critique_and_revise(subject, body, contact, sender_profile,
 
     log.info(
         f"[CRITIC] | {name} | {company} | "
-        f"score={result['score']} | "
-        f"failed={result['failed_criteria']} | "
+        f"score={result.get('score', 0)} | "
+        f"killed_by={result.get('killed_by', [])} | "
+        f"failed_soft={result.get('failed_soft_criteria', [])} | "
         f"retried={retried}"
     )
     return subject, body

@@ -77,7 +77,8 @@ def test_critic_gating(tier, action, expects_critic, mocker):
     )
     mock_critic = mocker.patch.object(
         emailer, "_run_critic",
-        return_value={"score": 7, "failed_criteria": [], "feedback": ""},
+        return_value={"verdict": "PASS", "score": 16, "rewrite_required": False,
+                      "killed_by": [], "failed_soft_criteria": [], "feedback": ""},
     )
 
     # Follow-up actions need original_subject to avoid "Re: None" issues.
@@ -114,7 +115,8 @@ def test_generate_email_tier1_critic_passes_no_retry(mocker):
     )
     mocker.patch.object(
         emailer, "_run_critic",
-        return_value={"score": 7, "failed_criteria": [], "feedback": ""},
+        return_value={"verdict": "PASS", "score": 16, "rewrite_required": False,
+                      "killed_by": [], "failed_soft_criteria": [], "feedback": ""},
     )
 
     subject, body = emailer.generate_email(contact, "send_first_touch")
@@ -144,11 +146,9 @@ def test_generate_email_tier1_critic_retries_on_low_score(mocker):
     )
     mocker.patch.object(
         emailer, "_run_critic",
-        return_value={
-            "score": 4,
-            "failed_criteria": [1, 3],
-            "feedback": "Make it more specific.",
-        },
+        return_value={"verdict": "FAIL", "score": 12, "rewrite_required": True,
+                      "killed_by": ["K3"], "failed_soft_criteria": [],
+                      "feedback": "Make it more specific."},
     )
 
     subject, body = emailer.generate_email(contact, "send_first_touch")
