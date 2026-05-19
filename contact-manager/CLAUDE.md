@@ -149,11 +149,14 @@ If you add a stage, update `OUTREACH_STAGES` / `APPLIED_STAGES` in `types.ts` an
 ## Tests (Vitest)
 
 - **Every code change must ship with tests.** New functions get a test file or new cases in the nearest existing test file. Bug fixes get a regression test that would have caught the bug. No exceptions for "trivial" changes — if it's worth changing, it's worth a test.
+- **Zero tolerance for failing tests.** `npm test` must show 0 failures before every commit. If a test fails — even one that was already failing before your change — fix it. Never ship with a known failure and never describe failures as "pre-existing" or "unrelated". A broken test suite is a broken codebase.
+- **Fix → rerun → confirm green.** After fixing a failing test, always rerun the full suite (`npm test`) to confirm no regressions were introduced by the fix itself.
 - Run: `npm test`. Watch: `npm run test:watch`.
 - Test files colocate with source: `Foo.test.tsx` next to `Foo.tsx`.
 - Vitest config: `vitest.config.ts` (jsdom + React plugin + `@/` alias).
 - Setup file: `vitest.setup.ts` — registers jest-dom, stubs env vars, installs a plain-
-  function IntersectionObserver mock (NOT `vi.fn()` — see below).
+  function IntersectionObserver mock (NOT `vi.fn()` — see below). Also stubs `localStorage`
+  because Node.js 22 exposes a native `localStorage = undefined` that shadows jsdom's.
 
 ### Mocking conventions
 
@@ -221,9 +224,13 @@ vi.mock("sonner", () => ({
 
 ## Tests (Playwright e2e)
 
-- **MANDATORY before every push**: `npm run test:e2e` must pass before pushing any UI change to GitHub. A Claude Code PreToolUse hook enforces this automatically — it runs the full suite before every `git push` and blocks the push if any test fails. All 21 tests must be green.
+- **MANDATORY before every push**: `npm run test:e2e` must pass before pushing any UI change to GitHub. A Claude Code PreToolUse hook enforces this automatically — it runs the full suite before every `git push` and blocks the push if any test fails. All tests must be green.
+- **Zero tolerance for failing e2e tests.** Same rule as Vitest: if any test fails, fix it and rerun the full suite before pushing. Never push with a failing e2e test, even if it was failing before your change.
+- **Write e2e tests for every UI change.** For any change that affects what the user sees or interacts with, add a Playwright test that exercises the changed flow. Assertions alone are not enough — take a screenshot with `page.screenshot()` and visually verify the result before committing.
+- **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
-- Tests live in `tests/e2e/`. Fifteen smoke tests; files run alphabetically (00–09).
+- Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
+- **Current test count: 23** (as of `ux-stage-dropdown.spec.ts`).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
@@ -251,8 +258,8 @@ vi.mock("sonner", () => ({
 ## Build / deploy
 
 - `npm run build` — typecheck + production build. Must pass.
-- `npm test` — Vitest unit tests. Must pass.
-- `npm run test:e2e` — Playwright smoke tests. Must pass.
+- `npm test` — Vitest unit tests. Must pass. **0 failures required — no exceptions.**
+- `npm run test:e2e` — Playwright smoke tests. Must pass. **0 failures required — no exceptions.**
 - `vercel deploy --prod` to deploy. Env vars in Vercel dashboard.
 - Three env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
   `ANTHROPIC_API_KEY`. The first two are public (no RLS — be aware). Third is server-only.
