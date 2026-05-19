@@ -199,6 +199,77 @@ def _validate_prompt_output_schemas(prompts):
     return problems
 
 
+# ── Draft execution helper ─────────────────────────────────────────────────────
+
+def _execute_draft(contact, action, subject, body, thread_message_id,
+                   mode_tag, today, prompts):
+    """
+    Create Gmail draft, persist thread info, store in email_messages, apply
+    label, update Supabase. Returns True if a new draft was created, False if
+    a duplicate was detected. Raises on hard errors so callers can count them.
+    """
+    name    = contact.get("name", "Unknown")
+    company = contact.get("company", "Unknown")
+    mode    = contact.get("mode", "outreach")
+    current_stage = contact.get("stage")
+
+    if thread_message_id:
+        message_id, thread_id = create_draft(
+            contact["email"], subject, body,
+            in_reply_to=thread_message_id,
+            contact_id=contact["id"], stage=current_stage,
+        )
+    else:
+        message_id, thread_id = create_draft(
+            contact["email"], subject, body,
+            contact_id=contact["id"], stage=current_stage,
+        )
+
+    if message_id is None:
+        log.info(f"{mode_tag} {name} | {company} | {action} | draft already exists, skipping")
+        return False
+
+    if action in _FIRST_TOUCH_ACTIONS and message_id:
+        save_thread_info(contact["id"], message_id, subject, gmail_thread_id=thread_id)
+
+    insert_email_message(
+        contact_id=contact["id"],
+        direction="outgoing",
+        sent_at=datetime.now(timezone.utc).isoformat(),
+        subject=subject,
+        body=body,
+        message_id=message_id,
+        in_reply_to=thread_message_id,
+        stage_at_send=current_stage,
+    )
+
+    label = ACTION_LABEL.get(action)
+    if label:
+        try:
+            apply_label_to_latest_draft(label)
+        except Exception as exc:
+            log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
+
+    next_stage = NEXT_STAGE[action]
+    followup_days = FOLLOWUP_DAYS.get(action)
+    next_template = NEXT_TEMPLATE.get(action)
+    update_contact(
+        contact["id"], next_stage, followup_days, next_template,
+        expected_stage=current_stage,
+    )
+
+    extra = ""
+    if mode == "applied":
+        extra = f"| job: {contact.get('job_title', 'N/A')}"
+    if followup_days:
+        from datetime import timedelta
+        fu_date = today + timedelta(days=followup_days)
+        extra += f" | followup: {fu_date}"
+
+    log.info(f"{mode_tag} {name} | {company} | {action} | DRAFTED {extra}")
+    return True
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run():
@@ -299,101 +370,83 @@ def run():
             log.warning(f"Failed to record run metadata: {exc}")
         return
 
-    # ── Phase 2: Submit batch ─────────────────────────────────────────────────
-    _batch_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    batch = _batch_client.messages.batches.create(requests=batch_requests)
-    log.info(f"BATCH | submitted {len(batch_requests)} requests | batch_id={batch.id}")
+    # ── Phases 2–4: Submit batch, poll, collect results ───────────────────────
+    retry_items = []  # contacts to re-attempt sequentially
 
-    # ── Phase 3: Poll until complete ──────────────────────────────────────────
-    while batch.processing_status == "in_progress":
-        time.sleep(BATCH_POLL_INTERVAL)
-        batch = _batch_client.messages.batches.retrieve(batch.id)
-        log.info(f"BATCH | {batch.processing_status} | {batch.request_counts}")
+    try:
+        _batch_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        batch = _batch_client.messages.batches.create(requests=batch_requests)
+        log.info(f"BATCH | submitted {len(batch_requests)} requests | batch_id={batch.id}")
 
-    log.info(f"BATCH | complete | {batch.request_counts}")
+        while batch.processing_status == "in_progress":
+            time.sleep(BATCH_POLL_INTERVAL)
+            batch = _batch_client.messages.batches.retrieve(batch.id)
+            log.info(f"BATCH | {batch.processing_status} | {batch.request_counts}")
 
-    # ── Phase 4: Process results ──────────────────────────────────────────────
-    results_map = {r.custom_id: r for r in _batch_client.messages.batches.results(batch.id)}
+        log.info(f"BATCH | complete | {batch.request_counts}")
 
-    for contact, action, thread_message_id, original_subject, custom_id, ctx, mode_tag in batch_items:
-        name    = contact.get("name", "Unknown")
-        company = contact.get("company", "Unknown")
-        mode    = contact.get("mode", "outreach")
+        results_map = {r.custom_id: r
+                       for r in _batch_client.messages.batches.results(batch.id)}
 
-        result = results_map.get(custom_id)
-        if result is None or result.result.type != "succeeded":
-            err_detail = result.result if result else "missing"
-            log.error(f"{mode_tag} {name} | {company} | {action} | batch error: {err_detail}")
-            errors += 1
-            continue
+        for contact, action, thread_message_id, original_subject, custom_id, ctx, mode_tag in batch_items:
+            name    = contact.get("name", "Unknown")
+            company = contact.get("company", "Unknown")
 
-        raw_body = result.result.message.content[0].text
-
-        try:
-            subject, body = finalize_email(
-                contact, action, raw_body, original_subject, prompts, **ctx
-            )
-
-            current_stage = contact.get("stage")
-            if thread_message_id:
-                message_id, thread_id = create_draft(
-                    contact["email"], subject, body,
-                    in_reply_to=thread_message_id,
-                    contact_id=contact["id"], stage=current_stage,
+            result = results_map.get(custom_id)
+            if result is None or result.result.type != "succeeded":
+                log.warning(
+                    f"{mode_tag} {name} | {company} | {action} | "
+                    f"batch errored — queued for sequential retry"
                 )
-            else:
-                message_id, thread_id = create_draft(
-                    contact["email"], subject, body,
-                    contact_id=contact["id"], stage=current_stage,
+                retry_items.append(
+                    (contact, action, thread_message_id, original_subject, mode_tag)
                 )
-
-            if message_id is None:
-                log.info(f"{mode_tag} {name} | {company} | {action} | draft already exists, skipping")
-                skipped += 1
                 continue
 
-            if action in _FIRST_TOUCH_ACTIONS and message_id:
-                save_thread_info(contact["id"], message_id, subject, gmail_thread_id=thread_id)
+            raw_body = result.result.message.content[0].text
+            try:
+                subject, body = finalize_email(
+                    contact, action, raw_body, original_subject, prompts, **ctx
+                )
+                created = _execute_draft(
+                    contact, action, subject, body, thread_message_id, mode_tag, today, prompts
+                )
+                if created:
+                    drafted += 1
+                else:
+                    skipped += 1
+            except Exception as exc:
+                log.error(f"{mode_tag} {name} | {company} | {action} | ERROR: {exc}")
+                errors += 1
 
-            insert_email_message(
-                contact_id=contact["id"],
-                direction="outgoing",
-                sent_at=datetime.now(timezone.utc).isoformat(),
-                subject=subject,
-                body=body,
-                message_id=message_id,
-                in_reply_to=thread_message_id,
-                stage_at_send=current_stage,
+    except Exception as exc:
+        # Batch submission or polling failed — retry all contacts sequentially
+        log.warning(
+            f"BATCH | failed ({exc}) — falling back to sequential "
+            f"for all {len(batch_items)} contacts"
+        )
+        retry_items = [
+            (c, a, tmid, orig_subj, mtag)
+            for c, a, tmid, orig_subj, _, _, mtag in batch_items
+        ]
+
+    # ── Phase 5: Sequential retry (partial failures + catastrophic fallback) ──
+    for contact, action, thread_message_id, original_subject, mode_tag in retry_items:
+        name    = contact.get("name", "Unknown")
+        company = contact.get("company", "Unknown")
+        try:
+            subject, body = generate_email(
+                contact, action, original_subject, prompts=prompts
             )
-
-            label = ACTION_LABEL.get(action)
-            if label:
-                try:
-                    apply_label_to_latest_draft(label)
-                except Exception as exc:
-                    log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
-
-            next_stage = NEXT_STAGE[action]
-            followup_days = FOLLOWUP_DAYS.get(action)
-            next_template = NEXT_TEMPLATE.get(action)
-            update_contact(
-                contact["id"], next_stage, followup_days, next_template,
-                expected_stage=current_stage,
+            created = _execute_draft(
+                contact, action, subject, body, thread_message_id, mode_tag, today, prompts
             )
-
-            extra = ""
-            if mode == "applied":
-                extra = f"| job: {contact.get('job_title', 'N/A')}"
-            if followup_days:
-                from datetime import timedelta
-                fu_date = today + timedelta(days=followup_days)
-                extra += f" | followup: {fu_date}"
-
-            log.info(f"{mode_tag} {name} | {company} | {action} | DRAFTED {extra}")
-            drafted += 1
-
+            if created:
+                drafted += 1
+            else:
+                skipped += 1
         except Exception as exc:
-            log.error(f"{mode_tag} {name} | {company} | {action} | ERROR: {exc}")
+            log.error(f"{mode_tag} {name} | {company} | {action} | retry ERROR: {exc}")
             errors += 1
 
     elapsed = round(time.time() - start)

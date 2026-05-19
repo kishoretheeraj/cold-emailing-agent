@@ -556,6 +556,78 @@ def test_run_duplicate_draft_does_not_store_email_message(mocker):
     insert_email_message.assert_not_called()
 
 
+# ── Batch fallback + partial retry ────────────────────────────────────────────
+
+
+def test_batch_catastrophic_failure_falls_back_to_sequential(mocker):
+    """If batch submission raises, all contacts are retried via generate_email()."""
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    mocker.patch("agent.prepare_email", return_value=("p", "s", {}))
+
+    # Batch client raises on create()
+    mock_client = MagicMock()
+    mock_client.messages.batches.create.side_effect = RuntimeError("network error")
+    mocker.patch("agent.anthropic.Anthropic", return_value=mock_client)
+
+    # Sequential fallback uses generate_email()
+    mocker.patch("agent.generate_email", return_value=("subj", "body"))
+    create_draft = mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    create_draft.assert_called_once()
+
+
+def test_batch_partial_failure_retries_errored_contacts(mocker):
+    """Contacts with batch result type='errored' are retried sequentially."""
+    contact1 = _build_contact(id=1, name="Dana", email="dana@example.com")
+    contact2 = _build_contact(id=2, name="Alice", email="alice@example.com")
+    mocker.patch("agent.get_all_contacts", return_value=[contact1, contact2])
+    mocker.patch("agent.prepare_email", return_value=("p", "s", {}))
+    mocker.patch("agent.finalize_email", return_value=("subj1", "body1"))
+
+    # Batch returns: contact1 succeeded, contact2 errored
+    ok_result = MagicMock()
+    ok_result.custom_id = "1-send_first_touch"
+    ok_result.result.type = "succeeded"
+    ok_result.result.message.content = [MagicMock(text="body1")]
+
+    err_result = MagicMock()
+    err_result.custom_id = "2-send_first_touch"
+    err_result.result.type = "errored"
+
+    mock_batch = MagicMock()
+    mock_batch.id = "batch-test"
+    mock_batch.processing_status = "ended"
+    mock_batch.request_counts = MagicMock()
+
+    mock_client = MagicMock()
+    mock_client.messages.batches.create.return_value = mock_batch
+    mock_client.messages.batches.retrieve.return_value = mock_batch
+    mock_client.messages.batches.results.return_value = [ok_result, err_result]
+    mocker.patch("agent.anthropic.Anthropic", return_value=mock_client)
+
+    # Sequential retry for contact2
+    mocker.patch("agent.generate_email", return_value=("subj2", "body2"))
+    create_draft = mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", None))
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.time.sleep")
+
+    agent.run()
+
+    # create_draft called once for batch success + once for sequential retry
+    assert create_draft.call_count == 2
+
+
 # ── _validate_prompts ──────────────────────────────────────────────────────────
 
 def test_validate_prompts_clean_returns_empty():
