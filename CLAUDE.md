@@ -144,13 +144,19 @@ Follow-up emails must land in the same Gmail thread as the original.
   5xx; non-retryable 4xx raise immediately. Signature:
   `_call_claude(prompt, model=None, max_tokens=1000, system=None)`. When `system`
   is provided it is sent as a system-prompt block with `cache_control: ephemeral`
-  for prompt caching. All five generators (`_generate_outreach`,
-  `_generate_applied_intro`, `_generate_applied_followup`, `_generate_subject`,
-  `_run_critic`) pass the sender profile as `system`. `research.py` passes
-  `RESEARCH_QUERY_MODEL` / `RESEARCH_CURATE_MODEL` (both Haiku) with lower token
-  ceilings (300 / 500) and no `system` param.
-  Caching activates automatically when the system prompt reaches the 1024-token
-  Sonnet minimum (currently below threshold; grows as Supabase prompts are edited).
+  for prompt caching. All seven system-bearing generators pass the sender profile
+  as `system`: `_generate_outreach`, `_generate_applied_intro`,
+  `_generate_applied_followup`, `_generate_subject`, `_run_critic`
+  (all in `emailer.py`); `_generate_reply_body` (`reply_drafter.py`); and
+  `_generate_queries` (`research.py`). `_curate_brief` and `_classify_reply`
+  have no stable system component and send no `system` param.
+  `_call_claude` logs `[CACHE] model=... | cache_read=N | cache_created=N`
+  at INFO level whenever either counter is non-zero, so cache hits are visible
+  in `agent.log` / `monitor.log`.
+  Run `python3 measure_caching.py` to count tokens for every system block
+  and see which are above/below the cache threshold. Caching activates
+  automatically when the system prompt reaches the 1024-token minimum
+  (currently below threshold; grows as Supabase prompts are edited).
 - **Tavily** (`research.py`): `_get_client()` lazily initialises a singleton
   `TavilyClient`. All failures inside `get_research_brief` degrade to `""` —
   the function never raises. Absent `TAVILY_API_KEY` short-circuits immediately.

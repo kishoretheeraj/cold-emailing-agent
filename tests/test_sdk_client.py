@@ -1,12 +1,19 @@
 """Tests for the SDK-based _call_claude wrapper."""
+import logging
 import pytest
 import anthropic
 
 
-def _make_response(text):
+def _make_response(text, cache_read=0, cache_created=0):
     """Build a minimal mock SDK response object."""
     content_block = type("Block", (), {"text": text})()
-    return type("Resp", (), {"content": [content_block]})()
+    usage = type("Usage", (), {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_created,
+    })()
+    return type("Resp", (), {"content": [content_block], "usage": usage})()
 
 
 def test_call_claude_basic(mocker):
@@ -72,3 +79,36 @@ def test_call_claude_sdk_error_propagates(mocker):
     from emailer import _call_claude
     with pytest.raises(anthropic.APIConnectionError):
         _call_claude("ping")
+
+
+def test_call_claude_logs_cache_hit(mocker, caplog):
+    mocker.patch("emailer._claude.messages.create",
+                 return_value=_make_response("hi", cache_read=512, cache_created=0))
+    from emailer import _call_claude
+    with caplog.at_level(logging.INFO, logger="emailer"):
+        _call_claude("Say hi", system="stable system")
+    assert any(
+        "[CACHE]" in r.message and "cache_read=512" in r.message
+        for r in caplog.records
+    )
+
+
+def test_call_claude_logs_cache_creation(mocker, caplog):
+    mocker.patch("emailer._claude.messages.create",
+                 return_value=_make_response("hi", cache_read=0, cache_created=1024))
+    from emailer import _call_claude
+    with caplog.at_level(logging.INFO, logger="emailer"):
+        _call_claude("Say hi", system="stable system")
+    assert any(
+        "[CACHE]" in r.message and "cache_created=1024" in r.message
+        for r in caplog.records
+    )
+
+
+def test_call_claude_no_cache_log_when_zero(mocker, caplog):
+    mocker.patch("emailer._claude.messages.create",
+                 return_value=_make_response("hi", cache_read=0, cache_created=0))
+    from emailer import _call_claude
+    with caplog.at_level(logging.INFO, logger="emailer"):
+        _call_claude("Say hi")
+    assert not any("[CACHE]" in r.message for r in caplog.records)

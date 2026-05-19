@@ -101,3 +101,15 @@ def test_logs_research_q_marker_with_correct_count(mocker, caplog):
     messages = [r.message for r in caplog.records]
     assert any("[RESEARCH-Q]" in m for m in messages)
     assert any("queries=2" in m for m in messages)
+
+
+def test_passes_sender_profile_as_system(mocker):
+    captured = {}
+
+    def capture(prompt, **kwargs):
+        captured.update(kwargs)
+        return "[]"
+
+    mocker.patch.object(research, "_call_claude", side_effect=capture)
+    research._generate_queries(_CONTACT, _SENDER, {})
+    assert captured.get("system") == _SENDER

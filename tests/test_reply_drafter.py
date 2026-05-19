@@ -118,6 +118,34 @@ def test_critic_not_called(mocker):
     assert not mock_critic.called
 
 
+# ── system=profile passed for prompt caching ──────────────────────────────────
+
+def test_generate_reply_body_passes_system_profile(mocker):
+    captured = {}
+
+    def capture(prompt, **kwargs):
+        captured.update(kwargs)
+        return "Hi Alice, happy to chat."
+
+    mocker.patch.object(reply_drafter, "_call_claude", side_effect=capture)
+    prompts = {"sender_profile": "Name: Kishore\nProgram: MEM"}
+    reply_drafter._generate_reply_body(_contact(), "Let's chat!", prompts)
+    assert captured.get("system") == "Name: Kishore\nProgram: MEM"
+
+
+def test_generate_reply_body_uses_config_profile_fallback(mocker):
+    from config import SENDER_PROFILE
+    captured = {}
+
+    def capture(prompt, **kwargs):
+        captured.update(kwargs)
+        return "Hi Alice."
+
+    mocker.patch.object(reply_drafter, "_call_claude", side_effect=capture)
+    reply_drafter._generate_reply_body(_contact(), "Let's chat!", {})
+    assert captured.get("system") == SENDER_PROFILE
+
+
 # ── Duplicate draft returns None ───────────────────────────────────────────────
 
 def test_duplicate_draft_skipped(mocker):

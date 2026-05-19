@@ -79,6 +79,14 @@ def _call_claude(prompt, model=None, max_tokens=1000, system=None):
             {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
         ]
     resp = _claude.messages.create(**kwargs)
+    usage = resp.usage
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_created = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    if cache_read or cache_created:
+        log.info(
+            f"[CACHE] model={_model} | "
+            f"cache_read={cache_read} | cache_created={cache_created}"
+        )
     text = resp.content[0].text.strip()
     if not text:
         raise ValueError("Claude returned empty text")

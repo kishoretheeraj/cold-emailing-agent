@@ -32,7 +32,7 @@ def _generate_reply_body(contact, reply_body_text, prompts):
         role=contact.get("role", ""),
         reply_body=reply_body_text,
     )
-    return _call_claude(prompt, model=REPLY_RESPONSE_MODEL)
+    return _call_claude(prompt, model=REPLY_RESPONSE_MODEL, system=profile)
 
 
 # ── Public interface ───────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ def draft_reply(contact, reply_body_text, prompts):
                 role=contact.get("role", ""),
                 reply_body=reply_body_text,
             ) + f"\nREVISION INSTRUCTION:\n{'; '.join(failures)}"
-            body = _normalize_body(_call_claude(retry_full, model=REPLY_RESPONSE_MODEL))
+            body = _normalize_body(_call_claude(retry_full, model=REPLY_RESPONSE_MODEL, system=profile))
             failures = preflight.check(body, contact, prompts)
 
         if failures:

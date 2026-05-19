@@ -53,7 +53,8 @@ def _generate_queries(contact, sender_profile, prompts):
         return []
 
     try:
-        raw = _call_claude(formatted, model=config.RESEARCH_QUERY_MODEL, max_tokens=300)
+        raw = _call_claude(formatted, model=config.RESEARCH_QUERY_MODEL, max_tokens=300,
+                           system=sender_profile)
     except Exception as exc:
         log.warning(f"[RESEARCH-Q] | {name} | {company} | _call_claude error: {exc}")
         return []
