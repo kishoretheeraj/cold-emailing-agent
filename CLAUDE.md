@@ -435,17 +435,18 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 
 `monitor.run()` now has four sequential phases, each wrapped in `try/except` so failure in one never blocks the next:
 1. `detect_sent_drafts()` — unchanged
-2. `detect_replies(prompts)` — header-based IMAP INBOX scan; returns list of newly-classified contacts
+2. `detect_replies(prompts)` — targeted per-contact IMAP HEADER search; returns list of newly-classified contacts
 3. (called inside detect_replies) `_classify_reply()` — Claude Haiku classifies reply body → `classifier_status`
 4. `_draft_reply_responses(classified, prompts)` — calls `reply_drafter.draft_reply()` for positive_reply/soft_yes contacts
 
 **Reply detection invariants:**
-- Matches via `In-Reply-To` header first, then walks `References` chain. No FROM fallback.
-- Skip message if no header matches any stored `contacts.message_id`.
-- Auto-reply bypass: if `Auto-Submitted` header is not "no" or `X-Auto-Response-Suppress` is present, classify as `auto_reply` without calling Claude.
+- Iterates over contacts with a stored `message_id`; issues two targeted server-side IMAP searches per contact: `HEADER "In-Reply-To" "<mid>"` and `HEADER "References" "<mid>"`. No full inbox scan. No FROM fallback.
+- False-positive guard: IMAP `HEADER` search does substring matching, so each hit is re-verified with `_match_message()` before classification.
+- `seen_nums` set deduplicates message UIDs across contacts (one message can reference multiple threads).
 - Skip contact if `classifier_status` is already set (idempotent across 2-hour runs).
+- Auto-reply bypass: if `Auto-Submitted` header is not "no" or `X-Auto-Response-Suppress` is present, classify as `auto_reply` without calling Claude.
 - `email_messages` insert is upsert on `message_id` (ON CONFLICT DO NOTHING).
-- One IMAP connection for all contacts in the INBOX phase. `readonly=True` for the SINCE search; switches to read-write only for label copy.
+- One IMAP connection for all contacts. `readonly=True` at open; label copy re-selects INBOX read-write.
 
 ## Reply drafting (reply_drafter.py)
 

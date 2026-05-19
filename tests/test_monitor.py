@@ -91,6 +91,28 @@ def test_in_reply_to_match_classifies_and_stores(mocker):
 
 
 def test_no_header_match_skips_contact(mocker):
+    """IMAP server finds nothing for our message_id — no fetch, no classification."""
+    contact = _contact()
+    mocker.patch.object(monitor, "detect_sent_drafts")
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])
+    mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
+
+    fake = _fake_imap(msg_nums=b"", search_status="OK")
+    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake)
+
+    mock_fetch = mocker.patch.object(monitor, "_fetch_headers")
+    mock_update_cs = mocker.patch.object(monitor, "update_classifier_status")
+    mocker.patch.object(monitor, "_draft_reply_responses")
+
+    monitor.run()
+
+    mock_fetch.assert_not_called()
+    mock_update_cs.assert_not_called()
+
+
+def test_imap_false_positive_skipped(mocker):
+    """IMAP returns a hit (substring match) but _match_message rejects it."""
     contact = _contact()
     mocker.patch.object(monitor, "detect_sent_drafts")
     mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])

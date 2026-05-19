@@ -256,84 +256,94 @@ def detect_replies(prompts=None):
         create_gmail_label_if_not_exists(imap, REPLIED_LABEL)
 
         since_str = (date.today() - timedelta(days=60)).strftime("%d-%b-%Y")
-        status, data = imap.search(None, f'SINCE "{since_str}"')
-        if status != "OK" or not data[0]:
-            log.info("DONE | reply-detection | inbox empty or search failed")
-            return []
+        seen_nums = set()
 
-        msg_nums = data[0].split()
-        log.info(f"[REPLY-DETECTION] | scanning {len(msg_nums)} inbox messages")
-
-        for num in msg_nums:
-            try:
-                msg = _fetch_headers(imap, num)
-                contact = _match_message(msg, by_message_id)
-                if contact is None:
-                    continue
-
-                name = contact.get("name", "Unknown")
-                company = contact.get("company", "Unknown")
-
-                # Skip if already classified this cycle
-                if contact.get("classifier_status") is not None:
-                    log.info(f"[REPLY] | {name} | {company} | already classified, skip")
-                    continue
-
-                is_auto = _is_auto_reply(msg)
-                body_text = "" if is_auto else _fetch_body_text(imap, num)
-
-                # Store in email_messages (idempotent)
-                incoming_mid = _header_val(msg, "Message-ID").strip("<>")
-                in_reply_to_hdr = _header_val(msg, "In-Reply-To").strip("<>")
-                date_hdr = _header_val(msg, "Date")
-                try:
-                    sent_at = email.utils.parsedate_to_datetime(date_hdr).isoformat()
-                except Exception:
-                    sent_at = datetime.now(timezone.utc).isoformat()
-
-                insert_email_message(
-                    contact_id=contact["id"],
-                    direction="incoming",
-                    sent_at=sent_at,
-                    subject=_header_val(msg, "Subject"),
-                    body=body_text,
-                    message_id=incoming_mid or None,
-                    in_reply_to=in_reply_to_hdr or None,
-                    stage_at_send=contact.get("stage"),
-                    raw_headers={"auto_reply": is_auto},
-                )
-
-                # Classify
-                if is_auto:
-                    status_val = "auto_reply"
-                    log.info(f"[REPLY] | {name} | {company} | auto-reply header detected")
-                else:
-                    status_val = _classify_reply(body_text, contact, _prompts)
-
-                update_classifier_status(contact["id"], status_val)
-                log_agent_event("classify_reply", contact_id=contact["id"],
-                                status="success")
-
-                # Copy to label (best-effort)
-                try:
-                    imap.select("INBOX")
-                    imap.copy(num.decode() if isinstance(num, bytes) else num,
-                              f'"{REPLIED_LABEL}"')
-                except Exception as exc:
-                    log.warning(f"[REPLY] | {name} | {company} | label warning: {exc}")
-
-                # Update contact's classifier_status in memory for draft phase
-                contact["classifier_status"] = status_val
-                newly_classified.append(contact)
-
-                log.info(
-                    f"[REPLY] | {name} | {company} | "
-                    f"classifier_status={status_val}"
-                )
-
-            except Exception as exc:
-                log.warning(f"[REPLY] | message {num} | error: {exc}")
+        for mid, contact in by_message_id.items():
+            if contact.get("classifier_status") is not None:
                 continue
+
+            name = contact.get("name", "Unknown")
+            company = contact.get("company", "Unknown")
+
+            # Targeted HEADER search — server-side filter, not a full inbox scan.
+            matched_nums = set()
+            for header in ("In-Reply-To", "References"):
+                status, data = imap.search(
+                    None,
+                    f'SINCE "{since_str}" HEADER "{header}" "{mid}"',
+                )
+                if status == "OK" and data[0]:
+                    matched_nums.update(data[0].split())
+
+            log.info(
+                f"[REPLY-DETECTION] | {name} | {company} | "
+                f"candidates={len(matched_nums)}"
+            )
+
+            for num in sorted(matched_nums):
+                if num in seen_nums:
+                    continue
+                seen_nums.add(num)
+                try:
+                    msg = _fetch_headers(imap, num)
+                    if _match_message(msg, {mid: contact}) is None:
+                        continue
+
+                    is_auto = _is_auto_reply(msg)
+                    body_text = "" if is_auto else _fetch_body_text(imap, num)
+
+                    # Store in email_messages (idempotent)
+                    incoming_mid = _header_val(msg, "Message-ID").strip("<>")
+                    in_reply_to_hdr = _header_val(msg, "In-Reply-To").strip("<>")
+                    date_hdr = _header_val(msg, "Date")
+                    try:
+                        sent_at = email.utils.parsedate_to_datetime(date_hdr).isoformat()
+                    except Exception:
+                        sent_at = datetime.now(timezone.utc).isoformat()
+
+                    insert_email_message(
+                        contact_id=contact["id"],
+                        direction="incoming",
+                        sent_at=sent_at,
+                        subject=_header_val(msg, "Subject"),
+                        body=body_text,
+                        message_id=incoming_mid or None,
+                        in_reply_to=in_reply_to_hdr or None,
+                        stage_at_send=contact.get("stage"),
+                        raw_headers={"auto_reply": is_auto},
+                    )
+
+                    # Classify
+                    if is_auto:
+                        status_val = "auto_reply"
+                        log.info(f"[REPLY] | {name} | {company} | auto-reply header detected")
+                    else:
+                        status_val = _classify_reply(body_text, contact, _prompts)
+
+                    update_classifier_status(contact["id"], status_val)
+                    log_agent_event("classify_reply", contact_id=contact["id"],
+                                    status="success")
+
+                    # Copy to label (best-effort)
+                    try:
+                        imap.select("INBOX")
+                        imap.copy(num.decode() if isinstance(num, bytes) else num,
+                                  f'"{REPLIED_LABEL}"')
+                    except Exception as exc:
+                        log.warning(f"[REPLY] | {name} | {company} | label warning: {exc}")
+
+                    # Update contact's classifier_status in memory for draft phase
+                    contact["classifier_status"] = status_val
+                    newly_classified.append(contact)
+
+                    log.info(
+                        f"[REPLY] | {name} | {company} | "
+                        f"classifier_status={status_val}"
+                    )
+
+                except Exception as exc:
+                    log.warning(f"[REPLY] | message {num} | error: {exc}")
+                    continue
 
     finally:
         imap.logout()
