@@ -61,6 +61,9 @@ def detect_sent_drafts():
     contacts = get_drafted_contacts()
     checked = 0
     flipped = 0
+    via_thrid = 0
+    via_mid = 0
+    via_subject = 0
 
     for contact in contacts:
         name       = contact.get("name", "Unknown")
@@ -80,11 +83,14 @@ def detect_sent_drafts():
             since_date = date.today() - timedelta(days=60)
 
         actual_mid = None
+        detection_method = None
 
         # Priority 1: X-GM-THRID — Gmail's stable thread ID, survives message_id rewrites.
         if not actual_mid and contact.get("gmail_thread_id"):
             try:
                 actual_mid = find_sent_by_thread_id(contact["gmail_thread_id"], since_date)
+                if actual_mid:
+                    detection_method = "thrid"
             except Exception as exc:
                 log.warning(f"[SENT-CHECK] | {name} | {company} | thrid error: {exc}")
 
@@ -92,6 +98,8 @@ def detect_sent_drafts():
         if not actual_mid:
             try:
                 actual_mid = find_sent_for_thread(message_id, since_date, mode)
+                if actual_mid:
+                    detection_method = "mid"
             except Exception as exc:
                 log.warning(f"[SENT-CHECK] | {name} | {company} | unexpected error: {exc}")
                 continue
@@ -101,6 +109,12 @@ def detect_sent_drafts():
             original_subject = contact.get("original_subject", "")
             if original_subject:
                 actual_mid = find_sent_by_subject(original_subject, since_date, contact.get("email", ""))
+                if actual_mid:
+                    detection_method = "subject"
+                    log.warning(
+                        f"[SENT-CHECK] | {name} | {company} | "
+                        f"detected via subject fallback — subject may have been edited before send"
+                    )
 
         if not actual_mid:
             continue
@@ -131,7 +145,7 @@ def detect_sent_drafts():
         )
         log.info(
             f"[SENT-DETECTED] | {name} | {company} | "
-            f"{stage} -> {new_stage} | followup_date={new_followup_date}"
+            f"{stage} -> {new_stage} | via={detection_method} | followup_date={new_followup_date}"
         )
 
         # If Gmail rewrote the Message-ID on send, update it so follow-ups thread correctly.
@@ -142,9 +156,18 @@ def detect_sent_drafts():
             except Exception as exc:
                 log.warning(f"[SENT-DETECTED] | {name} | {company} | message_id update failed: {exc}")
 
+        if detection_method == "thrid":
+            via_thrid += 1
+        elif detection_method == "mid":
+            via_mid += 1
+        elif detection_method == "subject":
+            via_subject += 1
         flipped += 1
 
-    log.info(f"DONE | sent-detection | checked={checked} flipped={flipped}")
+    log.info(
+        f"DONE | sent-detection | checked={checked} flipped={flipped} | "
+        f"via_thrid={via_thrid} via_mid={via_mid} via_subject={via_subject}"
+    )
 
 
 # ── IMAP helpers ───────────────────────────────────────────────────────────────
