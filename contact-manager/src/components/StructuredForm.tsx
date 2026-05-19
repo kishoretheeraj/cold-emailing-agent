@@ -66,6 +66,7 @@ function OutreachForm({
   const [tier, setTier] = useState(2);
   const [dartmouth, setDartmouth] = useState(false);
   const [notes, setNotes] = useState("");
+  const [resumeUrl, setResumeUrl] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function submit() {
@@ -85,6 +86,7 @@ function OutreachForm({
         mode: "outreach",
         dartmouth,
         notes: notes || null,
+        resume_url: resumeUrl || null,
         stage: "new",
         reply_status: "no_reply",
       });
@@ -97,6 +99,7 @@ function OutreachForm({
       setTier(2);
       setDartmouth(false);
       setNotes("");
+      setResumeUrl("");
       onAdded();
     } catch (err) {
       onError(err instanceof Error ? err.message : "save failed");
@@ -162,6 +165,15 @@ function OutreachForm({
         />
       </div>
 
+      <div>
+        <Label>Resume link (optional)</Label>
+        <TextInput
+          value={resumeUrl}
+          onChange={(e) => setResumeUrl(e.target.value)}
+          placeholder="Google Drive URL"
+        />
+      </div>
+
       <div className="flex justify-end pt-1">
         <button
           onClick={submit}
@@ -191,6 +203,7 @@ function AppliedForm({
   const [jobDescription, setJobDescription] = useState("");
   const [dartmouth, setDartmouth] = useState(false);
   const [notes, setNotes] = useState("");
+  const [resumeUrl, setResumeUrl] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function submit() {
@@ -217,6 +230,7 @@ function AppliedForm({
         mode: "applied",
         dartmouth,
         notes: notes || null,
+        resume_url: resumeUrl || null,
         stage: "new",
         reply_status: "no_reply",
       });
@@ -230,6 +244,7 @@ function AppliedForm({
       setJobDescription("");
       setDartmouth(false);
       setNotes("");
+      setResumeUrl("");
       onAdded();
     } catch (err) {
       onError(err instanceof Error ? err.message : "save failed");
@@ -302,6 +317,15 @@ function AppliedForm({
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           rows={2}
+        />
+      </div>
+
+      <div>
+        <Label>Resume link (optional)</Label>
+        <TextInput
+          value={resumeUrl}
+          onChange={(e) => setResumeUrl(e.target.value)}
+          placeholder="Google Drive URL"
         />
       </div>
 

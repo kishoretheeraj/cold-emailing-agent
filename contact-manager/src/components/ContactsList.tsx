@@ -38,7 +38,7 @@ import {
   SelectSeparator,
 } from "@/components/ui/Select";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
-import { TextArea, TierSelector } from "@/components/Field";
+import { TextInput, TextArea, TierSelector, ToggleSwitch } from "@/components/Field";
 import { ThreadView } from "@/components/ThreadView";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -187,15 +187,29 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
 
   // Sheet local state
   const [notes, setNotes] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [company, setCompany] = useState("");
+  const [role, setRole] = useState("");
+  const [detail, setDetail] = useState("");
+  const [resumeUrl, setResumeUrl] = useState("");
+  const [jobTitle, setJobTitle] = useState("");
 
   const fetchIdRef = useRef(0);
   const prevFiltersRef = useRef<ContactsQueryFilters>(EMPTY_FILTERS);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Sync sheet notes when selected contact changes
+  // Sync sheet local state when selected contact changes
   useEffect(() => {
     setNotes(selectedContact?.notes ?? "");
+    setName(selectedContact?.name ?? "");
+    setEmail(selectedContact?.email ?? "");
+    setCompany(selectedContact?.company ?? "");
+    setRole(selectedContact?.role ?? "");
+    setDetail(selectedContact?.detail ?? "");
+    setResumeUrl(selectedContact?.resume_url ?? "");
+    setJobTitle(selectedContact?.job_title ?? "");
   }, [selectedContact?.id]);
 
   // ── Fetch functions ──────────────────────────────────────────────────────────
@@ -335,23 +349,72 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
     }
   }
 
-  // ── Notes autosave on blur ───────────────────────────────────────────────────
+  // ── Generic blur-save for text fields ───────────────────────────────────────
 
-  async function handleNotesBlur() {
-    if (!selectedContact || notes === (selectedContact.notes ?? "")) return;
-    const { error } = await supabase
-      .from("contacts")
-      .update({ notes })
-      .eq("id", selectedContact.id);
-    if (error) {
-      onError(`Failed to save notes: ${error.message}`);
-      setNotes(selectedContact.notes ?? "");
-      return;
-    }
-    const updated = { ...selectedContact, notes };
+  async function handleBlurSave(
+    field: keyof Contact,
+    localValue: string,
+    label: string,
+    revert: () => void
+  ) {
+    if (!selectedContact) return;
+    const original = (selectedContact[field] as string | null | undefined) ?? "";
+    if (localValue === original) return;
+    const newValue = localValue.trim() || null;
+    const prev = selectedContact;
+    const updated = { ...selectedContact, [field]: newValue };
     setSelectedContact(updated);
     setContacts((cs) => cs.map((c) => (c.id === updated.id ? updated : c)));
-    onSuccess("Notes saved");
+    const { error } = await supabase
+      .from("contacts")
+      .update({ [field]: newValue })
+      .eq("id", selectedContact.id);
+    if (error) {
+      revert();
+      setSelectedContact(prev);
+      setContacts((cs) => cs.map((c) => (c.id === prev.id ? prev : c)));
+      onError(`Failed to save ${label}: ${error.message}`);
+    } else {
+      onSuccess(`${label} saved`);
+    }
+  }
+
+  // ── Mode change (immediate optimistic) ──────────────────────────────────────
+
+  async function handleModeChange(mode: "outreach" | "applied") {
+    if (!selectedContact) return;
+    const prev = selectedContact;
+    const updated = { ...selectedContact, mode };
+    setSelectedContact(updated);
+    setContacts((cs) => cs.map((c) => (c.id === updated.id ? updated : c)));
+    const { error } = await supabase
+      .from("contacts")
+      .update({ mode })
+      .eq("id", selectedContact.id);
+    if (error) {
+      setSelectedContact(prev);
+      setContacts((cs) => cs.map((c) => (c.id === prev.id ? prev : c)));
+      onError(`Failed to update mode: ${error.message}`);
+    }
+  }
+
+  // ── Dartmouth toggle (immediate optimistic) ──────────────────────────────────
+
+  async function handleDartmouthChange(dartmouth: boolean) {
+    if (!selectedContact) return;
+    const prev = selectedContact;
+    const updated = { ...selectedContact, dartmouth };
+    setSelectedContact(updated);
+    setContacts((cs) => cs.map((c) => (c.id === updated.id ? updated : c)));
+    const { error } = await supabase
+      .from("contacts")
+      .update({ dartmouth })
+      .eq("id", selectedContact.id);
+    if (error) {
+      setSelectedContact(prev);
+      setContacts((cs) => cs.map((c) => (c.id === prev.id ? prev : c)));
+      onError(`Failed to update: ${error.message}`);
+    }
   }
 
   // ── Soft delete ──────────────────────────────────────────────────────────────
@@ -672,60 +735,174 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
 
                 <div className="h-px bg-border my-4" />
 
-                {/* Contact details section */}
+                {/* Contact details section — all fields editable */}
                 <div className="space-y-3">
-                  {selectedContact.email && (
-                    <div>
-                      <label className="text-xs uppercase tracking-wider text-fg-dim mb-1 block">
-                        Email
-                      </label>
-                      <div className="flex items-center gap-2 text-sm text-fg-muted">
-                        <span className="truncate">{selectedContact.email}</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(
-                              selectedContact.email ?? ""
-                            );
-                            onSuccess("Email copied");
-                          }}
-                          className="text-fg-dim hover:text-fg p-1 rounded hover:bg-surface-2 shrink-0 transition-colors"
-                          aria-label="Copy email"
-                        >
-                          <Copy className="size-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      Name
+                    </label>
+                    <TextInput
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      onBlur={() =>
+                        handleBlurSave("name", name, "Name", () =>
+                          setName(selectedContact.name ?? "")
+                        )
+                      }
+                    />
+                  </div>
 
-                  {selectedContact.role && (
-                    <div>
-                      <label className="text-xs uppercase tracking-wider text-fg-dim mb-1 block">
-                        Role
-                      </label>
-                      <p className="text-sm text-fg-muted">{selectedContact.role}</p>
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      Email
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <TextInput
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        onBlur={() =>
+                          handleBlurSave("email", email, "Email", () =>
+                            setEmail(selectedContact.email ?? "")
+                          )
+                        }
+                        className="flex-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(email);
+                          onSuccess("Email copied");
+                        }}
+                        className="text-fg-dim hover:text-fg p-1 rounded hover:bg-surface-2 shrink-0 transition-colors"
+                        aria-label="Copy email"
+                      >
+                        <Copy className="size-3.5" />
+                      </button>
                     </div>
-                  )}
+                  </div>
 
-                  {selectedContact.mode === "applied" && selectedContact.job_title && (
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      Company
+                    </label>
+                    <TextInput
+                      value={company}
+                      onChange={(e) => setCompany(e.target.value)}
+                      onBlur={() =>
+                        handleBlurSave("company", company, "Company", () =>
+                          setCompany(selectedContact.company ?? "")
+                        )
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      Role
+                    </label>
+                    <TextInput
+                      value={role}
+                      onChange={(e) => setRole(e.target.value)}
+                      onBlur={() =>
+                        handleBlurSave("role", role, "Role", () =>
+                          setRole(selectedContact.role ?? "")
+                        )
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      Personalization hook
+                    </label>
+                    <TextArea
+                      value={detail}
+                      onChange={(e) => setDetail(e.target.value)}
+                      onBlur={() =>
+                        handleBlurSave("detail", detail, "Detail", () =>
+                          setDetail(selectedContact.detail ?? "")
+                        )
+                      }
+                      rows={3}
+                    />
+                  </div>
+
+                  {selectedContact.mode === "applied" && (
                     <div>
-                      <label className="text-xs uppercase tracking-wider text-fg-dim mb-1 block">
+                      <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
                         Job Title
                       </label>
-                      <p className="text-sm text-fg-muted">
-                        {selectedContact.job_title}
-                      </p>
+                      <TextInput
+                        value={jobTitle}
+                        onChange={(e) => setJobTitle(e.target.value)}
+                        onBlur={() =>
+                          handleBlurSave("job_title", jobTitle, "Job Title", () =>
+                            setJobTitle(selectedContact.job_title ?? "")
+                          )
+                        }
+                      />
                     </div>
                   )}
 
                   <div>
-                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1 block">
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      Resume URL
+                    </label>
+                    <TextInput
+                      value={resumeUrl}
+                      onChange={(e) => setResumeUrl(e.target.value)}
+                      onBlur={() =>
+                        handleBlurSave("resume_url", resumeUrl, "Resume URL", () =>
+                          setResumeUrl(selectedContact.resume_url ?? "")
+                        )
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      Mode
+                    </label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {(["outreach", "applied"] as const).map((m) => {
+                        const active = (selectedContact.mode ?? "outreach") === m;
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => handleModeChange(m)}
+                            className={`rounded-lg border py-2 text-xs capitalize transition ${
+                              active
+                                ? "border-indigo-500 bg-indigo-500/10 text-indigo-300"
+                                : "border-border bg-surface text-fg-muted hover:border-border-strong"
+                            }`}
+                          >
+                            {m}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <ToggleSwitch
+                    on={selectedContact.dartmouth ?? false}
+                    onChange={handleDartmouthChange}
+                    label="Dartmouth / Tuck / Thayer / Irving connection"
+                  />
+
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
                       Notes
                     </label>
                     <TextArea
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
-                      onBlur={handleNotesBlur}
+                      onBlur={() =>
+                        handleBlurSave("notes", notes, "Notes", () =>
+                          setNotes(selectedContact.notes ?? "")
+                        )
+                      }
                       rows={4}
                     />
                   </div>

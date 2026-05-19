@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
+import { render, screen, within, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // ── Primitive mocks ────────────────────────────────────────────────────────────
@@ -471,7 +471,99 @@ describe("ContactsList — side sheet", () => {
     await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
 
     expect(screen.getByTestId("sheet-content")).toBeInTheDocument();
-    expect(screen.getByText("dana@clearbond.com")).toBeInTheDocument();
+    // Email is now an editable input; use getByDisplayValue
+    expect(screen.getByDisplayValue("dana@clearbond.com")).toBeInTheDocument();
+  });
+
+  it("sheet shows editable inputs for name, email, company, role", async () => {
+    const user = userEvent.setup();
+    const contact = makeContact({ role: "CEO", detail: "runs a cool fund" });
+    limitMock.mockResolvedValue({ data: [contact], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    expect(screen.getByDisplayValue("Dana Ehrlich")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("dana@clearbond.com")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Clearbond")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("CEO")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("runs a cool fund")).toBeInTheDocument();
+  });
+
+  it("blurring a text field saves to Supabase and calls onSuccess", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    const roleInput = screen.getByDisplayValue("CEO");
+    await user.clear(roleInput);
+    await user.type(roleInput, "Partner");
+    await user.tab(); // triggers blur
+
+    await waitFor(() => expect(updateEqMock).toHaveBeenCalled());
+    expect(updateEqMock).toHaveBeenCalledWith("id", dana.id);
+    await waitFor(() =>
+      expect(defaultProps.onSuccess).toHaveBeenCalledWith("Role saved")
+    );
+  });
+
+  it("blur-save error reverts and calls onError", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    updateEqMock.mockResolvedValue({ error: { message: "write failed" } });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    const roleInput = screen.getByDisplayValue("CEO");
+    await user.clear(roleInput);
+    await user.type(roleInput, "Partner");
+    await user.tab();
+
+    await waitFor(() =>
+      expect(defaultProps.onError).toHaveBeenCalledWith(
+        expect.stringMatching(/write failed/i)
+      )
+    );
+  });
+
+  it("mode toggle saves to Supabase immediately", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    // Scope to sheet to avoid collision with the mode filter pill in the header
+    const sheet = screen.getByTestId("sheet-content");
+    await user.click(within(sheet).getByRole("button", { name: /^applied$/i }));
+
+    await waitFor(() => expect(updateEqMock).toHaveBeenCalled());
+    expect(updateEqMock).toHaveBeenCalledWith("id", dana.id);
+  });
+
+  it("dartmouth toggle saves to Supabase immediately", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    // Scope to sheet to avoid collision with the dartmouth filter button in the header
+    const sheet = screen.getByTestId("sheet-content");
+    await user.click(
+      within(sheet).getByRole("button", { name: /dartmouth/i })
+    );
+
+    await waitFor(() => expect(updateEqMock).toHaveBeenCalled());
+    expect(updateEqMock).toHaveBeenCalledWith("id", dana.id);
   });
 
   it("optimistically updates stage and issues Supabase UPDATE", async () => {

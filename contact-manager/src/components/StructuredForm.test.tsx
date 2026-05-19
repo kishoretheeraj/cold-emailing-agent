@@ -43,7 +43,7 @@ describe("StructuredForm — outreach", () => {
 
     // Fields are labeled by Label component (sibling text), so target by index.
     const inputs = screen.getAllByRole("textbox");
-    // 0=Name, 1=Email, 2=Company, 3=Role, 4=Detail, 5=Notes
+    // 0=Name, 1=Email, 2=Company, 3=Role, 4=Detail, 5=Notes, 6=Resume link
     await user.type(inputs[0], "Dana");
     await user.type(inputs[1], "dana@example.com");
     await user.type(inputs[2], "Clearbond");
@@ -60,6 +60,25 @@ describe("StructuredForm — outreach", () => {
     expect(payload.email).toBe("dana@example.com");
     expect(payload.company).toBe("Clearbond");
     expect(onAdded).toHaveBeenCalled();
+  });
+
+  it("includes resume_url in payload when provided", async () => {
+    const user = userEvent.setup();
+    const onAdded = vi.fn();
+    render(<StructuredForm onAdded={onAdded} onError={() => {}} />);
+
+    const inputs = screen.getAllByRole("textbox");
+    await user.type(inputs[0], "Dana");
+    await user.type(inputs[1], "dana@example.com");
+    await user.type(inputs[2], "Clearbond");
+    await user.type(inputs[6], "https://drive.google.com/file/resume");
+
+    await user.click(screen.getByRole("button", { name: /Add Contact/i }));
+
+    await waitFor(() => expect(insertMock).toHaveBeenCalled());
+    expect(insertMock.mock.calls[0][0].resume_url).toBe(
+      "https://drive.google.com/file/resume"
+    );
   });
 });
 
