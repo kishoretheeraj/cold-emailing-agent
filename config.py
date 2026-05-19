@@ -258,6 +258,7 @@ CRITIC_PASS_THRESHOLD = 6
 # Seconds to sleep between body generation and subject/critic calls within a single
 # contact, to avoid exhausting the 30k input-tokens-per-minute rate limit.
 INTER_CALL_SLEEP = 10
+BATCH_POLL_INTERVAL = 30  # seconds between batch status polls
 
 # ── Research prompt defaults ───────────────────────────────────────────────────
 RESEARCH_QUERY_DEFAULT = """You generate web search queries to help a job seeker write a personalized cold outreach email.

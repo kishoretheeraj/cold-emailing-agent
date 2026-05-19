@@ -115,23 +115,20 @@ def _normalize_body(text):
     return "\n\n".join(normalized)
 
 
-def generate_email(contact, action, original_subject=None, prompts=None):
+def prepare_email(contact, action, prompts=None):
     """
-    Generate email body + subject for a contact based on the action.
-    Returns (subject, body) tuple.
-    For follow-up actions, skips Claude subject generation and returns
-    'Re: {original_subject}' so follow-ups stay in the same thread.
-    If prompts dict is provided, its values override the config.py defaults.
+    Build the email body prompt without calling Claude.
+    Handles research and dartmouth checks synchronously (fast/cached).
+    Returns (user_prompt, system, ctx) where ctx is passed as **kwargs to finalize_email().
     """
     _prompts = prompts or {}
-    mode = contact.get("mode", "outreach")
     dart = _is_dartmouth(contact)
     dart_instr = get_dartmouth_instruction(_prompts, dart)
+    tier = contact.get("tier")
 
     # ── Research injection ─────────────────────────────────────────────────────
     research_brief = ""
     is_first_touch = action in _FIRST_TOUCH_ACTIONS
-    tier = contact.get("tier")
     is_research_tier = tier in RESEARCH_TIERS
 
     if is_first_touch and is_research_tier:
@@ -173,25 +170,41 @@ def generate_email(contact, action, original_subject=None, prompts=None):
         f"has_brief={bool(research_brief)}"
     )
 
+    profile = _prompts.get("sender_profile", SENDER_PROFILE)
+
     if action in ("send_first_touch", "send_followup1",
                   "send_followup2", "send_breakup"):
-        body = _generate_outreach(contact, action, dart_instr, _prompts,
-                                  research_block=research_block)
+        user_prompt = _build_outreach_prompt(contact, action, dart_instr, _prompts,
+                                             research_block=research_block)
     elif action == "send_applied_intro":
-        body = _generate_applied_intro(contact, dart_instr, _prompts,
-                                       research_block=research_block)
+        user_prompt = _build_applied_intro_prompt(contact, dart_instr, _prompts,
+                                                  research_block=research_block)
     elif action == "send_applied_followup":
-        body = _generate_applied_followup(contact, dart_instr, _prompts)
+        user_prompt = _build_applied_followup_prompt(contact, dart_instr, _prompts)
     else:
         raise ValueError(f"Unknown action: {action}")
+
+    ctx = {"dart_instr": dart_instr, "research_block": research_block}
+    return user_prompt, profile, ctx
+
+
+def finalize_email(contact, action, body, original_subject=None, prompts=None,
+                   dart_instr="", research_block=""):
+    """
+    Complete email generation from a pre-computed body.
+    Runs pre-flight, generates subject, runs critic for Tier 1 first-touch.
+    Returns (subject, body). Raises ValueError on hard pre-flight block.
+    """
+    import preflight
+    from db import log_agent_event as _log_event
+    _prompts = prompts or {}
+    mode = contact.get("mode", "outreach")
+    _name = contact.get("name", "")
+    _company = contact.get("company", "")
 
     body = _normalize_body(body)
 
     # ── Pre-flight checks (all actions) ───────────────────────────────────────
-    import preflight
-    from db import log_agent_event as _log_event
-    _name = contact.get("name", "")
-    _company = contact.get("company", "")
     _pf_failures = preflight.check(body, contact, _prompts)
     if _pf_failures:
         _pf_extra = "Fix these issues before rewriting: " + "; ".join(_pf_failures)
@@ -225,9 +238,7 @@ def generate_email(contact, action, original_subject=None, prompts=None):
     _log_event("preflight", contact_id=contact.get("id"),
                contact_name=contact.get("name"), status="success")
 
-    # Space out calls within a contact to avoid exhausting the TPM limit.
-    # Body generation already consumed ~7k tokens; the subject + critic add 2–4 more
-    # calls at similar cost. Sleep gives the per-minute window time to partially clear.
+    # Space out subject + critic calls to stay within per-minute token budget.
     if action in _FIRST_TOUCH_ACTIONS:
         time.sleep(INTER_CALL_SLEEP)
 
@@ -263,7 +274,20 @@ def generate_email(contact, action, original_subject=None, prompts=None):
 
     return subject, body
 
-def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None, research_block=""):
+
+def generate_email(contact, action, original_subject=None, prompts=None):
+    """
+    Generate email body + subject for a contact based on the action.
+    Returns (subject, body) tuple.
+    For follow-up actions, skips Claude subject generation and returns
+    'Re: {original_subject}' so follow-ups stay in the same thread.
+    If prompts dict is provided, its values override the config.py defaults.
+    """
+    user_prompt, system, ctx = prepare_email(contact, action, prompts)
+    body = _call_claude(user_prompt, system=system)
+    return finalize_email(contact, action, body, original_subject, prompts, **ctx)
+
+def _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction=None, research_block=""):
     template = ACTION_TO_TEMPLATE[action]
     tier = str(contact.get("tier", 2))
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -284,9 +308,13 @@ def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=N
         prompt += research_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
-    return _call_claude(prompt, system=profile)
+    return prompt
 
-def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
+def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None, research_block=""):
+    prompt = _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction, research_block)
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+
+def _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
     applied = contact.get("applied_date") or str(date.today())
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("applied_intro_prompt", APPLIED_INTRO_PROMPT)
@@ -304,9 +332,13 @@ def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None
         prompt += research_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
-    return _call_claude(prompt, system=profile)
+    return prompt
 
-def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=None):
+def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
+    prompt = _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction, research_block)
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+
+def _build_applied_followup_prompt(contact, dart_instr, prompts, extra_instruction=None):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("applied_followup_prompt", APPLIED_FOLLOWUP_PROMPT)
     prompt = tpl.format(
@@ -319,7 +351,11 @@ def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=N
     )
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
-    return _call_claude(prompt, system=profile)
+    return prompt
+
+def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=None):
+    prompt = _build_applied_followup_prompt(contact, dart_instr, prompts, extra_instruction)
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
 
 def _generate_subject(contact, mode, body, prompts):
     profile = prompts.get("sender_profile", SENDER_PROFILE)

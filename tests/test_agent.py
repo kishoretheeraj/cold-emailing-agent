@@ -1,6 +1,7 @@
 """Tests for agent.py — decision logic, stage transitions, and run() orchestration."""
 
 from datetime import date, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -274,12 +275,51 @@ def _build_contact(**overrides):
     return contact
 
 
+def _mock_batch_pipeline(mocker, contact, action, subject, body,
+                         finalize_side_effect=None, prepare_side_effect=None):
+    """
+    Wire up mocks for the prepare_email → Batch API → finalize_email pipeline.
+    Returns (mock_prepare, mock_finalize, mock_batch_client).
+    """
+    custom_id = f"{contact['id']}-{action}"
+
+    if prepare_side_effect:
+        mock_prepare = mocker.patch("agent.prepare_email", side_effect=prepare_side_effect)
+    else:
+        mock_prepare = mocker.patch("agent.prepare_email",
+                                    return_value=("prompt", "system", {}))
+
+    if finalize_side_effect:
+        mock_finalize = mocker.patch("agent.finalize_email",
+                                     side_effect=finalize_side_effect)
+    else:
+        mock_finalize = mocker.patch("agent.finalize_email",
+                                     return_value=(subject, body))
+
+    mock_result = MagicMock()
+    mock_result.custom_id = custom_id
+    mock_result.result.type = "succeeded"
+    mock_result.result.message.content = [MagicMock(text=body)]
+
+    mock_batch = MagicMock()
+    mock_batch.id = "batch-test"
+    mock_batch.processing_status = "ended"
+    mock_batch.request_counts = MagicMock()
+
+    mock_client = MagicMock()
+    mock_client.messages.batches.create.return_value = mock_batch
+    mock_client.messages.batches.retrieve.return_value = mock_batch
+    mock_client.messages.batches.results.return_value = [mock_result]
+
+    mocker.patch("agent.anthropic.Anthropic", return_value=mock_client)
+
+    return mock_prepare, mock_finalize, mock_client
+
+
 def test_run_drafts_and_labels_a_new_contact(mocker):
-    mocker.patch(
-        "agent.get_all_contacts",
-        return_value=[_build_contact()],
-    )
-    mocker.patch("agent.generate_email", return_value=("subj", "body"))
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    _mock_batch_pipeline(mocker, contact, "send_first_touch", "subj", "body")
     create_draft = mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     apply_label = mocker.patch("agent.apply_label_to_latest_draft")
     update_contact = mocker.patch("agent.update_contact")
@@ -304,10 +344,10 @@ def test_run_drafts_and_labels_a_new_contact(mocker):
     save_thread_info.assert_called_once_with(1, "<mid@gmail.com>", "subj", gmail_thread_id=17850200168)
 
 
-
 def test_run_does_not_block_on_label_failure(mocker):
-    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
-    mocker.patch("agent.generate_email", return_value=("s", "b"))
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    _mock_batch_pipeline(mocker, contact, "send_first_touch", "s", "b")
     mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     mocker.patch(
         "agent.apply_label_to_latest_draft",
@@ -336,7 +376,7 @@ def test_run_followup_passes_thread_headers(mocker):
         "agent.get_thread_info",
         return_value={"message_id": "<orig@gmail.com>", "original_subject": "quick intro"},
     )
-    mocker.patch("agent.generate_email", return_value=("Re: quick intro", "follow body"))
+    _mock_batch_pipeline(mocker, contact, "send_followup1", "Re: quick intro", "follow body")
     create_draft = mocker.patch("agent.create_draft", return_value=("<fup@gmail.com>", None))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
@@ -372,8 +412,10 @@ def test_run_skips_replied_contacts(mocker):
 
 
 def test_run_exits_one_on_errors(mocker):
-    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
-    mocker.patch("agent.generate_email", side_effect=RuntimeError("claude down"))
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    _mock_batch_pipeline(mocker, contact, "send_first_touch", "s", "b",
+                         finalize_side_effect=RuntimeError("claude down"))
     mocker.patch("agent.time.sleep")
 
     with pytest.raises(SystemExit) as excinfo:
@@ -394,10 +436,11 @@ def test_run_skips_already_processed_today(mocker):
     update_contact.assert_not_called()
 
 
-def test_run_loads_prompts_and_passes_to_generate_email(mocker):
-    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
+def test_run_loads_prompts_and_passes_to_prepare_email(mocker):
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
     mocker.patch("agent.load_prompts", return_value={"outreach_prompt": "LIVE"})
-    generate_email = mocker.patch("agent.generate_email", return_value=("s", "b"))
+    mock_prepare, _, _ = _mock_batch_pipeline(mocker, contact, "send_first_touch", "s", "b")
     mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
@@ -407,14 +450,15 @@ def test_run_loads_prompts_and_passes_to_generate_email(mocker):
 
     agent.run()
 
-    _, kwargs = generate_email.call_args
+    _, kwargs = mock_prepare.call_args
     assert kwargs.get("prompts") == {"outreach_prompt": "LIVE"}
 
 
 def test_run_falls_back_to_empty_prompts_on_load_failure(mocker):
-    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
     mocker.patch("agent.load_prompts", side_effect=RuntimeError("db down"))
-    generate_email = mocker.patch("agent.generate_email", return_value=("s", "b"))
+    mock_prepare, _, _ = _mock_batch_pipeline(mocker, contact, "send_first_touch", "s", "b")
     mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
@@ -424,13 +468,14 @@ def test_run_falls_back_to_empty_prompts_on_load_failure(mocker):
 
     agent.run()  # must not raise
 
-    _, kwargs = generate_email.call_args
+    _, kwargs = mock_prepare.call_args
     assert kwargs.get("prompts") == {}
 
 
 def test_run_skips_when_duplicate_draft_exists(mocker):
-    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
-    mocker.patch("agent.generate_email", return_value=("subj", "body"))
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    _mock_batch_pipeline(mocker, contact, "send_first_touch", "subj", "body")
     # create_draft returns None → duplicate found
     mocker.patch("agent.create_draft", return_value=(None, None))
     update_contact = mocker.patch("agent.update_contact")
@@ -443,8 +488,9 @@ def test_run_skips_when_duplicate_draft_exists(mocker):
 
 
 def test_run_stores_first_touch_draft_in_email_messages(mocker):
-    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
-    mocker.patch("agent.generate_email", return_value=("First Touch Subject", "Hello Dana"))
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    _mock_batch_pipeline(mocker, contact, "send_first_touch", "First Touch Subject", "Hello Dana")
     mocker.patch("agent.create_draft", return_value=("<mid@gmail.com>", 17850200168))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
@@ -477,7 +523,7 @@ def test_run_stores_followup_draft_with_in_reply_to(mocker):
         "agent.get_thread_info",
         return_value={"message_id": "<orig@gmail.com>", "original_subject": "quick intro"},
     )
-    mocker.patch("agent.generate_email", return_value=("Re: quick intro", "Follow-up body"))
+    _mock_batch_pipeline(mocker, contact, "send_followup1", "Re: quick intro", "Follow-up body")
     mocker.patch("agent.create_draft", return_value=("<fup@gmail.com>", None))
     mocker.patch("agent.apply_label_to_latest_draft")
     mocker.patch("agent.update_contact")
@@ -496,8 +542,9 @@ def test_run_stores_followup_draft_with_in_reply_to(mocker):
 
 
 def test_run_duplicate_draft_does_not_store_email_message(mocker):
-    mocker.patch("agent.get_all_contacts", return_value=[_build_contact()])
-    mocker.patch("agent.generate_email", return_value=("subj", "body"))
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    _mock_batch_pipeline(mocker, contact, "send_first_touch", "subj", "body")
     mocker.patch("agent.create_draft", return_value=(None, None))
     mocker.patch("agent.update_contact")
     mocker.patch("agent.save_thread_info")

@@ -19,10 +19,12 @@ import time
 import logging
 from datetime import date, datetime, timezone
 
-from config import FOLLOWUP_DAYS
+import anthropic
+
+from config import ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL, EMAIL_MODEL, FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
 from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run, insert_email_message
-from emailer import generate_email
+from emailer import generate_email, prepare_email, finalize_email
 from gmail import create_draft, apply_label_to_latest_draft
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -235,13 +237,17 @@ def run():
     skipped = 0
     errors  = 0
 
+    # ── Phase 1: Collect batch requests ───────────────────────────────────────
+    # (contact, action, thread_message_id, original_subject, custom_id, ctx)
+    batch_items = []
+    batch_requests = []
+
     for contact in contacts:
         name    = contact.get("name", "Unknown")
         company = contact.get("company", "Unknown")
         mode    = contact.get("mode", "outreach")
         mode_tag = "[OUTREACH]" if mode == "outreach" else "[APPLIED] "
 
-        # Idempotency: skip contacts already processed today
         last_emailed = _parse_date(contact.get("last_emailed"))
         if last_emailed == today:
             log.info(f"{mode_tag} {name} | {company} | skip | already processed today")
@@ -256,22 +262,78 @@ def run():
             skipped += 1
             continue
 
-        time.sleep(3)
+        thread_message_id = None
+        original_subject = None
+        if action not in _FIRST_TOUCH_ACTIONS:
+            thread_info = get_thread_info(contact["id"])
+            thread_message_id = thread_info.get("message_id")
+            original_subject = thread_info.get("original_subject")
 
         try:
-            # Fetch stored thread info for follow-ups
-            thread_message_id = None
-            original_subject = None
-            if action not in _FIRST_TOUCH_ACTIONS:
-                thread_info = get_thread_info(contact["id"])
-                thread_message_id = thread_info.get("message_id")
-                original_subject = thread_info.get("original_subject")
+            user_prompt, system, ctx = prepare_email(contact, action, prompts=prompts)
+        except Exception as exc:
+            log.error(f"{mode_tag} {name} | {company} | {action} | prepare error: {exc}")
+            errors += 1
+            continue
 
-            # Generate email
-            subject, body = generate_email(contact, action, original_subject, prompts=prompts)
+        custom_id = f"{contact['id']}-{action}"
+        batch_requests.append({
+            "custom_id": custom_id,
+            "params": {
+                "model": EMAIL_MODEL,
+                "max_tokens": 1000,
+                "system": [{"type": "text", "text": system,
+                             "cache_control": {"type": "ephemeral"}}],
+                "messages": [{"role": "user", "content": user_prompt}],
+            },
+        })
+        batch_items.append((contact, action, thread_message_id, original_subject,
+                             custom_id, ctx, mode_tag))
 
-            # Create Gmail draft (with threading headers for follow-ups).
-            # Returns None if a duplicate draft already exists for today.
+    if not batch_requests:
+        elapsed = round(time.time() - start)
+        log.info(f"DONE | {drafted} drafted | {skipped} skipped | {errors} errors | {elapsed}s")
+        try:
+            record_run("success", drafted, skipped, errors, elapsed)
+        except Exception as exc:
+            log.warning(f"Failed to record run metadata: {exc}")
+        return
+
+    # ── Phase 2: Submit batch ─────────────────────────────────────────────────
+    _batch_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    batch = _batch_client.messages.batches.create(requests=batch_requests)
+    log.info(f"BATCH | submitted {len(batch_requests)} requests | batch_id={batch.id}")
+
+    # ── Phase 3: Poll until complete ──────────────────────────────────────────
+    while batch.processing_status == "in_progress":
+        time.sleep(BATCH_POLL_INTERVAL)
+        batch = _batch_client.messages.batches.retrieve(batch.id)
+        log.info(f"BATCH | {batch.processing_status} | {batch.request_counts}")
+
+    log.info(f"BATCH | complete | {batch.request_counts}")
+
+    # ── Phase 4: Process results ──────────────────────────────────────────────
+    results_map = {r.custom_id: r for r in _batch_client.messages.batches.results(batch.id)}
+
+    for contact, action, thread_message_id, original_subject, custom_id, ctx, mode_tag in batch_items:
+        name    = contact.get("name", "Unknown")
+        company = contact.get("company", "Unknown")
+        mode    = contact.get("mode", "outreach")
+
+        result = results_map.get(custom_id)
+        if result is None or result.result.type != "succeeded":
+            err_detail = result.result if result else "missing"
+            log.error(f"{mode_tag} {name} | {company} | {action} | batch error: {err_detail}")
+            errors += 1
+            continue
+
+        raw_body = result.result.message.content[0].text
+
+        try:
+            subject, body = finalize_email(
+                contact, action, raw_body, original_subject, prompts, **ctx
+            )
+
             current_stage = contact.get("stage")
             if thread_message_id:
                 message_id, thread_id = create_draft(
@@ -288,14 +350,11 @@ def run():
             if message_id is None:
                 log.info(f"{mode_tag} {name} | {company} | {action} | draft already exists, skipping")
                 skipped += 1
-                time.sleep(2)
                 continue
 
-            # Persist thread info after the first email so follow-ups can thread
             if action in _FIRST_TOUCH_ACTIONS and message_id:
                 save_thread_info(contact["id"], message_id, subject, gmail_thread_id=thread_id)
 
-            # Store the full draft in email_messages for the ThreadView
             insert_email_message(
                 contact_id=contact["id"],
                 direction="outgoing",
@@ -307,7 +366,6 @@ def run():
                 stage_at_send=current_stage,
             )
 
-            # Apply Gmail label to the draft (best-effort — never blocks)
             label = ACTION_LABEL.get(action)
             if label:
                 try:
@@ -315,7 +373,6 @@ def run():
                 except Exception as exc:
                     log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
 
-            # Update Supabase — conditional on current stage to guard against races
             next_stage = NEXT_STAGE[action]
             followup_days = FOLLOWUP_DAYS.get(action)
             next_template = NEXT_TEMPLATE.get(action)
@@ -334,7 +391,6 @@ def run():
 
             log.info(f"{mode_tag} {name} | {company} | {action} | DRAFTED {extra}")
             drafted += 1
-            time.sleep(60)  # respect 30k tpm limit between consecutive contacts
 
         except Exception as exc:
             log.error(f"{mode_tag} {name} | {company} | {action} | ERROR: {exc}")
