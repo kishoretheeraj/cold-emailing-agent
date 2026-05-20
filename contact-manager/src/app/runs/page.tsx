@@ -154,10 +154,16 @@ export default function RunsPage() {
               : "Run Agent"}
           </button>
           <Link
+            href="/overview"
+            className="rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
+          >
+            Overview
+          </Link>
+          <Link
             href="/"
             className="rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
           >
-            Back
+            Contacts
           </Link>
         </div>
       </header>

@@ -138,14 +138,17 @@ function extractTuckYear(notes: string | null | undefined): string | null {
 
 // ── Query builder ──────────────────────────────────────────────────────────────
 
+const LIST_COLUMNS =
+  "id,name,company,email,stage,tier,mode,last_emailed,reply_status,classifier_status,dartmouth,notes,message_id,followup_date,created_at";
+
 function buildContactsQuery(filters: ContactsQueryFilters, cursor: string | null) {
   const escaped = filters.nameOrCompany.trim().replace(/[%_]/g, "\\$&");
 
-  // Build filters first, then apply ordering and limit last.
-  // This keeps the chain valid: .order().limit() always resolves the query.
+  // Select only columns needed for the list + sheet header; heavy text fields
+  // (detail, job_description, job_title, etc.) are fetched on row-click.
   let q = supabase
     .from("contacts")
-    .select("*")
+    .select(LIST_COLUMNS)
     .is("deleted_at", null);
 
   if (escaped) {
@@ -199,6 +202,12 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
   const prevFiltersRef = useRef<ContactsQueryFilters>(EMPTY_FILTERS);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const openContact = useCallback(async (c: Contact) => {
+    setSelectedContact(c);
+    const { data } = await supabase.from("contacts").select("*").eq("id", c.id).single();
+    if (data) setSelectedContact(data as Contact);
+  }, []);
 
   // Sync sheet local state when selected contact changes
   useEffect(() => {
@@ -513,7 +522,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
             <button
               key={c.id}
               type="button"
-              onClick={() => setSelectedContact(c)}
+              onClick={() => openContact(c)}
               className={`w-full grid ${GRID_COLS} gap-3 px-4 py-2.5 border-b border-border/50 hover:bg-surface-2 transition-colors text-left text-sm cursor-pointer`}
             >
               <div className="min-w-0">

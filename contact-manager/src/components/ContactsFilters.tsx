@@ -1,6 +1,6 @@
 "use client";
 
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { TextInput, ToggleSwitch } from "@/components/Field";
 import { Tooltip } from "@/components/ui/Tooltip";
 import {
@@ -79,8 +79,18 @@ export function ContactsFilters({ filters, onChange }: Props) {
           onChange={(e) =>
             onChange({ ...filters, nameOrCompany: e.target.value })
           }
-          className="pl-9"
+          className={filters.nameOrCompany ? "pl-9 pr-9" : "pl-9"}
         />
+        {filters.nameOrCompany && (
+          <button
+            type="button"
+            onClick={() => onChange({ ...filters, nameOrCompany: "" })}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg transition-colors"
+            aria-label="Clear search"
+          >
+            <X className="size-3.5" />
+          </button>
+        )}
       </div>
 
       {/* Row 2: pill filters */}

@@ -101,29 +101,37 @@ export function PromptsPage() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold text-fg">Prompts & Profile</h1>
           <p className="text-sm text-fg-muted">
-            Changes take effect on the next agent run (8am EST).
+            Changes take effect on the next agent run (4:37am EST).
           </p>
         </div>
-        <Link
-          href="/"
-          className="shrink-0 flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+        <div className="flex items-center gap-2">
+          <Link
+            href="/overview"
+            className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
           >
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-          Contacts
-        </Link>
+            Overview
+          </Link>
+          <Link
+            href="/"
+            className="shrink-0 flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            Contacts
+          </Link>
+        </div>
       </header>
 
       {/* Sticky search */}
