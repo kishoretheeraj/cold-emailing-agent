@@ -296,8 +296,11 @@ vi.mock("sonner", () => ({
 - Env vars (server-only): `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
 - `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.
-- Gmail OAuth vars: run `npx tsx scripts/capture-gmail-token.mts` once to obtain
-  `GOOGLE_OAUTH_REFRESH_TOKEN`. Add all three vars to `.env` and Vercel dashboard.
+- Gmail OAuth vars: run `cd contact-manager && npx tsx scripts/capture-gmail-token.mts` once
+  to obtain `GOOGLE_OAUTH_REFRESH_TOKEN`. Must run from `contact-manager/` (dotenv and googleapis
+  are in that directory's node_modules, not the repo root). Script uses `http://localhost:8080`
+  redirect — Desktop app OAuth clients allow this without GCP Console config.
+  Add all three vars to `.env` and Vercel dashboard.
 
 ## Mirrored cadence constants
 

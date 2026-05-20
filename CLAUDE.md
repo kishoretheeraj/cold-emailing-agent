@@ -24,6 +24,7 @@ config.py         # All env-var reads + prompt templates + tier instructions
 constants.py      # Stage sequences, reply statuses, TERMINAL_REPLY_STATUSES, DRAFTED_STAGES, TERMINAL_DRAFTED_STAGES
 notify_failure.py # Emailed to GMAIL_ADDRESS when a workflow step fails
 supabase/migrations/ # SQL migration files; apply with: supabase link --project-ref yqrnsparrvirruwjsjgt && supabase db push
+                    # If remote has migrations missing from local, db push fails — fix with empty placeholder files.
 ```
 
 Every module that touches the outside world is wrapped behind a function so
