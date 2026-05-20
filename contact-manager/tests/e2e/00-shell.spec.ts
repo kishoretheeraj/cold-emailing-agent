@@ -12,7 +12,11 @@ test("main page has expected chrome: title, nav links, input toggle", async ({
 
   await expect(page.getByRole("heading", { name: "Cold Email Ops" })).toBeVisible();
 
-  const promptsLink = page.getByRole("link", { name: /prompts/i });
+  const overviewLink = page.getByRole("link", { name: /^overview$/i });
+  await expect(overviewLink).toBeVisible();
+  await expect(overviewLink).toHaveAttribute("href", "/overview");
+
+  const promptsLink = page.getByRole("link", { name: /^prompts$/i });
   await expect(promptsLink).toBeVisible();
   await expect(promptsLink).toHaveAttribute("href", "/prompts");
 
@@ -24,7 +28,7 @@ test("main page has expected chrome: title, nav links, input toggle", async ({
   await expect(page.getByRole("button", { name: "Structured Form" })).toBeVisible();
 });
 
-test("Prompts & Profile link navigates to /prompts", async ({ page }) => {
+test("Prompts link navigates to /prompts", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("link", { name: /prompts/i }).click();
   await expect(page).toHaveURL(/\/prompts/);

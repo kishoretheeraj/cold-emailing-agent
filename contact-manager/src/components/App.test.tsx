@@ -140,9 +140,16 @@ describe("App shell", () => {
     );
   });
 
-  it("renders Prompts & Profile nav link pointing to /prompts", () => {
+  it("renders Overview nav link pointing to /overview", () => {
     render(<App />);
-    const link = screen.getByRole("link", { name: /prompts/i });
+    const link = screen.getByRole("link", { name: /overview/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/overview");
+  });
+
+  it("renders Prompts nav link pointing to /prompts", () => {
+    render(<App />);
+    const link = screen.getByRole("link", { name: /^prompts$/i });
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute("href", "/prompts");
   });

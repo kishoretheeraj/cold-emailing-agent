@@ -37,12 +37,14 @@ written, not just style preferences.
 ```
 src/
 ├── app/
-│   ├── api/extract/route.ts   # Server-only Claude POST handler (prompt LOCKED — see below)
-│   ├── prompts/page.tsx        # 7-line server shell → <PromptsPage />
-│   ├── runs/page.tsx           # Activity page — agent_events table, 10s auto-refresh
-│   ├── globals.css             # @theme tokens + global resets + Vaul overrides
-│   ├── layout.tsx              # Inter font, dark theme, AppProviders wrapper
-│   └── page.tsx                # 1-line server component → <App />
+│   ├── api/extract/route.ts        # Server-only Claude POST handler (prompt LOCKED — see below)
+│   ├── api/trigger-agent/route.ts  # Proxies to GitHub Actions workflow_dispatch. Needs GITHUB_DISPATCH_TOKEN env var.
+│   ├── overview/page.tsx           # Dashboard: action items, pipeline funnel, agent status. 30s auto-refresh.
+│   ├── prompts/page.tsx            # 7-line server shell → <PromptsPage />
+│   ├── runs/page.tsx               # Activity page — agent_events table, 10s auto-refresh
+│   ├── globals.css                 # @theme tokens + global resets + Vaul overrides
+│   ├── layout.tsx                  # Inter font, dark theme, AppProviders wrapper
+│   └── page.tsx                    # 1-line server component → <App />
 ├── components/
 │   ├── ui/                     # In-house primitive wrappers (NO shadcn)
 │   │   ├── Badge.tsx           # Semantic color variants
@@ -57,7 +59,7 @@ src/
 │   ├── SmartInput.tsx          # Paste → /api/extract → editable preview → save
 │   ├── StructuredForm.tsx      # Two form sections: outreach + applied
 │   ├── ContactsList.tsx        # Infinite-scroll list + filters + Vaul sheet + soft delete
-│   ├── ContactsFilters.tsx     # Search input + tier/mode pills + stage select + dartmouth + needs-response
+│   ├── ContactsFilters.tsx     # Search input (with × clear button) + tier/mode pills + stage select + dartmouth + needs-response
 │   ├── ThreadView.tsx          # Email thread history shown inside the Vaul side sheet
 │   ├── PromptsPage.tsx         # "use client" — fetches all prompts, sticky search, 7 collapsible categories
 │   ├── PromptCategory.tsx      # "use client" — collapsible section header + PromptSection list
@@ -119,13 +121,15 @@ tests/
 - **Contact list query** (keyset pagination, PAGE_SIZE=30):
   ```ts
   supabase.from("contacts")
-    .select("*")
+    .select(LIST_COLUMNS)     // explicit column list — NOT select("*"). Heavy text fields
+                              // (detail, job_description, job_title) excluded from list view.
     .is("deleted_at", null)   // soft delete filter — always include
     // ...optional filter methods (.or, .in, .eq, .lt)...
     .order("created_at", { ascending: false })
     .limit(30)                // limit always LAST — after all filters
   ```
   Do not call `.limit()` before `.or()` / `.in()` / `.lt()` — the chain must resolve at `.limit()`.
+- **Full-record fetch on row click** (`openContact` in `ContactsList.tsx`): after setting `selectedContact` with list-column data, a second `select("*").eq("id", id).single()` call fetches all fields for the side sheet. This keeps the list fast while the sheet gets the complete record (detail, job_description, etc.). If you add a new field that's needed in the list view, add it to `LIST_COLUMNS`. If it's only needed in the sheet, leave it out.
 - **Soft delete**: `supabase.from("contacts").update({ deleted_at: new Date().toISOString() }).eq("id", id)`. Never hard-delete.
 - **Optimistic updates** (stage/tier changes): mutate local state first, then issue the
   Supabase update. On error, revert local state and call `onError`.
@@ -221,8 +225,8 @@ vi.mock("sonner", () => ({
 - Variables used inside `vi.mock()` factories must be hoisted with `vi.hoisted()`.
 - Reset mocks in `beforeEach`, not afterEach.
 - **App shell test** (`App.test.tsx`): always assert that persistent nav links (e.g.
-  "Prompts & Profile") exist with the correct `href`. When rewriting App.tsx, verify this
-  test still passes before committing.
+  "Overview", "Prompts", "Activity") exist with the correct `href`. When rewriting App.tsx,
+  verify this test still passes before committing.
 
 ## Tests (Playwright e2e)
 
@@ -263,8 +267,10 @@ vi.mock("sonner", () => ({
 - `npm test` — Vitest unit tests. Must pass. **0 failures required — no exceptions.**
 - `npm run test:e2e` — Playwright smoke tests. Must pass. **0 failures required — no exceptions.**
 - `vercel deploy --prod` to deploy. Env vars in Vercel dashboard.
-- Three env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-  `ANTHROPIC_API_KEY`. The first two are public (no RLS — be aware). Third is server-only.
+- Four env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+  `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`. The first two are public (no RLS — be aware).
+  The latter two are server-only. `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the
+  `kishoretheeraj/cold-emailing-agent` repo — powers the "Run Agent" button on every page.
 
 ## Style: comments and docs
 
@@ -326,10 +332,19 @@ Client component (`PromptsPage.tsx`). Fetches all prompts ordered by `sort_order
 
 ## e2e helpers update
 
-`tests/e2e/helpers.ts` `mockSupabase()` now intercepts four tables:
-- `/rest/v1/contacts` — returns fixture or handles PATCH/DELETE
+`tests/e2e/helpers.ts` `mockSupabase()` intercepts four tables:
+- `/rest/v1/contacts` — returns fixture rows (filtered) or handles PATCH/DELETE
 - `/rest/v1/prompts` — returns prompts fixture (14 fixture rows)
 - `/rest/v1/email_messages` — returns `[]` (empty thread)
 - `/rest/v1/agent_events` — returns `[]` with `Content-Range: 0-0/0`
+
+**`applyFilters` handles these URL params:** `or` (name/company ilike), `tier=in.(...)`,
+`mode=in.(...)`, `stage=in.(...)`, `dartmouth=eq.true`, `created_at=lt.ISO`,
+`id=eq.{id}` (single-row fetch by primary key — for `openContact`'s `.single()` call).
+
+**`.single()` support:** when the request has `Accept: application/vnd.pgrst.object+json`
+(set automatically by Supabase's `.single()`), the mock returns a plain JSON object (not
+array) so the Supabase client parses it correctly. Without this, `.single()` would receive
+an array, treat it as `data`, and corrupt `selectedContact` state.
 
 When writing new e2e tests that need non-empty `email_messages` or `agent_events`, add a `page.route()` override **before** calling `mockSupabase(page)` or add a dedicated helper fixture.
