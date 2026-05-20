@@ -90,6 +90,13 @@ export async function mockSupabase(page: Page) {
       }
     }
 
+    // id=eq.123 (single-row fetch by primary key)
+    const idParam = params.get("id");
+    if (idParam?.startsWith("eq.")) {
+      const targetId = idParam.slice(3);
+      rows = rows.filter((c) => String(c.id) === targetId);
+    }
+
     // dartmouth=eq.true
     if (params.get("dartmouth") === "eq.true") {
       rows = rows.filter((c) => c.dartmouth === true);
@@ -117,6 +124,18 @@ export async function mockSupabase(page: Page) {
   await page.route(/\/rest\/v1\/contacts(\?.*)?$/, async (route, request) => {
     if (request.method() === "GET") {
       const rows = applyFilters(request.url());
+      // .single() sets Accept: application/vnd.pgrst.object+json.
+      // PostgREST returns a plain JSON object, not an array, for this header.
+      const acceptHeader = (request.headers() as Record<string, string>)["accept"] ?? "";
+      if (acceptHeader.includes("application/vnd.pgrst.object+json")) {
+        const row = rows[0];
+        await route.fulfill({
+          status: row ? 200 : 404,
+          contentType: "application/json",
+          body: row ? JSON.stringify(row) : JSON.stringify({ error: "Not found" }),
+        });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: "application/json",
