@@ -23,6 +23,7 @@ db.py             # Supabase client + thin query/update wrappers
 config.py         # All env-var reads + prompt templates + tier instructions
 constants.py      # Stage sequences, reply statuses, TERMINAL_REPLY_STATUSES, DRAFTED_STAGES, TERMINAL_DRAFTED_STAGES
 notify_failure.py # Emailed to GMAIL_ADDRESS when a workflow step fails
+supabase/migrations/ # SQL migration files; apply with: supabase link --project-ref yqrnsparrvirruwjsjgt && supabase db push
 ```
 
 Every module that touches the outside world is wrapped behind a function so
@@ -147,7 +148,7 @@ Follow-up emails must land in the same Gmail thread as the original.
 ## Resilience patterns
 
 - **Anthropic API** (`emailer._call_claude`): uses the official `anthropic` SDK
-  with `max_retries=2` (3 total attempts). The SDK auto-retries 429, 529, and
+  with `max_retries=4` (5 total attempts). The SDK auto-retries 429, 529, and
   5xx; non-retryable 4xx raise immediately. Signature:
   `_call_claude(prompt, model=None, max_tokens=1000, system=None)`. When `system`
   is provided it is sent as a system-prompt block with `cache_control: ephemeral`
@@ -164,6 +165,11 @@ Follow-up emails must land in the same Gmail thread as the original.
   and see which are above/below the cache threshold. Caching activates
   automatically when the system prompt reaches the 1024-token minimum
   (currently below threshold; grows as Supabase prompts are edited).
+  **Credit exhaustion fast-fail**: a module-level `_credit_exhausted` flag
+  is set on the first `400 credit balance too low` response. All subsequent
+  `_call_claude` calls raise `RuntimeError` immediately without hitting the
+  network, saving the `INTER_CALL_SLEEP` sleep and HTTP round-trip for every
+  remaining contact. Log marker: `[CREDIT] Anthropic credit balance exhausted`.
 - **Tavily** (`research.py`): `_get_client()` lazily initialises a singleton
   `TavilyClient`. All failures inside `get_research_brief` degrade to `""` —
   the function never raises. Absent `TAVILY_API_KEY` short-circuits immediately.

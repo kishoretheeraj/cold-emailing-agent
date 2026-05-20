@@ -20,6 +20,7 @@ from config import (
 log = logging.getLogger(__name__)
 
 _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=4)
+_credit_exhausted = False  # set on first 400 credit error; makes all further calls fail fast
 
 # ── Action → template name mapping ────────────────────────────────────────────
 _FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
@@ -71,6 +72,9 @@ def get_dartmouth_instruction(prompts_dict, dart):
     return DARTMOUTH_INSTRUCTION
 
 def _call_claude(prompt, model=None, max_tokens=1000, system=None):
+    global _credit_exhausted
+    if _credit_exhausted:
+        raise RuntimeError("Anthropic credit balance exhausted — aborting remaining calls this run")
     _model = model or EMAIL_MODEL
     kwargs = dict(
         model=_model,
@@ -81,7 +85,13 @@ def _call_claude(prompt, model=None, max_tokens=1000, system=None):
         kwargs["system"] = [
             {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
         ]
-    resp = _claude.messages.create(**kwargs)
+    try:
+        resp = _claude.messages.create(**kwargs)
+    except anthropic.BadRequestError as exc:
+        if "credit balance is too low" in str(exc):
+            _credit_exhausted = True
+            log.error("[CREDIT] Anthropic credit balance exhausted — aborting remaining calls this run")
+        raise
     usage = resp.usage
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
     cache_created = getattr(usage, "cache_creation_input_tokens", 0) or 0

@@ -1,5 +1,6 @@
 """Tests for emailer.py — Dartmouth detection, action mapping, prompt generation."""
 
+import anthropic
 import pytest
 
 import emailer
@@ -271,3 +272,37 @@ def test_generate_email_custom_subject_prompt(mocker):
     )
     subject_prompt = captured[1]  # second call is subject
     assert subject_prompt.startswith("SUBJ")
+
+
+# ── Credit exhaustion sentinel ────────────────────────────────────────────────
+
+
+def test_call_claude_sets_credit_sentinel_on_400(mocker):
+    """First credit-too-low 400 sets the module sentinel and re-raises."""
+    emailer._credit_exhausted = False  # ensure clean state
+
+    err = anthropic.BadRequestError(
+        message="Your credit balance is too low to access the Anthropic API.",
+        response=mocker.Mock(status_code=400),
+        body={"type": "error"},
+    )
+    mocker.patch.object(emailer._claude.messages, "create", side_effect=err)
+
+    with pytest.raises(anthropic.BadRequestError):
+        emailer._call_claude("test prompt")
+
+    assert emailer._credit_exhausted is True
+    emailer._credit_exhausted = False  # reset for other tests
+
+
+def test_call_claude_fast_fails_when_credit_exhausted(mocker):
+    """When sentinel is True, _call_claude raises immediately without hitting the API."""
+    emailer._credit_exhausted = True
+
+    mock_create = mocker.patch.object(emailer._claude.messages, "create")
+
+    with pytest.raises(RuntimeError, match="credit balance exhausted"):
+        emailer._call_claude("test prompt")
+
+    mock_create.assert_not_called()
+    emailer._credit_exhausted = False  # reset for other tests
