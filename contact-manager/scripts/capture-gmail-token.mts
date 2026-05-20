@@ -4,13 +4,13 @@
  *
  * Prerequisites:
  *   - GCP project with Gmail API enabled
- *   - OAuth 2.0 Desktop credentials downloaded
- *   - GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in .env
+ *   - OAuth 2.0 Desktop credentials in .env
+ *   - http://localhost:8080 added as an authorized redirect URI in GCP Console
  *
  * After running, add GOOGLE_OAUTH_REFRESH_TOKEN to .env and Vercel env vars.
  */
 
-import { createInterface } from "node:readline";
+import { createServer } from "node:http";
 import { config } from "dotenv";
 import { google } from "googleapis";
 
@@ -26,17 +26,11 @@ if (!clientId || !clientSecret) {
   process.exit(1);
 }
 
-const oauth2Client = new google.auth.OAuth2(
-  clientId,
-  clientSecret,
-  "urn:ietf:wg:oauth:2.0:oob" // Desktop app redirect — code shown in browser
-);
+const REDIRECT_PORT = 8080;
+const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}`;
 
-// Scopes needed:
-//   gmail.send    — /api/send-draft calls drafts.send()
-//   gmail.compose — /api/update-draft calls drafts.update()
-//   gmail.modify  — label management
-//   gmail.readonly — draft ID lookup in gmail.py after IMAP APPEND
+const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
+
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/gmail.compose",
@@ -47,27 +41,48 @@ const SCOPES = [
 const authUrl = oauth2Client.generateAuthUrl({
   access_type: "offline",
   scope: SCOPES,
-  prompt: "consent", // force consent screen so refresh_token is always returned
+  prompt: "consent",
 });
 
 console.log("\n1. Open this URL in your browser:\n");
 console.log(authUrl);
-console.log("\n2. Grant access and copy the authorization code shown.\n");
+console.log("\n2. Authorize the app — you'll be redirected to localhost:8080.");
+console.log("   (The page will show a 'Cannot GET /' error — that's expected.)\n");
+console.log("Waiting for redirect on http://localhost:8080 ...\n");
 
-const rl = createInterface({ input: process.stdin, output: process.stdout });
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", REDIRECT_URI);
+  const code = url.searchParams.get("code");
+  const error = url.searchParams.get("error");
 
-rl.question("3. Paste the authorization code here: ", async (code) => {
-  rl.close();
+  if (error) {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(`Error: ${error}. Close this tab and check the terminal.`);
+    server.close();
+    console.error(`\nOAuth error: ${error}`);
+    process.exit(1);
+  }
+
+  if (!code) {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("No code received. Close this tab and try again.");
+    return;
+  }
+
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Authorization successful! You can close this tab and return to the terminal.");
+  server.close();
+
   try {
-    const { tokens } = await oauth2Client.getToken(code.trim());
+    const { tokens } = await oauth2Client.getToken(code);
     if (!tokens.refresh_token) {
       console.error(
-        "\nError: No refresh_token in response. Did you include prompt=consent?\n" +
+        "\nError: No refresh_token in response.\n" +
           "Try revoking access at https://myaccount.google.com/permissions and re-running."
       );
       process.exit(1);
     }
-    console.log("\nSuccess! Add this to .env and Vercel env vars:\n");
+    console.log("Success! Add this to .env and Vercel env vars:\n");
     console.log(`GOOGLE_OAUTH_REFRESH_TOKEN=${tokens.refresh_token}`);
     console.log(
       "\nNote: This token has no expiry as long as it is used regularly.\n" +
@@ -78,3 +93,5 @@ rl.question("3. Paste the authorization code here: ", async (code) => {
     process.exit(1);
   }
 });
+
+server.listen(REDIRECT_PORT);
