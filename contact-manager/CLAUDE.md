@@ -39,6 +39,9 @@ src/
 ├── app/
 │   ├── api/extract/route.ts        # Server-only Claude POST handler (prompt LOCKED — see below)
 │   ├── api/trigger-agent/route.ts  # Proxies to GitHub Actions workflow_dispatch. Needs GITHUB_DISPATCH_TOKEN env var.
+│   ├── api/send-draft/route.ts     # POST {contact_id} → drafts.send(), flips stage to *_sent, updates draft_history
+│   ├── api/update-draft/route.ts   # POST {contact_id, subject, body} → drafts.update(), persists edits to draft_history
+│   ├── api/trash-message/route.ts  # POST {message_id} → messages.trash() (reserved for future undo feature)
 │   ├── overview/page.tsx           # Dashboard: action items, pipeline funnel, agent status. 30s auto-refresh.
 │   ├── prompts/page.tsx            # 7-line server shell → <PromptsPage />
 │   ├── runs/page.tsx               # Activity page — agent_events table, 10s auto-refresh
@@ -67,9 +70,11 @@ src/
 │   └── Field.tsx               # Label / TextInput / TextArea / ToggleSwitch / TierSelector
 └── lib/
     ├── supabase.ts             # Anon-key browser client singleton
+    ├── gmail-server.ts         # Server-only Gmail API client (OAuth refresh token). Import in API routes only.
+    ├── cadence.ts              # MIRRORED cadence constants — keep in sync with agent config.py::FOLLOWUP_DAYS
     ├── promptCategories.ts     # CATEGORY_ORDER, PROMPT_CATEGORY_MAP — TS-only, no DB column
     ├── promptVariables.ts      # extractVariables, getPythonFormatPlaceholders, getUnknownVariables, PROMPT_VALID_KEYS
-    └── types.ts                # Contact + ReplyStatus + stage arrays + filter types
+    └── types.ts                # Contact + ReplyStatus + stage arrays + filter types + DraftHistory
 tests/
 └── e2e/                        # Playwright smoke tests (15 tests total)
     ├── helpers.ts              # mockSupabase() — intercepts contacts, prompts, email_messages, agent_events
@@ -113,6 +118,26 @@ tests/
 - Validate the body shape: `400` for missing input, `502` for malformed downstream data,
   `500` for unexpected SDK errors.
 - Strip ` ```json` code fences from Claude responses before `JSON.parse`.
+
+### Gmail API routes (Phase 0 — bulk-send infrastructure)
+
+**POST `/api/send-draft`** — body: `{ contact_id: string }`
+- Fetches contact + latest `draft_history` row with `sent_body IS NULL`.
+- Calls `gmail.users.drafts.send({ id: gmail_draft_id })`.
+- Flips contact `stage` to `*_sent`, sets `last_emailed` + `followup_date`.
+- Updates `draft_history` with sent content. Inserts `email_messages` + `agent_events`.
+- Idempotent: returns `{ already_sent: true }` if stage is already `*_sent`.
+- Status codes: 400 (missing id), 404 (contact not found), 409 (wrong stage),
+  410 (no draft ID or draft deleted from Gmail), 401 (auth failure), 502 (Gmail error).
+
+**POST `/api/update-draft`** — body: `{ contact_id: string, subject: string, body: string }`
+- Reads existing draft headers (In-Reply-To, References) via `drafts.get` to preserve threading.
+- Calls `drafts.update` with a new RFC822 message. Persists edits to `draft_history`.
+- Status codes: 400 (missing fields), 404/409/410 same as send-draft, 502 (Gmail error).
+
+**POST `/api/trash-message`** — body: `{ message_id: string }`
+- Reserved for future undo feature. Calls `messages.trash`. Not called from UI in v1.
+- Status codes: 400 (missing id), 401 (auth), 502 (Gmail error).
 
 ## Supabase patterns
 
@@ -267,10 +292,19 @@ vi.mock("sonner", () => ({
 - `npm test` — Vitest unit tests. Must pass. **0 failures required — no exceptions.**
 - `npm run test:e2e` — Playwright smoke tests. Must pass. **0 failures required — no exceptions.**
 - `vercel deploy --prod` to deploy. Env vars in Vercel dashboard.
-- Four env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-  `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`. The first two are public (no RLS — be aware).
-  The latter two are server-only. `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the
-  `kishoretheeraj/cold-emailing-agent` repo — powers the "Run Agent" button on every page.
+- Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+- Env vars (server-only): `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
+  `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
+- `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.
+- Gmail OAuth vars: run `npx tsx scripts/capture-gmail-token.mts` once to obtain
+  `GOOGLE_OAUTH_REFRESH_TOKEN`. Add all three vars to `.env` and Vercel dashboard.
+
+## Mirrored cadence constants
+
+`src/lib/cadence.ts` mirrors `agent/config.py::FOLLOWUP_DAYS`. If the agent cadence
+changes (days between emails), update **both** files. Same pattern as `REPLY_STAGES`
+in `types.ts` mirroring `constants.py`. The `STAGE_TRANSITIONS` map in `cadence.ts`
+is the authoritative transition table for all `/api/send-draft` stage flips.
 
 ## Style: comments and docs
 
@@ -278,6 +312,16 @@ vi.mock("sonner", () => ({
 - Do add a short comment for non-obvious workarounds (e.g., why `vi.hoisted` is needed,
   why `.limit()` must be last in the query chain).
 - Don't write docstrings on tiny helper components.
+
+## New tables (Phase 0 — 2026-05-20)
+
+**`draft_history`** — lifecycle of every Gmail draft created by the agent.
+- `gmail_draft_id TEXT` — Gmail API draft ID, required by `/api/send-draft`.
+- `subject, body` — draft content as generated. Updated by `/api/update-draft` on Quick Fix edits.
+- `sent_subject, sent_body, sent_at, edit_detected` — populated by `/api/send-draft` after send.
+- `edit_detected = true` when the sent body differs from the draft body (user edited in Gmail).
+- RLS disabled. Access via `/api/send-draft` and `/api/update-draft`; read by `/queue` page.
+- Written by Python `db.log_drafted_email()` — called from `agent._execute_draft` and `reply_drafter.draft_reply`.
 
 ## New tables (Sprint 2 — 2026-05-16)
 

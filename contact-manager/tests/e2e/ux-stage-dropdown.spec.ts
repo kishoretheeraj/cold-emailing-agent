@@ -55,9 +55,19 @@ test("applied contact: stage dropdown shows only Applied section with descriptiv
   await page.waitForTimeout(500);
   await expect(page.getByText("Emily Scott")).toBeVisible({ timeout: 5_000 });
 
+  // Set up response waiter BEFORE clicking to capture the async full-record fetch.
+  // openContact() calls setSelectedContact(listData) immediately then fetches select("*")
+  // which triggers a re-render. We must wait for that re-render before opening the dropdown.
+  const fullRecordFetch = page.waitForResponse(
+    (r) =>
+      r.url().includes("/rest/v1/contacts") &&
+      (r.request().headers()["accept"] ?? "").includes("pgrst.object")
+  );
+
   // Open side sheet for Emily (applied contact)
   await page.getByRole("button", { name: /emily scott/i }).click();
   await expect(page.getByRole("dialog")).toBeVisible({ timeout: 5_000 });
+  await fullRecordFetch;
 
   // Open the stage dropdown
   const combobox = page.getByRole("combobox").first();

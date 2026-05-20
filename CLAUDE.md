@@ -119,10 +119,12 @@ Follow-up emails must land in the same Gmail thread as the original.
 
 - `create_draft()` in `gmail.py` generates a `Message-ID` via
   `email.utils.make_msgid()` and embeds it in the MIME message before IMAP
-  APPEND. It returns the Message-ID string, or `None` if a duplicate draft
-  already exists for this `contact_id`/`stage`/`date` combination. **Do not
-  fetch the ID from IMAP after append** — Gmail drafts have no server-assigned
-  Message-ID until sent.
+  APPEND. It returns a `DraftResult` namedtuple `(message_id, gmail_draft_id,
+  gmail_thread_id)`. `gmail_draft_id` is the Gmail API string ID (needed by
+  `/api/send-draft`); `gmail_thread_id` is the X-GM-THRID integer from IMAP
+  (needed by monitor's `find_sent_by_thread_id`). On duplicate detection it
+  returns `DraftResult(None, None, None)`. **Do not fetch the ID from IMAP
+  after append** — Gmail drafts have no server-assigned Message-ID until sent.
 - `create_draft()` accepts `in_reply_to` and `references` kwargs. When
   `in_reply_to` is set, it adds `In-Reply-To` and `References` headers and
   auto-prefixes the subject with `Re: ` (unless it already starts with it).
@@ -263,10 +265,10 @@ every run regardless of whether any drafts were created.
   intentionally ignores the return value.
 - Always wrap IMAP calls in `try/finally imap.logout()`. Connection cleanup
   is non-negotiable.
-- `create_draft()` returns the `Message-ID` it generated, or `None` if a
-  duplicate was detected via `X-Cold-Email-Key`. Do not try to fetch the ID
-  from IMAP after append — Gmail drafts only receive a server Message-ID when
-  actually sent.
+- `create_draft()` returns `DraftResult(message_id, gmail_draft_id,
+  gmail_thread_id)`, or `DraftResult(None, None, None)` if a duplicate was
+  detected via `X-Cold-Email-Key`. Do not try to fetch the ID from IMAP after
+  append — Gmail drafts only receive a server Message-ID when actually sent.
 - `find_sent_for_thread(message_id, since_date, mode)` searches `[Gmail]/Sent Mail`
   with `readonly=True`. Use `mode="first_touch"` to match on `Message-ID`,
   `mode="followup"` to match on `In-Reply-To`. Returns the **actual Message-ID string**
@@ -500,6 +502,18 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 
 ## New Supabase tables
 
+**`draft_history`** — lifecycle of every Gmail draft created by the agent (Phase 0, 2026-05-20).
+- `contact_id INTEGER FK→contacts(id) ON DELETE CASCADE`
+- `stage TEXT NOT NULL` — the drafted stage at time of creation
+- `subject TEXT, body TEXT` — draft content; updated by `/api/update-draft` on Quick Fix edits
+- `message_id TEXT` — RFC822 Message-ID from IMAP APPEND
+- `gmail_draft_id TEXT` — Gmail API draft ID; required by `/api/send-draft`
+- `drafted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
+- `sent_subject TEXT, sent_body TEXT, sent_at TIMESTAMPTZ` — populated by `/api/send-draft`
+- `edit_detected BOOLEAN` — true when user edited the draft in Gmail before sending
+- RLS disabled. Written by `db.log_drafted_email()` (called from `agent._execute_draft` and `reply_drafter.draft_reply`).
+- Migration: `supabase/migrations/20260520000001_create_draft_history.sql`
+
 **`email_messages`** — durable copy of every sent/received email per contact.
 - `contact_id INTEGER FK→contacts(id) ON DELETE CASCADE`
 - `direction TEXT` ('outgoing'|'incoming')
@@ -579,6 +593,7 @@ Instruction-level keys (sort_orders 11–18) use `get_tier_instruction()`,
 - `update_message_id(contact_id, message_id)` — updates only `message_id`; called by `detect_sent_drafts` when Gmail rewrites the ID on send (threading fix)
 - `record_run(status, drafted, skipped, errors, elapsed, failure_reason, source)` — `source` defaults to `'agent'`; pass `source='monitor'` from monitor.py
 - `set_research_cache(..., queries_generated, brief_reliable)` — two new optional params populate the analytics columns
+- `log_drafted_email(contact_id, stage, subject, body, message_id=None, gmail_draft_id=None)` — best-effort insert to draft_history; never raises. Called from `agent._execute_draft` and `reply_drafter.draft_reply` after IMAP APPEND.
 
 ## New config.py constants
 

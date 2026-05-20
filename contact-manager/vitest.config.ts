@@ -7,6 +7,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // "server-only" throws in non-server environments. Alias to a no-op stub in tests.
+      "server-only": path.resolve(__dirname, "./src/__mocks__/server-only.ts"),
     },
   },
   test: {

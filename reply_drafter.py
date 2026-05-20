@@ -10,7 +10,7 @@ from config import (
     ANTHROPIC_API_KEY, REPLY_RESPONSE_MODEL, SENDER_PROFILE,
     REPLY_RESPONSE_DEFAULT,
 )
-from db import log_agent_event, update_contact, insert_email_message
+from db import log_agent_event, update_contact, insert_email_message, log_drafted_email
 from emailer import _call_claude, _normalize_body
 from gmail import create_draft, apply_label_to_latest_draft
 import preflight
@@ -96,7 +96,7 @@ def draft_reply(contact, reply_body_text, prompts):
         subject = ("Re: " + original_subject) if original_subject else "Re: your message"
 
         thread_message_id = contact.get("message_id")
-        message_id, _thread_id = create_draft(
+        result = create_draft(
             contact.get("email"),
             subject,
             body,
@@ -104,6 +104,9 @@ def draft_reply(contact, reply_body_text, prompts):
             contact_id=contact_id,
             stage="reply_drafted",
         )
+
+        message_id = result.message_id
+        gmail_draft_id = result.gmail_draft_id
 
         if message_id is None:
             log.info(f"[REPLY-DRAFT] | {name} | {company} | duplicate draft, skipping")
@@ -120,6 +123,11 @@ def draft_reply(contact, reply_body_text, prompts):
             message_id=message_id,
             in_reply_to=thread_message_id,
             stage_at_send="reply_drafted",
+        )
+
+        log_drafted_email(
+            contact_id, "reply_drafted", subject, body,
+            message_id=message_id, gmail_draft_id=gmail_draft_id,
         )
 
         # Gmail label (best-effort)

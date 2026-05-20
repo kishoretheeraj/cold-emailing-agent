@@ -2,6 +2,7 @@
 
 import pytest
 import reply_drafter
+from gmail import DraftResult
 
 
 def _contact(**overrides):
@@ -23,23 +24,26 @@ def _contact(**overrides):
 def _patch_all(mocker, body="Hi Alice, happy to chat."):
     mocker.patch.object(reply_drafter, "_generate_reply_body", return_value=body)
     mocker.patch("preflight.check", return_value=[])
-    mocker.patch("reply_drafter.create_draft", return_value="<new@gmail.com>")
+    mocker.patch("reply_drafter.create_draft", return_value=DraftResult("<new@gmail.com>", None, None))
     mocker.patch("reply_drafter.apply_label_to_latest_draft")
     mocker.patch("reply_drafter.update_contact")
     mocker.patch("reply_drafter.insert_email_message")
     mocker.patch("reply_drafter.log_agent_event")
+    mocker.patch("reply_drafter.log_drafted_email")
 
 
 # ── Draft created for positive_reply ──────────────────────────────────────────
 
 def test_draft_created_for_positive_reply(mocker):
-    mock_create = mocker.patch("reply_drafter.create_draft", return_value="<new@gmail.com>")
+    mock_create = mocker.patch("reply_drafter.create_draft",
+                               return_value=DraftResult("<new@gmail.com>", None, None))
     mocker.patch.object(reply_drafter, "_generate_reply_body", return_value="Hi Alice, happy to chat.")
     mocker.patch("preflight.check", return_value=[])
     mocker.patch("reply_drafter.apply_label_to_latest_draft")
     mocker.patch("reply_drafter.update_contact")
     mocker.patch("reply_drafter.insert_email_message")
     mocker.patch("reply_drafter.log_agent_event")
+    mocker.patch("reply_drafter.log_drafted_email")
 
     reply_drafter.draft_reply(_contact(), "Let's chat!", {})
     assert mock_create.called
@@ -47,7 +51,8 @@ def test_draft_created_for_positive_reply(mocker):
 
 def test_draft_created_for_soft_yes(mocker):
     _patch_all(mocker)
-    mock_create = mocker.patch("reply_drafter.create_draft", return_value="<new@gmail.com>")
+    mock_create = mocker.patch("reply_drafter.create_draft",
+                               return_value=DraftResult("<new@gmail.com>", None, None))
     reply_drafter.draft_reply(_contact(classifier_status="soft_yes"), "Maybe.", {})
     assert mock_create.called
 
@@ -81,11 +86,13 @@ def test_preflight_block_triggers_retry(mocker):
     mocker.patch.object(reply_drafter, "_generate_reply_body", return_value="Hi Alice.")
     # Fail once, pass on retry
     mocker.patch("preflight.check", side_effect=[["first_name_missing: 'Alice'"], []])
-    mock_create = mocker.patch("reply_drafter.create_draft", return_value="<new@gmail.com>")
+    mock_create = mocker.patch("reply_drafter.create_draft",
+                               return_value=DraftResult("<new@gmail.com>", None, None))
     mocker.patch("reply_drafter.apply_label_to_latest_draft")
     mocker.patch("reply_drafter.update_contact")
     mocker.patch("reply_drafter.insert_email_message")
     mock_event = mocker.patch("reply_drafter.log_agent_event")
+    mocker.patch("reply_drafter.log_drafted_email")
     mocker.patch.object(reply_drafter, "_call_claude", return_value="Hi Alice, happy to connect.")
 
     reply_drafter.draft_reply(_contact(), "Let's chat!", {})
@@ -152,7 +159,7 @@ def test_generate_reply_body_uses_config_profile_fallback(mocker):
 def test_duplicate_draft_skipped(mocker):
     mocker.patch.object(reply_drafter, "_generate_reply_body", return_value="Hi Alice.")
     mocker.patch("preflight.check", return_value=[])
-    mocker.patch("reply_drafter.create_draft", return_value=None)
+    mocker.patch("reply_drafter.create_draft", return_value=DraftResult(None, None, None))
     mock_update = mocker.patch("reply_drafter.update_contact")
     mocker.patch("reply_drafter.insert_email_message")
     mocker.patch("reply_drafter.log_agent_event")

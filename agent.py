@@ -23,7 +23,7 @@ import anthropic
 
 from config import ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL, EMAIL_MODEL, FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run, insert_email_message
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run, insert_email_message, log_drafted_email
 from emailer import generate_email, prepare_email, finalize_email
 from gmail import create_draft, apply_label_to_latest_draft
 
@@ -214,16 +214,20 @@ def _execute_draft(contact, action, subject, body, thread_message_id,
     current_stage = contact.get("stage")
 
     if thread_message_id:
-        message_id, thread_id = create_draft(
+        result = create_draft(
             contact["email"], subject, body,
             in_reply_to=thread_message_id,
             contact_id=contact["id"], stage=current_stage,
         )
     else:
-        message_id, thread_id = create_draft(
+        result = create_draft(
             contact["email"], subject, body,
             contact_id=contact["id"], stage=current_stage,
         )
+
+    message_id = result.message_id
+    gmail_draft_id = result.gmail_draft_id
+    thread_id = result.gmail_thread_id
 
     if message_id is None:
         log.info(f"{mode_tag} {name} | {company} | {action} | draft already exists, skipping")
@@ -241,6 +245,11 @@ def _execute_draft(contact, action, subject, body, thread_message_id,
         message_id=message_id,
         in_reply_to=thread_message_id,
         stage_at_send=current_stage,
+    )
+
+    log_drafted_email(
+        contact["id"], current_stage, subject, body,
+        message_id=message_id, gmail_draft_id=gmail_draft_id,
     )
 
     label = ACTION_LABEL.get(action)

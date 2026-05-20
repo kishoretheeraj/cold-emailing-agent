@@ -277,6 +277,31 @@ def get_email_messages(contact_id):
     return result.data or []
 
 
+# ── draft_history helpers ──────────────────────────────────────────────────────
+
+def log_drafted_email(contact_id, stage, subject, body,
+                      message_id=None, gmail_draft_id=None):
+    """Insert a row into draft_history when a Gmail draft is created. Best-effort."""
+    from datetime import datetime, timezone
+    row = {
+        "contact_id": contact_id,
+        "stage": stage,
+        "drafted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if subject is not None:
+        row["subject"] = subject
+    if body is not None:
+        row["body"] = body
+    if message_id is not None:
+        row["message_id"] = message_id
+    if gmail_draft_id is not None:
+        row["gmail_draft_id"] = gmail_draft_id
+    try:
+        _retry(lambda: get_client().table("draft_history").insert(row).execute())
+    except Exception as exc:
+        log.warning(f"[draft_history] insert failed for contact {contact_id}: {exc}")
+
+
 # ── research_cache helpers ─────────────────────────────────────────────────────
 
 def get_research_cache(cache_key):

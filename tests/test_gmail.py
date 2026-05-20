@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import gmail
+from gmail import DraftResult
 
 
 # ── create_draft ─────────────────────────────────────────────────────────────
@@ -33,7 +34,9 @@ def test_create_draft_returns_message_id(mocker):
     fake_imap.append.return_value = ("OK", [b"appended"])
     mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
 
-    mid, thread_id = gmail.create_draft("dana@example.com", "subject", "body")
+    result = gmail.create_draft("dana@example.com", "subject", "body")
+    mid = result.message_id
+    thread_id = result.gmail_thread_id
 
     # make_msgid always generates an RFC-compliant angle-bracket id
     assert mid.startswith("<") and mid.endswith(">")
@@ -47,7 +50,7 @@ def test_create_draft_embeds_message_id_in_raw_bytes(mocker):
     fake_imap.append.return_value = ("OK", [b"appended"])
     mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
 
-    mid, _ = gmail.create_draft("dana@example.com", "subject", "body")
+    mid = gmail.create_draft("dana@example.com", "subject", "body").message_id
 
     raw_msg = fake_imap.append.call_args.args[3]
     assert mid.encode() in raw_msg
@@ -61,7 +64,7 @@ def test_create_draft_captures_gmail_thread_id(mocker):
     fake_imap.uid.return_value = ("OK", [b"1 (X-GM-THRID 17850200168 UID 89012)"])
     mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
 
-    _, thread_id = gmail.create_draft("dana@example.com", "subject", "body")
+    thread_id = gmail.create_draft("dana@example.com", "subject", "body").gmail_thread_id
 
     assert thread_id == 17850200168
 
@@ -131,7 +134,7 @@ def test_create_draft_skips_when_duplicate_exists(mocker):
     result = gmail.create_draft("dana@example.com", "subject", "body",
                                 contact_id=1, stage="new")
 
-    assert result == (None, None)
+    assert result == DraftResult(None, None, None)
     fake_imap.append.assert_not_called()
     fake_imap.logout.assert_called_once()
 
@@ -146,7 +149,7 @@ def test_create_draft_proceeds_when_no_duplicate(mocker):
     result = gmail.create_draft("dana@example.com", "subject", "body",
                                 contact_id=1, stage="new")
 
-    assert result[0] is not None
+    assert result.message_id is not None
     fake_imap.append.assert_called_once()
 
 
@@ -173,7 +176,7 @@ def test_create_draft_without_contact_id_skips_idempotency_check(mocker):
 
     # No search was performed — idempotency check is opt-in
     fake_imap.search.assert_not_called()
-    assert result[0] is not None
+    assert result.message_id is not None
 
 
 # ── create_gmail_label_if_not_exists ─────────────────────────────────────────

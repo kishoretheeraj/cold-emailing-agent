@@ -45,6 +45,21 @@ export type EmailMessage = {
   raw_headers: Record<string, unknown> | null;
 };
 
+export type DraftHistory = {
+  id: number;
+  contact_id: number;
+  stage: string;
+  subject: string | null;
+  body: string | null;
+  message_id: string | null;
+  gmail_draft_id: string | null;
+  drafted_at: string;
+  sent_subject: string | null;
+  sent_body: string | null;
+  sent_at: string | null;
+  edit_detected: boolean | null;
+};
+
 export type AgentEvent = {
   id: number;
   run_id: number | null;

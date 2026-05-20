@@ -10,6 +10,12 @@ GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 SUPABASE_URL       = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY  = os.environ["SUPABASE_ANON_KEY"]
 
+# Optional — needed for Gmail API send path (/api/send-draft) and
+# draft ID lookup in gmail.py. Absent in CI until secrets are added.
+GOOGLE_OAUTH_CLIENT_ID     = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+GOOGLE_OAUTH_REFRESH_TOKEN = os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN")
+
 # ── Models ─────────────────────────────────────────────────────────────────────
 EMAIL_MODEL = "claude-sonnet-4-6"
 REPLY_CLASSIFICATION_MODEL = "claude-haiku-4-5-20251001"

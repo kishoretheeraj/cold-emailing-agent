@@ -4,14 +4,77 @@ import imaplib
 import logging
 import re
 import time
+from collections import namedtuple
 from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import make_msgid
 
-from config import GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+from config import (
+    GMAIL_ADDRESS, GMAIL_APP_PASSWORD,
+    GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REFRESH_TOKEN,
+)
 
 log = logging.getLogger(__name__)
+
+# Return type for create_draft. Callers unpack by attribute name to avoid silent
+# positional bugs when the return shape changes.
+DraftResult = namedtuple("DraftResult", ["message_id", "gmail_draft_id", "gmail_thread_id"])
+
+
+# ── Gmail API client (optional — degrades gracefully if OAuth vars absent) ─────
+
+def _get_gmail_api_client():
+    """Return an authenticated Gmail v1 API client, or None if env vars are missing."""
+    if not (GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN):
+        return None
+    try:
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        creds = Credentials(
+            token=None,
+            refresh_token=GOOGLE_OAUTH_REFRESH_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+    except Exception as exc:
+        log.warning(f"[GMAIL-API] client init failed: {exc}")
+        return None
+
+
+def _lookup_gmail_draft_id(message_id):
+    """
+    After an IMAP APPEND, find the Gmail API draft ID that matches the given RFC822
+    Message-ID. Inspects up to 20 recent drafts. Returns the draft ID string or None.
+    Never raises.
+    """
+    client = _get_gmail_api_client()
+    if client is None:
+        return None
+    try:
+        result = client.users().drafts().list(userId="me", maxResults=20).execute()
+        drafts = result.get("drafts", [])
+        for draft in drafts:
+            draft_id = draft.get("id")
+            msg_id = draft.get("message", {}).get("id")
+            if not draft_id or not msg_id:
+                continue
+            try:
+                msg = client.users().messages().get(
+                    userId="me", id=msg_id,
+                    format="metadata", metadataHeaders=["Message-ID"],
+                ).execute()
+                headers = msg.get("payload", {}).get("headers", [])
+                for h in headers:
+                    if h.get("name", "").lower() == "message-id" and h.get("value") == message_id:
+                        return draft_id
+            except Exception:
+                continue
+    except Exception as exc:
+        log.warning(f"[GMAIL-API] draft lookup failed: {exc}")
+    return None
 
 
 def _body_to_html(text):
@@ -27,12 +90,11 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
                  subject_prefix=True, contact_id=None, stage=None):
     """
     Create a Gmail draft via IMAP. Never sends — draft only.
-    Returns (message_id, gmail_thread_id). gmail_thread_id is Gmail's stable
-    X-GM-THRID integer — persists even if Gmail rewrites the Message-ID on send,
-    so it is the primary key for reliable sent detection. Returns (None, None)
-    if a duplicate draft already exists for this contact_id/stage/date combination.
-    When in_reply_to is provided, adds In-Reply-To/References headers and
-    prefixes subject with 'Re: ' (unless already set or subject_prefix=False).
+    Returns DraftResult(message_id, gmail_draft_id, gmail_thread_id).
+    gmail_thread_id is X-GM-THRID (int) — primary key for monitor sent detection.
+    gmail_draft_id is the Gmail API string ID — needed by /api/send-draft.
+    Returns DraftResult(None, None, None) if duplicate detected for this
+    contact_id/stage/date combination.
     """
     if in_reply_to and subject_prefix and not subject.startswith("Re: "):
         subject = "Re: " + subject
@@ -52,7 +114,7 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
             status, data = imap.search(None, "HEADER", "X-Cold-Email-Key", key)
             if status == "OK" and data[0]:
                 log.info(f"draft already exists | key={key} | contact={contact_id}")
-                return None, None
+                return DraftResult(None, None, None)
 
         # Generate before append so we own the ID and can return it immediately.
         # Gmail honours a pre-set Message-ID when the user clicks Send.
@@ -96,7 +158,8 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
                 except Exception:
                     pass  # Best-effort; detection falls back to message_id search
 
-        return mid, gmail_thread_id
+        gmail_draft_id = _lookup_gmail_draft_id(mid)
+        return DraftResult(mid, gmail_draft_id, gmail_thread_id)
     finally:
         imap.logout()
 
