@@ -379,13 +379,16 @@ critic retry.
    search queries, person-first (every query includes the company name to
    disambiguate). Returns JSON array. Hard-capped at `RESEARCH_MAX_QUERIES=5`,
    each query truncated to `RESEARCH_MAX_QUERY_LEN=80` chars.
-3. **Tavily execution** — `search_depth="basic"`, `max_results=3` per query.
+3. **Tavily execution** — `search_depth="basic"`, `max_results=5` per query,
+   `include_raw_content=True` (full page text alongside snippets).
    Per-query failures skip silently. If query gen returns `[]`, the hardcoded
    fallback `"{company} news 2026"` fires.
-4. **Brief curation** — Haiku (`RESEARCH_CURATE_MODEL`) synthesises raw results
-   into a short markdown brief. Applies a strict disambiguation rule: any fact
-   that could refer to a different person with the same name is excluded. Returns
-   `NO_RELIABLE_BRIEF` (mapped to `""`) if results are ambiguous or off-topic.
+4. **Brief curation** — Sonnet (`RESEARCH_CURATE_MODEL`) synthesises raw results
+   into a short markdown brief (`RESEARCH_CURATE_MAX_TOKENS=600`). Each result
+   includes up to 500 chars of `raw_content` for richer context. Applies a
+   strict disambiguation rule: any fact that could refer to a different person
+   with the same name is excluded. Returns `NO_RELIABLE_BRIEF` (mapped to `""`)
+   if results are ambiguous or off-topic.
 5. **Cache write** — `brief_text` cached even when `""` to prevent re-querying
    no-footprint contacts on the next run.
 
@@ -405,9 +408,10 @@ facts in a draft, tighten `research_curate_prompt` in `/prompts` and add a
 failure example. Never trust a confident-sounding brief without verifying a
 specific fact against a real source before sending.
 
-**Cost** (approximate): ~1-2 USD/month extra Anthropic spend at typical volume
-(two Haiku calls per researched contact). Tavily free tier: 1000 credits/month;
-~3 queries per contact = ~30 credits per 10 first-touches.
+**Cost** (approximate): ~2-3 USD/month extra Anthropic spend at typical volume
+(one Haiku call for query gen + one Sonnet call for curation per researched
+contact). Tavily free tier: 1000 credits/month; ~5 queries per contact = ~50
+credits per 10 first-touches.
 
 ## Definition of done
 

@@ -13,7 +13,8 @@ def _make_client(results=None, answer="summary answer"):
     client = MagicMock()
     client.search.return_value = {
         "results": results if results is not None else [
-            {"title": "Title", "content": "Content text", "url": "https://example.com/page"}
+            {"title": "Title", "content": "Content text", "url": "https://example.com/page",
+             "raw_content": "Full page text here"}
         ],
         "answer": answer,
     }
@@ -28,6 +29,14 @@ def test_run_tavily_returns_list_of_dicts(mocker):
     assert len(result) == 2
     assert result[0]["query"] == queries[0]
     assert "result" in result[0]
+
+
+def test_run_tavily_passes_include_raw_content(mocker):
+    client = _make_client()
+    mocker.patch.object(research, "_get_client", return_value=client)
+    research._run_tavily(["Jane Doe Acme Corp"], _CONTACT)
+    _, kwargs = client.search.call_args
+    assert kwargs.get("include_raw_content") is True
 
 
 def test_run_tavily_skips_query_that_raises(mocker):

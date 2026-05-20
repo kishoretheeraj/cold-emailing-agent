@@ -113,6 +113,7 @@ def _run_tavily(queries, contact):
                 search_depth="basic",
                 max_results=config.RESEARCH_TAVILY_RESULTS_PER_QUERY,
                 include_answer=True,
+                include_raw_content=True,
             )
             if resp and (resp.get("results") or resp.get("answer")):
                 results.append({"query": q, "result": resp})
@@ -150,6 +151,7 @@ def _run_hardcoded_fallback(contact):
             search_depth="basic",
             max_results=config.RESEARCH_TAVILY_RESULTS_PER_QUERY,
             include_answer=True,
+            include_raw_content=True,
         )
         if resp and (resp.get("results") or resp.get("answer")):
             results.append({"query": q, "result": resp})
@@ -185,7 +187,9 @@ def _curate_brief(contact, raw_results, prompts):
             content = (r.get("content") or "")[:300]
             url = r.get("url", "")
             domain = url.split("/")[2] if "/" in url and url.count("/") >= 2 else url
-            parts.append(f"- {title}: {content}  (source: {domain})")
+            raw_content = (r.get("raw_content") or "")[:500]
+        excerpt = f"  Full text excerpt: {raw_content}" if raw_content else ""
+        parts.append(f"- {title}: {content}  (source: {domain}){excerpt}")
         parts.append("")
 
     formatted = "\n".join(parts)
@@ -207,7 +211,8 @@ def _curate_brief(contact, raw_results, prompts):
         return ""
 
     try:
-        raw = _call_claude(formatted_prompt, model=config.RESEARCH_CURATE_MODEL, max_tokens=500)
+        raw = _call_claude(formatted_prompt, model=config.RESEARCH_CURATE_MODEL,
+                           max_tokens=config.RESEARCH_CURATE_MAX_TOKENS)
     except Exception as exc:
         log.warning(f"[RESEARCH-C] | {name} | {company} | _call_claude error: {exc}")
         return ""

@@ -23,12 +23,13 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 RESEARCH_CACHE_TTL_DAYS = 7
 RESEARCH_MAX_QUERIES = 5
 RESEARCH_MAX_QUERY_LEN = 80
-RESEARCH_TAVILY_RESULTS_PER_QUERY = 3
+RESEARCH_TAVILY_RESULTS_PER_QUERY = 5
 RESEARCH_HARDCODED_FALLBACK_QUERY = "{company} news 2026"
 RESEARCH_TIERS = {1, 2}
 
 RESEARCH_QUERY_MODEL = "claude-haiku-4-5-20251001"
-RESEARCH_CURATE_MODEL = "claude-haiku-4-5-20251001"
+RESEARCH_CURATE_MODEL = "claude-sonnet-4-6"
+RESEARCH_CURATE_MAX_TOKENS = 600
 
 # These are fallback defaults. Live prompts (including sender_profile) are stored
 # in the Supabase prompts table and override these at runtime.

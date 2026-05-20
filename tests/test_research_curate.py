@@ -78,6 +78,34 @@ def test_returns_empty_on_call_claude_raise(mocker):
     assert result == ""
 
 
+def test_raw_content_included_in_curator_prompt(mocker):
+    captured = {}
+
+    def capture(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "Person:\n- A fact"
+
+    mocker.patch.object(research, "_call_claude", side_effect=capture)
+    raw_results = [
+        {
+            "query": "Jane Doe Acme Corp",
+            "result": {
+                "answer": "brief answer",
+                "results": [
+                    {
+                        "title": "Jane Doe profile",
+                        "content": "short snippet",
+                        "url": "https://example.com/jane",
+                        "raw_content": "This is the full page text about Jane Doe.",
+                    }
+                ],
+            },
+        }
+    ]
+    research._curate_brief(_CONTACT, raw_results, {})
+    assert "This is the full page text about Jane Doe." in captured["prompt"]
+
+
 def test_prompt_contains_contact_fields_for_disambiguation(mocker):
     captured = {}
 
