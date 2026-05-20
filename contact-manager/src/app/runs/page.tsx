@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import type { AgentEvent } from "@/lib/types";
+
+type TriggerState = "idle" | "loading" | "ok" | "err";
 
 const STATUS_CHIPS = ["all", "success", "failed", "blocked_preflight"] as const;
 type StatusFilter = (typeof STATUS_CHIPS)[number];
@@ -67,6 +69,20 @@ export default function RunsPage() {
   const [eventTypeFilter, setEventTypeFilter] = useState<EventTypeFilter>("all");
   const [failureBadge, setFailureBadge] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+  const [triggerState, setTriggerState] = useState<TriggerState>("idle");
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runAgent = useCallback(async () => {
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+    setTriggerState("loading");
+    try {
+      const r = await fetch("/api/trigger-agent", { method: "POST" });
+      setTriggerState(r.ok ? "ok" : "err");
+    } catch {
+      setTriggerState("err");
+    }
+    resetTimer.current = setTimeout(() => setTriggerState("idle"), 3000);
+  }, []);
 
   const fetchEvents = useCallback(async () => {
     const { data } = await supabase
@@ -117,6 +133,26 @@ export default function RunsPage() {
               {failureBadge} failure{failureBadge !== 1 ? "s" : ""} (7d)
             </span>
           )}
+          <button
+            type="button"
+            onClick={runAgent}
+            disabled={triggerState === "loading"}
+            className={`rounded-lg border px-3 py-1.5 text-xs transition disabled:opacity-50 ${
+              triggerState === "ok"
+                ? "text-emerald-400 border-emerald-500/40"
+                : triggerState === "err"
+                ? "text-red-400 border-red-500/40"
+                : "text-fg-muted border-border hover:text-fg hover:border-border-strong"
+            }`}
+          >
+            {triggerState === "loading"
+              ? "Triggering…"
+              : triggerState === "ok"
+              ? "Triggered ✓"
+              : triggerState === "err"
+              ? "Failed ✗"
+              : "Run Agent"}
+          </button>
           <Link
             href="/"
             className="rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"

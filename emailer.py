@@ -106,8 +106,8 @@ def _normalize_body(text):
             normalized.append(lines[0].strip())
         elif any(l.lstrip().startswith(("•", "-", "*")) for l in lines):
             normalized.append("\n".join(lines))
-        elif all(len(l.strip()) < 20 for l in lines):
-            # Every line is very short — sign-off ("Best,\nKishore"). Preserve breaks.
+        elif all(len(l.strip()) < 35 for l in lines):
+            # Every line is short — sign-off block (threshold covers "Dartmouth College, MEM '26").
             normalized.append("\n".join(l.strip() for l in lines))
         else:
             # Word-wrapped prose: collapse into one continuous paragraph.

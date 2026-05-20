@@ -8,14 +8,30 @@ import { StructuredForm } from "./StructuredForm";
 import { ContactsList } from "./ContactsList";
 
 type InputMode = "smart" | "form";
+type TriggerState = "idle" | "loading" | "ok" | "err";
 
 export function App() {
   const [mode, setMode] = useState<InputMode>("smart");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [triggerState, setTriggerState] = useState<TriggerState>("idle");
+
+  const runAgent = useCallback(async () => {
+    setTriggerState("loading");
+    try {
+      const r = await fetch("/api/trigger-agent", { method: "POST" });
+      setTriggerState(r.ok ? "ok" : "err");
+      if (r.ok) toast.success("Agent triggered — check Activity in ~30s");
+      else toast.error("Failed to trigger agent");
+    } catch {
+      setTriggerState("err");
+      toast.error("Failed to trigger agent");
+    }
+    setTimeout(() => setTriggerState("idle"), 3000);
+  }, []);
 
   const onAdded = useCallback(() => {
     setRefreshKey((k) => k + 1);
-    toast.success("Contact added — agent picks this up tomorrow 8am");
+    toast.success("Contact added — agent picks this up tomorrow at 4:37am");
   }, []);
 
   const onError = useCallback((msg: string) => {
@@ -32,7 +48,7 @@ export function App() {
         <div>
           <h1 className="text-xl font-semibold text-fg">Cold Email Ops</h1>
           <p className="text-sm text-fg-muted mt-0.5">
-            Add a contact below — the agent drafts a personalized email tomorrow at 8am.
+            Add a contact below — the agent drafts a personalized email tomorrow at 4:37am.
           </p>
         </div>
         <nav className="shrink-0 flex items-center gap-2">
@@ -48,6 +64,26 @@ export function App() {
           >
             Activity
           </Link>
+          <button
+            type="button"
+            onClick={runAgent}
+            disabled={triggerState === "loading"}
+            className={`rounded-lg border px-3 py-1.5 text-xs transition disabled:opacity-50 ${
+              triggerState === "ok"
+                ? "text-emerald-400 border-emerald-500/40"
+                : triggerState === "err"
+                ? "text-red-400 border-red-500/40"
+                : "text-fg-muted border-border hover:text-fg hover:border-border-strong"
+            }`}
+          >
+            {triggerState === "loading"
+              ? "Triggering…"
+              : triggerState === "ok"
+              ? "Triggered ✓"
+              : triggerState === "err"
+              ? "Failed ✗"
+              : "Run Agent"}
+          </button>
         </nav>
       </header>
 

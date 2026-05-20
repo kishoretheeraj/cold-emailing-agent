@@ -174,6 +174,7 @@ Follow-up emails must land in the same Gmail thread as the original.
   `if: failure()` step that runs this script. It emails `GMAIL_ADDRESS` via
   Gmail SMTP using `GMAIL_APP_PASSWORD` — no new secrets required.
 - **Prompt validation** (`agent._validate_prompts`): called at the top of `run()` right after `load_prompts()`. Checks every formattable prompt against `_PROMPT_VALID_KEYS` (a dict of prompt key → valid format kwargs, mirroring each `tpl.format(...)` call site). If any prompt contains a `{placeholder}` the code never provides, it logs `[PROMPT-VALIDATION] <key>: unknown placeholder(s) [...]` and raises `ValueError` before contacting Supabase, Tavily, or Anthropic — zero wasted API credits. The valid-key map lives in `agent._PROMPT_VALID_KEYS` (Python) and `src/lib/promptVariables.PROMPT_VALID_KEYS` (TypeScript, used by the contact-manager UI). **Keep both in sync** if you add a new prompt or change a format() call site.
+- **Batch API fallback** (`agent.py` Phases 2–5): the Anthropic Messages Batch API path has two-layer resilience. Partial failure: if individual batch results have `type != "succeeded"`, those contacts are appended to `retry_items` and re-attempted sequentially in Phase 5 via `generate_email()`. Catastrophic failure: if `batches.create()` or the poll loop raises, the entire `try/except` around Phases 2–4 catches it, sets `retry_items` to every collected contact, and Phase 5 runs sequential generation for all of them. `_execute_draft()` is a shared private helper (extracted to avoid duplicating the create-draft / persist / label / update flow between the batch success path and the sequential retry path).
 
 ## Supabase patterns
 
@@ -205,10 +206,14 @@ Follow-up emails must land in the same Gmail thread as the original.
 
 Two workflows live in `.github/workflows/`:
 
-- **`daily_agent.yml`** — runs `agent.py` Mon-Fri at 5:37am EST (cron
-  `37 10 * * 1-5`). Has a `check-duplicate` preflight job: if a
+- **`daily_agent.yml`** — runs `agent.py` Mon-Fri at 4:37am EST (cron
+  `37 9 * * 1-5`). Has a `check-duplicate` preflight job: if a
   `workflow_dispatch` (manual) run already succeeded today, the scheduled
-  run is skipped to prevent double-drafting.
+  run is skipped to prevent double-drafting. The contact-manager UI has a
+  "Run Agent" button (`/api/trigger-agent` route) that fires a
+  `workflow_dispatch` — the dedup check prevents the scheduled run from
+  duplicating it the same day. Requires `GITHUB_DISPATCH_TOKEN` env var
+  (actions: write on the repo).
 - **`monitor.yml`** — runs `monitor.py` every 2 hours Mon-Fri at :23
   (cron `23 */2 * * 1-5`).
 
@@ -321,11 +326,12 @@ Key invariants:
 All other tiers and all follow-up actions skip it entirely.
 
 - **Pass condition**: `rewrite_required == False` in the critic JSON response.
-  The critic now returns an 8-key dict: `verdict` (PASS/FAIL), `score` (0–16),
+  The critic now returns an 8-key dict: `verdict` (PASS/FAIL), `score` (0–21),
   `rewrite_required` (bool), `killed_by`, `failed_soft_criteria`,
-  `banned_phrases_found`, `ai_tells_found`, `feedback`. If `rewrite_required`
-  is True, one regeneration is triggered via `extra_instruction`. Max 2
-  generation attempts total — never loop.
+  `banned_phrases_found`, `ai_tells_found`, `feedback`. 21 criteria: K1–K11
+  kill switches + S1–S10 soft criteria. If `rewrite_required` is True, one
+  regeneration is triggered via `extra_instruction`. Max 2 generation attempts
+  total — never loop.
 - **Prompt**: `critic_prompt` key in the Supabase `prompts` table
   (`sort_order=25`). `CRITIC_PROMPT_DEFAULT` in `config.py` is the fallback.
 - **Failure safety**: any error inside `_run_critic` (format error, Claude
