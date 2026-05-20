@@ -349,6 +349,20 @@ All other tiers and all follow-up actions skip it entirely.
 - **`CRITIC_PASS_THRESHOLD`** in `config.py` is no longer used by `critique_and_revise` — the pass condition is `rewrite_required`, not a numeric threshold. The constant is kept for reference but has no effect.
 - **Cost**: adds 1 critic Claude call per Tier 1 first-touch, plus 1 optional
   regeneration call. Subject is also regenerated on retry.
+- **Common first-draft failures to guard in `outreach_prompt`**:
+  - K5 (structural AI tells): rule-of-three tricolons, "from X to Y" ranges,
+    participial -ing closers ("...helping companies scale"). The outreach_prompt
+    FINAL PASS must include explicit checks for these — listing them in ABSOLUTE
+    NO'S alone is insufficient.
+  - K7 (weak CTA): any open-ended question ("What do you look for in...") fails.
+    The outreach_prompt CTA guidance must require a yes/no question for ALL
+    recipient types. Never instruct "ask about perspective/their path" — that
+    produces open-ended questions that K7 rejects.
+  - S10 (dense paragraph): the outreach_prompt format rule must say "one sentence
+    per paragraph, blank line between each". Any phrasing that permits grouping
+    sentences (e.g. "may sit on the same line") causes `_normalize_body` to
+    collapse them into a dense paragraph that S10 rejects.
+  - S6 (multiple question marks): must be in ABSOLUTE NO'S, not just FINAL PASS.
 
 ## Research pipeline (v1)
 
