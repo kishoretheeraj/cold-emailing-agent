@@ -302,15 +302,17 @@ vi.mock("sonner", () => ({
 - `npm run build` — typecheck + production build. Must pass.
 - `npm test` — Vitest unit tests. Must pass. **0 failures required — no exceptions.**
 - `npm run test:e2e` — Playwright smoke tests. Must pass. **0 failures required — no exceptions.**
-- Deploy from **repo root** (not from `contact-manager/`): the Vercel project root is configured
-  as `contact-manager/` so the CLI must be run one level up. Because the repo-root `.vercel/`
-  links to a different project, always specify the project ID explicitly:
+- **Deploy is automatic** — pushing to `main` triggers Vercel auto-deploy via the GitHub
+  integration. Vercel project `rootDirectory` is set to `contact-manager` and
+  `commandForIgnoringBuildStep` is `git diff HEAD^ HEAD --quiet -- contact-manager/`, so
+  pushes that only touch Python files (agent.py, monitor.py, etc.) are skipped — only
+  `contact-manager/` changes trigger a build.
+- If a **manual deploy** is ever needed, run from repo root with project ID override:
   ```
   VERCEL_PROJECT_ID=prj_Vf7rorfOlTiNHB5xKFcybUKf0ysV VERCEL_ORG_ID=team_BynuvJ8k5TWQEFKW0kvh046u vercel deploy --prod
   ```
-  Running `vercel deploy --prod` from inside `contact-manager/` fails (path resolves to
-  `contact-manager/contact-manager`). Running without the env vars from repo root deploys
-  the wrong project.
+  Running `vercel deploy --prod` from inside `contact-manager/` still fails (path resolves to
+  `contact-manager/contact-manager`); always run from repo root.
 - Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 - Env vars (server-only): `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
