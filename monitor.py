@@ -224,13 +224,37 @@ def _is_notification_sender(from_header):
 
 
 def _fetch_body_text(imap, num):
-    """Return the plain-text body of a message, truncated to 2000 chars."""
-    status, data = imap.fetch(num, "(BODY[TEXT])")
+    """Return the plain-text body of a message, truncated to 2000 chars.
+
+    Uses RFC822 + MIME walk instead of BODY[TEXT] so multipart/mixed and
+    Outlook-formatted emails (which don't return a plain tuple from BODY[TEXT])
+    are handled correctly.
+    """
+    import re as _re
+    status, data = imap.fetch(num, "(RFC822)")
     if status != "OK" or not data or not data[0]:
         return ""
-    raw = data[0][1] if isinstance(data[0], tuple) else b""
+    raw_bytes = data[0][1] if isinstance(data[0], tuple) else b""
+    if not raw_bytes:
+        return ""
     try:
-        return raw.decode("utf-8", errors="replace")[:2000]
+        msg = email.message_from_bytes(raw_bytes, policy=email.policy.compat32)
+        # Prefer text/plain; fall back to text/html (tags stripped)
+        plain = html_fallback = ""
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if part.get_filename():
+                continue
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            charset = part.get_content_charset() or "utf-8"
+            decoded = payload.decode(charset, errors="replace")
+            if ct == "text/plain" and not plain:
+                plain = decoded
+            elif ct == "text/html" and not html_fallback:
+                html_fallback = _re.sub(r"<[^>]+>", " ", decoded)
+        return (plain or html_fallback)[:2000]
     except Exception:
         return ""
 
@@ -348,6 +372,12 @@ def detect_replies(prompts=None):
 
                     is_auto = _is_auto_reply(msg)
                     body_text = "" if is_auto else _fetch_body_text(imap, num)
+
+                    # If body fetch failed for a non-auto reply, skip classification
+                    # so classifier_status stays None and the next run can retry.
+                    if not is_auto and not body_text.strip():
+                        log.warning(f"[REPLY] | {name} | {company} | empty body after fetch — skipping classification, will retry next run")
+                        continue
 
                     # Store in email_messages (idempotent)
                     incoming_mid = _header_val(msg, "Message-ID").strip("<>")

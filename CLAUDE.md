@@ -276,6 +276,11 @@ every run regardless of whether any drafts were created.
   from the found sent email (not the stored one — Gmail may rewrite it on send), or
   `None` if not found. Never raises. The `message_id` search arg is double-quoted in
   the IMAP command because angle brackets are IMAP special characters.
+- **`_fetch_body_text` uses `RFC822` + MIME walk, not `BODY[TEXT]`.** `BODY[TEXT]` on
+  multipart/mixed emails (Outlook, Exchange) returns the raw MIME structure rather than
+  a decoded tuple, silently producing `b""`. The function fetches the full RFC822 message,
+  walks MIME parts to find `text/plain` (falling back to stripped `text/html`), and
+  returns up to 2000 chars. Do not revert to `BODY[TEXT]`.
 
 ## Sent-draft auto-detection
 
@@ -488,6 +493,7 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 - Notification-sender filter: `_is_notification_sender(from_header)` checks the FROM domain against `_NOTIFICATION_SENDER_DOMAINS` (a frozenset of known tracking-service domains: mailsuite.com, mailtrack.io, streak.com, etc.). Matched emails are skipped with no `classifier_status` write, keeping the contact checkable for future real replies. Real human replies (delegated person, assistant, any non-blocklisted domain) are not affected.
 - `email_messages` insert is upsert on `message_id` (ON CONFLICT DO NOTHING).
 - One IMAP connection for all contacts. `readonly=True` at open; label copy re-selects INBOX read-write.
+- **Empty-body guard**: if `_fetch_body_text` returns `""` for a non-auto reply, the contact is skipped with a warning and `classifier_status` is NOT written. This keeps the contact eligible for retry on the next run. Without this guard, the Anthropic API returns 400 (empty content) and the error fallback silently sets `classifier_status=unrelated`, permanently locking the contact out of future detection.
 
 ## Reply drafting (reply_drafter.py)
 
@@ -501,6 +507,7 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 - Updates stage to `reply_drafted` via `update_contact(clear_followup_date=True)` — reply is terminal.
 - Skips silently if `classifier_status` not in `{"positive_reply", "soft_yes"}`.
 - Skips if already in `reply_drafted` or `reply_sent`.
+- Prompt fallback: uses `prompts.get("reply_response_prompt") or REPLY_RESPONSE_DEFAULT` (not `.get(key, default)`) so an empty string stored in Supabase correctly falls back to the hardcoded default.
 
 ## New Supabase tables
 

@@ -24,7 +24,7 @@ DRAFTABLE_STATUSES = {"positive_reply", "soft_yes"}
 
 def _generate_reply_body(contact, reply_body_text, prompts):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
-    tpl = prompts.get("reply_response_prompt", REPLY_RESPONSE_DEFAULT)
+    tpl = prompts.get("reply_response_prompt") or REPLY_RESPONSE_DEFAULT
     prompt = tpl.format(
         profile=profile,
         name=contact.get("name", ""),

@@ -231,6 +231,82 @@ def test_per_message_exception_continues_loop(mocker):
     monitor.run()
 
 
+# ── _fetch_body_text ──────────────────────────────────────────────────────────
+
+def _make_multipart_imap(plain_text=None, html_text=None):
+    """Return a fake IMAP whose fetch() yields a minimal multipart/mixed RFC822 message."""
+    import email as _email
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    outer = MIMEMultipart("mixed")
+    outer["From"] = "jose@reindi.com"
+    outer["To"] = "kishore@gmail.com"
+    outer["Subject"] = "Re: intro"
+    outer["Message-ID"] = "<reply@reindi.com>"
+    outer["Date"] = "Wed, 21 May 2026 08:27:00 +0000"
+    if plain_text is not None:
+        outer.attach(MIMEText(plain_text, "plain"))
+    if html_text is not None:
+        outer.attach(MIMEText(f"<p>{html_text}</p>", "html"))
+
+    raw = outer.as_bytes()
+    fake = MagicMock()
+    fake.fetch.return_value = ("OK", [(b"1 (RFC822 {%d})" % len(raw), raw)])
+    return fake
+
+
+def test_fetch_body_text_multipart_plain():
+    fake_imap = _make_multipart_imap(plain_text="Happy to talk. Please send time slots.")
+    result = monitor._fetch_body_text(fake_imap, b"1")
+    assert "Happy to talk" in result
+
+
+def test_fetch_body_text_multipart_html_fallback():
+    fake_imap = _make_multipart_imap(html_text="Happy to connect with you!")
+    result = monitor._fetch_body_text(fake_imap, b"1")
+    assert "Happy to connect" in result
+
+
+def test_fetch_body_text_empty_returns_empty():
+    fake = MagicMock()
+    fake.fetch.return_value = ("OK", [None])
+    assert monitor._fetch_body_text(fake, b"1") == ""
+
+
+def test_empty_body_skips_classification(mocker):
+    """When _fetch_body_text returns empty string, classifier_status must NOT be written."""
+    contact = _contact()
+    mocker.patch.object(monitor, "detect_sent_drafts")
+    mocker.patch.object(monitor, "get_sent_contacts", return_value=[contact])
+    mocker.patch.object(monitor, "create_gmail_label_if_not_exists")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
+
+    fake = _fake_imap()
+    mocker.patch.object(monitor.imaplib, "IMAP4_SSL", return_value=fake)
+
+    mock_msg = MagicMock()
+    mock_msg.get.side_effect = lambda h, d="": {
+        "In-Reply-To": "<orig123@gmail.com>",
+        "References": "",
+        "Auto-Submitted": "no",
+        "X-Auto-Response-Suppress": "",
+        "Message-ID": "<reply456@gmail.com>",
+        "Subject": "Re: intro",
+        "Date": "Wed, 21 May 2026 08:27:00 +0000",
+    }.get(h, d)
+    mocker.patch.object(monitor, "_fetch_headers", return_value=mock_msg)
+    mocker.patch.object(monitor, "_fetch_body_text", return_value="")  # body fetch failed
+    mock_classify = mocker.patch.object(monitor, "_classify_reply")
+    mock_update_cs = mocker.patch.object(monitor, "update_classifier_status")
+    mocker.patch.object(monitor, "_draft_reply_responses")
+
+    monitor.run()
+
+    mock_classify.assert_not_called()
+    mock_update_cs.assert_not_called()
+
+
 # ── Constant invariant ─────────────────────────────────────────────────────────
 
 def test_replied_label_format():
