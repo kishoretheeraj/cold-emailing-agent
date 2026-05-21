@@ -611,6 +611,23 @@ describe("ContactsList — side sheet", () => {
       )
     );
   });
+
+  it("stage select shows Reply Draft label for reply_drafted contact (not blank)", async () => {
+    const user = userEvent.setup();
+    const jose = makeContact({ id: "99", name: "Jose Aberg Cobo", stage: "reply_drafted" });
+    limitMock.mockResolvedValue({ data: [jose], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Jose Aberg Cobo"));
+    await user.click(screen.getByRole("button", { name: /jose aberg cobo/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    // The stage Select Root must hold the correct value attribute (not empty/blank)
+    const stageSelect = sheet.querySelector("[data-select-value='reply_drafted']");
+    expect(stageSelect).not.toBeNull();
+    // The Reply group option must be rendered in the dropdown
+    expect(within(sheet).getByRole("option", { name: "Reply Draft" })).toBeInTheDocument();
+  });
 });
 
 // ── Soft delete ───────────────────────────────────────────────────────────────

@@ -37,6 +37,10 @@ test("outreach contact: stage dropdown shows only Outreach section with descript
   await expect(page.getByRole("option", { name: "App Intro Draft" })).not.toBeVisible();
   await expect(page.getByRole("option", { name: "App Followup Draft" })).not.toBeVisible();
 
+  // Assert Reply group options are present for all contacts
+  await expect(page.getByRole("option", { name: "Reply Draft" })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Reply Sent" })).toBeVisible();
+
   await page.screenshot({
     path: path.join(SCREENSHOTS, "stage-dropdown-outreach.png"),
   });

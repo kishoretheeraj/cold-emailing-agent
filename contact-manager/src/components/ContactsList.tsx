@@ -9,6 +9,7 @@ import {
   type ContactsQueryFilters,
   OUTREACH_STAGES,
   APPLIED_STAGES,
+  REPLY_STAGES,
   REPLY_STATUSES,
   EMPTY_FILTERS,
   filtersEqual,
@@ -69,6 +70,8 @@ const STAGE_LABELS: Record<string, string> = {
   research: "Research",
   ready: "Ready",
   engaged: "Engaged",
+  reply_drafted: "Reply Draft",
+  reply_sent: "Reply Sent",
 };
 
 function stageLabel(stage: string): string {
@@ -678,6 +681,14 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                             ))}
                           </SelectGroup>
                         )}
+                        <SelectGroup>
+                          <SelectLabel>Reply</SelectLabel>
+                          {REPLY_STAGES.map((s) => (
+                            <SelectItem key={s} value={s}>
+                              {stageLabel(s)}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                         <SelectSeparator />
                         <SelectItem value="closed">Closed</SelectItem>
                       </SelectContent>
