@@ -166,3 +166,49 @@ def test_duplicate_draft_skipped(mocker):
 
     reply_drafter.draft_reply(_contact(), "Let's chat!", {})
     assert not mock_update.called
+
+
+# ── Threading: in_reply_to_mid threads after recipient's reply ─────────────────
+
+def test_in_reply_to_mid_used_when_provided(mocker):
+    """Draft must thread after the recipient's reply, not the original first-touch."""
+    mock_create = mocker.patch("reply_drafter.create_draft",
+                               return_value=DraftResult("<new@gmail.com>", None, None))
+    mocker.patch.object(reply_drafter, "_generate_reply_body", return_value="Hi Alice.")
+    mocker.patch("preflight.check", return_value=[])
+    mocker.patch("reply_drafter.apply_label_to_latest_draft")
+    mocker.patch("reply_drafter.update_contact")
+    mocker.patch("reply_drafter.insert_email_message")
+    mocker.patch("reply_drafter.log_agent_event")
+    mocker.patch("reply_drafter.log_drafted_email")
+
+    reply_drafter.draft_reply(
+        _contact(),
+        "Let's chat!",
+        {},
+        in_reply_to_mid="<alice_reply@reindi.com>",
+    )
+
+    _, kwargs = mock_create.call_args
+    assert kwargs["in_reply_to"] == "<alice_reply@reindi.com>"
+    # References chain includes both original and incoming IDs
+    assert "<orig@gmail.com>" in kwargs["references"]
+    assert "<alice_reply@reindi.com>" in kwargs["references"]
+
+
+def test_in_reply_to_falls_back_to_contact_message_id(mocker):
+    """When in_reply_to_mid is not passed, fall back to contact['message_id']."""
+    mock_create = mocker.patch("reply_drafter.create_draft",
+                               return_value=DraftResult("<new@gmail.com>", None, None))
+    mocker.patch.object(reply_drafter, "_generate_reply_body", return_value="Hi Alice.")
+    mocker.patch("preflight.check", return_value=[])
+    mocker.patch("reply_drafter.apply_label_to_latest_draft")
+    mocker.patch("reply_drafter.update_contact")
+    mocker.patch("reply_drafter.insert_email_message")
+    mocker.patch("reply_drafter.log_agent_event")
+    mocker.patch("reply_drafter.log_drafted_email")
+
+    reply_drafter.draft_reply(_contact(), "Let's chat!", {})
+
+    _, kwargs = mock_create.call_args
+    assert kwargs["in_reply_to"] == "<orig@gmail.com>"

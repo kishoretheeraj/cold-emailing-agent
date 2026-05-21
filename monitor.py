@@ -458,7 +458,11 @@ def _draft_reply_responses(classified_contacts, prompts):
             messages = get_email_messages(contact["id"])
             incoming = [m for m in messages if m.get("direction") == "incoming"]
             reply_body_text = incoming[-1]["body"] if incoming else ""
-            reply_drafter.draft_reply(contact, reply_body_text, prompts)
+            # Pass the incoming reply's message_id so the draft threads after
+            # the recipient's reply, not after our original first-touch email.
+            incoming_mid = incoming[-1].get("message_id") if incoming else None
+            reply_drafter.draft_reply(contact, reply_body_text, prompts,
+                                      in_reply_to_mid=incoming_mid)
         except Exception as exc:
             log.warning(f"[REPLY-DRAFT] | {name} | {company} | error: {exc}")
 

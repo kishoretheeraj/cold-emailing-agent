@@ -508,6 +508,7 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 - Skips silently if `classifier_status` not in `{"positive_reply", "soft_yes"}`.
 - Skips if already in `reply_drafted` or `reply_sent`.
 - Prompt fallback: uses `prompts.get("reply_response_prompt") or REPLY_RESPONSE_DEFAULT` (not `.get(key, default)`) so an empty string stored in Supabase correctly falls back to the hardcoded default.
+- **Threading**: `draft_reply()` accepts `in_reply_to_mid` (the incoming reply's message-id). The draft sets `In-Reply-To` to this value and `References` to `"<first_touch_mid> <in_reply_to_mid>"` so it appears after the recipient's reply in the thread, not after the original first-touch email. `_draft_reply_responses` in `monitor.py` passes `incoming[-1]["message_id"]`.
 
 ## New Supabase tables
 

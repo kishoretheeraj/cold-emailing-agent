@@ -37,11 +37,15 @@ def _generate_reply_body(contact, reply_body_text, prompts):
 
 # ── Public interface ───────────────────────────────────────────────────────────
 
-def draft_reply(contact, reply_body_text, prompts):
+def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
     """
     Generate a reply draft for a contact, run pre-flight, create Gmail draft,
     update stage to reply_drafted, apply label. Logs to agent_events.
     Never calls the critic loop. Best-effort: logs warning on any failure.
+
+    in_reply_to_mid: message-id of the incoming reply (not the original first-touch).
+    When provided, the draft threads after the recipient's reply, not after our
+    original email. Falls back to contact["message_id"] if not supplied.
     """
     name = contact.get("name", "Unknown")
     company = contact.get("company", "Unknown")
@@ -95,12 +99,21 @@ def draft_reply(contact, reply_body_text, prompts):
         original_subject = contact.get("original_subject") or ""
         subject = ("Re: " + original_subject) if original_subject else "Re: your message"
 
-        thread_message_id = contact.get("message_id")
+        first_touch_mid = contact.get("message_id")
+        # Thread after the recipient's reply (in_reply_to_mid), not the original.
+        # References chain: <first_touch_mid> <in_reply_to_mid> preserves full history.
+        reply_to = in_reply_to_mid or first_touch_mid
+        references = (
+            f"{first_touch_mid} {in_reply_to_mid}"
+            if (first_touch_mid and in_reply_to_mid and first_touch_mid != in_reply_to_mid)
+            else reply_to
+        )
         result = create_draft(
             contact.get("email"),
             subject,
             body,
-            in_reply_to=thread_message_id,
+            in_reply_to=reply_to,
+            references=references,
             contact_id=contact_id,
             stage="reply_drafted",
         )
@@ -121,7 +134,7 @@ def draft_reply(contact, reply_body_text, prompts):
             subject=subject,
             body=body,
             message_id=message_id,
-            in_reply_to=thread_message_id,
+            in_reply_to=reply_to,
             stage_at_send="reply_drafted",
         )
 
