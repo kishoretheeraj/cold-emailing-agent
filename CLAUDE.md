@@ -12,19 +12,18 @@ was actually written, not just style preferences.
 ## Module layout
 
 ```
-agent.py          # Daily run: pick contacts, draft, label, update Supabase
-monitor.py        # Four-phase monitor: sent-detection, reply-detection, classification, reply-drafting
-emailer.py        # Claude prompts and email generation (includes pre-flight integration)
-preflight.py      # Six deterministic checks run before every draft; hard block on failure with one retry
-reply_drafter.py  # Generates reply drafts for positive_reply/soft_yes contacts; no critic, no auto-send
-research.py       # Tavily web research pipeline — query gen, curation, caching (Tier 1+2 first-touch only)
-gmail.py          # IMAP draft creation + Gmail label management
-db.py             # Supabase client + thin query/update wrappers
-config.py         # All env-var reads + prompt templates + tier instructions
-constants.py      # Stage sequences, reply statuses, TERMINAL_REPLY_STATUSES, DRAFTED_STAGES, TERMINAL_DRAFTED_STAGES
-notify_failure.py # Emailed to GMAIL_ADDRESS when a workflow step fails
-supabase/migrations/ # SQL migration files; apply with: supabase link --project-ref yqrnsparrvirruwjsjgt && supabase db push
-                    # If remote has migrations missing from local, db push fails — fix with empty placeholder files.
+agent.py
+monitor.py
+emailer.py
+preflight.py
+reply_drafter.py
+research.py
+gmail.py
+db.py
+config.py
+constants.py
+notify_failure.py
+supabase/migrations/
 ```
 
 Every module that touches the outside world is wrapped behind a function so
@@ -148,42 +147,7 @@ Follow-up emails must land in the same Gmail thread as the original.
 - `message_id` and `original_subject` columns are **agent-managed**. Never
   write them manually — they are set once after the first draft.
 
-## Resilience patterns
-
-- **Anthropic API** (`emailer._call_claude`): uses the official `anthropic` SDK
-  with `max_retries=4` (5 total attempts). The SDK auto-retries 429, 529, and
-  5xx; non-retryable 4xx raise immediately. Signature:
-  `_call_claude(prompt, model=None, max_tokens=1000, system=None)`. When `system`
-  is provided it is sent as a system-prompt block with `cache_control: ephemeral`
-  for prompt caching. All seven system-bearing generators pass the sender profile
-  as `system`: `_generate_outreach`, `_generate_applied_intro`,
-  `_generate_applied_followup`, `_generate_subject`, `_run_critic`
-  (all in `emailer.py`); `_generate_reply_body` (`reply_drafter.py`); and
-  `_generate_queries` (`research.py`). `_curate_brief` and `_classify_reply`
-  have no stable system component and send no `system` param.
-  `_call_claude` logs `[CACHE] model=... | cache_read=N | cache_created=N`
-  at INFO level whenever either counter is non-zero, so cache hits are visible
-  in `agent.log` / `monitor.log`.
-  Run `python3 measure_caching.py` to count tokens for every system block
-  and see which are above/below the cache threshold. Caching activates
-  automatically when the system prompt reaches the 1024-token minimum
-  (currently below threshold; grows as Supabase prompts are edited).
-  **Credit exhaustion fast-fail**: a module-level `_credit_exhausted` flag
-  is set on the first `400 credit balance too low` response. All subsequent
-  `_call_claude` calls raise `RuntimeError` immediately without hitting the
-  network, saving the `INTER_CALL_SLEEP` sleep and HTTP round-trip for every
-  remaining contact. Log marker: `[CREDIT] Anthropic credit balance exhausted`.
-- **Tavily** (`research.py`): `_get_client()` lazily initialises a singleton
-  `TavilyClient`. All failures inside `get_research_brief` degrade to `""` —
-  the function never raises. Absent `TAVILY_API_KEY` short-circuits immediately.
-- **Supabase** (`db._retry`): every query/update is wrapped in a 3-attempt
-  retry with the same 2 s / 4 s backoff. Catches broad `Exception` — Supabase
-  blips are transient; the retry budget is small.
-- **Failure notification** (`notify_failure.py`): both workflows have an
-  `if: failure()` step that runs this script. It emails `GMAIL_ADDRESS` via
-  Gmail SMTP using `GMAIL_APP_PASSWORD` — no new secrets required.
-- **Prompt validation** (`agent._validate_prompts`): called at the top of `run()` right after `load_prompts()`. Checks every formattable prompt against `_PROMPT_VALID_KEYS` (a dict of prompt key → valid format kwargs, mirroring each `tpl.format(...)` call site). If any prompt contains a `{placeholder}` the code never provides, it logs `[PROMPT-VALIDATION] <key>: unknown placeholder(s) [...]` and raises `ValueError` before contacting Supabase, Tavily, or Anthropic — zero wasted API credits. The valid-key map lives in `agent._PROMPT_VALID_KEYS` (Python) and `src/lib/promptVariables.PROMPT_VALID_KEYS` (TypeScript, used by the contact-manager UI). **Keep both in sync** if you add a new prompt or change a format() call site.
-- **Batch API fallback** (`agent.py` Phases 2–5): the Anthropic Messages Batch API path has two-layer resilience. Partial failure: if individual batch results have `type != "succeeded"`, those contacts are appended to `retry_items` and re-attempted sequentially in Phase 5 via `generate_email()`. Catastrophic failure: if `batches.create()` or the poll loop raises, the entire `try/except` around Phases 2–4 catches it, sets `retry_items` to every collected contact, and Phase 5 runs sequential generation for all of them. `_execute_draft()` is a shared private helper (extracted to avoid duplicating the create-draft / persist / label / update flow between the batch success path and the sequential retry path).
+See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Supabase retry, prompt validation, batch fallback).
 
 ## Supabase patterns
 
@@ -256,59 +220,9 @@ The dashboard's "Last run" reads `ran_at` from the most recent `agent_runs`
 row, not `MAX(last_emailed)` from contacts. This means the date updates on
 every run regardless of whether any drafts were created.
 
-## IMAP patterns
+See docs/python/imap.md for IMAP patterns (mailbox quoting, DraftResult, find_sent_for_thread, _fetch_body_text).
 
-- `[Gmail]/Drafts` mailbox name is double-quoted: `'"[Gmail]/Drafts"'`.
-- `[Gmail]/Sent Mail` mailbox name is double-quoted: `'"[Gmail]/Sent Mail"'`.
-- Label folder names are double-quoted: `f'"{label_name}"'`.
-- `imap.create()` returns `('NO', [b'[ALREADYEXISTS]...'])` if the label
-  exists. **This is not an exception** — `create_gmail_label_if_not_exists`
-  intentionally ignores the return value.
-- Always wrap IMAP calls in `try/finally imap.logout()`. Connection cleanup
-  is non-negotiable.
-- `create_draft()` returns `DraftResult(message_id, gmail_draft_id,
-  gmail_thread_id)`, or `DraftResult(None, None, None)` if a duplicate was
-  detected via `X-Cold-Email-Key`. Do not try to fetch the ID from IMAP after
-  append — Gmail drafts only receive a server Message-ID when actually sent.
-- `find_sent_for_thread(message_id, since_date, mode)` searches `[Gmail]/Sent Mail`
-  with `readonly=True`. Use `mode="first_touch"` to match on `Message-ID`,
-  `mode="followup"` to match on `In-Reply-To`. Returns the **actual Message-ID string**
-  from the found sent email (not the stored one — Gmail may rewrite it on send), or
-  `None` if not found. Never raises. The `message_id` search arg is double-quoted in
-  the IMAP command because angle brackets are IMAP special characters.
-- **`_fetch_body_text` uses `RFC822` + MIME walk, not `BODY[TEXT]`.** `BODY[TEXT]` on
-  multipart/mixed emails (Outlook, Exchange) returns the raw MIME structure rather than
-  a decoded tuple, silently producing `b""`. The function fetches the full RFC822 message,
-  walks MIME parts to find `text/plain` (falling back to stripped `text/html`), and
-  returns up to 2000 chars. Do not revert to `BODY[TEXT]`.
-
-## Sent-draft auto-detection
-
-`monitor.detect_sent_drafts()` runs at the start of every monitor cycle,
-before reply detection. It flips contacts from `*_drafted` to `*_sent`
-automatically when the user sends a draft from Gmail.
-
-Key invariants:
-- **Best-effort, per-contact**: any per-contact failure (IMAP error, Supabase
-  error, missing message_id) logs a warning and continues to the next contact.
-  A single failure never aborts the loop or blocks reply detection.
-- **`message_id` required**: contacts with `message_id=None` are skipped with
-  an info log. The agent populates `message_id` when it creates the first draft.
-- **Cadence reuse**: `followup_date` is set using `FOLLOWUP_DAYS[action]` from
-  `config.py` — the exact same values the agent uses. Look up the action via
-  the inverse of `NEXT_STAGE`. Do not hardcode day counts here.
-- **Terminal stages**: `breakup_drafted` and `applied_followup_drafted` are in
-  `TERMINAL_DRAFTED_STAGES`. When flipped, `followup_date` is cleared to `None`
-  (via `update_contact(..., clear_followup_date=True)`).
-- **`update_contact` change**: `db.update_contact` now accepts `clear_followup_date=False`.
-  When `True`, it explicitly sets `followup_date=None` in the Supabase update.
-  All existing callers are unaffected (default is `False`).
-- **`detect_replies()` independence**: `run()` wraps `detect_sent_drafts()` in
-  `try/except` so a catastrophic failure there never blocks reply detection.
-- **v1 limitation**: depends on Gmail preserving the draft's `Message-ID` on
-  send. Scheduled-send drafts and heavily-edited first-touch drafts may not be
-  detected. If the monitor log shows `found=False` after sending, Gmail may
-  have rewritten the Message-ID — a subject+recipient fallback would be v2.
+See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 
 ## Tests
 
@@ -333,93 +247,9 @@ Key invariants:
 - `tests/test_research_brief.py` — `get_research_brief` integration tests (cache TTL, pipeline, never-raises parametrize).
 - `tests/test_emailer_research.py` — research gating (tier/action matrix) and injection behavior in `generate_email`.
 
-## Critic loop (v1)
+See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
 
-`emailer.critique_and_revise()` runs on Tier 1 first-touch emails only
-(`send_first_touch` and `send_applied_intro` when `contact["tier"] == 1`).
-All other tiers and all follow-up actions skip it entirely.
-
-- **Pass condition**: `rewrite_required == False` in the critic JSON response.
-  The critic now returns an 8-key dict: `verdict` (PASS/FAIL), `score` (0–21),
-  `rewrite_required` (bool), `killed_by`, `failed_soft_criteria`,
-  `banned_phrases_found`, `ai_tells_found`, `feedback`. 21 criteria: K1–K11
-  kill switches + S1–S10 soft criteria. If `rewrite_required` is True, one
-  regeneration is triggered via `extra_instruction`. Max 2 generation attempts
-  total — never loop.
-- **Prompt**: `critic_prompt` key in the Supabase `prompts` table
-  (`sort_order=25`). `CRITIC_PROMPT_DEFAULT` in `config.py` is the fallback.
-- **Failure safety**: any error inside `_run_critic` (format error, Claude
-  error, JSON parse failure) returns the pass-through fallback
-  `{"verdict": "PASS", "score": 16, "rewrite_required": False, ...}` and
-  logs a warning. Critic failures never block draft creation.
-- **Log marker**: `[CRITIC] | name | company | score=N | killed_by=[...] | failed_soft=[...] | retried=<bool>`
-  appears exactly once per Tier 1 first-touch draft.
-- **`CRITIC_PASS_THRESHOLD`** in `config.py` is no longer used by `critique_and_revise` — the pass condition is `rewrite_required`, not a numeric threshold. The constant is kept for reference but has no effect.
-- **Cost**: adds 1 critic Claude call per Tier 1 first-touch, plus 1 optional
-  regeneration call. Subject is also regenerated on retry.
-- **Common first-draft failures to guard in `outreach_prompt`**:
-  - K5 (structural AI tells): rule-of-three tricolons, "from X to Y" ranges,
-    participial -ing closers ("...helping companies scale"). The outreach_prompt
-    FINAL PASS must include explicit checks for these — listing them in ABSOLUTE
-    NO'S alone is insufficient.
-  - K7 (weak CTA): any open-ended question ("What do you look for in...") fails.
-    The outreach_prompt CTA guidance must require a yes/no question for ALL
-    recipient types. Never instruct "ask about perspective/their path" — that
-    produces open-ended questions that K7 rejects.
-  - S10 (dense paragraph): the outreach_prompt format rule must say "one sentence
-    per paragraph, blank line between each". Any phrasing that permits grouping
-    sentences (e.g. "may sit on the same line") causes `_normalize_body` to
-    collapse them into a dense paragraph that S10 rejects.
-  - S6 (multiple question marks): must be in ABSOLUTE NO'S, not just FINAL PASS.
-
-## Research pipeline (v1)
-
-`research.get_research_brief(contact, sender_profile, prompts)` runs for Tier 1
-and Tier 2 first-touch actions only (`send_first_touch`, `send_applied_intro`).
-Follow-ups and Tier 3 skip research entirely. The brief is injected into the
-outreach/applied-intro prompt before body generation and persists through any
-critic retry.
-
-**Pipeline steps:**
-1. **Cache check** — `research_cache` keyed by `name_lower|company_lower`. Hit
-   within 7 days: return `brief_text` immediately, no Tavily or Claude calls.
-2. **Query generation** — Haiku (`RESEARCH_QUERY_MODEL`) generates 1-5 Tavily
-   search queries, person-first (every query includes the company name to
-   disambiguate). Returns JSON array. Hard-capped at `RESEARCH_MAX_QUERIES=5`,
-   each query truncated to `RESEARCH_MAX_QUERY_LEN=80` chars.
-3. **Tavily execution** — `search_depth="basic"`, `max_results=5` per query,
-   `include_raw_content=True` (full page text alongside snippets).
-   Per-query failures skip silently. If query gen returns `[]`, the hardcoded
-   fallback `"{company} news 2026"` fires.
-4. **Brief curation** — Sonnet (`RESEARCH_CURATE_MODEL`) synthesises raw results
-   into a short markdown brief (`RESEARCH_CURATE_MAX_TOKENS=600`). Each result
-   includes up to 500 chars of `raw_content` for richer context. Applies a
-   strict disambiguation rule: any fact that could refer to a different person
-   with the same name is excluded. Returns `NO_RELIABLE_BRIEF` (mapped to `""`)
-   if results are ambiguous or off-topic.
-5. **Cache write** — `brief_text` cached even when `""` to prevent re-querying
-   no-footprint contacts on the next run.
-
-**Log markers (all in `agent.log`):**
-- `[RESEARCH-Q]` — queries generated by Haiku
-- `[RESEARCH-T]` — Tavily execution results
-- `[RESEARCH-F]` — hardcoded fallback fired (query gen returned `[]`)
-- `[RESEARCH-C]` — curator output (`reliable=True/False`)
-- `[RESEARCH]` — top-level summary (`path=cache|fresh`)
-- `[OUTREACH] | name | company | tier=N | has_brief=True/False` — emitted from
-  `emailer.generate_email` for every first-touch, showing whether a brief was
-  injected
-
-**Worst-case failure mode**: Tavily returns facts about a different person with
-the same name. The curation step is the guard against this — if you see wrong
-facts in a draft, tighten `research_curate_prompt` in `/prompts` and add a
-failure example. Never trust a confident-sounding brief without verifying a
-specific fact against a real source before sending.
-
-**Cost** (approximate): ~2-3 USD/month extra Anthropic spend at typical volume
-(one Haiku call for query gen + one Sonnet call for curation per researched
-contact). Tavily free tier: 1000 credits/month; ~5 queries per contact = ~50
-credits per 10 first-touches.
+See docs/python/research-pipeline.md for research pipeline details (steps, log markers, failure mode, cost).
 
 ## Definition of done
 
@@ -476,138 +306,8 @@ Pre-flight runs on ALL actions (outreach, follow-up, reply). Critic runs only on
 
 In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("db.log_agent_event")` are required in any test that calls `generate_email()`.
 
-## Reply pipeline (monitor.py)
+See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 
-`monitor.run()` now has four sequential phases, each wrapped in `try/except` so failure in one never blocks the next:
-1. `detect_sent_drafts()` — unchanged
-2. `detect_replies(prompts)` — targeted per-contact IMAP HEADER search; returns list of newly-classified contacts
-3. (called inside detect_replies) `_classify_reply()` — Claude Haiku classifies reply body → `classifier_status`
-4. `_draft_reply_responses(classified, prompts)` — calls `reply_drafter.draft_reply()` for positive_reply/soft_yes contacts
+See docs/python/db-schema.md for table schemas, new columns, reply stages, new db.py functions, and new config.py constants.
 
-**Reply detection invariants:**
-- Iterates over contacts with a stored `message_id`; issues two targeted server-side IMAP searches per contact: `HEADER "In-Reply-To" "<mid>"` and `HEADER "References" "<mid>"`. No full inbox scan. No FROM fallback.
-- False-positive guard: IMAP `HEADER` search does substring matching, so each hit is re-verified with `_match_message()` before classification.
-- `seen_nums` set deduplicates message UIDs across contacts (one message can reference multiple threads).
-- Skip contact if `classifier_status` is already set (idempotent across 2-hour runs).
-- Auto-reply bypass: if `Auto-Submitted` header is not "no" or `X-Auto-Response-Suppress` is present, classify as `auto_reply` without calling Claude.
-- Notification-sender filter: `_is_notification_sender(from_header)` checks the FROM domain against `_NOTIFICATION_SENDER_DOMAINS` (a frozenset of known tracking-service domains: mailsuite.com, mailtrack.io, streak.com, etc.). Matched emails are skipped with no `classifier_status` write, keeping the contact checkable for future real replies. Real human replies (delegated person, assistant, any non-blocklisted domain) are not affected.
-- `email_messages` insert is upsert on `message_id` (ON CONFLICT DO NOTHING).
-- One IMAP connection for all contacts. `readonly=True` at open; label copy re-selects INBOX read-write.
-- **Empty-body guard**: if `_fetch_body_text` returns `""` for a non-auto reply, the contact is skipped with a warning and `classifier_status` is NOT written. This keeps the contact eligible for retry on the next run. Without this guard, the Anthropic API returns 400 (empty content) and the error fallback silently sets `classifier_status=unrelated`, permanently locking the contact out of future detection.
-
-## Reply drafting (reply_drafter.py)
-
-`draft_reply(contact, reply_body_text, prompts)`:
-- Generates reply body via `REPLY_RESPONSE_MODEL` (Sonnet).
-- Runs pre-flight; one retry on failure; hard block with `agent_events` log if still failing.
-- **Never calls the critic loop.**
-- Creates Gmail draft via `create_draft()` with `in_reply_to=contact.message_id`.
-- Stores draft in `email_messages` as `direction="outgoing"`.
-- Applies label `Cold Outreach/Reply` (best-effort).
-- Updates stage to `reply_drafted` via `update_contact(clear_followup_date=True)` — reply is terminal.
-- Skips silently if `classifier_status` not in `{"positive_reply", "soft_yes"}`.
-- Skips if already in `reply_drafted` or `reply_sent`.
-- Prompt fallback: uses `prompts.get("reply_response_prompt") or REPLY_RESPONSE_DEFAULT` (not `.get(key, default)`) so an empty string stored in Supabase correctly falls back to the hardcoded default.
-- **Threading**: `draft_reply()` accepts `in_reply_to_mid` (the incoming reply's message-id). The draft sets `In-Reply-To` to this value and `References` to `"<first_touch_mid> <in_reply_to_mid>"` so it appears after the recipient's reply in the thread, not after the original first-touch email. `_draft_reply_responses` in `monitor.py` passes `incoming[-1]["message_id"]`.
-
-## New Supabase tables
-
-**`draft_history`** — lifecycle of every Gmail draft created by the agent (Phase 0, 2026-05-20).
-- `contact_id INTEGER FK→contacts(id) ON DELETE CASCADE`
-- `stage TEXT NOT NULL` — the drafted stage at time of creation
-- `subject TEXT, body TEXT` — draft content; updated by `/api/update-draft` on Quick Fix edits
-- `message_id TEXT` — RFC822 Message-ID from IMAP APPEND
-- `gmail_draft_id TEXT` — Gmail API draft ID; required by `/api/send-draft`
-- `drafted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
-- `sent_subject TEXT, sent_body TEXT, sent_at TIMESTAMPTZ` — populated by `/api/send-draft`
-- `edit_detected BOOLEAN` — true when user edited the draft in Gmail before sending
-- RLS disabled. Written by `db.log_drafted_email()` (called from `agent._execute_draft` and `reply_drafter.draft_reply`).
-- Migration: `supabase/migrations/20260520000001_create_draft_history.sql`
-
-**`email_messages`** — durable copy of every sent/received email per contact.
-- `contact_id INTEGER FK→contacts(id) ON DELETE CASCADE`
-- `direction TEXT` ('outgoing'|'incoming')
-- `UNIQUE(message_id) WHERE message_id IS NOT NULL` — idempotency index
-- Index on `(contact_id, sent_at DESC)`
-- RLS disabled. Access via `db.insert_email_message()` and `db.get_email_messages(contact_id)`.
-
-**`agent_events`** — per-action audit log (preflight, classify_reply, draft_reply, critic, sent_detected, research).
-- `run_id INTEGER FK→agent_runs(id) ON DELETE SET NULL` (nullable)
-- `contact_name TEXT nullable` — denormalized contact name; stored at write time so /runs page never needs a join
-- `status TEXT` ('running'|'success'|'failed'|'blocked_preflight')
-- `metadata JSONB nullable` — structured per-event data; shape varies by `event_type`:
-  - `preflight`: `{"blocked_checks": ["check_name", ...]}`
-  - `critic`: `{"score": N, "verdict": "PASS"|"FAIL", "rewrite_required": bool, "killed_by": [...], "failed_soft": [...], "retried": bool}`
-  - `sent_detected`: `{"method": "thrid"|"mid"|"subject", "new_stage": "first_touch_sent"|...}`
-  - `classify_reply`: `{"classifier_status": "positive_reply"|...}`
-  - `research`: `{"cache_hit": bool, "queries_generated": N, "tavily_results": N, "brief_reliable": bool, "brief_length": N}` (cache hits also include `"cache_age_days": N`)
-- Indexes on `(started_at DESC)`, `status`, `contact_id`
-- RLS disabled. Access via `db.log_agent_event()` (best-effort, never raises) and `db.get_agent_events(limit=100)`.
-
-**`agent_runs`** gains `source TEXT DEFAULT 'agent'` — values: `'agent'` (daily agent.py run) or `'monitor'` (monitor.py run). `monitor.run()` calls `record_run(source='monitor')` at the end of every cycle.
-
-**`research_cache`** gains `queries_generated INT` and `brief_reliable BOOLEAN` — populated by `db.set_research_cache()`. Allows querying which contacts had no reliable brief without unpacking `brief_json`.
-
-**`prompts_history`** — append-only audit log of every prompt value change. Populated automatically via a Supabase BEFORE UPDATE trigger on the `prompts` table (no application code needed). Columns: `id`, `key`, `old_value`, `new_value`, `changed_at`.
-
-## New contacts column
-
-**`contacts.classifier_status TEXT nullable`** — written by monitor's reply classifier; never by user or agent. User manages `reply_status` separately. "Needs response" filter: `classifier_status IN ('positive_reply','soft_yes') AND reply_status NOT IN ('interested','call_scheduled','dead')`.
-
-## Reply stages
-
-`REPLY_STAGES = ["reply_drafted", "reply_sent"]` in `constants.py`. These are included in `DRAFTED_STAGES` (comprehension extended to include `REPLY_STAGES`). `reply_drafted` is in `TERMINAL_DRAFTED_STAGES`. `DRAFTED_TO_SENT` in `agent.py` includes `"reply_drafted": "reply_sent"`.
-
-**`REPLY_STAGES` is a mirrored constant** — update both `constants.py` (Python) and `types.ts` (TypeScript) if adding new reply stages.
-
-## Prompt keys (Supabase prompts table — 21 rows)
-
-Loaded at startup by `db.load_prompts()` → `{key: value}`. Absent keys fall back to
-`config.py` constants; `emailer.py` logs `[WARN] prompt key X not in DB — using fallback`.
-Instruction-level keys (sort_orders 11–18) use `get_tier_instruction()`,
-`get_template_instruction()`, `get_dartmouth_instruction()` in `emailer.py`.
-
-| key | sort_order | purpose |
-|-----|-----------|---------|
-| `sender_profile` | 10 | Sender bio; injected as `{profile}` into every email template |
-| `outreach_first_touch_instruction` | 11 | `{template_instruction}` for `cold_intro` emails |
-| `outreach_followup1_instruction` | 12 | `{template_instruction}` for `follow_up_1` emails |
-| `outreach_followup2_instruction` | 13 | `{template_instruction}` for `follow_up_2` emails |
-| `outreach_breakup_instruction` | 14 | `{template_instruction}` for `breakup` emails |
-| `tier_1_instruction` | 15 | `{tier_instruction}` for Tier 1 contacts |
-| `tier_2_instruction` | 16 | `{tier_instruction}` for Tier 2 contacts |
-| `tier_3_instruction` | 17 | `{tier_instruction}` for Tier 3 contacts |
-| `dartmouth_instruction` | 18 | `{dartmouth_instruction}` when alumnus detected; used in outreach AND applied |
-| `outreach_prompt` | 20 | Cold outreach email body (all 4 templates) |
-| `critic_prompt` | 25 | Critic editor prompt; Tier 1 first-touch only |
-| `research_query_prompt` | 26 | Haiku generates 1–5 Tavily queries |
-| `research_curate_prompt` | 27 | Haiku synthesises Tavily results into a brief |
-| `research_injection` | 28 | Wraps curated brief before appending to outreach/applied-intro |
-| `applied_intro_prompt` | 30 | Applied intro email with 3 bullets |
-| `applied_followup_prompt` | 40 | Applied follow-up; short, adds one new value |
-| `subject_prompt` | 50 | Subject line; called once per first-touch email |
-| `reply_classification_prompt` | 60 | Claude Haiku classifier; returns `{"classifier_status": "..."}` JSON |
-| `reply_response_prompt` | 61 | Reply body template for `reply_drafter.py` |
-| `forbidden_phrases` | 62 | Newline-delimited banned substrings for pre-flight check 6 |
-| `guardrail_company_list` | 63 | Newline-delimited company watchwords for pre-flight check 4 |
-
-**Locked:** `/api/extract` prompt is hardcoded — bound to `ExtractedContact` JSON schema.
-
-## New db.py functions
-
-- `log_agent_event(event_type, contact_id, contact_name, status, metadata, ...)` — best-effort insert to agent_events; never raises. `metadata` replaces the old `blocked_checks` param — pass a dict, not a list.
-- `get_agent_events(limit=100)` — ordered by started_at DESC; used by /runs page
-- `update_classifier_status(contact_id, value)` — sets classifier_status; used by monitor
-- `insert_email_message(contact_id, direction, sent_at, ...)` — upsert on message_id; used by agent (outgoing) and monitor (incoming)
-- `get_email_messages(contact_id)` — ordered by sent_at ASC; used by thread view in contact sheet
-- `update_message_id(contact_id, message_id)` — updates only `message_id`; called by `detect_sent_drafts` when Gmail rewrites the ID on send (threading fix)
-- `record_run(status, drafted, skipped, errors, elapsed, failure_reason, source)` — `source` defaults to `'agent'`; pass `source='monitor'` from monitor.py
-- `set_research_cache(..., queries_generated, brief_reliable)` — two new optional params populate the analytics columns
-- `log_drafted_email(contact_id, stage, subject, body, message_id=None, gmail_draft_id=None)` — best-effort insert to draft_history; never raises. Called from `agent._execute_draft` and `reply_drafter.draft_reply` after IMAP APPEND.
-
-## New config.py constants
-
-- `REPLY_CLASSIFICATION_MODEL = "claude-haiku-4-5-20251001"` — Haiku for reply classification
-- `REPLY_RESPONSE_MODEL = "claude-sonnet-4-6"` — Sonnet for reply body generation
-- `REPLY_CLASSIFICATION_DEFAULT` — fallback classification prompt
-- `REPLY_RESPONSE_DEFAULT` — fallback reply response template
+See docs/python/prompt-keys.md for the full Supabase prompts table (21 rows, sort_orders 10–63).
