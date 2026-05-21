@@ -182,6 +182,12 @@ Tier display: T1 → indigo, T2 → default, T3 → muted.
 If you add a stage, update `OUTREACH_STAGES` / `APPLIED_STAGES` in `types.ts` and
 `STAGE_LABELS` map in `ContactsList.tsx`.
 
+`REPLY_STAGES` (`reply_drafted`, `reply_sent`) render in a separate "Reply" SelectGroup
+in the stage dropdown — distinct from Outreach and Applied groups. If adding new reply
+stages, update all three: `REPLY_STAGES` in `types.ts`, `STAGE_LABELS` in
+`ContactsList.tsx`, and the Reply SelectGroup in the stage `<Select>` inside
+`ContactsList.tsx`. **Do not add reply stages to `OUTREACH_STAGES` or `APPLIED_STAGES`.**
+
 ## Tests (Vitest)
 
 - **Every code change must ship with tests.** New functions get a test file or new cases in the nearest existing test file. Bug fixes get a regression test that would have caught the bug. No exceptions for "trivial" changes — if it's worth changing, it's worth a test.
