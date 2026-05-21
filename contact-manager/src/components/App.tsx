@@ -65,6 +65,12 @@ export function App() {
             Queue
           </Link>
           <Link
+            href="/replies"
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
+          >
+            Replies
+          </Link>
+          <Link
             href="/prompts"
             className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg hover:border-border-strong transition"
           >

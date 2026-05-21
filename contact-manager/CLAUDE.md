@@ -45,6 +45,7 @@ src/
 │   ├── overview/page.tsx           # Dashboard: action items, pipeline funnel, agent status. 30s auto-refresh.
 │   ├── prompts/page.tsx            # 7-line server shell → <PromptsPage />
 │   ├── queue/page.tsx              # Server shell → <QueuePage /> (bulk draft approval with 5s undo)
+│   ├── replies/page.tsx            # Server shell → <RepliesPage /> (reply triage with 5s undo)
 │   ├── runs/page.tsx               # Activity page — agent_events table, 10s auto-refresh
 │   ├── globals.css                 # @theme tokens + global resets + Vaul overrides
 │   ├── layout.tsx                  # Inter font, dark theme, AppProviders wrapper
@@ -69,6 +70,7 @@ src/
 │   ├── PromptCategory.tsx      # "use client" — collapsible section header + PromptSection list
 │   ├── PromptSection.tsx       # "use client" — individual prompt card with save/reset; shows amber warning for unknown {placeholders}
 │   ├── QueuePage.tsx           # "use client" — three-column bulk-send queue; 30s auto-refresh; focus by contact_id
+│   ├── RepliesPage.tsx         # "use client" — two-column reply triage; classifier sort; 5s undo; 30s auto-refresh
 │   └── Field.tsx               # Label / TextInput / TextArea / ToggleSwitch / TierSelector
 └── lib/
     ├── supabase.ts             # Anon-key browser client singleton
@@ -81,8 +83,8 @@ src/
 tests/
 └── e2e/                        # Playwright smoke tests
     ├── helpers.ts              # mockSupabase() — intercepts contacts, prompts, email_messages, agent_events, draft_history + API routes
-    ├── fixtures/               # contacts.json (50 rows), prompts.json, draft_history.json (6 rows)
-    └── *.spec.ts               # 00-shell through 11-queue
+    ├── fixtures/               # contacts.json (50 rows), prompts.json, draft_history.json (7 rows), email_messages.json (4 rows)
+    └── *.spec.ts               # 00-shell through 12-replies
 ```
 
 ## Coding conventions
@@ -264,7 +266,7 @@ vi.mock("sonner", () => ({
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 33** (as of `11-queue.spec.ts`).
+- **Current test count: 48** (as of `12-replies.spec.ts`; vitest: 282 passed, playwright: 48 passed).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
@@ -353,6 +355,48 @@ Three-column layout: left rail (filters), center (scrollable draft list), right 
 - Critic: queryable from `agent_events` (event_type='critic', metadata.score/verdict/retried). T2+ shows "n/a (T2+)".
 - Pre-flight: shows "✓ passed" inferred from draft existence (no logged event for passing preflight — only blocked events exist).
 - Edited in Gmail: always "—" in v1 (`draft_history.edit_detected` is null until send; per-row API call too expensive).
+
+## /replies page (Phase 2 — reply triage UI)
+
+Two-column layout: left (320px scrollable triage list), right (focused detail + action bar).
+
+**Data fetch**: three-step on mount + 30s auto-refresh.
+1. Contacts where `classifier_status IS NOT NULL` AND `reply_status NOT IN (interested,call_scheduled,dead)` AND `deleted_at IS NULL`.
+2. `draft_history` rows with `stage='reply_drafted'` AND `sent_body IS NULL`, latest per contact.
+3. `email_messages` rows with `direction='incoming'`, latest per contact (for left-list snippet + timestamp).
+
+**Sort**: client-side — positive_reply first (priority 0), soft_yes second (priority 1), others last, then created_at DESC within each group.
+
+**Left list rows**: classifier dot+label (emerald=positive, amber=soft_yes, gray=others), name+company, stripped incoming snippet (quoted lines/headers removed, max 80 chars), relative timestamp.
+
+**Right column**: contact header + classifier badge, ThreadView (self-contained, fetches own data per contactId), suggested reply block (subject+body, only for positive/soft_yes with draft), action bar.
+
+**Action bar** — with draft (positive/soft_yes):
+[Approve and Send] [Quick Fix] [Edit in Gmail] | [Mark interested] [Mark call scheduled] [Mark dead]
+
+**Action bar** — without draft (hard_no, unrelated, etc.):
+[Open in Gmail] | [Mark interested] [Mark call scheduled] [Mark dead]
+
+**5-second undo**: same pattern as QueuePage. `pendingActions: Map<contact_id, PendingEntry>`. Both "Approve and Send" and "mark reply_status" changes use this pattern. Reply_status changes: Supabase PATCH fires after 5s; undo reverts optimistic removal from list.
+
+**Important**: `reply_status` updates (i/c/D) do NOT touch `stage` — stage is managed manually via the contacts side sheet on /contacts.
+
+**Keyboard map** (same early-return pattern as QueuePage):
+
+| Key | Action |
+|---|---|
+| `j` / `↓` | Next reply |
+| `k` / `↑` | Previous reply |
+| `e` | Approve and Send (only when draft exists) |
+| `E` | Quick Fix (only when draft exists) |
+| `o` | Edit in Gmail (draft) or Open Gmail inbox (no draft) |
+| `i` | Mark interested (5s undo) |
+| `c` | Mark call scheduled (5s undo) |
+| `D` | Mark dead (5s undo, uppercase D) |
+| `?` | Keyboard shortcuts overlay |
+| `Esc` | Close Quick Fix |
+
+**ThreadView**: reused as-is — `<ThreadView contactId={focused.id} />`. It fetches its own email_messages per contactId on mount/change. No additional data plumbing needed.
 
 ## Mirrored cadence constants
 

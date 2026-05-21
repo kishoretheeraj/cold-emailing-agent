@@ -90,6 +90,19 @@ export async function mockSupabase(page: Page) {
       }
     }
 
+    // classifier_status=not.is.null
+    const classifierStatus = params.get("classifier_status");
+    if (classifierStatus === "not.is.null") {
+      rows = rows.filter((c) => c.classifier_status != null);
+    }
+
+    // reply_status=not.in.(interested,call_scheduled,dead)
+    const replyStatus = params.get("reply_status");
+    if (replyStatus?.startsWith("not.in.(")) {
+      const vals = replyStatus.slice("not.in.(".length, -1).split(",");
+      rows = rows.filter((c) => !vals.includes(String(c.reply_status ?? "")));
+    }
+
     // id=eq.123 (single-row fetch by primary key)
     const idParam = params.get("id");
     if (idParam?.startsWith("eq.")) {
@@ -186,12 +199,43 @@ export async function mockSupabase(page: Page) {
   });
 
   // Intercept GET /rest/v1/email_messages
+  const allEmailMessages = JSON.parse(
+    fs.readFileSync(path.join(FIXTURES_DIR, "email_messages.json"), "utf-8")
+  ) as Array<Record<string, unknown>>;
+
   await page.route(/\/rest\/v1\/email_messages(\?.*)?$/, async (route) => {
     if (route.request().method() === "GET") {
+      const url = new URL(route.request().url());
+      const params = url.searchParams;
+      let rows = [...allEmailMessages];
+
+      // contact_id=eq.7
+      const cidEqParam = params.get("contact_id");
+      if (cidEqParam?.startsWith("eq.")) {
+        const cid = cidEqParam.slice(3);
+        rows = rows.filter((m) => String(m.contact_id) === cid);
+      }
+
+      // contact_id=in.(7,9,...)
+      if (cidEqParam) {
+        const inMatch = /in\.\((.+?)\)/.exec(cidEqParam);
+        if (inMatch) {
+          const ids = inMatch[1].split(",");
+          rows = rows.filter((m) => ids.includes(String(m.contact_id)));
+        }
+      }
+
+      // direction=eq.incoming
+      const dirParam = params.get("direction");
+      if (dirParam?.startsWith("eq.")) {
+        const dir = dirParam.slice(3);
+        rows = rows.filter((m) => m.direction === dir);
+      }
+
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify([]),
+        body: JSON.stringify(rows),
       });
     } else {
       await route.continue();
@@ -237,6 +281,13 @@ export async function mockSupabase(page: Page) {
       // sent_body=is.null
       if (params.get("sent_body") === "is.null") {
         rows = rows.filter((d) => d.sent_body === null);
+      }
+
+      // stage=eq.reply_drafted
+      const stageEqParam = params.get("stage");
+      if (stageEqParam?.startsWith("eq.")) {
+        const stageVal = stageEqParam.slice(3);
+        rows = rows.filter((d) => d.stage === stageVal);
       }
 
       // Sort by drafted_at DESC

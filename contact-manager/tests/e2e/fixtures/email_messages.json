@@ -1,0 +1,50 @@
+[
+  {
+    "id": 1,
+    "contact_id": 7,
+    "direction": "outgoing",
+    "subject": "Quick intro",
+    "body": "Hi Grace,\n\nI came across Groveworks and wanted to introduce myself. As a Dartmouth T'22 alum exploring ops roles, I thought what you're building is worth a conversation.\n\nWould a quick call make sense?\n\nKishore",
+    "sent_at": "2026-05-10T10:00:00.000Z",
+    "message_id": "msg-thread-7",
+    "in_reply_to": null,
+    "stage_at_send": "first_touch_sent",
+    "raw_headers": null
+  },
+  {
+    "id": 2,
+    "contact_id": 7,
+    "direction": "incoming",
+    "subject": "Re: Quick intro",
+    "body": "Hi Kishore, thanks for reaching out! I'd be open to a quick chat. Let me know your availability.",
+    "sent_at": "2026-05-12T14:00:00.000Z",
+    "message_id": "msg-reply-incoming-7",
+    "in_reply_to": "msg-thread-7",
+    "stage_at_send": null,
+    "raw_headers": null
+  },
+  {
+    "id": 3,
+    "contact_id": 9,
+    "direction": "outgoing",
+    "subject": "Re: Quick intro (last note)",
+    "body": "Hi Iris,\n\nI'll take your silence as a no for now — no hard feelings at all. Leaving you to it.\n\nBest,\nKishore",
+    "sent_at": "2026-05-08T09:00:00.000Z",
+    "message_id": "msg-thread-9",
+    "in_reply_to": null,
+    "stage_at_send": "breakup_sent",
+    "raw_headers": null
+  },
+  {
+    "id": 4,
+    "contact_id": 9,
+    "direction": "incoming",
+    "subject": "Re: Quick intro (last note)",
+    "body": "Hey Kishore, sorry for the slow reply. Actually, let's find a time to connect.",
+    "sent_at": "2026-05-14T11:00:00.000Z",
+    "message_id": "msg-reply-incoming-9",
+    "in_reply_to": "msg-thread-9",
+    "stage_at_send": null,
+    "raw_headers": null
+  }
+]

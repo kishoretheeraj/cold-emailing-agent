@@ -82,5 +82,19 @@
     "sent_body": null,
     "sent_at": null,
     "edit_detected": null
+  },
+  {
+    "id": 7,
+    "contact_id": 7,
+    "stage": "reply_drafted",
+    "subject": "Re: Quick intro",
+    "body": "Hi Grace,\n\nThanks for getting back to me! I'd love to find a time to connect briefly about Groveworks and what you're building.\n\nWould a 15-minute call work this week?\n\nKishore",
+    "message_id": "msg-reply-7",
+    "gmail_draft_id": "draft-reply-id-7",
+    "drafted_at": "2026-05-20T15:00:00.000Z",
+    "sent_subject": null,
+    "sent_body": null,
+    "sent_at": null,
+    "edit_detected": null
   }
 ]
