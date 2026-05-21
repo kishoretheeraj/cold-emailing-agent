@@ -90,3 +90,21 @@ def test_classify_strips_code_fences(mocker):
     )
     result = monitor._classify_reply("OOO until Monday", _contact(), _prompts())
     assert result == "out_of_office"
+
+
+# ── _is_notification_sender ────────────────────────────────────────────────────
+
+def test_is_notification_sender_mailsuite():
+    assert monitor._is_notification_sender("Mailsuite Notification <notification@mailsuite.com>") is True
+
+
+def test_is_notification_sender_mailtrack():
+    assert monitor._is_notification_sender("Mailtrack <me@mailtrack.io>") is True
+
+
+def test_is_notification_sender_real_email():
+    assert monitor._is_notification_sender("George Allen <gkentonallen@gmail.com>") is False
+
+
+def test_is_notification_sender_empty():
+    assert monitor._is_notification_sender("") is False

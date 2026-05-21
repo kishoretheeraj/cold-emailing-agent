@@ -51,6 +51,21 @@ from emailer import _call_claude
 
 REPLIED_LABEL = "Cold Outreach/Replied"
 
+_NOTIFICATION_SENDER_DOMAINS = frozenset({
+    "mailsuite.com",
+    "mailtrack.io",
+    "streak.com",
+    "yesware.com",
+    "salesloft.com",
+    "outreach.io",
+    "cirrusinsight.com",
+    "mixmax.com",
+    "lemlist.com",
+    "reply.io",
+    "apollo.io",
+    "hubspot.com",
+})
+
 # ── Sent-draft detection ───────────────────────────────────────────────────────
 
 def detect_sent_drafts():
@@ -201,6 +216,13 @@ def _is_auto_reply(msg):
     return False
 
 
+def _is_notification_sender(from_header):
+    """Return True if FROM is a known tracking/notification service domain."""
+    addr = email.utils.parseaddr(from_header)[1].lower()
+    domain = addr.split("@")[-1] if "@" in addr else ""
+    return domain in _NOTIFICATION_SENDER_DOMAINS
+
+
 def _fetch_body_text(imap, num):
     """Return the plain-text body of a message, truncated to 2000 chars."""
     status, data = imap.fetch(num, "(BODY[TEXT])")
@@ -317,6 +339,11 @@ def detect_replies(prompts=None):
                 try:
                     msg = _fetch_headers(imap, num)
                     if _match_message(msg, {mid: contact}) is None:
+                        continue
+
+                    from_hdr = _header_val(msg, "From")
+                    if _is_notification_sender(from_hdr):
+                        log.info(f"[REPLY] | {name} | {company} | notification sender: {from_hdr} — skip")
                         continue
 
                     is_auto = _is_auto_reply(msg)

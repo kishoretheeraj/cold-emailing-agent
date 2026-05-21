@@ -485,6 +485,7 @@ In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("
 - `seen_nums` set deduplicates message UIDs across contacts (one message can reference multiple threads).
 - Skip contact if `classifier_status` is already set (idempotent across 2-hour runs).
 - Auto-reply bypass: if `Auto-Submitted` header is not "no" or `X-Auto-Response-Suppress` is present, classify as `auto_reply` without calling Claude.
+- Notification-sender filter: `_is_notification_sender(from_header)` checks the FROM domain against `_NOTIFICATION_SENDER_DOMAINS` (a frozenset of known tracking-service domains: mailsuite.com, mailtrack.io, streak.com, etc.). Matched emails are skipped with no `classifier_status` write, keeping the contact checkable for future real replies. Real human replies (delegated person, assistant, any non-blocklisted domain) are not affected.
 - `email_messages` insert is upsert on `message_id` (ON CONFLICT DO NOTHING).
 - One IMAP connection for all contacts. `readonly=True` at open; label copy re-selects INBOX read-write.
 
