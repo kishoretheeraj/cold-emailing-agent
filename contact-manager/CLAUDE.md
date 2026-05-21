@@ -291,7 +291,15 @@ vi.mock("sonner", () => ({
 - `npm run build` — typecheck + production build. Must pass.
 - `npm test` — Vitest unit tests. Must pass. **0 failures required — no exceptions.**
 - `npm run test:e2e` — Playwright smoke tests. Must pass. **0 failures required — no exceptions.**
-- `vercel deploy --prod` to deploy. Env vars in Vercel dashboard.
+- Deploy from **repo root** (not from `contact-manager/`): the Vercel project root is configured
+  as `contact-manager/` so the CLI must be run one level up. Because the repo-root `.vercel/`
+  links to a different project, always specify the project ID explicitly:
+  ```
+  VERCEL_PROJECT_ID=prj_Vf7rorfOlTiNHB5xKFcybUKf0ysV VERCEL_ORG_ID=team_BynuvJ8k5TWQEFKW0kvh046u vercel deploy --prod
+  ```
+  Running `vercel deploy --prod` from inside `contact-manager/` fails (path resolves to
+  `contact-manager/contact-manager`). Running without the env vars from repo root deploys
+  the wrong project.
 - Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 - Env vars (server-only): `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
