@@ -325,6 +325,37 @@ export function RepliesPage() {
     [visible.length, fetchData, onUndo] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  // ── Re-classify (reset garbled / wrong classification) ──────────────────────
+
+  const onReclassify = useCallback(
+    async (contact: Contact, idx: number) => {
+      if (pendingActions.current.has(contact.id)) return;
+      try {
+        await Promise.all([
+          supabase
+            .from("contacts")
+            .update({ classifier_status: null })
+            .eq("id", contact.id),
+          supabase
+            .from("email_messages")
+            .delete()
+            .eq("contact_id", contact.id)
+            .eq("direction", "incoming"),
+        ]);
+        // Remove from list — classifier_status=null means it won't reappear until
+        // the monitor re-classifies on its next run.
+        setContacts((prev) => prev.filter((c) => c.id !== contact.id));
+        setFocusedIndex((prev) => Math.min(prev, Math.max(0, idx - 1)));
+        toast.success(
+          `Re-classify queued for ${contact.name ?? "contact"} — updates on next monitor run`
+        );
+      } catch {
+        toast.error("Failed to reset classifier status");
+      }
+    },
+    [] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   // ── Quick Fix ────────────────────────────────────────────────────────────────
 
   const openQuickFix = useCallback(() => {
@@ -691,18 +722,30 @@ export function RepliesPage() {
                         )}
                       </>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          window.open(
-                            "https://mail.google.com/mail/u/0/#inbox",
-                            "_blank"
-                          )
-                        }
-                        className="rounded-lg border border-border text-sm px-4 py-2 text-fg-muted hover:text-fg hover:border-border-strong transition"
-                      >
-                        Open in Gmail
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            window.open(
+                              "https://mail.google.com/mail/u/0/#inbox",
+                              "_blank"
+                            )
+                          }
+                          className="rounded-lg border border-border text-sm px-4 py-2 text-fg-muted hover:text-fg hover:border-border-strong transition"
+                        >
+                          Open in Gmail
+                        </button>
+                        {focused.classifier_status === "unrelated" && (
+                          <button
+                            type="button"
+                            onClick={() => focused && onReclassify(focused, focusedIndex)}
+                            className="rounded-lg border border-border text-sm px-4 py-2 text-fg-muted hover:text-fg hover:border-border-strong transition"
+                            title="Clears this classification so the monitor re-detects and re-classifies on its next run."
+                          >
+                            Re-classify
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                   <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">

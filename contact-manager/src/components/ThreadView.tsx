@@ -6,6 +6,30 @@ import type { EmailMessage } from "@/lib/types";
 
 const TRUNCATE_AT = 300;
 
+// ── Body sanitization ──────────────────────────────────────────────────────────
+
+const MIME_BOUNDARY_RE = /^-{4}[_\w]/;
+
+function sanitizeBody(raw: string): { display: string; garbled: boolean } {
+  const trimmed = raw.trimStart();
+  // Raw MIME structure (Samsung Galaxy and similar multipart/mixed emails stored
+  // via the old BODY[TEXT] code path that didn't decode transfer-encoding).
+  if (MIME_BOUNDARY_RE.test(trimmed) && trimmed.includes("Content-Type:")) {
+    return { display: "", garbled: true };
+  }
+  // Raw HTML with quoted-printable artifacts from the same old code path.
+  if (trimmed.startsWith("<!DOCTYPE") || trimmed.toLowerCase().startsWith("<html")) {
+    const stripped = trimmed
+      .replace(/=\r?\n/g, "")
+      .replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    return { display: stripped, garbled: false };
+  }
+  return { display: raw, garbled: false };
+}
+
 const STAGE_LABELS: Record<string, string> = {
   new: "First Touch",
   applied_new: "Applied Intro",
@@ -19,7 +43,7 @@ const STAGE_LABELS: Record<string, string> = {
 function MessageBubble({ msg }: { msg: EmailMessage }) {
   const [expanded, setExpanded] = useState(false);
   const isOut = msg.direction === "outgoing";
-  const body = msg.body ?? "";
+  const { display: body, garbled } = sanitizeBody(msg.body ?? "");
   const truncated = body.length > TRUNCATE_AT && !expanded;
   const stageLabel = isOut && msg.stage_at_send ? STAGE_LABELS[msg.stage_at_send] : null;
 
@@ -55,15 +79,31 @@ function MessageBubble({ msg }: { msg: EmailMessage }) {
             : "bg-surface-2 text-fg border border-border"
         }`}
       >
-        {truncated ? body.slice(0, TRUNCATE_AT) + "…" : body}
-        {body.length > TRUNCATE_AT && (
-          <button
-            type="button"
-            onClick={() => setExpanded((e) => !e)}
-            className="block mt-1 text-xs text-fg-dim hover:text-fg transition-colors"
-          >
-            {expanded ? "Show less" : "Show more"}
-          </button>
+        {garbled ? (
+          <span className="italic text-fg-dim text-xs">
+            (Message encoding not supported —{" "}
+            <button
+              type="button"
+              onClick={() => window.open("https://mail.google.com/mail/u/0/#inbox", "_blank")}
+              className="underline hover:text-fg transition-colors"
+            >
+              open in Gmail
+            </button>
+            )
+          </span>
+        ) : (
+          <>
+            {truncated ? body.slice(0, TRUNCATE_AT) + "…" : body}
+            {body.length > TRUNCATE_AT && (
+              <button
+                type="button"
+                onClick={() => setExpanded((e) => !e)}
+                className="block mt-1 text-xs text-fg-dim hover:text-fg transition-colors"
+              >
+                {expanded ? "Show less" : "Show more"}
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>

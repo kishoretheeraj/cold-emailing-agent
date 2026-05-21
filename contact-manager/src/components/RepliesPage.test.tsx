@@ -43,11 +43,13 @@ const {
   selectDraftsMock,
   selectMsgsMock,
   updateMock,
+  deleteMsgsMock,
 } = vi.hoisted(() => ({
   selectContactsMock: vi.fn(),
   selectDraftsMock: vi.fn(),
   selectMsgsMock: vi.fn(),
   updateMock: vi.fn(),
+  deleteMsgsMock: vi.fn().mockResolvedValue({ error: null }),
 }));
 
 vi.mock("@/lib/supabase", () => {
@@ -83,7 +85,12 @@ vi.mock("@/lib/supabase", () => {
           return { select: vi.fn(() => makeReadChain(selectDraftsMock)) };
         }
         if (table === "email_messages") {
-          return { select: vi.fn(() => makeReadChain(selectMsgsMock)) };
+          return {
+            select: vi.fn(() => makeReadChain(selectMsgsMock)),
+            delete: vi.fn(() => ({
+              eq: vi.fn(() => ({ eq: deleteMsgsMock })),
+            })),
+          };
         }
         return {
           select: vi.fn(() => makeReadChain(selectContactsMock)),
@@ -599,5 +606,61 @@ describe("RepliesPage — unmount", () => {
     });
 
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("RepliesPage — Re-classify", () => {
+  const unrelated = makeContact({
+    id: "42",
+    name: "Marcel Feenstra",
+    company: "AfterImage",
+    classifier_status: "unrelated",
+    created_at: "2026-05-20T08:00:00Z",
+  });
+  const unrelatedMsg = makeIncomingMsg({
+    id: 99,
+    contact_id: 42,
+    body: "----_com.samsung.android.email\nContent-Type: text/plain\n\nSGkg...",
+  });
+
+  beforeEach(() => {
+    mockSupabaseData([unrelated], [], [unrelatedMsg]);
+  });
+
+  it("shows Re-classify button for unrelated contact", async () => {
+    render(<RepliesPage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Marcel Feenstra" }));
+    expect(screen.getByRole("button", { name: /re-classify/i })).toBeInTheDocument();
+  });
+
+  it("does NOT show Re-classify button for positive_reply contact", async () => {
+    mockSupabaseData([grace], [graceDraft], [graceMsg]);
+    render(<RepliesPage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Grace Lee" }));
+    expect(screen.queryByRole("button", { name: /re-classify/i })).toBeNull();
+  });
+
+  it("clicking Re-classify resets classifier_status and removes contact from list", async () => {
+    updateMock.mockResolvedValue({ error: null });
+    deleteMsgsMock.mockResolvedValue({ error: null });
+
+    render(<RepliesPage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Marcel Feenstra" }));
+
+    const btn = screen.getByRole("button", { name: /re-classify/i });
+    await act(async () => {
+      fireEvent.click(btn);
+      await Promise.resolve();
+    });
+
+    // Contact removed from list immediately
+    await waitFor(() =>
+      expect(screen.queryByText("Marcel Feenstra")).toBeNull()
+    );
+
+    // Toast shown
+    expect(toastMock.success).toHaveBeenCalledWith(
+      expect.stringContaining("Re-classify queued for Marcel Feenstra")
+    );
   });
 });

@@ -148,4 +148,58 @@ describe("ThreadView", () => {
     await user.click(screen.getByText(/show more/i));
     expect(screen.getByText(/show less/i)).toBeTruthy();
   });
+
+  // ── Body sanitization ───────────────────────────────────────────────────────
+
+  it("shows garbled-body fallback for raw MIME structure (Samsung-style)", async () => {
+    const mimeBody =
+      "----_com.samsung.android.email_9552101976775920\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nSGkgS2lzaG9yZQ==";
+    selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+      cb({ data: [makeMsg({ direction: "incoming", body: mimeBody })] });
+      return Promise.resolve();
+    });
+
+    render(<ThreadView contactId={42} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/message encoding not supported/i)).toBeTruthy()
+    );
+    // Raw MIME content must NOT appear
+    expect(screen.queryByText(/Content-Type/)).toBeNull();
+    expect(screen.queryByText(/SGkgS2lz/)).toBeNull();
+    // "Open in Gmail" link shown
+    expect(screen.getByRole("button", { name: /open in gmail/i })).toBeTruthy();
+  });
+
+  it("strips HTML tags and decodes quoted-printable for raw HTML body", async () => {
+    const htmlBody =
+      "<!DOCTYPE html><html><body>Hi Kishore,=3D nice to meet you.</body></html>";
+    selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+      cb({ data: [makeMsg({ direction: "incoming", body: htmlBody })] });
+      return Promise.resolve();
+    });
+
+    render(<ThreadView contactId={42} />);
+
+    await waitFor(() => {
+      // Tags stripped, QP decoded: =3D → =
+      expect(screen.getByText(/nice to meet you/)).toBeTruthy();
+    });
+    // Raw markup must not appear verbatim
+    expect(screen.queryByText(/<!DOCTYPE/)).toBeNull();
+  });
+
+  it("renders normal body as-is without sanitization", async () => {
+    selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+      cb({ data: [makeMsg({ direction: "incoming", body: "Happy to connect, Kishore!" })] });
+      return Promise.resolve();
+    });
+
+    render(<ThreadView contactId={42} />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Happy to connect, Kishore!")).toBeTruthy()
+    );
+    expect(screen.queryByText(/message encoding not supported/i)).toBeNull();
+  });
 });
