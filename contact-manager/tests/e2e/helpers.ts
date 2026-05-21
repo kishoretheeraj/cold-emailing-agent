@@ -213,12 +213,80 @@ export async function mockSupabase(page: Page) {
   });
 
   // Intercept GET /rest/v1/draft_history
+  const allDraftHistory = JSON.parse(
+    fs.readFileSync(path.join(FIXTURES_DIR, "draft_history.json"), "utf-8")
+  ) as Array<Record<string, unknown>>;
+
   await page.route(/\/rest\/v1\/draft_history(\?.*)?$/, async (route) => {
     if (route.request().method() === "GET") {
+      const url = new URL(route.request().url());
+      const params = url.searchParams;
+
+      let rows = [...allDraftHistory];
+
+      // contact_id=in.(1,2,3)
+      const cidParam = params.get("contact_id");
+      if (cidParam) {
+        const m = /in\.\((.+?)\)/.exec(cidParam);
+        if (m) {
+          const ids = m[1].split(",");
+          rows = rows.filter((d) => ids.includes(String(d.contact_id)));
+        }
+      }
+
+      // sent_body=is.null
+      if (params.get("sent_body") === "is.null") {
+        rows = rows.filter((d) => d.sent_body === null);
+      }
+
+      // Sort by drafted_at DESC
+      rows = rows.sort((a, b) =>
+        String(b.drafted_at ?? "").localeCompare(String(a.drafted_at ?? ""))
+      );
+
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify([]),
+        body: JSON.stringify(rows),
+      });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // Intercept POST /api/send-draft
+  await page.route(/\/api\/send-draft$/, async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, stage: "first_touch_sent" }),
+      });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // Intercept POST /api/update-draft
+  await page.route(/\/api\/update-draft$/, async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // Intercept POST /api/trash-message
+  await page.route(/\/api\/trash-message$/, async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
       });
     } else {
       await route.continue();

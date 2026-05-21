@@ -44,6 +44,7 @@ src/
 │   ├── api/trash-message/route.ts  # POST {message_id} → messages.trash() (reserved for future undo feature)
 │   ├── overview/page.tsx           # Dashboard: action items, pipeline funnel, agent status. 30s auto-refresh.
 │   ├── prompts/page.tsx            # 7-line server shell → <PromptsPage />
+│   ├── queue/page.tsx              # Server shell → <QueuePage /> (bulk draft approval with 5s undo)
 │   ├── runs/page.tsx               # Activity page — agent_events table, 10s auto-refresh
 │   ├── globals.css                 # @theme tokens + global resets + Vaul overrides
 │   ├── layout.tsx                  # Inter font, dark theme, AppProviders wrapper
@@ -67,19 +68,21 @@ src/
 │   ├── PromptsPage.tsx         # "use client" — fetches all prompts, sticky search, 7 collapsible categories
 │   ├── PromptCategory.tsx      # "use client" — collapsible section header + PromptSection list
 │   ├── PromptSection.tsx       # "use client" — individual prompt card with save/reset; shows amber warning for unknown {placeholders}
+│   ├── QueuePage.tsx           # "use client" — three-column bulk-send queue; 30s auto-refresh; focus by contact_id
 │   └── Field.tsx               # Label / TextInput / TextArea / ToggleSwitch / TierSelector
 └── lib/
     ├── supabase.ts             # Anon-key browser client singleton
     ├── gmail-server.ts         # Server-only Gmail API client (OAuth refresh token). Import in API routes only.
     ├── cadence.ts              # MIRRORED cadence constants — keep in sync with agent config.py::FOLLOWUP_DAYS
+    ├── personalization.ts      # highlight(body, contact) → Segment[] — amber token highlighting for QueuePage
     ├── promptCategories.ts     # CATEGORY_ORDER, PROMPT_CATEGORY_MAP — TS-only, no DB column
     ├── promptVariables.ts      # extractVariables, getPythonFormatPlaceholders, getUnknownVariables, PROMPT_VALID_KEYS
     └── types.ts                # Contact + ReplyStatus + stage arrays + filter types + DraftHistory
 tests/
-└── e2e/                        # Playwright smoke tests (15 tests total)
-    ├── helpers.ts              # mockSupabase() — intercepts contacts, prompts, email_messages, agent_events
-    ├── fixtures/               # contacts.json (50 rows) + prompts.json (13 fixture rows)
-    └── *.spec.ts               # 00-shell through 09-runs-page
+└── e2e/                        # Playwright smoke tests
+    ├── helpers.ts              # mockSupabase() — intercepts contacts, prompts, email_messages, agent_events, draft_history + API routes
+    ├── fixtures/               # contacts.json (50 rows), prompts.json, draft_history.json (6 rows)
+    └── *.spec.ts               # 00-shell through 11-queue
 ```
 
 ## Coding conventions
@@ -261,7 +264,7 @@ vi.mock("sonner", () => ({
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 23** (as of `ux-stage-dropdown.spec.ts`).
+- **Current test count: 33** (as of `11-queue.spec.ts`).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
@@ -310,12 +313,54 @@ vi.mock("sonner", () => ({
   redirect — Desktop app OAuth clients allow this without GCP Console config.
   Add all three vars to `.env` and Vercel dashboard.
 
+## /queue page (Phase 1 — bulk-send UI)
+
+Three-column layout: left rail (filters), center (scrollable draft list), right (focused detail + action bar).
+
+**Data fetch**: two-step on mount + 30s auto-refresh.
+1. Contacts `IN QUEUE_STAGES` (from `cadence.ts`) AND `deleted_at IS NULL`, sorted tier ASC + created_at DESC.
+2. draft_history rows for those contacts with `sent_body IS NULL`, latest per contact.
+
+**Focus tracking**: focus is tracked by `contact_id`, not index. On auto-refresh, if the focused contact is still present its position is restored. If it disappeared, focus resets to index 0.
+
+**5-second undo pattern** (used for both Approve and Send and Mark Dead):
+- API fires AFTER the 5-second delay. Optimistically remove from list → show toast with Undo button → start `setTimeout(5000)`.
+- Undo: `clearTimeout`, re-insert at `originalIndex`, toast.info("Send canceled"). API never called.
+- Timer fires: POST `/api/send-draft` (or Supabase PATCH for dead). On error: re-add to list + error toast.
+- Unmount: all pending timers are cleared — navigating away cancels pending sends (deliberate trade-off, documented in comment).
+- Concurrent: multiple contacts can have pending timers simultaneously; each is tracked separately in `pendingSends` Map.
+
+**Quick Fix mode** (`E` key): replaces subject/body in right column with editable inputs. "Save and Send" calls `/api/update-draft` first, then enters the 5s undo flow.
+
+**Keyboard map** (document-level listener; early-returns when input/textarea is focused):
+
+| Key | Action |
+|---|---|
+| `j` / `↓` | Next draft |
+| `k` / `↑` | Previous draft |
+| `g g` | Jump to top (500ms window between presses) |
+| `G` | Jump to bottom |
+| `e` | Approve and Send (5s undo) |
+| `E` | Open Quick Fix |
+| `o` | Edit in Gmail (new tab, `/u/0/#drafts?compose=<id>`) |
+| `x` | Skip (session-only, survives 30s auto-refresh) |
+| `D` | Mark dead (uppercase D — 5s undo) |
+| `1`/`2`/`3` | Toggle tier filter |
+| `?` | Show keyboard shortcuts overlay |
+| `Esc` | Close Quick Fix → clear filters |
+
+**Signals in right column**:
+- Critic: queryable from `agent_events` (event_type='critic', metadata.score/verdict/retried). T2+ shows "n/a (T2+)".
+- Pre-flight: shows "✓ passed" inferred from draft existence (no logged event for passing preflight — only blocked events exist).
+- Edited in Gmail: always "—" in v1 (`draft_history.edit_detected` is null until send; per-row API call too expensive).
+
 ## Mirrored cadence constants
 
 `src/lib/cadence.ts` mirrors `agent/config.py::FOLLOWUP_DAYS`. If the agent cadence
 changes (days between emails), update **both** files. Same pattern as `REPLY_STAGES`
 in `types.ts` mirroring `constants.py`. The `STAGE_TRANSITIONS` map in `cadence.ts`
 is the authoritative transition table for all `/api/send-draft` stage flips.
+`QUEUE_STAGES` (in `cadence.ts`) is used by `/queue` page to filter contacts for bulk approval.
 
 ## Style: comments and docs
 

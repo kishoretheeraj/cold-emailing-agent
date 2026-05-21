@@ -153,9 +153,10 @@ vi.mock("@/components/ThreadView", () => ({
 }));
 
 // vi.hoisted ensures these are available inside vi.mock factory (which is hoisted)
-const { limitMock, updateEqMock } = vi.hoisted(() => ({
+const { limitMock, updateEqMock, singleMock } = vi.hoisted(() => ({
   limitMock: vi.fn(),
   updateEqMock: vi.fn(),
+  singleMock: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase", () => {
@@ -164,6 +165,7 @@ vi.mock("@/lib/supabase", () => {
     readChain[m] = vi.fn(() => readChain);
   }
   readChain.limit = limitMock;
+  readChain.single = singleMock;
 
   return {
     supabase: {
@@ -225,11 +227,15 @@ const defaultProps = {
 beforeEach(() => {
   limitMock.mockReset();
   updateEqMock.mockReset();
+  singleMock.mockReset();
   selectInstances.length = 0;
   ioCallback = null;
   defaultProps.onError.mockReset();
   defaultProps.onSuccess.mockReset();
   updateEqMock.mockResolvedValue({ error: null });
+  // Return null data by default so the component keeps the list data as selectedContact.
+  // Tests that need specific full-record data can override with singleMock.mockResolvedValueOnce.
+  singleMock.mockResolvedValue({ data: null, error: null });
 });
 
 // ── Fetching ──────────────────────────────────────────────────────────────────
