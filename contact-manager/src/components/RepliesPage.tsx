@@ -24,11 +24,13 @@ type ReplyStatusValue = "interested" | "call_scheduled" | "dead";
 const CLASS_COLOR: Record<string, string> = {
   positive_reply: "text-emerald-400",
   soft_yes: "text-amber-400",
+  bounced: "text-rose-400",
 };
 
 const CLASS_DOT: Record<string, string> = {
   positive_reply: "bg-emerald-400",
   soft_yes: "bg-amber-400",
+  bounced: "bg-rose-400",
 };
 
 const CLASS_LABEL: Record<string, string> = {
@@ -38,6 +40,7 @@ const CLASS_LABEL: Record<string, string> = {
   unrelated: "UNRELATED",
   auto_reply: "AUTO REPLY",
   out_of_office: "OUT OF OFFICE",
+  bounced: "BOUNCED",
 };
 
 const SORT_PRIORITY: Record<string, number> = {
@@ -658,8 +661,10 @@ export function RepliesPage() {
                     No suggested reply drafted.
                   </p>
                   <p className="text-xs text-fg-dim mt-1">
-                    {focused.classifier_status === "positive_reply" ||
-                    focused.classifier_status === "soft_yes"
+                    {focused.classifier_status === "bounced"
+                      ? "Email bounced — this address appears to be invalid. Consider updating the contact or marking dead."
+                      : focused.classifier_status === "positive_reply" ||
+                        focused.classifier_status === "soft_yes"
                       ? "The agent hasn't drafted a reply yet for this contact."
                       : "The agent only drafts replies for positive and soft-yes responses."}
                   </p>

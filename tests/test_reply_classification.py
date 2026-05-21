@@ -108,3 +108,57 @@ def test_is_notification_sender_real_email():
 
 def test_is_notification_sender_empty():
     assert monitor._is_notification_sender("") is False
+
+
+# ── _is_bounce ─────────────────────────────────────────────────────────────────
+
+def _make_msg(subject="", from_addr=""):
+    import email as _email
+    raw = f"Subject: {subject}\r\nFrom: {from_addr}\r\n\r\n"
+    return _email.message_from_bytes(raw.encode())
+
+
+def test_is_bounce_mailer_daemon():
+    msg = _make_msg(subject="Delivery Status Notification (Failure)")
+    assert monitor._is_bounce(msg, "mailer-daemon@googlemail.com") is True
+
+
+def test_is_bounce_postmaster():
+    msg = _make_msg(subject="Undeliverable: your message")
+    assert monitor._is_bounce(msg, "postmaster@domain.com") is True
+
+
+def test_is_bounce_delivery_status_subject():
+    msg = _make_msg(subject="Delivery Status Notification (Failure)", from_addr="someone@company.com")
+    assert monitor._is_bounce(msg, "someone@company.com") is True
+
+
+def test_is_bounce_undeliverable_subject():
+    msg = _make_msg(subject="Undeliverable: re: cold intro", from_addr="anyone@example.com")
+    assert monitor._is_bounce(msg, "anyone@example.com") is True
+
+
+def test_is_bounce_normal_reply():
+    msg = _make_msg(subject="Re: Lean transformation", from_addr="jim@bringrr.com")
+    assert monitor._is_bounce(msg, "jim@bringrr.com") is False
+
+
+def test_is_bounce_normal_auto_reply():
+    msg = _make_msg(subject="Out of office: re: quick intro", from_addr="alice@company.com")
+    assert monitor._is_bounce(msg, "alice@company.com") is False
+
+
+# ── _classify_reply with empty prompt in Supabase ─────────────────────────────
+
+def test_classify_uses_fallback_when_prompt_is_empty_string(mocker):
+    """reply_classification_prompt stored as '' must fall through to the default."""
+    from config import REPLY_CLASSIFICATION_DEFAULT
+    mock_claude = mocker.patch.object(
+        monitor, "_call_claude",
+        return_value='{"classifier_status": "positive_reply"}',
+    )
+    monitor._classify_reply("Sounds great!", _contact(), {"reply_classification_prompt": ""})
+    # The prompt passed to Claude must not be empty
+    called_prompt = mock_claude.call_args[0][0]
+    assert called_prompt != ""
+    assert called_prompt == REPLY_CLASSIFICATION_DEFAULT.format(reply_body="Sounds great!")

@@ -216,6 +216,24 @@ def _is_auto_reply(msg):
     return False
 
 
+_BOUNCE_FROM_USERS = frozenset({"mailer-daemon", "postmaster"})
+_BOUNCE_SUBJECT_PREFIXES = (
+    "delivery status notification",
+    "undeliverable:",
+    "mail delivery failed",
+    "mail delivery subsystem",
+)
+
+
+def _is_bounce(msg, from_header):
+    """Return True if this is a mail delivery failure (bounce) notification."""
+    addr_user = email.utils.parseaddr(from_header)[1].lower().split("@")[0]
+    if addr_user in _BOUNCE_FROM_USERS:
+        return True
+    subject = _header_val(msg, "Subject").lower()
+    return any(subject.startswith(p) for p in _BOUNCE_SUBJECT_PREFIXES)
+
+
 def _is_notification_sender(from_header):
     """Return True if FROM is a known tracking/notification service domain."""
     addr = email.utils.parseaddr(from_header)[1].lower()
@@ -282,7 +300,7 @@ def _match_message(msg, by_message_id):
 def _classify_reply(body_text, contact, prompts):
     """Call Claude Haiku to classify a reply. Returns classifier_status string."""
     _fallback = "unrelated"
-    tpl = prompts.get("reply_classification_prompt", REPLY_CLASSIFICATION_DEFAULT)
+    tpl = prompts.get("reply_classification_prompt") or REPLY_CLASSIFICATION_DEFAULT
     try:
         prompt = tpl.format(reply_body=body_text[:1500])
         raw = _call_claude(prompt, model=REPLY_CLASSIFICATION_MODEL, max_tokens=100)
@@ -370,7 +388,8 @@ def detect_replies(prompts=None):
                         log.info(f"[REPLY] | {name} | {company} | notification sender: {from_hdr} — skip")
                         continue
 
-                    is_auto = _is_auto_reply(msg)
+                    is_bounce = _is_bounce(msg, from_hdr)
+                    is_auto = is_bounce or _is_auto_reply(msg)
                     body_text = "" if is_auto else _fetch_body_text(imap, num)
 
                     # If body fetch failed for a non-auto reply, skip classification
@@ -397,11 +416,14 @@ def detect_replies(prompts=None):
                         message_id=incoming_mid or None,
                         in_reply_to=in_reply_to_hdr or None,
                         stage_at_send=contact.get("stage"),
-                        raw_headers={"auto_reply": is_auto},
+                        raw_headers={"auto_reply": is_auto, "bounce": is_bounce},
                     )
 
                     # Classify
-                    if is_auto:
+                    if is_bounce:
+                        status_val = "bounced"
+                        log.info(f"[REPLY] | {name} | {company} | bounce detected from {from_hdr}")
+                    elif is_auto:
                         status_val = "auto_reply"
                         log.info(f"[REPLY] | {name} | {company} | auto-reply header detected")
                     else:

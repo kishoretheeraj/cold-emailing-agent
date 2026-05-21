@@ -609,6 +609,40 @@ describe("RepliesPage — unmount", () => {
   });
 });
 
+describe("RepliesPage — bounced contact", () => {
+  const bounced = makeContact({
+    id: "55",
+    name: "Jim Logan",
+    company: "Bringrr Systems",
+    classifier_status: "bounced",
+    created_at: "2026-05-20T09:00:00Z",
+  });
+
+  beforeEach(() => {
+    mockSupabaseData([bounced], [], []);
+  });
+
+  it("shows BOUNCED label in the list and detail panel", async () => {
+    render(<RepliesPage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Jim Logan" }));
+    const badges = screen.getAllByText("BOUNCED");
+    expect(badges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows address-invalid explanation for bounced contact", async () => {
+    render(<RepliesPage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Jim Logan" }));
+    expect(screen.getByText(/email bounced/i)).toBeInTheDocument();
+    expect(screen.getByText(/invalid/i)).toBeInTheDocument();
+  });
+
+  it("does NOT show Re-classify button for bounced contact", async () => {
+    render(<RepliesPage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Jim Logan" }));
+    expect(screen.queryByRole("button", { name: /re-classify/i })).toBeNull();
+  });
+});
+
 describe("RepliesPage — Re-classify", () => {
   const unrelated = makeContact({
     id: "42",
