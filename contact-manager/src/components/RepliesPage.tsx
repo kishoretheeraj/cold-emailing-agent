@@ -740,7 +740,8 @@ export function RepliesPage() {
                         >
                           Open in Gmail
                         </button>
-                        {focused.classifier_status === "unrelated" && (
+                        {(focused.classifier_status === "unrelated" ||
+                          focused.classifier_status === "auto_reply") && (
                           <button
                             type="button"
                             onClick={() => focused && onReclassify(focused, focusedIndex)}
