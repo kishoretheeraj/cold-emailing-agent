@@ -37,54 +37,54 @@ written, not just style preferences.
 ```
 src/
 ├── app/
-│   ├── api/extract/route.ts        # Server-only Claude POST handler (prompt LOCKED — see below)
-│   ├── api/trigger-agent/route.ts  # Proxies to GitHub Actions workflow_dispatch. Needs GITHUB_DISPATCH_TOKEN env var.
-│   ├── api/send-draft/route.ts     # POST {contact_id} → drafts.send(), flips stage to *_sent, updates draft_history
-│   ├── api/update-draft/route.ts   # POST {contact_id, subject, body} → drafts.update(), persists edits to draft_history
-│   ├── api/trash-message/route.ts  # POST {message_id} → messages.trash() (reserved for future undo feature)
-│   ├── overview/page.tsx           # Dashboard: action items, pipeline funnel, agent status. 30s auto-refresh.
-│   ├── prompts/page.tsx            # 7-line server shell → <PromptsPage />
-│   ├── queue/page.tsx              # Server shell → <QueuePage /> (bulk draft approval with 5s undo)
-│   ├── replies/page.tsx            # Server shell → <RepliesPage /> (reply triage with 5s undo)
-│   ├── runs/page.tsx               # Activity page — agent_events table, 10s auto-refresh
-│   ├── globals.css                 # @theme tokens + global resets + Vaul overrides
-│   ├── layout.tsx                  # Inter font, dark theme, AppProviders wrapper
-│   └── page.tsx                    # 1-line server component → <App />
+│   ├── api/extract/route.ts
+│   ├── api/trigger-agent/route.ts
+│   ├── api/send-draft/route.ts
+│   ├── api/update-draft/route.ts
+│   ├── api/trash-message/route.ts
+│   ├── overview/page.tsx
+│   ├── prompts/page.tsx
+│   ├── queue/page.tsx
+│   ├── replies/page.tsx
+│   ├── runs/page.tsx
+│   ├── globals.css
+│   ├── layout.tsx
+│   └── page.tsx
 ├── components/
-│   ├── ui/                     # In-house primitive wrappers (NO shadcn)
-│   │   ├── Badge.tsx           # Semantic color variants
-│   │   ├── Skeleton.tsx        # Loading placeholder
-│   │   ├── EmptyState.tsx      # Centered empty-state layout
-│   │   ├── Tooltip.tsx         # Radix Tooltip wrapper + TooltipProvider re-export
-│   │   ├── Select.tsx          # Radix Select wrapper (SelectTrigger, SelectItem, etc.)
-│   │   ├── Sheet.tsx           # Vaul Drawer direction=right (SheetContent, SheetBody…)
-│   │   └── ConfirmModal.tsx    # Radix Dialog wrapper for confirmation prompts
-│   ├── App.tsx                 # Top-level shell + refreshKey + sonner toast calls
-│   ├── AppProviders.tsx        # "use client" wrapper: TooltipProvider + Toaster
-│   ├── SmartInput.tsx          # Paste → /api/extract → editable preview → save
-│   ├── StructuredForm.tsx      # Two form sections: outreach + applied
-│   ├── ContactsList.tsx        # Infinite-scroll list + filters + Vaul sheet + soft delete
-│   ├── ContactsFilters.tsx     # Search input (with × clear button) + tier/mode pills + stage select + dartmouth + needs-response
-│   ├── ThreadView.tsx          # Email thread history shown inside the Vaul side sheet
-│   ├── PromptsPage.tsx         # "use client" — fetches all prompts, sticky search, 7 collapsible categories
-│   ├── PromptCategory.tsx      # "use client" — collapsible section header + PromptSection list
-│   ├── PromptSection.tsx       # "use client" — individual prompt card with save/reset; shows amber warning for unknown {placeholders}
-│   ├── QueuePage.tsx           # "use client" — three-column bulk-send queue; 30s auto-refresh; focus by contact_id
-│   ├── RepliesPage.tsx         # "use client" — two-column reply triage; classifier sort; 5s undo; 30s auto-refresh
-│   └── Field.tsx               # Label / TextInput / TextArea / ToggleSwitch / TierSelector
+│   ├── ui/
+│   │   ├── Badge.tsx
+│   │   ├── Skeleton.tsx
+│   │   ├── EmptyState.tsx
+│   │   ├── Tooltip.tsx
+│   │   ├── Select.tsx
+│   │   ├── Sheet.tsx
+│   │   └── ConfirmModal.tsx
+│   ├── App.tsx
+│   ├── AppProviders.tsx
+│   ├── SmartInput.tsx
+│   ├── StructuredForm.tsx
+│   ├── ContactsList.tsx
+│   ├── ContactsFilters.tsx
+│   ├── ThreadView.tsx
+│   ├── PromptsPage.tsx
+│   ├── PromptCategory.tsx
+│   ├── PromptSection.tsx
+│   ├── QueuePage.tsx
+│   ├── RepliesPage.tsx
+│   └── Field.tsx
 └── lib/
-    ├── supabase.ts             # Anon-key browser client singleton
-    ├── gmail-server.ts         # Server-only Gmail API client (OAuth refresh token). Import in API routes only.
-    ├── cadence.ts              # MIRRORED cadence constants — keep in sync with agent config.py::FOLLOWUP_DAYS
-    ├── personalization.ts      # highlight(body, contact) → Segment[] — amber token highlighting for QueuePage
-    ├── promptCategories.ts     # CATEGORY_ORDER, PROMPT_CATEGORY_MAP — TS-only, no DB column
-    ├── promptVariables.ts      # extractVariables, getPythonFormatPlaceholders, getUnknownVariables, PROMPT_VALID_KEYS
-    └── types.ts                # Contact + ReplyStatus + stage arrays + filter types + DraftHistory
+    ├── supabase.ts
+    ├── gmail-server.ts
+    ├── cadence.ts
+    ├── personalization.ts
+    ├── promptCategories.ts
+    ├── promptVariables.ts
+    └── types.ts
 tests/
-└── e2e/                        # Playwright smoke tests
-    ├── helpers.ts              # mockSupabase() — intercepts contacts, prompts, email_messages, agent_events, draft_history + API routes
-    ├── fixtures/               # contacts.json (50 rows), prompts.json, draft_history.json (7 rows), email_messages.json (4 rows)
-    └── *.spec.ts               # 00-shell through 12-replies
+└── e2e/
+    ├── helpers.ts
+    ├── fixtures/
+    └── *.spec.ts
 ```
 
 ## Coding conventions
@@ -200,69 +200,7 @@ stages, update all three: `REPLY_STAGES` in `types.ts`, `STAGE_LABELS` in
   function IntersectionObserver mock (NOT `vi.fn()` — see below). Also stubs `localStorage`
   because Node.js 22 exposes a native `localStorage = undefined` that shadows jsdom's.
 
-### Mocking conventions
-
-**Supabase chain mock** — the new query builder calls methods in a specific order and
-`.limit()` must be the terminal resolver. Use a shared `readChain` object:
-```ts
-const { limitMock, updateEqMock } = vi.hoisted(() => ({
-  limitMock: vi.fn(),
-  updateEqMock: vi.fn(),
-}));
-
-vi.mock("@/lib/supabase", () => {
-  const readChain: Record<string, unknown> = {};
-  for (const m of ["is", "order", "or", "in", "eq", "lt"]) {
-    readChain[m] = vi.fn(() => readChain);
-  }
-  readChain.limit = limitMock;
-  return {
-    supabase: {
-      from: vi.fn(() => ({
-        select: vi.fn(() => readChain),
-        update: vi.fn(() => ({ eq: updateEqMock })),
-      })),
-    },
-  };
-});
-```
-
-**IntersectionObserver mock** — must be a plain function (not `vi.fn()`). `vi.restoreAllMocks()`
-in afterEach will reset a `vi.fn()` implementation, breaking tests that capture the IO
-callback. Install a plain function in `vitest.setup.ts` and override with another plain
-function per-test if you need to capture the callback:
-```ts
-// vitest.setup.ts — base stub
-global.IntersectionObserver = function() {
-  return { observe() {}, disconnect() {}, unobserve() {} };
-} as unknown as typeof IntersectionObserver;
-
-// In individual test file — capturing version
-let ioCallback: (...) => void;
-global.IntersectionObserver = function(cb) {
-  ioCallback = cb;
-  return { observe() {}, disconnect() {}, unobserve() {} };
-} as unknown as typeof IntersectionObserver;
-```
-
-**Radix / Vaul mocks** — these use portals. In tests that render components using Sheet
-or ConfirmModal, mock the primitives so they render into the jsdom body without portal
-quirks. See `ContactsList.test.tsx` for complete Vaul + Radix Dialog + Radix Select mock
-examples.
-
-**Sonner mock:**
-```ts
-vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
-  Toaster: () => null,
-}));
-```
-
-- Variables used inside `vi.mock()` factories must be hoisted with `vi.hoisted()`.
-- Reset mocks in `beforeEach`, not afterEach.
-- **App shell test** (`App.test.tsx`): always assert that persistent nav links (e.g.
-  "Overview", "Prompts", "Activity") exist with the correct `href`. When rewriting App.tsx,
-  verify this test still passes before committing.
+See docs/testing/mocking.md for mocking conventions (Supabase chain, IntersectionObserver, Radix/Vaul, Sonner).
 
 ## Tests (Playwright e2e)
 
@@ -323,96 +261,10 @@ vi.mock("sonner", () => ({
   redirect — Desktop app OAuth clients allow this without GCP Console config.
   Add all three vars to `.env` and Vercel dashboard.
 
-## /queue page (Phase 1 — bulk-send UI)
+See docs/routes/queue.md for /queue page details and cadence constants.
 
-Three-column layout: left rail (filters), center (scrollable draft list), right (focused detail + action bar).
+See docs/routes/replies.md for /replies page details.
 
-**Data fetch**: two-step on mount + 30s auto-refresh.
-1. Contacts `IN QUEUE_STAGES` (from `cadence.ts`) AND `deleted_at IS NULL`, sorted tier ASC + created_at DESC.
-2. draft_history rows for those contacts with `sent_body IS NULL`, latest per contact.
-
-**Focus tracking**: focus is tracked by `contact_id`, not index. On auto-refresh, if the focused contact is still present its position is restored. If it disappeared, focus resets to index 0.
-
-**5-second undo pattern** (used for both Approve and Send and Mark Dead):
-- API fires AFTER the 5-second delay. Optimistically remove from list → show toast with Undo button → start `setTimeout(5000)`.
-- Undo: `clearTimeout`, re-insert at `originalIndex`, toast.info("Send canceled"). API never called.
-- Timer fires: POST `/api/send-draft` (or Supabase PATCH for dead). On error: re-add to list + error toast.
-- Unmount: all pending timers are cleared — navigating away cancels pending sends (deliberate trade-off, documented in comment).
-- Concurrent: multiple contacts can have pending timers simultaneously; each is tracked separately in `pendingSends` Map.
-
-**Quick Fix mode** (`E` key): replaces subject/body in right column with editable inputs. "Save and Send" calls `/api/update-draft` first, then enters the 5s undo flow.
-
-**Keyboard map** (document-level listener; early-returns when input/textarea is focused):
-
-| Key | Action |
-|---|---|
-| `j` / `↓` | Next draft |
-| `k` / `↑` | Previous draft |
-| `g g` | Jump to top (500ms window between presses) |
-| `G` | Jump to bottom |
-| `e` | Approve and Send (5s undo) |
-| `E` | Open Quick Fix |
-| `o` | Edit in Gmail (new tab, `/u/0/#drafts?compose=<id>`) |
-| `x` | Skip (session-only, survives 30s auto-refresh) |
-| `D` | Mark dead (uppercase D — 5s undo) |
-| `1`/`2`/`3` | Toggle tier filter |
-| `?` | Show keyboard shortcuts overlay |
-| `Esc` | Close Quick Fix → clear filters |
-
-**Signals in right column**:
-- Critic: queryable from `agent_events` (event_type='critic', metadata.score/verdict/retried). T2+ shows "n/a (T2+)".
-- Pre-flight: shows "✓ passed" inferred from draft existence (no logged event for passing preflight — only blocked events exist).
-- Edited in Gmail: always "—" in v1 (`draft_history.edit_detected` is null until send; per-row API call too expensive).
-
-## /replies page (Phase 2 — reply triage UI)
-
-Two-column layout: left (320px scrollable triage list), right (focused detail + action bar).
-
-**Data fetch**: three-step on mount + 30s auto-refresh.
-1. Contacts where `classifier_status IS NOT NULL` AND `reply_status NOT IN (interested,call_scheduled,dead)` AND `deleted_at IS NULL`.
-2. `draft_history` rows with `stage='reply_drafted'` AND `sent_body IS NULL`, latest per contact.
-3. `email_messages` rows with `direction='incoming'`, latest per contact (for left-list snippet + timestamp).
-
-**Sort**: client-side — positive_reply first (priority 0), soft_yes second (priority 1), others last, then created_at DESC within each group.
-
-**Left list rows**: classifier dot+label (emerald=positive, amber=soft_yes, gray=others), name+company, stripped incoming snippet (quoted lines/headers removed, max 80 chars), relative timestamp.
-
-**Right column**: contact header + classifier badge, ThreadView (self-contained, fetches own data per contactId), suggested reply block (subject+body, only for positive/soft_yes with draft), action bar.
-
-**Action bar** — with draft (positive/soft_yes):
-[Approve and Send] [Quick Fix] [Edit in Gmail] | [Mark interested] [Mark call scheduled] [Mark dead]
-
-**Action bar** — without draft (hard_no, unrelated, etc.):
-[Open in Gmail] | [Mark interested] [Mark call scheduled] [Mark dead]
-
-**5-second undo**: same pattern as QueuePage. `pendingActions: Map<contact_id, PendingEntry>`. Both "Approve and Send" and "mark reply_status" changes use this pattern. Reply_status changes: Supabase PATCH fires after 5s; undo reverts optimistic removal from list.
-
-**Important**: `reply_status` updates (i/c/D) do NOT touch `stage` — stage is managed manually via the contacts side sheet on /contacts.
-
-**Keyboard map** (same early-return pattern as QueuePage):
-
-| Key | Action |
-|---|---|
-| `j` / `↓` | Next reply |
-| `k` / `↑` | Previous reply |
-| `e` | Approve and Send (only when draft exists) |
-| `E` | Quick Fix (only when draft exists) |
-| `o` | Edit in Gmail (draft) or Open Gmail inbox (no draft) |
-| `i` | Mark interested (5s undo) |
-| `c` | Mark call scheduled (5s undo) |
-| `D` | Mark dead (5s undo, uppercase D) |
-| `?` | Keyboard shortcuts overlay |
-| `Esc` | Close Quick Fix |
-
-**ThreadView**: reused as-is — `<ThreadView contactId={focused.id} />`. It fetches its own email_messages per contactId on mount/change. No additional data plumbing needed.
-
-## Mirrored cadence constants
-
-`src/lib/cadence.ts` mirrors `agent/config.py::FOLLOWUP_DAYS`. If the agent cadence
-changes (days between emails), update **both** files. Same pattern as `REPLY_STAGES`
-in `types.ts` mirroring `constants.py`. The `STAGE_TRANSITIONS` map in `cadence.ts`
-is the authoritative transition table for all `/api/send-draft` stage flips.
-`QUEUE_STAGES` (in `cadence.ts`) is used by `/queue` page to filter contacts for bulk approval.
 
 ## Style: comments and docs
 
@@ -421,82 +273,12 @@ is the authoritative transition table for all `/api/send-draft` stage flips.
   why `.limit()` must be last in the query chain).
 - Don't write docstrings on tiny helper components.
 
-## New tables (Phase 0 — 2026-05-20)
+See docs/schema/tables.md for table schemas (draft_history, email_messages, agent_events) and new types.
 
-**`draft_history`** — lifecycle of every Gmail draft created by the agent.
-- `gmail_draft_id TEXT` — Gmail API draft ID, required by `/api/send-draft`.
-- `subject, body` — draft content as generated. Updated by `/api/update-draft` on Quick Fix edits.
-- `sent_subject, sent_body, sent_at, edit_detected` — populated by `/api/send-draft` after send.
-- `edit_detected = true` when the sent body differs from the draft body (user edited in Gmail).
-- RLS disabled. Access via `/api/send-draft` and `/api/update-draft`; read by `/queue` page.
-- Written by Python `db.log_drafted_email()` — called from `agent._execute_draft` and `reply_drafter.draft_reply`.
+See docs/components/thread-view.md for ThreadView details and test mock pattern.
 
-## New tables (Sprint 2 — 2026-05-16)
+See docs/routes/runs.md for /runs page details.
 
-Two new Supabase tables are readable by the frontend. Both have RLS disabled.
+See docs/routes/prompts.md for /prompts page details.
 
-**`email_messages`** — outgoing and incoming emails per contact, written by the Python agent and monitor.
-- `direction`: `"outgoing"` | `"incoming"`
-- `sent_at`: timestamptz, used for chronological ordering
-- Used by `ThreadView.tsx` in the Vaul side sheet.
-- Query pattern: `.from("email_messages").select("*").eq("contact_id", id).order("sent_at", { ascending: true })` — no `.limit()`, `.order()` is terminal.
-
-**`agent_events`** — per-action audit log written by the Python agent/monitor (preflight blocks, reply classification, draft creation).
-- `status`: `"success"` | `"failed"` | `"blocked_preflight"` | `"running"`
-- `event_type`: `"preflight"` | `"classify_reply"` | `"draft_reply"` | `"critic"` | `"sent_detection"`
-- Used by `/runs` page (`app/runs/page.tsx`).
-- Query pattern: `.from("agent_events").select("*").order("started_at", { ascending: false }).limit(100)` — `.limit()` is terminal.
-- Badge query (7-day failures): `.select("id", { count: "exact", head: true }).in("status", [...]).gte("started_at", since)` — this returns a thenable, not a limit-terminated chain.
-
-## New types (types.ts)
-
-- `Contact.classifier_status: string | null` — auto-set by monitor; never by user. Distinct from `reply_status` (user-managed).
-- `REPLY_STAGES = ["reply_drafted", "reply_sent"]` — **mirrored constant**: must also be updated in Python `constants.py` if changed.
-- `ContactsQueryFilters.needsResponseOnly: boolean` — filter: `classifier_status IN (positive_reply, soft_yes) AND reply_status NOT IN (interested, call_scheduled, dead)`.
-- `EmailMessage` type — mirrors `email_messages` table.
-- `AgentEvent` type — mirrors `agent_events` table.
-
-## ThreadView component
-
-`ThreadView.tsx` renders inside the Vaul side sheet in `ContactsList.tsx`. It fetches `email_messages` for the selected contact on mount. Outgoing messages are right-aligned indigo; incoming are left-aligned muted. Bodies >300 chars are truncated with an expand toggle.
-
-**Testing**: `ContactsList.test.tsx` mocks `ThreadView` to `null` to avoid triggering the `email_messages` Supabase query inside the test's mock chain:
-```ts
-vi.mock("@/components/ThreadView", () => ({ ThreadView: () => null }));
-```
-The `ThreadView.test.tsx` file provides its own isolated mock of the supabase chain.
-
-## /runs page (app/runs/page.tsx)
-
-Client component. Fetches `agent_events` on mount and every 10 seconds via `setInterval`. Status filter chips (All / Success / Failed / Blocked) filter the in-memory list. Shows a 7-day failure badge in the header. Empty state when no events. Route: `/runs`, heading reads "Activity".
-
-**Mocking in tests**: the `agent_events` list query uses `limitMock` as the terminal call; the count (badge) query uses a thenable `countChain`. These are separate chains distinguished by whether `select()` receives `{ count: "exact" }`.
-
-## /prompts page (app/prompts/page.tsx)
-
-Client component (`PromptsPage.tsx`). Fetches all prompts ordered by `sort_order`. Sticky search (title + description). 7 collapsible categories via `PROMPT_CATEGORY_MAP` in `src/lib/promptCategories.ts`; unknown keys fall into "Shared". Only "Sender & Core" open by default; state persists in `localStorage` (`"prompts-open-categories"`). localStorage read in `useEffect` post-mount (SSR-safe skeleton pattern). `PromptCategory.tsx` is the collapsible section wrapper; `PromptSection.tsx` (individual card) unchanged.
-
-**Categorization drift:** When adding new prompt rows to Supabase, add the key to `promptCategories.ts` — omitted keys silently land in "Shared".
-
-**Placeholder validation:** `PromptSection.tsx` calls `getUnknownVariables(prompt.key, draft)` from `src/lib/promptVariables.ts` on every render. Any `{placeholder}` that Python's `.format()` would try to fill but the code never provides triggers an amber inline warning. `PROMPT_VALID_KEYS` in `promptVariables.ts` mirrors `agent._PROMPT_VALID_KEYS` in Python — **keep both in sync** when adding a new prompt or changing a `tpl.format(...)` call site.
-
-**Locked prompt:** `/api/extract` prompt (`route.ts`) is hardcoded, not in the prompts table. Bound to `ExtractedContact` JSON schema — editing it requires a `types.ts` update and code deploy in sync.
-
-## e2e helpers update
-
-`tests/e2e/helpers.ts` `mockSupabase()` intercepts four tables:
-- `/rest/v1/contacts` — returns fixture rows (filtered) or handles PATCH/DELETE
-- `/rest/v1/prompts` — returns prompts fixture (14 fixture rows)
-- `/rest/v1/email_messages` — returns `[]` (empty thread)
-- `/rest/v1/agent_events` — returns `[]` with `Content-Range: 0-0/0`
-
-**`applyFilters` handles these URL params:** `or` (name/company ilike), `tier=in.(...)`,
-`mode=in.(...)`, `stage=in.(...)`, `dartmouth=eq.true`, `created_at=lt.ISO`,
-`id=eq.{id}` (single-row fetch by primary key — for `openContact`'s `.single()` call).
-
-**`.single()` support:** when the request has `Accept: application/vnd.pgrst.object+json`
-(set automatically by Supabase's `.single()`), the mock returns a plain JSON object (not
-array) so the Supabase client parses it correctly. Without this, `.single()` would receive
-an array, treat it as `data`, and corrupt `selectedContact` state.
-
-When writing new e2e tests that need non-empty `email_messages` or `agent_events`, add a `page.route()` override **before** calling `mockSupabase(page)` or add a dedicated helper fixture.
+See docs/testing/e2e-helpers.md for e2e helper (mockSupabase) details.
