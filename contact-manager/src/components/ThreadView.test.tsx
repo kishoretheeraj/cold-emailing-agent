@@ -202,4 +202,70 @@ describe("ThreadView", () => {
     );
     expect(screen.queryByText(/message encoding not supported/i)).toBeNull();
   });
+
+  // ── Quoted-content stripping ───────────────────────────────────────────────
+
+  describe("stripQuotedContent via sanitizeBody", () => {
+    async function renderBody(body: string) {
+      selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+        cb({ data: [makeMsg({ direction: "incoming", body })] });
+        return Promise.resolve();
+      });
+      render(<ThreadView contactId={42} />);
+      await waitFor(() => screen.queryByText(/loading thread/i) === null);
+    }
+
+    it("strips === mobile separator and everything after it (Marcel scenario)", async () => {
+      const body =
+        "Good reply here. ====================Kort, want mobiel verstuurd!\n" +
+        "--------- Oorspronkelijk bericht -------- Van: Kishore <k@example.com>";
+      await renderBody(body);
+      expect(screen.getByText(/Good reply here\./)).toBeTruthy();
+      expect(screen.queryByText(/Kort, want mobiel/)).toBeNull();
+      expect(screen.queryByText(/Oorspronkelijk bericht/)).toBeNull();
+      expect(screen.queryByText(/Van: Kishore/)).toBeNull();
+    });
+
+    it("strips Dutch Oorspronkelijk bericht separator", async () => {
+      const body =
+        "Thanks for reaching out!\n" +
+        "--------- Oorspronkelijk bericht -------- Van: Kishore\nHi Marcel,\nOriginal email...";
+      await renderBody(body);
+      expect(screen.getByText(/Thanks for reaching out!/)).toBeTruthy();
+      expect(screen.queryByText(/Oorspronkelijk bericht/)).toBeNull();
+      expect(screen.queryByText(/Original email/)).toBeNull();
+    });
+
+    it("strips English Original Message separator", async () => {
+      const body =
+        "Got it, thanks.\n" +
+        "----- Original Message ----- From: Kishore\nHi there,\nOriginal content.";
+      await renderBody(body);
+      expect(screen.getByText(/Got it, thanks\./)).toBeTruthy();
+      expect(screen.queryByText(/Original Message/)).toBeNull();
+    });
+
+    it("strips Gmail On-date-wrote quoting", async () => {
+      const body =
+        "Sure, let's connect.\nOn 20 May 2026 Kishore wrote:\n> Hi Alice, hope you're well.";
+      await renderBody(body);
+      expect(screen.getByText(/Sure, let's connect\./)).toBeTruthy();
+      expect(screen.queryByText(/On 20 May 2026/)).toBeNull();
+      expect(screen.queryByText(/hope you're well/)).toBeNull();
+    });
+
+    it("strips Outlook-style From/Sent/To/Subject header block", async () => {
+      const body =
+        "OK sounds good.\nFrom: Kishore Theeraj <k@dartmouth.edu>\nSent: Monday, 20 May 2026\nTo: alice@example.com\nSubject: Quick intro";
+      await renderBody(body);
+      expect(screen.getByText(/OK sounds good\./)).toBeTruthy();
+      expect(screen.queryByText(/Kishore Theeraj/)).toBeNull();
+    });
+
+    it("leaves clean bodies unchanged", async () => {
+      const body = "Hi Kishore, happy to chat. Let me know your availability.";
+      await renderBody(body);
+      expect(screen.getByText(body)).toBeTruthy();
+    });
+  });
 });

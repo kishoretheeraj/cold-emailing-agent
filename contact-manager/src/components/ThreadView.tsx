@@ -10,6 +10,30 @@ const TRUNCATE_AT = 300;
 
 const MIME_BOUNDARY_RE = /^-{4}[_\w]/;
 
+// Patterns that mark the start of quoted/forwarded content or mobile footers.
+// All are tried; the earliest match position wins.
+const QUOTE_SEPARATORS: RegExp[] = [
+  // 8+ equals signs — mobile signature separator (e.g. ====================)
+  /={8,}/,
+  // Dash line + "original message" keyword in common languages
+  /-{4,}[\s_]*(?:oorspronkelijk bericht|original message|begin forwarded message|bericht doorsturen|forwarded message|weitergeleitete nachricht|message original)/i,
+  // "On [date] [person] wrote:" — Gmail / Apple Mail quoting
+  /^on\s.{5,150}\swrote:?\s*$/im,
+  // 20+ consecutive dashes on their own line (Outlook / Lotus Notes separator)
+  /^-{20,}\s*$/m,
+  // Outlook-style quote header block (English and Dutch)
+  /^(?:from|van):\s.+\r?\n(?:sent|datum):\s/im,
+];
+
+function stripQuotedContent(text: string): string {
+  let cut = text.length;
+  for (const re of QUOTE_SEPARATORS) {
+    const m = re.exec(text);
+    if (m && m.index < cut) cut = m.index;
+  }
+  return text.slice(0, cut).trimEnd();
+}
+
 function sanitizeBody(raw: string): { display: string; garbled: boolean } {
   const trimmed = raw.trimStart();
   // Raw MIME structure (Samsung Galaxy and similar multipart/mixed emails stored
@@ -27,7 +51,8 @@ function sanitizeBody(raw: string): { display: string; garbled: boolean } {
       .trim();
     return { display: stripped, garbled: false };
   }
-  return { display: raw, garbled: false };
+  // Strip quoted/forwarded content — display only; stored body in Supabase unchanged.
+  return { display: stripQuotedContent(trimmed), garbled: false };
 }
 
 const STAGE_LABELS: Record<string, string> = {
