@@ -336,7 +336,7 @@ def test_run_drafts_and_labels_a_new_contact(mocker):
     assert args == ("dana@example.com", "subj", "body")
     assert kwargs.get("contact_id") == 1
     assert kwargs.get("stage") == "new"
-    apply_label.assert_called_once_with("Cold Outreach/First Touch")
+    apply_label.assert_called_once_with("Cold Outreach/First Touch", gmail_draft_id=None)
     update_contact.assert_called_once()
     pos_args, kw_args = update_contact.call_args
     assert pos_args[0] == 1  # contact id

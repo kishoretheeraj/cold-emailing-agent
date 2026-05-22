@@ -141,11 +141,39 @@ Follow-up emails must land in the same Gmail thread as the original.
   to persist `message_id` and `original_subject` in Supabase.
 - For all follow-up actions, `agent.py` calls `get_thread_info()` first and
   passes the stored `message_id` as `in_reply_to` to `create_draft()`.
+- Before using `message_id` as `in_reply_to`, `_execute_draft` calls
+  `_resolve_thread_message_id()` to verify the ID points to an actual sent
+  email in Sent Mail (Gmail rewrites Message-IDs when a draft is sent, making
+  the stored draft ID stale). Resolution tries `find_sent_by_thread_id` (via
+  `gmail_thread_id`) then `find_sent_by_subject` (via `original_subject`). If
+  the resolved ID differs, `update_message_id` is called to self-heal Supabase.
+  Falls back to the stored ID if both lookups fail. Never runs for first-touch
+  actions.
+- **Gmail API draft creation for follow-ups**: `create_draft()` tries the Gmail
+  API path first (before opening any IMAP connection) when `in_reply_to` is set
+  and OAuth vars are present. The API call uses `_create_draft_via_api()`, which
+  looks up the parent message's `threadId` and creates the draft inside that
+  thread. This preserves `In-Reply-To` headers (Gmail silently strips them from
+  IMAP APPEND). Falls back to IMAP APPEND if the API client is unavailable or
+  the parent message is not found.
+- **Sequential `In-Reply-To` chain**: `latest_message_id` column in `contacts`
+  tracks the most recently sent email's Message-ID. `monitor.detect_sent_drafts`
+  calls `update_latest_message_id` after every successful sent detection. The
+  agent reads `latest_message_id` (falling back to `message_id`) when building
+  the `in_reply_to` for follow-up drafts. `message_id` is kept as the
+  first-touch ID for incoming reply detection and is never overwritten by
+  follow-up detection.
+- `apply_label_to_latest_draft(label_name, gmail_draft_id=None)`: when
+  `gmail_draft_id` is provided and OAuth is available, uses the Gmail API
+  `messages.modify` to add the label (no IMAP COPY, no duplicates). Falls back
+  to IMAP COPY otherwise.
 - `generate_email()` in `emailer.py` accepts `original_subject=None`. For
   follow-up actions it returns `"Re: " + original_subject` without calling
   Claude — only first-touch actions call `_generate_subject()`.
 - `message_id` and `original_subject` columns are **agent-managed**. Never
-  write them manually — they are set once after the first draft.
+  write them manually — they are set once after the first draft (and may be
+  updated later by the monitor or `_resolve_thread_message_id`).
+  `latest_message_id` is updated by the monitor after every sent detection.
 
 See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Supabase retry, prompt validation, batch fallback).
 

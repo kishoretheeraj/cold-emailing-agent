@@ -13,6 +13,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kishoretheeraj/Documents/cold-email-agent/.claude/hooks/post-commit-doc-check.sh",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

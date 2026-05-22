@@ -131,7 +131,11 @@ def update_reply_status(contact_id, status):
 
 def save_thread_info(contact_id, message_id, subject, gmail_thread_id=None):
     """Save Message-ID, subject, and optionally X-GM-THRID of the first email."""
-    row = {"message_id": message_id, "original_subject": subject}
+    row = {
+        "message_id": message_id,
+        "original_subject": subject,
+        "latest_message_id": message_id,  # first-touch: both start equal
+    }
     if gmail_thread_id is not None:
         row["gmail_thread_id"] = gmail_thread_id
     _retry(lambda: get_client().table("contacts").update(row).eq("id", contact_id).execute())
@@ -142,6 +146,12 @@ def update_message_id(contact_id, message_id):
         "message_id": message_id,
     }).eq("id", contact_id).execute())
 
+def update_latest_message_id(contact_id, message_id):
+    """Update latest_message_id after each sent detection for sequential In-Reply-To chaining."""
+    _retry(lambda: get_client().table("contacts").update({
+        "latest_message_id": message_id,
+    }).eq("id", contact_id).execute())
+
 def update_gmail_thread_id(contact_id, gmail_thread_id):
     """Store the X-GM-THRID captured at draft creation for reliable sent detection."""
     _retry(lambda: get_client().table("contacts").update({
@@ -149,9 +159,9 @@ def update_gmail_thread_id(contact_id, gmail_thread_id):
     }).eq("id", contact_id).execute())
 
 def get_thread_info(contact_id):
-    """Return message_id and original_subject for a contact."""
+    """Return message_id, latest_message_id, and original_subject for a contact."""
     result = _retry(lambda: get_client().table("contacts").select(
-        "message_id, original_subject"
+        "message_id, latest_message_id, original_subject"
     ).eq("id", contact_id).execute())
     rows = result.data or []
     return rows[0] if rows else {}

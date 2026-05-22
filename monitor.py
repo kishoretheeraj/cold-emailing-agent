@@ -41,7 +41,7 @@ from constants import TERMINAL_DRAFTED_STAGES
 from db import (
     get_drafted_contacts, get_sent_contacts, update_contact, update_reply_status,
     log_agent_event, update_classifier_status, insert_email_message, load_prompts,
-    update_message_id, record_run,
+    update_message_id, update_latest_message_id, record_run,
 )
 from gmail import (
     create_gmail_label_if_not_exists, find_sent_for_thread,
@@ -173,6 +173,13 @@ def detect_sent_drafts():
                 log.info(f"[SENT-DETECTED] | {name} | {company} | message_id updated: {actual_mid}")
             except Exception as exc:
                 log.warning(f"[SENT-DETECTED] | {name} | {company} | message_id update failed: {exc}")
+
+        # Always advance latest_message_id so follow-up N+1's In-Reply-To points
+        # to the most recently sent email rather than the first-touch.
+        try:
+            update_latest_message_id(contact["id"], actual_mid)
+        except Exception as exc:
+            log.warning(f"[SENT-DETECTED] | {name} | {company} | latest_message_id update failed: {exc}")
 
         if detection_method == "thrid":
             via_thrid += 1

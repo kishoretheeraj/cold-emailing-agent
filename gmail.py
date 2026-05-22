@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import html
 import imaplib
@@ -77,6 +78,47 @@ def _lookup_gmail_draft_id(message_id):
     return None
 
 
+def _create_draft_via_api(client, to_email, subject, body, in_reply_to, mid):
+    """
+    Create a follow-up draft via Gmail API so In-Reply-To and threadId are
+    preserved (Gmail strips In-Reply-To from IMAP-appended drafts).
+
+    Looks up the threadId of in_reply_to by searching Gmail, then creates
+    the draft inside that thread. Returns (gmail_draft_id, gmail_thread_id_int)
+    on success, or None if the parent message cannot be found.
+    Never raises — failures fall back to IMAP APPEND.
+    """
+    try:
+        q = f"rfc822msgid:{in_reply_to.strip('<>')}"
+        result = client.users().messages().list(userId="me", q=q, maxResults=1).execute()
+        messages = result.get("messages", [])
+        if not messages:
+            log.info(f"[GMAIL-API] in_reply_to not found in Gmail — falling back to IMAP: {in_reply_to}")
+            return None
+        thread_id = messages[0]["threadId"]
+
+        msg = MIMEMultipart("alternative")
+        msg["Message-ID"]  = mid
+        msg["From"]        = GMAIL_ADDRESS
+        msg["To"]          = to_email
+        msg["Subject"]     = subject
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"]  = in_reply_to
+        msg.attach(MIMEText(_body_to_html(body), "html"))
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        draft = client.users().drafts().create(
+            userId="me",
+            body={"message": {"raw": raw, "threadId": thread_id}},
+        ).execute()
+
+        gmail_draft_id = draft["id"]
+        return (gmail_draft_id, int(thread_id, 16))
+    except Exception as exc:
+        log.warning(f"[GMAIL-API] _create_draft_via_api failed — falling back to IMAP: {exc}")
+        return None
+
+
 def _body_to_html(text):
     """Convert normalized plain-text body to HTML so Gmail renders at full column width."""
     parts = []
@@ -89,7 +131,11 @@ def _body_to_html(text):
 def create_draft(to_email, subject, body, in_reply_to=None, references=None,
                  subject_prefix=True, contact_id=None, stage=None):
     """
-    Create a Gmail draft via IMAP. Never sends — draft only.
+    Create a Gmail draft. Never sends — draft only.
+    For follow-up drafts (in_reply_to set): uses Gmail API so In-Reply-To and
+    threadId are preserved (Gmail silently strips In-Reply-To from IMAP APPEND).
+    Falls back to IMAP APPEND when OAuth is unavailable or the parent message
+    cannot be found.
     Returns DraftResult(message_id, gmail_draft_id, gmail_thread_id).
     gmail_thread_id is X-GM-THRID (int) — primary key for monitor sent detection.
     gmail_draft_id is the Gmail API string ID — needed by /api/send-draft.
@@ -99,6 +145,20 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
     if in_reply_to and subject_prefix and not subject.startswith("Re: "):
         subject = "Re: " + subject
 
+    mid = make_msgid(domain="gmail.com")
+
+    # For follow-ups, try Gmail API first — before opening any IMAP connection.
+    # Gmail strips In-Reply-To from IMAP-appended messages; the API preserves
+    # headers and accepts threadId to force correct thread placement.
+    if in_reply_to:
+        api_client = _get_gmail_api_client()
+        if api_client:
+            api_result = _create_draft_via_api(api_client, to_email, subject, body, in_reply_to, mid)
+            if api_result:
+                gmail_draft_id, gmail_thread_id = api_result
+                return DraftResult(mid, gmail_draft_id, gmail_thread_id)
+
+    # IMAP fallback: idempotency check + APPEND (first-touch drafts and API failures).
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -115,10 +175,6 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
             if status == "OK" and data[0]:
                 log.info(f"draft already exists | key={key} | contact={contact_id}")
                 return DraftResult(None, None, None)
-
-        # Generate before append so we own the ID and can return it immediately.
-        # Gmail honours a pre-set Message-ID when the user clicks Send.
-        mid = make_msgid(domain="gmail.com")
 
         msg = MIMEMultipart()
         msg["Message-ID"] = mid
@@ -175,12 +231,35 @@ def create_gmail_label_if_not_exists(imap, label_name):
     # it already exists. imaplib does not raise on NO — both outcomes are fine.
 
 
-def apply_label_to_latest_draft(label_name):
+def apply_label_to_latest_draft(label_name, gmail_draft_id=None):
     """
-    Open a fresh IMAP connection, ensure the label exists, then copy the
-    most-recently-appended draft to that label folder (which adds the label
-    in Gmail without creating a storage duplicate).
+    Add label_name to a Gmail draft. When gmail_draft_id is provided and OAuth
+    is available, uses the Gmail API (no IMAP COPY duplicate). Falls back to
+    IMAP COPY otherwise.
     """
+    if gmail_draft_id:
+        client = _get_gmail_api_client()
+        if client:
+            try:
+                labels = client.users().labels().list(userId="me").execute()
+                label = next(
+                    (l for l in labels.get("labels", [])
+                     if l.get("name", "").lower() == label_name.lower()),
+                    None,
+                )
+                if label:
+                    msg_id = client.users().drafts().get(
+                        userId="me", id=gmail_draft_id
+                    ).execute()["message"]["id"]
+                    client.users().messages().modify(
+                        userId="me", id=msg_id,
+                        body={"addLabelIds": [label["id"]]},
+                    ).execute()
+                    return
+            except Exception as exc:
+                log.warning(f"[GMAIL-API] apply_label_to_latest_draft failed — falling back to IMAP: {exc}")
+
+    # IMAP COPY fallback
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)

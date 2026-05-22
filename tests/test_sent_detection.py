@@ -37,6 +37,7 @@ def test_stage_flip(mocker, stage, expected_sent, mode, terminal):
     find_sent = mocker.patch.object(monitor, "find_sent_for_thread", return_value=MID)
     update = mocker.patch.object(monitor, "update_contact")
     mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -88,6 +89,7 @@ def test_imap_failure_continues_to_next_contact(mocker):
                         side_effect=[Exception("imap down"), "<second@m>"])
     update = mocker.patch.object(monitor, "update_contact")
     mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -102,6 +104,7 @@ def test_db_update_failure_continues(mocker):
     mocker.patch.object(monitor, "update_contact",
                         side_effect=Exception("supabase timeout"))
     mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -112,6 +115,7 @@ def test_unknown_stage_no_update(mocker):
     mocker.patch.object(monitor, "find_sent_for_thread", return_value=MID)
     update = mocker.patch.object(monitor, "update_contact")
     mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -151,6 +155,7 @@ def test_message_id_updated_when_gmail_rewrites_it(mocker):
     mocker.patch.object(monitor, "find_sent_for_thread", return_value=rewritten_mid)
     mocker.patch.object(monitor, "update_contact")
     update_mid = mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -164,6 +169,7 @@ def test_message_id_not_updated_when_unchanged(mocker):
     mocker.patch.object(monitor, "find_sent_for_thread", return_value=MID)
     mocker.patch.object(monitor, "update_contact")
     update_mid = mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -180,6 +186,7 @@ def test_subject_fallback_used_when_message_id_not_found(mocker):
     subj_search = mocker.patch.object(monitor, "find_sent_by_subject", return_value=fallback_mid)
     update = mocker.patch.object(monitor, "update_contact")
     update_mid = mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -211,6 +218,7 @@ def test_thread_id_search_takes_priority_over_message_id(mocker):
     mid_search = mocker.patch.object(monitor, "find_sent_for_thread")
     mocker.patch.object(monitor, "update_contact")
     mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -227,6 +235,7 @@ def test_thread_id_search_falls_through_to_message_id(mocker):
     mid_search = mocker.patch.object(monitor, "find_sent_for_thread", return_value=MID)
     mocker.patch.object(monitor, "update_contact")
     mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
@@ -240,7 +249,43 @@ def test_message_id_not_updated_for_followup_mode(mocker):
     mocker.patch.object(monitor, "find_sent_for_thread", return_value="<different@m>")
     mocker.patch.object(monitor, "update_contact")
     update_mid = mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
 
     monitor.detect_sent_drafts()
 
     update_mid.assert_not_called()
+
+
+# ── latest_message_id updated for all sent detections ─────────────────────────
+
+@pytest.mark.parametrize("stage", [
+    "first_touch_drafted",
+    "followup1_drafted",
+    "followup2_drafted",
+    "applied_intro_drafted",
+])
+def test_latest_message_id_updated_for_all_modes(mocker, stage):
+    """update_latest_message_id is called after every successful sent detection."""
+    actual_mid = "<actual-sent@mail.gmail.com>"
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact(stage=stage)])
+    mocker.patch.object(monitor, "find_sent_for_thread", return_value=actual_mid)
+    mocker.patch.object(monitor, "update_contact")
+    mocker.patch.object(monitor, "update_message_id")
+    update_latest = mocker.patch.object(monitor, "update_latest_message_id")
+
+    monitor.detect_sent_drafts()
+
+    update_latest.assert_called_once_with(42, actual_mid)
+
+
+def test_latest_message_id_not_updated_when_not_detected(mocker):
+    """update_latest_message_id is not called when no sent email is found."""
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact()])
+    mocker.patch.object(monitor, "find_sent_for_thread", return_value=None)
+    update_latest = mocker.patch.object(monitor, "update_latest_message_id")
+
+    monitor.detect_sent_drafts()
+
+    update_latest.assert_not_called()

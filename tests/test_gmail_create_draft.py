@@ -193,3 +193,116 @@ def test_create_draft_captures_gmail_thread_id(mocker):
     result = gmail.create_draft("a@b.com", "s", "b")
 
     assert result.gmail_thread_id == 17850200168
+
+
+# ── Gmail API path for follow-up drafts ───────────────────────────────────────
+
+def _mock_api_client(thread_id="19e16fae44291d1f", draft_id="r123abc"):
+    """Return a minimal mock Gmail API client for follow-up draft creation."""
+    client = MagicMock()
+    # messages().list() → finds the in_reply_to message
+    client.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+        "messages": [{"id": "msg001", "threadId": thread_id}]
+    }
+    # drafts().create() → returns the new draft
+    client.users.return_value.drafts.return_value.create.return_value.execute.return_value = {
+        "id": draft_id,
+        "message": {"id": "msg002", "threadId": thread_id},
+    }
+    return client
+
+
+def test_create_draft_uses_api_for_followup(mocker):
+    """When in_reply_to is set and OAuth is available, Gmail API is used."""
+    mock_client = _mock_api_client(thread_id="19e16fae44291d1f", draft_id="r-api-draft")
+    mocker.patch.object(gmail, "_get_gmail_api_client", return_value=mock_client)
+    imap_mock = mocker.patch.object(gmail.imaplib, "IMAP4_SSL")
+
+    result = gmail.create_draft(
+        "a@b.com", "Re: intro", "body",
+        in_reply_to="<orig@mail.gmail.com>",
+    )
+
+    mock_client.users.return_value.drafts.return_value.create.assert_called_once()
+    imap_mock.assert_not_called()
+    assert result.gmail_draft_id == "r-api-draft"
+    assert result.gmail_thread_id == int("19e16fae44291d1f", 16)
+    assert result.message_id.startswith("<")
+
+
+def test_create_draft_api_thread_id_is_decimal_int(mocker):
+    """gmail_thread_id in DraftResult is the decimal conversion of the hex threadId."""
+    mocker.patch.object(gmail, "_get_gmail_api_client", return_value=_mock_api_client("000000000000000a"))
+    result = gmail.create_draft("a@b.com", "Re: s", "b", in_reply_to="<x@y.com>")
+    assert result.gmail_thread_id == 10  # 0xa == 10
+
+
+def test_create_draft_falls_back_to_imap_when_message_not_found(mocker):
+    """Falls back to IMAP APPEND when Gmail API can't find the in_reply_to message."""
+    client = MagicMock()
+    client.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+        "messages": []  # not found
+    }
+    mocker.patch.object(gmail, "_get_gmail_api_client", return_value=client)
+    fake_imap = _patch_imap(mocker)
+    mocker.patch.object(gmail, "_lookup_gmail_draft_id", return_value=None)
+
+    result = gmail.create_draft("a@b.com", "Re: s", "b", in_reply_to="<notfound@x.com>")
+
+    fake_imap.append.assert_called_once()
+    assert result.message_id is not None
+
+
+def test_create_draft_falls_back_to_imap_when_api_unavailable(mocker):
+    """Falls back to IMAP APPEND when OAuth vars are absent."""
+    mocker.patch.object(gmail, "_get_gmail_api_client", return_value=None)
+    fake_imap = _patch_imap(mocker)
+    mocker.patch.object(gmail, "_lookup_gmail_draft_id", return_value=None)
+
+    result = gmail.create_draft("a@b.com", "Re: s", "b", in_reply_to="<orig@x.com>")
+
+    fake_imap.append.assert_called_once()
+    assert result.message_id is not None
+
+
+def test_create_draft_no_api_call_for_first_touch(mocker):
+    """First-touch drafts (no in_reply_to) never call the Gmail API."""
+    api_spy = mocker.patch.object(gmail, "_get_gmail_api_client", return_value=MagicMock())
+    _patch_imap(mocker)
+    mocker.patch.object(gmail, "_lookup_gmail_draft_id", return_value=None)
+
+    gmail.create_draft("a@b.com", "intro", "body")  # no in_reply_to
+
+    api_spy.assert_not_called()
+
+
+# ── apply_label_to_latest_draft via Gmail API ─────────────────────────────────
+
+def test_apply_label_uses_api_when_draft_id_provided(mocker):
+    """Gmail API messages.modify is called when gmail_draft_id is given."""
+    client = MagicMock()
+    client.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+        "labels": [{"id": "Label_1", "name": "Cold Outreach/Follow-up #1"}]
+    }
+    client.users.return_value.drafts.return_value.get.return_value.execute.return_value = {
+        "message": {"id": "msg999"}
+    }
+    mocker.patch.object(gmail, "_get_gmail_api_client", return_value=client)
+    imap_spy = mocker.patch.object(gmail.imaplib, "IMAP4_SSL")
+
+    gmail.apply_label_to_latest_draft("Cold Outreach/Follow-up #1", gmail_draft_id="r-draft")
+
+    client.users.return_value.messages.return_value.modify.assert_called_once()
+    imap_spy.assert_not_called()
+
+
+def test_apply_label_falls_back_to_imap_without_draft_id(mocker):
+    """IMAP COPY fallback is used when no gmail_draft_id is provided."""
+    mocker.patch.object(gmail, "_get_gmail_api_client", return_value=MagicMock())
+    fake_imap = MagicMock()
+    fake_imap.search.return_value = ("OK", [b"1 2 3"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.apply_label_to_latest_draft("Cold Outreach/Follow-up #1")  # no gmail_draft_id
+
+    fake_imap.copy.assert_called_once()

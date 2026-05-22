@@ -145,7 +145,7 @@ def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
 
         # Gmail label (best-effort)
         try:
-            apply_label_to_latest_draft(REPLY_LABEL)
+            apply_label_to_latest_draft(REPLY_LABEL, gmail_draft_id=gmail_draft_id)
         except Exception as exc:
             log.warning(f"[REPLY-DRAFT] | {name} | {company} | label warning: {exc}")
 

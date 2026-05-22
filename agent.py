@@ -23,9 +23,9 @@ import anthropic
 
 from config import ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL, EMAIL_MODEL, FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run, insert_email_message, log_drafted_email
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id
 from emailer import generate_email, prepare_email, finalize_email
-from gmail import create_draft, apply_label_to_latest_draft
+from gmail import create_draft, apply_label_to_latest_draft, find_sent_by_thread_id, find_sent_by_subject
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -106,6 +106,37 @@ def _parse_date(value):
 
 # Actions that open a new thread — first email in a sequence.
 _FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
+
+
+def _resolve_thread_message_id(contact, thread_message_id):
+    """
+    Gmail rewrites the Message-ID when a draft is sent, making the stored
+    draft ID stale. Search Sent Mail to find the actual sent Message-ID so
+    In-Reply-To threads correctly. Falls back to thread_message_id on failure.
+    """
+    from datetime import timedelta
+
+    since_date = _parse_date(contact.get("last_emailed")) or (date.today() - timedelta(days=90))
+
+    if contact.get("gmail_thread_id"):
+        try:
+            actual = find_sent_by_thread_id(contact["gmail_thread_id"], since_date)
+            if actual:
+                return actual
+        except Exception as exc:
+            log.warning(f"[THREAD-RESOLVE] | {contact.get('name')} | thrid lookup failed: {exc}")
+
+    original_subject = contact.get("original_subject", "")
+    if original_subject and contact.get("email"):
+        try:
+            actual = find_sent_by_subject(original_subject, since_date, contact["email"])
+            if actual:
+                return actual
+        except Exception as exc:
+            log.warning(f"[THREAD-RESOLVE] | {contact.get('name')} | subject lookup failed: {exc}")
+
+    return thread_message_id
+
 
 # ── Stage transitions ──────────────────────────────────────────────────────────
 
@@ -213,6 +244,19 @@ def _execute_draft(contact, action, subject, body, thread_message_id,
     mode    = contact.get("mode", "outreach")
     current_stage = contact.get("stage")
 
+    # For follow-ups, verify stored message_id is the actual sent ID.
+    # Gmail rewrites Message-IDs on send; resolve the real ID so In-Reply-To
+    # points to a message that exists in Sent Mail and Gmail can thread it.
+    if action not in _FIRST_TOUCH_ACTIONS and thread_message_id:
+        resolved = _resolve_thread_message_id(contact, thread_message_id)
+        if resolved and resolved != thread_message_id:
+            log.info(f"{mode_tag} {name} | {company} | thread_message_id resolved for threading")
+            try:
+                update_message_id(contact["id"], resolved)
+            except Exception as exc:
+                log.warning(f"{mode_tag} {name} | {company} | message_id update failed: {exc}")
+            thread_message_id = resolved
+
     if thread_message_id:
         result = create_draft(
             contact["email"], subject, body,
@@ -255,7 +299,7 @@ def _execute_draft(contact, action, subject, body, thread_message_id,
     label = ACTION_LABEL.get(action)
     if label:
         try:
-            apply_label_to_latest_draft(label)
+            apply_label_to_latest_draft(label, gmail_draft_id=gmail_draft_id)
         except Exception as exc:
             log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
 
@@ -346,7 +390,9 @@ def run():
         original_subject = None
         if action not in _FIRST_TOUCH_ACTIONS:
             thread_info = get_thread_info(contact["id"])
-            thread_message_id = thread_info.get("message_id")
+            # Prefer latest_message_id (most recently sent email) for sequential
+            # In-Reply-To chaining; fall back to first-touch message_id.
+            thread_message_id = thread_info.get("latest_message_id") or thread_info.get("message_id")
             original_subject = thread_info.get("original_subject")
 
         try:
