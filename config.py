@@ -349,10 +349,10 @@ Do not include 'Note:' caveats. Do not editorialize. Just facts in bullets, or N
 REPLY_CLASSIFICATION_DEFAULT = """Classify this email reply. Return a single JSON object with one key "classifier_status" and one of these values:
 - positive_reply: genuine interest, wants to talk, asks questions, or is clearly engaged
 - soft_yes: mild positive signal, open to connecting but non-committal
-- hard_no: explicit rejection or disinterest
+- hard_no: any negative reply — explicit rejection, disinterest, no opportunity available, can't help, doesn't have a role/internship/position, or politely declining
 - auto_reply: out-of-office, vacation auto-reply, or bounce notification
 - out_of_office: person is away but no explicit rejection
-- unrelated: reply is unrelated to the original outreach (wrong thread, spam, etc.)
+- unrelated: reply is clearly not about the original outreach at all (wrong thread, spam, phishing, etc.) — do NOT use this for negative replies
 
 Reply to classify:
 {reply_body}
