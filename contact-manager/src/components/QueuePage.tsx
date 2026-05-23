@@ -5,6 +5,12 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { QUEUE_STAGES, STAGE_TRANSITIONS } from "@/lib/cadence";
 import { highlight } from "@/lib/personalization";
+import {
+  formatLocalTime,
+  getTimezoneLabel,
+  getTimezoneDistribution,
+  ianaToTimezoneLabel,
+} from "@/lib/timezone";
 import { Badge } from "@/components/ui/Badge";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { TextInput, TextArea, ToggleSwitch } from "@/components/Field";
@@ -87,6 +93,7 @@ export function QueuePage() {
     dartmouthOnly: false,
   });
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [now, setNow] = useState(() => new Date());
 
   // pendingSends: navigating away cancels pending sends (deliberate trade-off)
   const pendingSends = useRef<Map<string, PendingEntry>>(new Map());
@@ -161,6 +168,11 @@ export function QueuePage() {
     const id = setInterval(fetchData, 30_000);
     return () => clearInterval(id);
   }, [fetchData]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // ── Filtered contacts ────────────────────────────────────────────────────────
 
@@ -487,6 +499,15 @@ export function QueuePage() {
     filters.stages.length +
     (filters.dartmouthOnly ? 1 : 0);
 
+  const senderIana = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const senderLabel = ianaToTimezoneLabel(senderIana) ?? senderIana;
+  const senderTime = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: senderIana,
+  }).format(now);
+  const tzDistribution = getTimezoneDistribution(contacts.map((c) => c.state ?? null));
+
   return (
     <div className="flex h-[calc(100vh-64px)] overflow-hidden">
       {/* ── Left rail ──────────────────────────────────────────────────── */}
@@ -500,8 +521,14 @@ export function QueuePage() {
               {visible.length}
             </span>
           </div>
+          <p className="text-xs text-fg-dim mt-1">
+            Your time: {senderTime} {senderLabel}
+            {tzDistribution.length > 0 && (
+              <> · {tzDistribution.map((d) => `${d.count} ${d.label}`).join(" · ")}</>
+            )}
+          </p>
           {skippedCount > 0 && (
-            <p className="text-xs text-fg-dim mt-1">
+            <p className="text-xs text-fg-dim mt-0.5">
               ({skippedCount} skipped this session)
             </p>
           )}
@@ -642,6 +669,12 @@ export function QueuePage() {
                       · {c.company}
                     </span>
                   </p>
+                  {/* Location label — only rendered when state is set */}
+                  {c.state && (
+                    <p className="text-xs text-fg-dim mt-0.5">
+                      {c.state} · {formatLocalTime(c.state, now) ?? ""}
+                    </p>
+                  )}
                   {/* Line 3: subject */}
                   <p className="text-xs text-fg truncate mt-0.5">
                     {draft?.subject ?? "—"}

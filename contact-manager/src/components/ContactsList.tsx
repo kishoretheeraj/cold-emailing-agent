@@ -14,6 +14,7 @@ import {
   EMPTY_FILTERS,
   filtersEqual,
 } from "@/lib/types";
+import { US_STATES } from "@/lib/timezone";
 import { ContactsFilters } from "@/components/ContactsFilters";
 import { Badge } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -142,7 +143,7 @@ function extractTuckYear(notes: string | null | undefined): string | null {
 // ── Query builder ──────────────────────────────────────────────────────────────
 
 const LIST_COLUMNS =
-  "id,name,company,email,stage,tier,mode,last_emailed,reply_status,classifier_status,dartmouth,notes,message_id,followup_date,created_at";
+  "id,name,company,email,stage,tier,mode,last_emailed,reply_status,classifier_status,dartmouth,notes,message_id,followup_date,created_at,state";
 
 function buildContactsQuery(filters: ContactsQueryFilters, cursor: string | null) {
   const escaped = filters.nameOrCompany.trim().replace(/[%_]/g, "\\$&");
@@ -200,6 +201,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
   const [detail, setDetail] = useState("");
   const [resumeUrl, setResumeUrl] = useState("");
   const [jobTitle, setJobTitle] = useState("");
+  const [contactState, setContactState] = useState("");
 
   const fetchIdRef = useRef(0);
   const prevFiltersRef = useRef<ContactsQueryFilters>(EMPTY_FILTERS);
@@ -222,6 +224,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
     setDetail(selectedContact?.detail ?? "");
     setResumeUrl(selectedContact?.resume_url ?? "");
     setJobTitle(selectedContact?.job_title ?? "");
+    setContactState(selectedContact?.state ?? "");
   }, [selectedContact?.id]);
 
   // ── Fetch functions ──────────────────────────────────────────────────────────
@@ -426,6 +429,25 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
       setSelectedContact(prev);
       setContacts((cs) => cs.map((c) => (c.id === prev.id ? prev : c)));
       onError(`Failed to update: ${error.message}`);
+    }
+  }
+
+  // ── State change (immediate optimistic) ─────────────────────────────────────
+
+  async function handleStateChange(newState: string | null) {
+    if (!selectedContact) return;
+    const prev = selectedContact;
+    const updated = { ...selectedContact, state: newState };
+    setSelectedContact(updated);
+    setContacts((cs) => cs.map((c) => (c.id === updated.id ? updated : c)));
+    const { error } = await supabase
+      .from("contacts")
+      .update({ state: newState })
+      .eq("id", selectedContact.id);
+    if (error) {
+      setSelectedContact(prev);
+      setContacts((cs) => cs.map((c) => (c.id === prev.id ? prev : c)));
+      onError(`Failed to update state: ${error.message}`);
     }
   }
 
@@ -830,6 +852,28 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                         )
                       }
                     />
+                  </div>
+
+                  <div>
+                    <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                      State
+                    </label>
+                    <Select
+                      value={selectedContact.state ?? ""}
+                      onValueChange={(v) => handleStateChange(v || null)}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Unknown / not US" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">Unknown / not US</SelectItem>
+                        {US_STATES.map((s) => (
+                          <SelectItem key={s.code} value={s.code}>
+                            {s.code} - {s.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
 
                   <div>

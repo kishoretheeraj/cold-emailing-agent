@@ -579,3 +579,67 @@ describe("QueuePage — unmount", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
+
+// ── Timezone display ───────────────────────────────────────────────────────────
+
+describe("QueuePage — timezone display", () => {
+  it("header always shows 'Your time:' with sender time", async () => {
+    render(<QueuePage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+    });
+    expect(screen.getByText(/your time:/i)).toBeInTheDocument();
+  });
+
+  it("queue row with state shows state code and local time", async () => {
+    const bobWithState = makeContact({ state: "NY" });
+    mockSupabaseData([bobWithState, dave], [bobDraft, daveDraft]);
+    render(<QueuePage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+    });
+
+    // NY should appear in the location label inside a list item
+    const locationEl = screen.getByText(/^NY · /);
+    expect(locationEl).toBeInTheDocument();
+    expect(locationEl.textContent).toMatch(/NY · \d{1,2}:\d{2} [AP]M/);
+  });
+
+  it("queue row without state shows no location element", async () => {
+    // bob and dave both have no state in default fixtures
+    render(<QueuePage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+    });
+
+    // Dave Johnson has no state — his list row should have no AM/PM marker
+    const daveListRows = screen.getAllByText("Dave Johnson");
+    const daveRow = daveListRows[0].closest("li");
+    expect(daveRow?.textContent).not.toMatch(/[AP]M/);
+  });
+
+  it("header distribution includes ET label when contacts have NY state", async () => {
+    const bobWithState = makeContact({ state: "NY" });
+    mockSupabaseData([bobWithState, dave], [bobDraft, daveDraft]);
+    render(<QueuePage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+    });
+
+    // "1 ET" should appear in header distribution since NY maps to ET
+    const header = document.querySelector("aside");
+    expect(header?.textContent).toMatch(/1 ET/);
+  });
+
+  it("header shows no distribution when all contacts have null state", async () => {
+    // Default contacts (bob, dave) have no state
+    render(<QueuePage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+    });
+
+    const header = document.querySelector("aside");
+    // Only "Your time: X:XX XX <label>" with no distribution numbers
+    expect(header?.textContent).not.toMatch(/\d+ ET/);
+  });
+});

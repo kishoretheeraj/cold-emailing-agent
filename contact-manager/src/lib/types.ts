@@ -30,6 +30,7 @@ export type Contact = {
   message_id: string | null;
   last_emailed: string | null;
   deleted_at: string | null;
+  state?: string | null;
 };
 
 export type EmailMessage = {
@@ -88,6 +89,7 @@ export type ExtractedContact = {
   applied_date: string | null;
   notes: string | null;
   resume_url?: string | null;
+  state?: string | null;
   missing_email?: boolean;
   missing_required?: boolean;
   required_missing_fields?: string[];
