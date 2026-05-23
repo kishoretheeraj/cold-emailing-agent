@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import { formatLocalTime } from "@/lib/timezone";
 import { ThreadView } from "@/components/ThreadView";
 import { TextInput, TextArea } from "@/components/Field";
 import { Badge } from "@/components/ui/Badge";
@@ -106,6 +107,7 @@ export function RepliesPage() {
   const [editSubject, setEditSubject] = useState("");
   const [editBody, setEditBody] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [now, setNow] = useState(() => new Date());
 
   // navigating away cancels pending actions (deliberate trade-off)
   const pendingActions = useRef<Map<string, PendingEntry>>(new Map());
@@ -182,6 +184,11 @@ export function RepliesPage() {
     const id = setInterval(fetchData, 30_000);
     return () => clearInterval(id);
   }, [fetchData]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Restore focus by contact_id after refresh
   useEffect(() => {
@@ -527,6 +534,12 @@ export function RepliesPage() {
                         · {c.company}
                       </span>
                     </p>
+                    {/* Location label — only rendered when state is set */}
+                    {c.state && (
+                      <p className="text-xs text-fg-dim mt-0.5">
+                        {c.state} · {formatLocalTime(c.state, now) ?? ""}
+                      </p>
+                    )}
                     {/* Line 3: incoming snippet */}
                     {lastMsg?.body && (
                       <p className="text-xs text-fg-muted truncate mt-0.5 italic">
