@@ -860,13 +860,13 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                     </label>
                     <Select
                       value={selectedContact.state ?? ""}
-                      onValueChange={(v) => handleStateChange(v || null)}
+                      onValueChange={(v) => handleStateChange(v === "_none" ? null : (v || null))}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Unknown / not US" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">Unknown / not US</SelectItem>
+                        <SelectItem value="_none">Unknown / not US</SelectItem>
                         {US_STATES.map((s) => (
                           <SelectItem key={s.code} value={s.code}>
                             {s.code} - {s.name}
