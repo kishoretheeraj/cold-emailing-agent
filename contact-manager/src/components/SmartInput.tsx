@@ -2,8 +2,16 @@
 
 import { useState } from "react";
 import { supabase, resolveInsertError } from "@/lib/supabase";
+import { US_STATES } from "@/lib/timezone";
 import type { ExtractedContact, ReviewContact, BulkImportWindow } from "@/lib/types";
 import { Label, TextInput, TextArea, ToggleSwitch, TierSelector } from "./Field";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/Select";
 import { ReviewFlow } from "./ReviewFlow";
 
 // ── Main component ─────────────────────────────────────────────────────────────
@@ -79,6 +87,7 @@ export function SmartInput({
         applied_date: preview.applied_date,
         notes: preview.notes,
         resume_url: preview.resume_url ?? null,
+        state: preview.state ?? null,
         stage: "new",
         reply_status: "no_reply",
       };
@@ -200,6 +209,25 @@ export function SmartInput({
               />
             </Field>
           </div>
+
+          <Field label="State">
+            <Select
+              value={preview.state ?? ""}
+              onValueChange={(v) => updateSingle("state", v === "_none" ? null : (v || null))}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Unknown / not US" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="_none">Unknown / not US</SelectItem>
+                {US_STATES.map((s) => (
+                  <SelectItem key={s.code} value={s.code}>
+                    {s.code} - {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
 
           <Field label="Detail to reference">
             <TextArea

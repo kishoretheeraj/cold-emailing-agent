@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { supabase, resolveInsertError } from "@/lib/supabase";
+import { US_STATES } from "@/lib/timezone";
 import {
   Label,
   TextInput,
@@ -9,6 +10,13 @@ import {
   ToggleSwitch,
   TierSelector,
 } from "./Field";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/Select";
 
 type FormMode = "outreach" | "applied";
 
@@ -67,6 +75,7 @@ function OutreachForm({
   const [dartmouth, setDartmouth] = useState(false);
   const [notes, setNotes] = useState("");
   const [resumeUrl, setResumeUrl] = useState("");
+  const [contactState, setContactState] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function submit() {
@@ -87,6 +96,7 @@ function OutreachForm({
         dartmouth,
         notes: notes || null,
         resume_url: resumeUrl || null,
+        state: contactState || null,
         stage: "new",
         reply_status: "no_reply",
       });
@@ -100,6 +110,7 @@ function OutreachForm({
       setDartmouth(false);
       setNotes("");
       setResumeUrl("");
+      setContactState("");
       onAdded();
     } catch (err) {
       onError(err instanceof Error ? err.message : "save failed");
@@ -143,6 +154,26 @@ function OutreachForm({
           onChange={(e) => setDetail(e.target.value)}
           rows={3}
         />
+      </div>
+
+      <div>
+        <Label>State</Label>
+        <Select
+          value={contactState}
+          onValueChange={(v) => setContactState(v === "_none" ? "" : v)}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="Unknown / not US" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="_none">Unknown / not US</SelectItem>
+            {US_STATES.map((s) => (
+              <SelectItem key={s.code} value={s.code}>
+                {s.code} - {s.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div>

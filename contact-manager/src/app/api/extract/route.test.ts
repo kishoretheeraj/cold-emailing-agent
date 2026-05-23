@@ -282,6 +282,57 @@ describe("POST /api/extract — field normalization", () => {
   });
 });
 
+describe("POST /api/extract — state extraction", () => {
+  it("passes through a valid 2-letter state code", async () => {
+    const withState = { ...sampleExtraction, state: "NY" };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(withState) }],
+    });
+    const res = await POST(makeRequest({ text: "x" }));
+    const json = await res.json();
+    expect(json.contacts[0].state).toBe("NY");
+  });
+
+  it("upcases a lowercase state code", async () => {
+    const withState = { ...sampleExtraction, state: "ca" };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(withState) }],
+    });
+    const res = await POST(makeRequest({ text: "x" }));
+    const json = await res.json();
+    expect(json.contacts[0].state).toBe("CA");
+  });
+
+  it("sets state=null when Claude returns null", async () => {
+    const withState = { ...sampleExtraction, state: null };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(withState) }],
+    });
+    const res = await POST(makeRequest({ text: "x" }));
+    const json = await res.json();
+    expect(json.contacts[0].state).toBeNull();
+  });
+
+  it("sets state=null when Claude omits the field", async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(sampleExtraction) }],
+    });
+    const res = await POST(makeRequest({ text: "x" }));
+    const json = await res.json();
+    expect(json.contacts[0].state).toBeNull();
+  });
+
+  it("sets state=null when Claude returns a non-2-char string", async () => {
+    const withState = { ...sampleExtraction, state: "New York" };
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(withState) }],
+    });
+    const res = await POST(makeRequest({ text: "x" }));
+    const json = await res.json();
+    expect(json.contacts[0].state).toBeNull();
+  });
+});
+
 describe("POST /api/extract — Dartmouth year rules", () => {
   it("T'24 in notes maps to Tuck Class of 2024 (20YY rule: 24 <= 26+5=31)", async () => {
     const c = { ...sampleExtraction, dartmouth: true, notes: "Tuck Class of 2024" };

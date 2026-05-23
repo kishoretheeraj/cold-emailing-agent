@@ -29,13 +29,14 @@ For each contact extract these fields:
       Examples: T'64 maps to 1964, T'96 maps to 1996.
   Otherwise null.
 - resume_url: string or null. Any Google Drive or resume link.
+- state: string or null. Two-letter US state code if a clear US location is mentioned (e.g. "Austin, TX" -> "TX", "NYC" -> "NY", "Bay Area" -> "CA", "based in Boston" -> "MA"). Null if ambiguous, non-US, or not mentioned. Do NOT infer from company name alone — if the paste says "Sarah, Stripe" with no location, return null.
 
 Ignore: addresses, phone numbers, fax numbers, Function field, Industry field.
 
 Return ONLY valid JSON. No explanation, no markdown, no preamble, no trailing text. Single contact returns a JSON object. Multiple contacts return a JSON array.
 
 Example single-contact output:
-{"name":"Jane Doe","email":"jane@acme.com","company":"Acme","role":"CEO","detail":"CEO at Acme since 2019","tier":2,"mode":"outreach","dartmouth":false,"notes":null,"resume_url":null}`;
+{"name":"Jane Doe","email":"jane@acme.com","company":"Acme","role":"CEO","detail":"CEO at Acme since 2019","tier":2,"mode":"outreach","dartmouth":false,"notes":null,"resume_url":null,"state":"NY"}`;
 
 function normalizeContact(c: Record<string, unknown>): ExtractedContact {
   const rawName = typeof c.name === "string" ? c.name.trim() : null;
@@ -57,6 +58,8 @@ function normalizeContact(c: Record<string, unknown>): ExtractedContact {
 
   const dartmouth = typeof c.dartmouth === "boolean" ? c.dartmouth : false;
 
+  const rawState = typeof c.state === "string" ? c.state.trim().toUpperCase() : null;
+
   return {
     name: rawName ?? "",
     email: missingEmail ? null : rawEmail,
@@ -71,6 +74,7 @@ function normalizeContact(c: Record<string, unknown>): ExtractedContact {
     applied_date: null,
     notes: typeof c.notes === "string" ? c.notes : null,
     resume_url: typeof c.resume_url === "string" ? c.resume_url : null,
+    state: rawState && rawState.length === 2 ? rawState : null,
     missing_email: missingEmail,
     ...(missingRequired
       ? { missing_required: true, required_missing_fields: requiredMissingFields }
