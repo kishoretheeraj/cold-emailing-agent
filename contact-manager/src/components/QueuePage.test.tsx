@@ -1,3 +1,4 @@
+import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   render,
@@ -26,6 +27,12 @@ const { toastMock } = vi.hoisted(() => {
 
 vi.mock("sonner", () => ({
   toast: toastMock,
+}));
+
+// ── Tooltip mock (Radix requires TooltipProvider; mock the wrapper in tests) ──
+
+vi.mock("@/components/ui/Tooltip", () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
@@ -506,6 +513,44 @@ describe("QueuePage — Esc behavior", () => {
     await waitFor(() =>
       expect(screen.queryAllByRole("textbox").length).toBe(0)
     );
+  });
+});
+
+describe("QueuePage — Approve and Send disabled when no gmail_draft_id", () => {
+  it("button is disabled and e key does not trigger send when gmail_draft_id is null", async () => {
+    vi.useFakeTimers();
+    const draftNoId = makeDraft({ gmail_draft_id: null });
+    mockSupabaseData([bob], [draftNoId]);
+
+    render(<QueuePage />);
+    // Flush initial data load
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Button should be disabled
+    const btn = screen.getByRole("button", { name: /approve and send/i });
+    expect(btn).toBeDisabled();
+
+    // e key should NOT trigger toast / send
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    expect(toastMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+      await Promise.resolve();
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("button is enabled when gmail_draft_id is present", async () => {
+    render(<QueuePage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Bob Martinez" }));
+
+    const btn = screen.getByRole("button", { name: /approve and send/i });
+    expect(btn).not.toBeDisabled();
   });
 });
 

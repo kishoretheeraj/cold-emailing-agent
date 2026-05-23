@@ -168,7 +168,7 @@ def test_get_thread_info_returns_row(fake_client):
 
     result = db.get_thread_info(5)
 
-    fake_client.table.return_value.select.assert_called_with("message_id, original_subject")
+    fake_client.table.return_value.select.assert_called_with("message_id, latest_message_id, original_subject")
     fake_client.table.return_value.select.return_value.eq.assert_called_with("id", 5)
     assert result == {"message_id": "<mid@gmail.com>", "original_subject": "quick intro"}
 

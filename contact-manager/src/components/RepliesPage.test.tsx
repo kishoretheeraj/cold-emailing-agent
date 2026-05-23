@@ -569,6 +569,67 @@ describe("RepliesPage — Mark reply_status", () => {
 
     expect(updateMock).toHaveBeenCalledWith("id", "7");
   });
+
+  it("D key immediately removes contact from the list and right panel", async () => {
+    vi.useFakeTimers();
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Grace is focused — right panel shows her heading
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("heading", { name: "Grace Lee" })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "D" });
+    });
+
+    // Right panel heading should be gone immediately (contact removed from state)
+    expect(screen.queryByRole("heading", { name: "Grace Lee" })).toBeNull();
+  });
+
+  it("undo after D key restores the contact", async () => {
+    vi.useFakeTimers();
+
+    let capturedAction: ((e: MouseEvent) => void) | undefined;
+    toastMock.mockImplementation(
+      (
+        _msg: string,
+        opts?: { action?: { onClick: (e: MouseEvent) => void } }
+      ) => {
+        capturedAction = opts?.action?.onClick;
+        return "toast-id-dead";
+      }
+    );
+
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Press D to mark dead — contact leaves state immediately
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "D" });
+    });
+
+    // Grace should be removed from the right panel heading
+    expect(screen.queryByRole("heading", { name: "Grace Lee" })).toBeNull();
+
+    // Click undo — contact is restored synchronously in the same act()
+    await act(async () => {
+      capturedAction?.(new MouseEvent("click") as unknown as MouseEvent);
+    });
+
+    // Grace should be back in the sidebar list
+    const allGrace = screen.getAllByText("Grace Lee");
+    expect(allGrace.length).toBeGreaterThan(0);
+
+    // No Supabase update should have happened
+    expect(updateMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("RepliesPage — Esc", () => {

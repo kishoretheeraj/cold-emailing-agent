@@ -47,32 +47,36 @@ def _get_gmail_api_client():
 
 def _lookup_gmail_draft_id(message_id):
     """
-    After an IMAP APPEND, find the Gmail API draft ID that matches the given RFC822
-    Message-ID. Inspects up to 20 recent drafts. Returns the draft ID string or None.
+    After an IMAP APPEND, find the Gmail API draft ID for the given RFC822 Message-ID.
+    Uses messages.list with a targeted search query rather than scanning recent drafts,
+    so it works regardless of how many drafts exist. Returns the draft ID or None.
     Never raises.
     """
     client = _get_gmail_api_client()
     if client is None:
         return None
     try:
-        result = client.users().drafts().list(userId="me", maxResults=20).execute()
-        drafts = result.get("drafts", [])
-        for draft in drafts:
-            draft_id = draft.get("id")
-            msg_id = draft.get("message", {}).get("id")
-            if not draft_id or not msg_id:
-                continue
-            try:
-                msg = client.users().messages().get(
-                    userId="me", id=msg_id,
-                    format="metadata", metadataHeaders=["Message-ID"],
-                ).execute()
-                headers = msg.get("payload", {}).get("headers", [])
-                for h in headers:
-                    if h.get("name", "").lower() == "message-id" and h.get("value") == message_id:
-                        return draft_id
-            except Exception:
-                continue
+        clean = message_id.strip("<>")
+        msgs = client.users().messages().list(
+            userId="me", q=f"in:draft rfc822msgid:{clean}", maxResults=1
+        ).execute()
+        messages = msgs.get("messages", [])
+        if not messages:
+            return None
+        target_msg_id = messages[0]["id"]
+        # Walk draft pages to match message.id → draft.id
+        page_token = None
+        while True:
+            kwargs = {"userId": "me", "maxResults": 100}
+            if page_token:
+                kwargs["pageToken"] = page_token
+            result = client.users().drafts().list(**kwargs).execute()
+            for draft in result.get("drafts", []):
+                if draft.get("message", {}).get("id") == target_msg_id:
+                    return draft["id"]
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
     except Exception as exc:
         log.warning(f"[GMAIL-API] draft lookup failed: {exc}")
     return None

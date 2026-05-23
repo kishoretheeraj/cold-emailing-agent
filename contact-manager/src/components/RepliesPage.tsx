@@ -15,6 +15,7 @@ type PendingEntry = {
   toastId: string | number;
   originalIndex: number;
   kind: "send" | "reply_status";
+  contact: Contact;
 };
 
 type ReplyStatusValue = "interested" | "call_scheduled" | "dead";
@@ -216,7 +217,11 @@ export function RepliesPage() {
     toast.dismiss(entry.toastId);
     pendingActions.current.delete(contactId);
     toast.info("Canceled");
-    setContacts((prev) => [...prev]);
+    setContacts((prev) => {
+      const next = [...prev];
+      next.splice(originalIndex, 0, entry.contact);
+      return next;
+    });
     setFocusedIndex(originalIndex);
   }, []);
 
@@ -265,9 +270,10 @@ export function RepliesPage() {
         toastId,
         originalIndex: idx,
         kind: "send",
+        contact,
       });
 
-      setContacts((prev) => [...prev]);
+      setContacts((prev) => prev.filter((c) => c.id !== contact.id));
     },
     [visible.length, fetchData, onUndo] // eslint-disable-line react-hooks/exhaustive-deps
   );
@@ -321,9 +327,10 @@ export function RepliesPage() {
         toastId,
         originalIndex: idx,
         kind: "reply_status",
+        contact,
       });
 
-      setContacts((prev) => [...prev]);
+      setContacts((prev) => prev.filter((c) => c.id !== contact.id));
     },
     [visible.length, fetchData, onUndo] // eslint-disable-line react-hooks/exhaustive-deps
   );

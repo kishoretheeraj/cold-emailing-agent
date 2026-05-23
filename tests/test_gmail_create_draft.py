@@ -141,7 +141,7 @@ def test_lookup_gmail_draft_id_returns_none_when_no_client(mocker):
 def test_lookup_gmail_draft_id_returns_none_on_api_error(mocker):
     """Never raises — returns None on any API exception."""
     mock_client = MagicMock()
-    mock_client.users.return_value.drafts.return_value.list.return_value.execute.side_effect = Exception("quota")
+    mock_client.users.return_value.messages.return_value.list.return_value.execute.side_effect = Exception("quota")
     mocker.patch.object(gmail, "_get_gmail_api_client", return_value=mock_client)
 
     result = gmail._lookup_gmail_draft_id("<test@gmail.com>")
@@ -149,14 +149,17 @@ def test_lookup_gmail_draft_id_returns_none_on_api_error(mocker):
 
 
 def test_lookup_gmail_draft_id_matches_by_message_id(mocker):
-    """Returns draft ID when Message-ID header matches."""
+    """Returns draft ID when messages.list finds the RFC822 message and drafts.list maps it."""
     mock_client = MagicMock()
     target_mid = "<abc123@gmail.com>"
-    mock_client.users.return_value.drafts.return_value.list.return_value.execute.return_value = {
-        "drafts": [{"id": "draft99", "message": {"id": "msg1"}}]
+    target_msg_id = "msg-hex-abc"
+    # messages.list search returns the target message
+    mock_client.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+        "messages": [{"id": target_msg_id}]
     }
-    mock_client.users.return_value.messages.return_value.get.return_value.execute.return_value = {
-        "payload": {"headers": [{"name": "Message-ID", "value": target_mid}]}
+    # drafts.list returns one draft with matching message.id
+    mock_client.users.return_value.drafts.return_value.list.return_value.execute.return_value = {
+        "drafts": [{"id": "draft99", "message": {"id": target_msg_id}}]
     }
     mocker.patch.object(gmail, "_get_gmail_api_client", return_value=mock_client)
 
@@ -165,13 +168,10 @@ def test_lookup_gmail_draft_id_matches_by_message_id(mocker):
 
 
 def test_lookup_gmail_draft_id_no_match(mocker):
-    """Returns None when no draft matches the given Message-ID."""
+    """Returns None when messages.list finds no message for the given Message-ID."""
     mock_client = MagicMock()
-    mock_client.users.return_value.drafts.return_value.list.return_value.execute.return_value = {
-        "drafts": [{"id": "draft99", "message": {"id": "msg1"}}]
-    }
-    mock_client.users.return_value.messages.return_value.get.return_value.execute.return_value = {
-        "payload": {"headers": [{"name": "Message-ID", "value": "<other@gmail.com>"}]}
+    mock_client.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+        "messages": []
     }
     mocker.patch.object(gmail, "_get_gmail_api_client", return_value=mock_client)
 

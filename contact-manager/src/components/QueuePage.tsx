@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import { QUEUE_STAGES, STAGE_TRANSITIONS } from "@/lib/cadence";
 import { highlight } from "@/lib/personalization";
 import { Badge } from "@/components/ui/Badge";
+import { Tooltip } from "@/components/ui/Tooltip";
 import { TextInput, TextArea, ToggleSwitch } from "@/components/Field";
 import type { Contact, DraftHistory, AgentEvent } from "@/lib/types";
 
@@ -395,7 +396,7 @@ export function QueuePage() {
         }
       } else if (e.key === "G") {
         setFocusedIndex(Math.max(0, len - 1));
-      } else if (e.key === "e" && focused) {
+      } else if (e.key === "e" && focused && focusedDraft?.gmail_draft_id) {
         onApprove(focused, focusedIndex);
       } else if (e.key === "E") {
         openQuickFix();
@@ -847,13 +848,28 @@ export function QueuePage() {
                 </>
               ) : (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => focused && onApprove(focused, focusedIndex)}
-                    className="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 font-medium transition"
-                  >
-                    Approve and Send
-                  </button>
+                  {focusedDraft?.gmail_draft_id ? (
+                    <button
+                      type="button"
+                      onClick={() => focused && onApprove(focused, focusedIndex)}
+                      className="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 font-medium transition"
+                    >
+                      Approve and Send
+                    </button>
+                  ) : (
+                    <Tooltip
+                      content="No Gmail draft ID — re-run the agent to re-draft this contact"
+                      side="top"
+                    >
+                      <button
+                        type="button"
+                        disabled
+                        className="rounded-lg bg-indigo-600 text-white text-sm px-4 py-2 font-medium opacity-40 cursor-not-allowed"
+                      >
+                        Approve and Send
+                      </button>
+                    </Tooltip>
+                  )}
                   <button
                     type="button"
                     onClick={openQuickFix}
