@@ -39,6 +39,14 @@ Three-column layout: left rail (filters), center (scrollable draft list), right 
 - Pre-flight: shows "✓ passed" inferred from draft existence (no logged event for passing preflight — only blocked events exist).
 - Edited in Gmail: always "—" in v1 (`draft_history.edit_detected` is null until send; per-row API call too expensive).
 
+## Location label and timezone display (2026-05-23)
+
+**Row label**: when `contact.state` is set, a `<p>` below the contact name/company line shows `"NY · 4:00 PM"`. Null state renders nothing — no placeholder, no extra padding.
+
+**Header line**: the left rail shows `"Your time: 4:00 PM ET · 2 ET"` — sender's local time + a distribution of contacts-with-state grouped by tz label. Only rendered when at least one contact has a state set. Updates every 60s via a separate `setInterval` (independent of the 30s data-refresh interval).
+
+**Timezone derivation**: state → IANA zone via `STATE_TO_TIMEZONE` in `src/lib/timezone.ts` → short label via `ZONE_TO_LABEL`. Split-zone states use the majority zone (e.g. TX → CT, FL → ET). AZ is special (no DST → "AZ" label). All derivation is read-time; no `timezone` column exists.
+
 ## Mirrored cadence constants
 
 `src/lib/cadence.ts` mirrors `agent/config.py::FOLLOWUP_DAYS`. If the agent cadence

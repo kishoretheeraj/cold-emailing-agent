@@ -27,6 +27,15 @@ Two new Supabase tables are readable by the frontend. Both have RLS disabled.
 - Query pattern: `.from("agent_events").select("*").order("started_at", { ascending: false }).limit(100)` — `.limit()` is terminal.
 - Badge query (7-day failures): `.select("id", { count: "exact", head: true }).in("status", [...]).gte("started_at", since)` — this returns a thenable, not a limit-terminated chain.
 
+## New columns (2026-05-23)
+
+**`contacts.state TEXT NULL`** — two-letter US state code (e.g. `"NY"`), or `null` if unknown/non-US.
+- Migration: `supabase/migrations/20260523000000_add_state_to_contacts.sql`
+- Populated by: `/api/extract` (Claude extraction), SmartInput preview dropdown, StructuredForm dropdown, ContactsList side sheet dropdown.
+- Displayed in: `/queue` row labels (`"NY · 4:00 PM"`), `/queue` header distribution (`"2 ET"`), `/replies` row labels.
+- Timezone is **always derived at read time** via `src/lib/timezone.ts` — no `timezone` column ever.
+- Radix Select sentinel: `value="_none"` maps to `null` on save. Do not use `value=""` — Radix forbids empty string on `<SelectItem>`.
+
 ## New types (types.ts)
 
 - `Contact.classifier_status: string | null` — auto-set by monitor; never by user. Distinct from `reply_status` (user-managed).
