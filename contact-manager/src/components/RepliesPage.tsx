@@ -252,7 +252,7 @@ export function RepliesPage() {
           const res = await fetch("/api/send-draft", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ contact_id: contact.id }),
+            body: JSON.stringify({ contact_id: String(contact.id) }),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -389,7 +389,7 @@ export function RepliesPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contact_id: focused.id,
+          contact_id: String(focused.id),
           subject: editSubject,
           body: editBody,
         }),

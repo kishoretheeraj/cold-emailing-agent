@@ -34,10 +34,14 @@ export async function POST(req: Request) {
 
   try {
     const body = (await req.json()) as { contact_id?: unknown };
-    if (typeof body.contact_id !== "string" || !body.contact_id) {
+    const raw = body.contact_id;
+    const coerced =
+      typeof raw === "string" ? raw :
+      typeof raw === "number" ? String(raw) : null;
+    if (!coerced) {
       return Response.json({ error: "contact_id is required" }, { status: 400 });
     }
-    contactId = body.contact_id;
+    contactId = coerced;
   } catch {
     return Response.json({ error: "contact_id is required" }, { status: 400 });
   }

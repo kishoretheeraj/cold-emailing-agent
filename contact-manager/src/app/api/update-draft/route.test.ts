@@ -72,6 +72,16 @@ describe("POST /api/update-draft", () => {
     expect(res.status).toBe(400);
   });
 
+  it("accepts numeric contact_id (Supabase returns integer ids as numbers)", async () => {
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+
+    const res = await POST(req({ contact_id: 1, subject: "New Subject", body: "New body" }));
+    // Should reach Gmail (200), not fail validation (400)
+    expect(res.status).toBe(200);
+  });
+
   it("returns 400 when subject is missing", async () => {
     const res = await POST(req({ contact_id: "1", body: "b" }));
     expect(res.status).toBe(400);

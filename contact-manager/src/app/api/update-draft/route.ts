@@ -24,18 +24,21 @@ export async function POST(req: Request) {
       subject?: unknown;
       body?: unknown;
     };
+    const rawId = parsed.contact_id;
+    const coercedId =
+      typeof rawId === "string" ? rawId :
+      typeof rawId === "number" ? String(rawId) : null;
     if (
-      typeof parsed.contact_id !== "string" ||
+      !coercedId ||
       typeof parsed.subject !== "string" ||
-      typeof parsed.body !== "string" ||
-      !parsed.contact_id
+      typeof parsed.body !== "string"
     ) {
       return Response.json(
         { error: "contact_id, subject, and body are required" },
         { status: 400 }
       );
     }
-    contactId = parsed.contact_id;
+    contactId = coercedId;
     subject = parsed.subject;
     body = parsed.body;
   } catch {

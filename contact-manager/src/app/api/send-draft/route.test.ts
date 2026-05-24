@@ -102,9 +102,16 @@ describe("POST /api/send-draft", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 when contact_id is not a string", async () => {
-    const res = await POST(req({ contact_id: 123 }));
+  it("returns 400 when contact_id is null", async () => {
+    const res = await POST(req({ contact_id: null }));
     expect(res.status).toBe(400);
+  });
+
+  it("accepts numeric contact_id (Supabase returns integer ids as numbers)", async () => {
+    mockSingle.mockResolvedValueOnce({ data: null, error: { message: "not found" } });
+    const res = await POST(req({ contact_id: 123 }));
+    // Should reach the contact lookup (404), not fail validation (400)
+    expect(res.status).toBe(404);
   });
 
   it("returns 404 when contact not found", async () => {
