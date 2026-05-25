@@ -182,6 +182,7 @@ function mockSupabaseData(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
   mockSupabaseData([bob, dave], [bobDraft, daveDraft]);
   vi.spyOn(global, "fetch").mockResolvedValue(
     new Response(JSON.stringify({ ok: true, stage: "first_touch_sent" }), {
@@ -484,6 +485,28 @@ describe("QueuePage — Skip and Mark Dead", () => {
     await waitFor(() => screen.getByRole("heading", { name: "Bob Martinez" }));
 
     expect(neqMock).toHaveBeenCalledWith("reply_status", "dead");
+  });
+
+  it("loads skippedIds from sessionStorage on mount", async () => {
+    sessionStorage.setItem("queue_skipped_ids", JSON.stringify([bob.id]));
+    render(<QueuePage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Dave Johnson" }));
+
+    expect(screen.queryByRole("heading", { name: "Bob Martinez" })).toBeNull();
+  });
+
+  it("writes skippedIds to sessionStorage when x is pressed", async () => {
+    render(<QueuePage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Bob Martinez" }));
+
+    fireEvent.keyDown(document, { key: "x" });
+
+    await waitFor(() => {
+      const stored = JSON.parse(
+        sessionStorage.getItem("queue_skipped_ids") ?? "[]"
+      ) as string[];
+      expect(stored).toContain(bob.id);
+    });
   });
 });
 

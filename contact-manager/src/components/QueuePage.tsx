@@ -86,7 +86,14 @@ export function QueuePage() {
   const [editMode, setEditMode] = useState<"idle" | "quickfix">("idle");
   const [editSubject, setEditSubject] = useState("");
   const [editBody, setEditBody] = useState("");
-  const [skippedIds, setSkippedIds] = useState<Set<string>>(new Set());
+  const [skippedIds, setSkippedIds] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem("queue_skipped_ids");
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
   const [filters, setFilters] = useState<Filters>({
     tiers: [],
     stages: [],
@@ -169,6 +176,14 @@ export function QueuePage() {
     const id = setInterval(fetchData, 30_000);
     return () => clearInterval(id);
   }, [fetchData]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("queue_skipped_ids", JSON.stringify([...skippedIds]));
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [skippedIds]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60_000);
