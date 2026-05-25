@@ -16,6 +16,14 @@ function toBase64Url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// RFC 2047 MIME-word encoding for non-ASCII header values.
+// Raw UTF-8 bytes in RFC 822 headers are invalid; without this, em dashes and
+// other non-ASCII characters get double-encoded by receiving mail servers.
+function mimeEncodeHeader(value: string): string {
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  return `=?utf-8?b?${Buffer.from(value, "utf8").toString("base64")}?=`;
+}
+
 export async function POST(req: Request) {
   let contactId: string, subject: string, body: string;
   try {
@@ -121,7 +129,7 @@ export async function POST(req: Request) {
   const lines: string[] = [
     `From: ${fromEmail ?? contact.email}`,
     `To: ${contact.email}`,
-    `Subject: ${subject}`,
+    `Subject: ${mimeEncodeHeader(subject)}`,
     "Content-Type: text/plain; charset=utf-8",
   ];
   if (inReplyTo) lines.push(`In-Reply-To: ${inReplyTo}`);

@@ -10,6 +10,16 @@ const SENT_STAGES = new Set(
   Object.values(STAGE_TRANSITIONS).map((t) => t.next)
 );
 
+// Mirror of agent.py::ACTION_LABEL, keyed by drafted stage.
+const STAGE_TO_LABEL: Record<string, string> = {
+  first_touch_drafted:      "Cold Outreach/First Touch",
+  followup1_drafted:        "Cold Outreach/Follow-up #1",
+  followup2_drafted:        "Cold Outreach/Follow-up #2",
+  breakup_drafted:          "Cold Outreach/Break-up",
+  applied_intro_drafted:    "Cold Outreach/Applied Intro",
+  applied_followup_drafted: "Cold Outreach/Applied Follow-up",
+};
+
 function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -139,9 +149,10 @@ export async function POST(req: Request) {
   const sentMessageId = sentMsg?.id ?? null;
   const sentThreadId = sentMsg?.threadId ?? null;
 
-  // Step 7: try to fetch sent body
+  // Step 7: try to fetch sent body + RFC822 Message-ID (for latest_message_id)
   let sentBody: string | null = draftRow.body;
   let sentSubject: string | null = draftRow.subject;
+  let rfcMessageId: string | null = null;
   if (sentMessageId) {
     try {
       const getMsgParams: gmail_v1.Params$Resource$Users$Messages$Get = {
@@ -155,6 +166,10 @@ export async function POST(req: Request) {
         (h) => h.name?.toLowerCase() === "subject"
       );
       if (subjectHeader?.value) sentSubject = subjectHeader.value;
+      const messageIdHeader = headers.find(
+        (h) => h.name?.toLowerCase() === "message-id"
+      );
+      if (messageIdHeader?.value) rfcMessageId = messageIdHeader.value;
       const bodyData = msgRes.data.payload?.body?.data;
       if (bodyData) {
         sentBody = Buffer.from(bodyData, "base64url").toString("utf8");
@@ -171,13 +186,16 @@ export async function POST(req: Request) {
   const today = todayUTC();
 
   // Step 10: update contact
+  // latest_message_id receives the RFC822 Message-ID so the agent can use it for
+  // follow-up In-Reply-To threading. contacts.message_id is agent-managed (first-touch
+  // only) and must never be written here.
   await supabase
     .from("contacts")
     .update({
       stage: nextStage,
       last_emailed: today,
       followup_date: followupDate,
-      ...(sentMessageId ? { message_id: sentMessageId } : {}),
+      ...(rfcMessageId ? { latest_message_id: rfcMessageId } : {}),
     })
     .eq("id", contactId);
 
@@ -199,7 +217,8 @@ export async function POST(req: Request) {
       {
         contact_id: Number(contactId),
         direction: "outgoing",
-        message_id: sentMessageId,
+        // Prefer the RFC822 Message-ID from sent headers; fall back to Gmail hex ID.
+        message_id: rfcMessageId ?? sentMessageId,
         subject: sentSubject,
         body: sentBody,
         sent_at: new Date().toISOString(),
@@ -218,7 +237,29 @@ export async function POST(req: Request) {
     completed_at: new Date().toISOString(),
   });
 
-  // Step 14: return
+  // Step 14: apply Gmail label to sent message — best-effort, never blocks the response.
+  // Labels applied to the draft are lost when update-draft replaces the message object,
+  // so we re-apply here on the final sent message.
+  const labelName = STAGE_TO_LABEL[stage];
+  if (labelName && sentMessageId) {
+    try {
+      const labelsRes = await gmail.users.labels.list({ userId: "me" });
+      const label = (labelsRes.data.labels ?? []).find(
+        (l) => l.name?.toLowerCase() === labelName.toLowerCase()
+      );
+      if (label?.id) {
+        await gmail.users.messages.modify({
+          userId: "me",
+          id: sentMessageId,
+          requestBody: { addLabelIds: [label.id] },
+        });
+      }
+    } catch (err) {
+      console.warn(`[send-draft] label warning for contact ${contactId}:`, err);
+    }
+  }
+
+  // Step 15: return
   return Response.json(
     { ok: true, message_id: sentMessageId, stage: nextStage },
     { status: 200 }

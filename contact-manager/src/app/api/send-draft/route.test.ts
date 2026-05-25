@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Hoist mocks so they are available before module-level imports.
-const { mockDraftsSend, mockMessagesGet, mockGetGmail } = vi.hoisted(() => ({
-  mockDraftsSend: vi.fn(),
-  mockMessagesGet: vi.fn(),
-  mockGetGmail: vi.fn(),
-}));
+const { mockDraftsSend, mockMessagesGet, mockMessagesModify, mockLabelsList, mockGetGmail } =
+  vi.hoisted(() => ({
+    mockDraftsSend: vi.fn(),
+    mockMessagesGet: vi.fn(),
+    mockMessagesModify: vi.fn(),
+    mockLabelsList: vi.fn(),
+    mockGetGmail: vi.fn(),
+  }));
 
 vi.mock("@/lib/gmail-server", () => ({ getGmailClient: mockGetGmail }));
 
@@ -16,6 +19,10 @@ const mockSingle = vi.hoisted(() => vi.fn());
 const mockLimit = vi.hoisted(() => vi.fn(() => ({ single: mockSingle })));
 const mockInsert = vi.hoisted(() => vi.fn());
 const mockUpsert = vi.hoisted(() => vi.fn());
+// Separate mock for contacts.update so tests can assert the update payload.
+const mockContactsUpdate = vi.hoisted(() =>
+  vi.fn(() => ({ eq: vi.fn(() => ({ data: null, error: null })) }))
+);
 
 vi.mock("@supabase/supabase-js", () => {
   const chain: Record<string, unknown> = {};
@@ -44,10 +51,10 @@ vi.mock("@supabase/supabase-js", () => {
         if (table === "email_messages") {
           return { upsert: mockUpsert };
         }
-        // contacts
+        // contacts — use named mock so tests can inspect the update payload
         return {
           select: vi.fn(() => chain),
-          update: vi.fn(() => updateChain),
+          update: mockContactsUpdate,
         };
       }),
     })),
@@ -88,12 +95,16 @@ beforeEach(() => {
   mockGetGmail.mockReturnValue({
     users: {
       drafts: { send: mockDraftsSend },
-      messages: { get: mockMessagesGet },
+      messages: { get: mockMessagesGet, modify: mockMessagesModify },
+      labels: { list: mockLabelsList },
     },
   });
   mockInsert.mockResolvedValue({ data: null, error: null });
   mockUpsert.mockResolvedValue({ data: null, error: null });
   mockMessagesGet.mockResolvedValue({ data: { payload: { headers: [], body: {} } } });
+  mockLabelsList.mockResolvedValue({ data: { labels: [] } });
+  mockMessagesModify.mockResolvedValue({ data: {} });
+  mockContactsUpdate.mockReturnValue({ eq: vi.fn(() => ({ data: null, error: null })) });
 });
 
 describe("POST /api/send-draft", () => {
@@ -208,5 +219,66 @@ describe("POST /api/send-draft", () => {
 
     const res = await POST(req({ contact_id: "1" }));
     expect(res.status).toBe(502);
+  });
+
+  it("stores RFC822 Message-ID in latest_message_id and not in message_id", async () => {
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+    mockDraftsSend.mockResolvedValueOnce({
+      data: { id: "hex-msg-id", threadId: "thread-01" },
+    });
+    mockMessagesGet.mockResolvedValueOnce({
+      data: {
+        payload: {
+          headers: [
+            { name: "Message-ID", value: "<rfc822abc@gmail.com>" },
+            { name: "Subject", value: "Hello Dana" },
+          ],
+          body: {},
+        },
+      },
+    });
+
+    const res = await POST(req({ contact_id: "1" }));
+    expect(res.status).toBe(200);
+
+    const updatePayload = mockContactsUpdate.mock.calls[0][0] as Record<string, unknown>;
+    expect(updatePayload.latest_message_id).toBe("<rfc822abc@gmail.com>");
+    expect(updatePayload).not.toHaveProperty("message_id");
+  });
+
+  it("applies the correct Gmail label to the sent message", async () => {
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })  // first_touch_drafted
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+    mockDraftsSend.mockResolvedValueOnce({
+      data: { id: "hex-msg-id", threadId: "thread-01" },
+    });
+    mockLabelsList.mockResolvedValueOnce({
+      data: { labels: [{ id: "Label_FT", name: "Cold Outreach/First Touch" }] },
+    });
+
+    await POST(req({ contact_id: "1" }));
+
+    expect(mockMessagesModify).toHaveBeenCalledWith({
+      userId: "me",
+      id: "hex-msg-id",
+      requestBody: { addLabelIds: ["Label_FT"] },
+    });
+  });
+
+  it("does not fail if label application throws", async () => {
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+    mockDraftsSend.mockResolvedValueOnce({
+      data: { id: "hex-msg-id", threadId: "thread-01" },
+    });
+    mockLabelsList.mockRejectedValueOnce(new Error("labels API down"));
+
+    const res = await POST(req({ contact_id: "1" }));
+    // Label is best-effort — send still succeeds
+    expect(res.status).toBe(200);
   });
 });

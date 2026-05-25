@@ -130,14 +130,20 @@ tests/
 - Fetches contact + latest `draft_history` row with `sent_body IS NULL`.
 - Calls `gmail.users.drafts.send({ id: gmail_draft_id })`.
 - Flips contact `stage` to `*_sent`, sets `last_emailed` + `followup_date`.
+- Reads RFC822 `Message-ID` from sent message headers and writes it to `contacts.latest_message_id`
+  (never writes `contacts.message_id` — that column is agent-managed, first-touch only).
 - Updates `draft_history` with sent content. Inserts `email_messages` + `agent_events`.
+- Applies the stage-appropriate Gmail label to the sent message (best-effort, via `STAGE_TO_LABEL`
+  map that mirrors `agent.py::ACTION_LABEL`). Label application never blocks the response.
 - Idempotent: returns `{ already_sent: true }` if stage is already `*_sent`.
 - Status codes: 400 (missing id), 404 (contact not found), 409 (wrong stage),
   410 (no draft ID or draft deleted from Gmail), 401 (auth failure), 502 (Gmail error).
 
 **POST `/api/update-draft`** — body: `{ contact_id: string, subject: string, body: string }`
 - Reads existing draft headers (In-Reply-To, References) via `drafts.get` to preserve threading.
-- Calls `drafts.update` with a new RFC822 message. Persists edits to `draft_history`.
+- Calls `drafts.update` with a new RFC822 message. Non-ASCII characters in Subject are encoded
+  using RFC 2047 MIME-word encoding (`=?utf-8?b?...?=`) via `mimeEncodeHeader()`.
+- Persists edits to `draft_history`.
 - Status codes: 400 (missing fields), 404/409/410 same as send-draft, 502 (Gmail error).
 
 **POST `/api/trash-message`** — body: `{ message_id: string }`

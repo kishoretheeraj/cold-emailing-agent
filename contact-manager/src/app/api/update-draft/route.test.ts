@@ -119,4 +119,43 @@ describe("POST /api/update-draft", () => {
     );
     expect(res.status).toBe(502);
   });
+
+  it("MIME-encodes non-ASCII Subject header (em dash → =?utf-8?b?...?=)", async () => {
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+
+    const emDashSubject = "Fellow Dartmouth alum — Summer 2026 internship";
+    const res = await POST(req({ contact_id: "1", subject: emDashSubject, body: "b" }));
+    expect(res.status).toBe(200);
+
+    const call = mockDraftsUpdate.mock.calls[0][0] as {
+      requestBody: { message: { raw: string } };
+    };
+    const rawPadded = call.requestBody.message.raw.replace(/-/g, "+").replace(/_/g, "/");
+    const rawMsg = Buffer.from(rawPadded, "base64").toString("utf8");
+
+    // Subject must use MIME-word encoding, not raw UTF-8 bytes
+    expect(rawMsg).toContain("Subject: =?utf-8?b?");
+    expect(rawMsg).not.toContain(emDashSubject);
+  });
+
+  it("leaves ASCII-only Subject unencoded", async () => {
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+
+    const asciiSubject = "Re: Hello World";
+    const res = await POST(req({ contact_id: "1", subject: asciiSubject, body: "b" }));
+    expect(res.status).toBe(200);
+
+    const call = mockDraftsUpdate.mock.calls[0][0] as {
+      requestBody: { message: { raw: string } };
+    };
+    const rawPadded = call.requestBody.message.raw.replace(/-/g, "+").replace(/_/g, "/");
+    const rawMsg = Buffer.from(rawPadded, "base64").toString("utf8");
+
+    expect(rawMsg).toContain(`Subject: ${asciiSubject}`);
+    expect(rawMsg).not.toContain("=?utf-8?b?");
+  });
 });
