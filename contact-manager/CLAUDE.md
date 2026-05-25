@@ -140,7 +140,11 @@ tests/
   410 (no draft ID or draft deleted from Gmail), 401 (auth failure), 502 (Gmail error).
 
 **POST `/api/update-draft`** — body: `{ contact_id: string, subject: string, body: string }`
-- Reads existing draft headers (In-Reply-To, References) via `drafts.get` to preserve threading.
+- Reads existing draft headers (In-Reply-To, References, From) via `drafts.get`.
+- If `In-Reply-To` is present (follow-up), searches Gmail for the parent message
+  (`rfc822msgid:` query) and passes its `threadId` to `drafts.update` — this ensures the
+  draft lands in the correct conversation even if the Python agent created it via IMAP APPEND
+  (which doesn't set a threadId). Lookup is best-effort; failure is non-fatal.
 - Calls `drafts.update` with a new RFC822 message. Non-ASCII characters in Subject are encoded
   using RFC 2047 MIME-word encoding (`=?utf-8?b?...?=`) via `mimeEncodeHeader()`.
 - Persists edits to `draft_history`.
