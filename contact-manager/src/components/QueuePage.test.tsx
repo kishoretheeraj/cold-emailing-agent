@@ -37,12 +37,13 @@ vi.mock("@/components/ui/Tooltip", () => ({
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
-const { selectContactsMock, selectDraftsMock, selectEventsMock, updateMock } =
+const { selectContactsMock, selectDraftsMock, selectEventsMock, updateMock, neqMock } =
   vi.hoisted(() => ({
     selectContactsMock: vi.fn(),
     selectDraftsMock: vi.fn(),
     selectEventsMock: vi.fn(),
     updateMock: vi.fn(),
+    neqMock: vi.fn(),
   }));
 
 vi.mock("@/lib/supabase", () => {
@@ -56,6 +57,7 @@ vi.mock("@/lib/supabase", () => {
     // chain to be thenable. We make `order` return a new object for the
     // contacts chain (which actually calls the terminal).
     // Simplification: make the chain itself thenable via `then`.
+    chain.neq = vi.fn((...args: unknown[]) => { neqMock(...args); return chain; });
     chain.then = terminalMock;
     return chain;
   }
@@ -475,6 +477,13 @@ describe("QueuePage — Skip and Mark Dead", () => {
     );
     // Supabase update should NOT fire immediately
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("fetchData excludes reply_status=dead contacts via neq filter", async () => {
+    render(<QueuePage />);
+    await waitFor(() => screen.getByRole("heading", { name: "Bob Martinez" }));
+
+    expect(neqMock).toHaveBeenCalledWith("reply_status", "dead");
   });
 });
 

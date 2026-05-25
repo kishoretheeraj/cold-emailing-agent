@@ -107,6 +107,7 @@ export function QueuePage() {
       .select("*")
       .in("stage", [...QUEUE_STAGES])
       .is("deleted_at", null)
+      .neq("reply_status", "dead")
       .order("tier", { ascending: true })
       .order("created_at", { ascending: false });
 
