@@ -125,6 +125,27 @@ export async function POST(req: Request) {
     // Non-fatal — proceed without threading headers
   }
 
+  // For follow-ups, look up the parent message's threadId so Gmail keeps the reply
+  // in the same conversation. The draft may lack a threadId if the Python agent
+  // fell back to IMAP APPEND (which strips threadId); this lookup repairs it.
+  let parentThreadId: string | null = null;
+  if (inReplyTo) {
+    try {
+      const clean = inReplyTo.trim().replace(/^<|>$/g, "");
+      const searchRes = await gmail.users.messages.list({
+        userId: "me",
+        q: `rfc822msgid:${clean}`,
+        maxResults: 1,
+      });
+      const parentMsg = searchRes.data.messages?.[0];
+      if (parentMsg?.threadId) {
+        parentThreadId = parentMsg.threadId;
+      }
+    } catch {
+      // Non-fatal — proceed without threadId if lookup fails
+    }
+  }
+
   // Build RFC822 message with provided subject/body and preserved headers.
   const lines: string[] = [
     `From: ${fromEmail ?? contact.email}`,
@@ -141,7 +162,12 @@ export async function POST(req: Request) {
     const updateParams: gmail_v1.Params$Resource$Users$Drafts$Update = {
       userId: "me",
       id: draftRow.gmail_draft_id,
-      requestBody: { message: { raw: rawMsg } },
+      requestBody: {
+        message: {
+          raw: rawMsg,
+          ...(parentThreadId ? { threadId: parentThreadId } : {}),
+        },
+      },
     };
     await gmail.users.drafts.update(updateParams);
   } catch {

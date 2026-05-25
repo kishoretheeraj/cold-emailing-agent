@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockDraftsGet, mockDraftsUpdate, mockGetGmail } = vi.hoisted(() => ({
+const { mockDraftsGet, mockDraftsUpdate, mockMessagesList, mockGetGmail } = vi.hoisted(() => ({
   mockDraftsGet: vi.fn(),
   mockDraftsUpdate: vi.fn(),
+  mockMessagesList: vi.fn(),
   mockGetGmail: vi.fn(),
 }));
 
@@ -60,10 +61,12 @@ beforeEach(() => {
   mockGetGmail.mockReturnValue({
     users: {
       drafts: { get: mockDraftsGet, update: mockDraftsUpdate },
+      messages: { list: mockMessagesList },
     },
   });
   mockDraftsGet.mockResolvedValue({ data: { message: { payload: { headers: [] } } } });
   mockDraftsUpdate.mockResolvedValue({ data: {} });
+  mockMessagesList.mockResolvedValue({ data: { messages: [] } });
 });
 
 describe("POST /api/update-draft", () => {
@@ -138,6 +141,72 @@ describe("POST /api/update-draft", () => {
     // Subject must use MIME-word encoding, not raw UTF-8 bytes
     expect(rawMsg).toContain("Subject: =?utf-8?b?");
     expect(rawMsg).not.toContain(emDashSubject);
+  });
+
+  it("sets threadId when In-Reply-To parent is found in Gmail", async () => {
+    mockDraftsGet.mockResolvedValueOnce({
+      data: {
+        message: {
+          payload: {
+            headers: [{ name: "In-Reply-To", value: "<parent-msg@gmail.com>" }],
+          },
+        },
+      },
+    });
+    mockMessagesList.mockResolvedValueOnce({
+      data: { messages: [{ id: "parent-hex", threadId: "thread-abc" }] },
+    });
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+
+    const res = await POST(req({ contact_id: "1", subject: "Re: Hello", body: "b" }));
+    expect(res.status).toBe(200);
+
+    const call = mockDraftsUpdate.mock.calls[0][0] as {
+      requestBody: { message: { threadId?: string } };
+    };
+    expect(call.requestBody.message.threadId).toBe("thread-abc");
+  });
+
+  it("omits threadId when In-Reply-To parent is not found", async () => {
+    mockDraftsGet.mockResolvedValueOnce({
+      data: {
+        message: {
+          payload: {
+            headers: [{ name: "In-Reply-To", value: "<missing@gmail.com>" }],
+          },
+        },
+      },
+    });
+    mockMessagesList.mockResolvedValueOnce({ data: { messages: [] } });
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+
+    const res = await POST(req({ contact_id: "1", subject: "Re: Hello", body: "b" }));
+    expect(res.status).toBe(200);
+
+    const call = mockDraftsUpdate.mock.calls[0][0] as {
+      requestBody: { message: { threadId?: string } };
+    };
+    expect(call.requestBody.message.threadId).toBeUndefined();
+  });
+
+  it("does not call messages.list when there is no In-Reply-To (first-touch)", async () => {
+    // mockDraftsGet already returns empty headers by default (no In-Reply-To)
+    mockSingle
+      .mockResolvedValueOnce({ data: contact, error: null })
+      .mockResolvedValueOnce({ data: draftRow, error: null });
+
+    const res = await POST(req({ contact_id: "1", subject: "Hello", body: "b" }));
+    expect(res.status).toBe(200);
+    expect(mockMessagesList).not.toHaveBeenCalled();
+
+    const call = mockDraftsUpdate.mock.calls[0][0] as {
+      requestBody: { message: { threadId?: string } };
+    };
+    expect(call.requestBody.message.threadId).toBeUndefined();
   });
 
   it("leaves ASCII-only Subject unencoded", async () => {
