@@ -2,7 +2,9 @@ name: Reply Monitor
 
 on:
   schedule:
-    - cron: '23 */2 * * 1-5'  # Every 2 hours at :23, Mon-Fri — off-peak minute
+    - cron: '*/20 13-23 * * *'  # Every 20 min, 8 AM – 6:59 PM EST (13–23 UTC)
+    - cron: '*/20 0-4 * * *'    # Every 20 min, 7 PM – 11:59 PM EST (0–4 UTC)
+    - cron: '30 5-12 * * *'     # Hourly at :30, 12:30 AM – 7:30 AM EST (5–12 UTC)
   workflow_dispatch:           # Manual trigger from GitHub Actions UI
 
 jobs:

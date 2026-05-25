@@ -215,8 +215,10 @@ Two workflows live in `.github/workflows/`:
   `workflow_dispatch` — the dedup check prevents the scheduled run from
   duplicating it the same day. Requires `GITHUB_DISPATCH_TOKEN` env var
   (actions: write on the repo).
-- **`monitor.yml`** — runs `monitor.py` every 2 hours Mon-Fri at :23
-  (cron `23 */2 * * 1-5`).
+- **`monitor.yml`** — runs `monitor.py` every day (incl. weekends) on two schedules
+  (EST = UTC-5): every 20 minutes from 8 AM–11:59 PM EST (crns `*/20 13-23 * * *`
+  and `*/20 0-4 * * *`), and hourly at :30 from 12:30 AM–7:30 AM EST
+  (cron `30 5-12 * * *`).
 
 Both workflows: upload the relevant `.log` file as an artifact (30-day
 retention), and run `notify_failure.py` in an `if: failure()` step.
