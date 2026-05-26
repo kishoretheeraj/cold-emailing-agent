@@ -44,3 +44,11 @@ test("Prompts link navigates to /prompts", async ({ page }) => {
     timeout: 10_000,
   });
 });
+
+test("nav bar is present on /queue (global layout)", async ({ page }) => {
+  await mockSupabase(page);
+  await page.goto("/queue");
+  await expect(page.getByRole("link", { name: /^overview$/i })).toBeVisible();
+  await expect(page.getByRole("link", { name: /^replies$/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /run agent/i })).toBeVisible();
+});
