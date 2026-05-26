@@ -252,10 +252,9 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - `npm test` — Vitest unit tests. Must pass. **0 failures required — no exceptions.**
 - `npm run test:e2e` — Playwright smoke tests. Must pass. **0 failures required — no exceptions.**
 - **Deploy is automatic** — pushing to `main` triggers Vercel auto-deploy via the GitHub
-  integration. Vercel project `rootDirectory` is set to `contact-manager` and
-  `commandForIgnoringBuildStep` is `git diff HEAD^ HEAD --quiet -- contact-manager/`, so
-  pushes that only touch Python files (agent.py, monitor.py, etc.) are skipped — only
-  `contact-manager/` changes trigger a build.
+  integration. Vercel project `rootDirectory` is set to `contact-manager`. Every push to
+  `main` triggers a build (~50s); the "Ignored Build Step" setting is intentionally left
+  blank so no builds are silently skipped.
 - If a **manual deploy** is ever needed, run from repo root with project ID override:
   ```
   VERCEL_PROJECT_ID=prj_Vf7rorfOlTiNHB5xKFcybUKf0ysV VERCEL_ORG_ID=team_BynuvJ8k5TWQEFKW0kvh046u vercel deploy --prod
