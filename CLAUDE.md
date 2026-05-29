@@ -161,8 +161,13 @@ Follow-up emails must land in the same Gmail thread as the original.
   calls `update_latest_message_id` after every successful sent detection. The
   agent reads `latest_message_id` (falling back to `message_id`) when building
   the `in_reply_to` for follow-up drafts. `message_id` is kept as the
-  first-touch ID for incoming reply detection and is never overwritten by
-  follow-up detection.
+  first-touch ID and is never overwritten by follow-up detection.
+- **Reply detection lookup**: `detect_replies()` builds `by_message_id` as a
+  union of `message_id` AND `latest_message_id` so that replies referencing
+  only the immediate parent email (common in webmail clients) are still detected.
+  It also includes contacts in `*_drafted` stages (not just `*_sent`), so
+  replies that arrive before the next draft has been reviewed and sent are
+  captured. The `classifier_status IS NOT NULL` guard prevents double-classification.
 - `apply_label_to_latest_draft(label_name, gmail_draft_id=None)`: when
   `gmail_draft_id` is provided and OAuth is available, uses the Gmail API
   `messages.modify` to add the label (no IMAP COPY, no duplicates). Falls back

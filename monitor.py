@@ -332,17 +332,31 @@ def detect_replies(prompts=None):
     _prompts = prompts or {}
     contacts = get_sent_contacts()
 
+    # Also check drafted contacts: someone may reply to an earlier email before
+    # the next draft has been sent (e.g. reply arrives while followup1_drafted
+    # is still pending review). Deduplicate by contact id.
+    seen_ids = {c["id"] for c in contacts}
+    for c in get_drafted_contacts():
+        if c["id"] not in seen_ids:
+            contacts.append(c)
+            seen_ids.add(c["id"])
+
     log.info(f"START | reply-detection | {len(contacts)} contacts to check")
     if not contacts:
         log.info("DONE | reply-detection | 0 contacts")
         return []
 
-    # Build lookup: stored message_id → contact
+    # Build lookup: stored message_id (and latest_message_id) → contact.
+    # latest_message_id covers replies to follow-up emails when the email
+    # client doesn't propagate the full References chain.
     by_message_id = {}
     for c in contacts:
         mid = (c.get("message_id") or "").strip("<>")
         if mid:
             by_message_id[mid] = c
+        latest_mid = (c.get("latest_message_id") or "").strip("<>")
+        if latest_mid and latest_mid != mid:
+            by_message_id[latest_mid] = c
 
     if not by_message_id:
         log.info("DONE | reply-detection | no contacts with message_id")
