@@ -62,6 +62,32 @@ test("/import — pasting valid JSON enables button and enters review phase", as
   await page.screenshot({ path: "tests/e2e/screenshots/14-import-review.png" });
 });
 
+test("/import review — company and role fields are visible and editable", async ({
+  page,
+}) => {
+  await page.goto("/import");
+  await page.getByRole("textbox").fill(sampleContacts);
+  await page.getByRole("button", { name: /review contacts/i }).click();
+
+  await expect(page.getByRole("button", { name: /skip/i }).first()).toBeVisible({
+    timeout: 5_000,
+  });
+
+  // Company field pre-filled and editable
+  const companyInput = page.getByPlaceholder("Company name");
+  await expect(companyInput).toBeVisible();
+  await expect(companyInput).toHaveValue("Workiva");
+  await companyInput.fill("Workiva Inc");
+  await expect(companyInput).toHaveValue("Workiva Inc");
+
+  // Role field pre-filled
+  const roleInput = page.getByPlaceholder("Job title");
+  await expect(roleInput).toBeVisible();
+  await expect(roleInput).toHaveValue("Director of Product Marketing");
+
+  await page.screenshot({ path: "tests/e2e/screenshots/14-import-editable-fields.png" });
+});
+
 test("/import — non-array JSON keeps button disabled", async ({ page }) => {
   await page.goto("/import");
   // Object (not array) starts with { so the button stays disabled

@@ -559,10 +559,7 @@ export function ReviewFlow({
         <div className="rounded-xl border border-border bg-surface overflow-hidden flex divide-x divide-border">
           {/* ── Left column — identity ── */}
           <div className="w-2/5 shrink-0 p-4 space-y-3">
-            <div className="text-base font-bold text-fg leading-snug">
-              {contact.name || <span className="text-fg-dim italic">No name</span>}
-            </div>
-
+            {/* Badges */}
             <div className="space-y-1.5">
               {contact.dartmouth && (
                 <div>
@@ -579,92 +576,93 @@ export function ReviewFlow({
 
               {contact.missing_required &&
                 (contact.required_missing_fields ?? []).length > 0 && (
-                  <div className="space-y-2">
-                    <span className="inline-flex items-center rounded-full bg-red-500/15 border border-red-500/20 px-2 py-0.5 text-xs text-red-300">
-                      Missing: {(contact.required_missing_fields ?? []).join(", ")}
-                    </span>
-                    {(contact.required_missing_fields ?? []).includes("name") && (
-                      <div>
-                        <Label>Name</Label>
-                        <TextInput
-                          value={contact.name ?? ""}
-                          placeholder="First and last name"
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const prev = contacts[currentIndex];
-                            const newFields = (prev.required_missing_fields ?? []).filter(
-                              (f) => f !== "name" || !val.trim()
-                            );
-                            onUpdate(currentIndex, {
-                              ...prev,
-                              name: val,
-                              required_missing_fields: newFields,
-                              missing_required: newFields.length > 0,
-                            });
-                          }}
-                        />
-                      </div>
-                    )}
-                    {(contact.required_missing_fields ?? []).includes("company") && (
-                      <div>
-                        <Label>Company</Label>
-                        <TextInput
-                          value={contact.company ?? ""}
-                          placeholder="Company name"
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const prev = contacts[currentIndex];
-                            const newFields = (prev.required_missing_fields ?? []).filter(
-                              (f) => f !== "company" || !val.trim()
-                            );
-                            onUpdate(currentIndex, {
-                              ...prev,
-                              company: val,
-                              required_missing_fields: newFields,
-                              missing_required: newFields.length > 0,
-                            });
-                          }}
-                        />
-                      </div>
-                    )}
-                  </div>
+                  <span className="inline-flex items-center rounded-full bg-red-500/15 border border-red-500/20 px-2 py-0.5 text-xs text-red-300">
+                    Missing: {(contact.required_missing_fields ?? []).join(", ")}
+                  </span>
                 )}
 
               {contact.missing_email && (
-                <div className="space-y-1">
-                  <span className="inline-flex items-center rounded-full bg-red-500/15 border border-red-500/20 px-2 py-0.5 text-xs text-red-300">
-                    No email
-                  </span>
-                  <div>
-                    <Label>Email address</Label>
-                    <TextInput
-                      type="email"
-                      value={contact.email ?? ""}
-                      placeholder="Add email to import this contact"
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        onUpdate(currentIndex, {
-                          ...contacts[currentIndex],
-                          email: val,
-                          missing_email: !val.includes("@"),
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
+                <span className="inline-flex items-center rounded-full bg-red-500/15 border border-red-500/20 px-2 py-0.5 text-xs text-red-300">
+                  No email
+                </span>
               )}
             </div>
 
-            {!contact.missing_email && contact.email && (
-              <div className="text-xs text-fg-muted truncate">{contact.email}</div>
-            )}
+            {/* Always-editable identity fields */}
+            <div>
+              <Label>Name</Label>
+              <TextInput
+                value={contact.name ?? ""}
+                placeholder="First and last name"
+                className={(contact.required_missing_fields ?? []).includes("name") ? "border-red-500" : ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const prev = contacts[currentIndex];
+                  const newFields = (prev.required_missing_fields ?? []).filter(
+                    (f) => f !== "name" || !val.trim()
+                  );
+                  onUpdate(currentIndex, {
+                    ...prev,
+                    name: val,
+                    required_missing_fields: newFields,
+                    missing_required: newFields.length > 0,
+                  });
+                }}
+              />
+            </div>
 
-            <div className="space-y-0.5">
-              {!contact.missing_required ||
-              !(contact.required_missing_fields ?? []).includes("company") ? (
-                <div className="text-xs font-medium text-fg-muted">{contact.company}</div>
-              ) : null}
-              <div className="text-xs text-fg-dim">{contact.role}</div>
+            <div>
+              <Label>Email</Label>
+              <TextInput
+                type="email"
+                value={contact.email ?? ""}
+                placeholder="email@example.com"
+                className={contact.missing_email ? "border-red-500" : ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  onUpdate(currentIndex, {
+                    ...contacts[currentIndex],
+                    email: val,
+                    missing_email: !val.includes("@"),
+                  });
+                }}
+              />
+            </div>
+
+            <div>
+              <Label>Company</Label>
+              <TextInput
+                value={contact.company ?? ""}
+                placeholder="Company name"
+                className={(contact.required_missing_fields ?? []).includes("company") ? "border-red-500" : ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const prev = contacts[currentIndex];
+                  const newFields = (prev.required_missing_fields ?? []).filter(
+                    (f) => f !== "company" || !val.trim()
+                  );
+                  onUpdate(currentIndex, {
+                    ...prev,
+                    company: val,
+                    required_missing_fields: newFields,
+                    missing_required: newFields.length > 0,
+                  });
+                }}
+              />
+            </div>
+
+            <div>
+              <Label>Role</Label>
+              <TextInput
+                value={contact.role ?? ""}
+                placeholder="Job title"
+                onChange={(e) => {
+                  onUpdate(currentIndex, {
+                    ...contacts[currentIndex],
+                    role: e.target.value,
+                  });
+                }}
+              />
             </div>
           </div>
 

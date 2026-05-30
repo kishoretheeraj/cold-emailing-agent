@@ -73,7 +73,7 @@ describe("ReviewFlow — reviewing phase", () => {
       makeContact({ name: "Carol Lee", email: "carol@example.com" }),
     ];
     render(<ReviewFlow {...makeProps(contacts)} />);
-    expect(screen.getByText("Alice Smith")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Alice Smith")).toBeInTheDocument();
     expect(screen.getByText(/Reviewing 1 of 3/i)).toBeInTheDocument();
   });
 
@@ -212,7 +212,7 @@ describe("ReviewFlow — validation", () => {
     const { rerender } = render(<ReviewFlow {...makeProps(contacts, { onUpdate })} />);
 
     // Type an invalid email in the email input
-    const emailInput = screen.getByPlaceholderText(/Add email to import/i);
+    const emailInput = screen.getByPlaceholderText(/email@example\.com/i);
     await userEvent.type(emailInput, "asdf");
 
     // Simulate the onUpdate having been called and update contacts
@@ -400,6 +400,62 @@ describe("ReviewFlow — importing phase", () => {
     await user.click(screen.getByRole("button", { name: /Add more/i }));
 
     expect(onAddMore).toHaveBeenCalled();
+  });
+});
+
+describe("ReviewFlow — always-editable identity fields", () => {
+  it("company TextInput renders with pre-filled value", () => {
+    const contacts = [makeContact({ company: "Acme Corp" })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    expect(screen.getByDisplayValue("Acme Corp")).toBeInTheDocument();
+  });
+
+  it("role TextInput renders with pre-filled value", () => {
+    const contacts = [makeContact({ role: "VP Engineering" })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    expect(screen.getByDisplayValue("VP Engineering")).toBeInTheDocument();
+  });
+
+  it("editing company field calls onUpdate with new company value", () => {
+    const onUpdate = vi.fn();
+    const contacts = [makeContact({ company: "OldCo" })];
+    render(<ReviewFlow {...makeProps(contacts, { onUpdate })} />);
+
+    fireEvent.change(screen.getByDisplayValue("OldCo"), {
+      target: { value: "NewCo" },
+    });
+
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      0,
+      expect.objectContaining({ company: "NewCo" })
+    );
+  });
+
+  it("editing role field calls onUpdate with new role value", () => {
+    const onUpdate = vi.fn();
+    const contacts = [makeContact({ role: "Old Title" })];
+    render(<ReviewFlow {...makeProps(contacts, { onUpdate })} />);
+
+    fireEvent.change(screen.getByDisplayValue("Old Title"), {
+      target: { value: "New Title" },
+    });
+
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      0,
+      expect.objectContaining({ role: "New Title" })
+    );
+  });
+
+  it("name TextInput always renders even when name is not in missing_required", () => {
+    const contacts = [makeContact({ name: "Bob Jones" })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    expect(screen.getByDisplayValue("Bob Jones")).toBeInTheDocument();
+  });
+
+  it("email TextInput always renders even when missing_email is false", () => {
+    const contacts = [makeContact({ email: "bob@example.com", missing_email: false })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    expect(screen.getByDisplayValue("bob@example.com")).toBeInTheDocument();
   });
 });
 
