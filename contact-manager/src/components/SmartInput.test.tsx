@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const insertMock = vi.fn();
+const { insertMock, checkDuplicateMock } = vi.hoisted(() => ({
+  insertMock: vi.fn(),
+  checkDuplicateMock: vi.fn(),
+}));
 vi.mock("@/lib/supabase", () => ({
   supabase: {
     from: vi.fn(() => ({ insert: insertMock })),
   },
   resolveInsertError: vi.fn((err: { message: string }) => Promise.resolve(err.message)),
+  checkDuplicateEmails: checkDuplicateMock,
 }));
 
 import { SmartInput } from "./SmartInput";
@@ -15,6 +19,8 @@ import { SmartInput } from "./SmartInput";
 beforeEach(() => {
   insertMock.mockReset();
   insertMock.mockResolvedValue({ error: null });
+  checkDuplicateMock.mockReset();
+  checkDuplicateMock.mockResolvedValue(new Set());
   vi.spyOn(global, "fetch").mockReset();
 });
 
@@ -198,5 +204,26 @@ describe("SmartInput — extraction flow", () => {
     await user.click(screen.getByRole("button", { name: /Confirm & Add Contact/i }));
 
     await waitFor(() => expect(onError).toHaveBeenCalledWith("duplicate email"));
+  });
+
+  it("blocks insert and calls onError when email already exists in DB", async () => {
+    const user = userEvent.setup();
+    mockFetchOk(sample);
+    checkDuplicateMock.mockResolvedValueOnce(new Set(["dana@example.com"]));
+
+    const onError = vi.fn();
+    render(<SmartInput onAdded={() => {}} onError={onError} />);
+
+    await user.type(screen.getByPlaceholderText(/Examples:/), "Dana");
+    await user.click(screen.getByRole("button", { name: /Extract with Claude/i }));
+    await waitFor(() => screen.getByText(/Preview/));
+    await user.click(screen.getByRole("button", { name: /Confirm & Add Contact/i }));
+
+    await waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        "A contact with this email is already in your list."
+      )
+    );
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,17 @@ export const supabase = createClient(url, key, {
   auth: { persistSession: false },
 });
 
+/** Returns the set of emails (from the given list) that already exist in the DB. */
+export async function checkDuplicateEmails(emails: string[]): Promise<Set<string>> {
+  const cleaned = [...new Set(emails.map((e) => e.trim()).filter(Boolean))];
+  if (cleaned.length === 0) return new Set();
+  const { data } = await supabase
+    .from("contacts")
+    .select("email")
+    .in("email", cleaned);
+  return new Set((data ?? []).map((r: { email: string }) => r.email));
+}
+
 /**
  * Translates a Supabase insert error into a user-facing message.
  * On unique-constraint violations (code 23505), looks up whether the

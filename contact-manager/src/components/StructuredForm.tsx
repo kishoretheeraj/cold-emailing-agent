@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { supabase, resolveInsertError } from "@/lib/supabase";
+import { supabase, resolveInsertError, checkDuplicateEmails } from "@/lib/supabase";
 import { US_STATES } from "@/lib/timezone";
 import {
   Label,
@@ -85,6 +85,8 @@ function OutreachForm({
     }
     setSaving(true);
     try {
+      const dupes = await checkDuplicateEmails([email]);
+      if (dupes.size > 0) throw new Error("A contact with this email is already in your list.");
       const { error } = await supabase.from("contacts").insert({
         name,
         email,
@@ -250,6 +252,8 @@ function AppliedForm({
     }
     setSaving(true);
     try {
+      const dupes = await checkDuplicateEmails([email]);
+      if (dupes.size > 0) throw new Error("A contact with this email is already in your list.");
       const { error } = await supabase.from("contacts").insert({
         name,
         email,

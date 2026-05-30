@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { supabase, resolveInsertError } from "@/lib/supabase";
+import { supabase, resolveInsertError, checkDuplicateEmails } from "@/lib/supabase";
 import type { ReviewContact, BulkImportWindow } from "@/lib/types";
 import { Label, TextInput, TierSelector } from "./Field";
 
@@ -14,6 +14,7 @@ type ImportResult = {
   name: string;
   ok: boolean;
   error?: string;
+  duplicate?: boolean;
 };
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -188,9 +189,20 @@ export function ReviewFlow({
     setImportResults(results);
 
     try {
+      const emailsToCheck = toImport.map((c) => c.email ?? "").filter(Boolean);
+      const dupes = await checkDuplicateEmails(emailsToCheck);
+
       for (let i = 0; i < toImport.length; i++) {
         const c = toImport[i];
         try {
+          if (c.email && dupes.has(c.email.trim())) {
+            setImportResults((rs) =>
+              rs.map((r, j) =>
+                j === i ? { ...r, ok: false, duplicate: true, error: "Already in your pipeline" } : r
+              )
+            );
+            continue;
+          }
           const { error } = await supabase.from("contacts").insert({
             name: c.name,
             email: c.email,
@@ -245,6 +257,7 @@ export function ReviewFlow({
           dartmouth: c.dartmouth ?? false,
           notes: c.notes,
           resume_url: c.resume_url ?? null,
+          state: c.state ?? null,
           stage: "new",
           reply_status: "no_reply",
         });
@@ -422,10 +435,11 @@ export function ReviewFlow({
 
   if (phase === "done") {
     const okCount = importResults.filter((r) => r.ok).length;
-    const failedCount = importResults.filter((r) => !r.ok).length;
+    const duplicateCount = importResults.filter((r) => r.duplicate).length;
+    const failedCount = importResults.filter((r) => !r.ok && !r.duplicate).length;
     const confirmedContacts = contacts.filter((c) => c.status === "confirmed");
     const failedIndices = importResults
-      .map((r, i) => (!r.ok ? i : -1))
+      .map((r, i) => (!r.ok && !r.duplicate ? i : -1))
       .filter((i) => i >= 0);
 
     return (
@@ -453,6 +467,12 @@ export function ReviewFlow({
             The agent will pick them up on the next scheduled run.
           </p>
         </div>
+
+        {duplicateCount > 0 && (
+          <p className="text-sm text-yellow-300">
+            {duplicateCount} contact{duplicateCount !== 1 ? "s" : ""} already in your pipeline — skipped.
+          </p>
+        )}
 
         {failedCount > 0 && (
           <div className="space-y-2">
@@ -885,6 +905,17 @@ function ImportResultsList({ results }: { results: ImportResult[] }) {
               >
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
+            ) : r.duplicate ? (
+              <svg
+                className="h-4 w-4 text-yellow-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.5}
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
             ) : r.error ? (
               <svg
                 className="h-4 w-4 text-red-400"
@@ -901,15 +932,20 @@ function ImportResultsList({ results }: { results: ImportResult[] }) {
             )}
           </span>
           <span
-            className={`flex-1 text-sm ${r.error ? "text-red-300" : "text-fg"}`}
+            className={`flex-1 text-sm ${r.duplicate ? "text-yellow-300" : r.error ? "text-red-300" : "text-fg"}`}
           >
             {r.name}
           </span>
-          {!r.ok && !r.error && (
+          {!r.ok && !r.error && !r.duplicate && (
             <span className="text-xs text-fg-dim">Waiting...</span>
           )}
           {r.ok && <span className="text-xs text-emerald-400">Added</span>}
-          {r.error && (
+          {r.duplicate && (
+            <span className="text-xs text-yellow-400 truncate max-w-[10rem]">
+              Already in pipeline
+            </span>
+          )}
+          {r.error && !r.duplicate && (
             <span className="text-xs text-red-400 truncate max-w-[10rem]">
               {r.error}
             </span>

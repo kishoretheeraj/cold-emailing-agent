@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// limitMock must be hoisted so it's accessible inside the vi.mock factory.
-const { limitMock } = vi.hoisted(() => ({ limitMock: vi.fn() }));
+// limitMock and inMock must be hoisted so they're accessible inside the vi.mock factory.
+const { limitMock, inMock } = vi.hoisted(() => ({
+  limitMock: vi.fn(),
+  inMock: vi.fn(),
+}));
 
 // Mock @supabase/supabase-js so createClient() returns a controllable client.
 // supabase.ts calls createClient at module load, so the mock must be here rather
@@ -11,16 +14,19 @@ vi.mock("@supabase/supabase-js", () => {
   readChain.select = vi.fn(() => readChain);
   readChain.eq = vi.fn(() => readChain);
   readChain.limit = limitMock;
+  readChain.in = inMock;
   return {
     createClient: vi.fn(() => ({ from: vi.fn(() => readChain) })),
   };
 });
 
-import { resolveInsertError } from "@/lib/supabase";
+import { resolveInsertError, checkDuplicateEmails } from "@/lib/supabase";
 
 beforeEach(() => {
   limitMock.mockReset();
   limitMock.mockResolvedValue({ data: [] });
+  inMock.mockReset();
+  inMock.mockResolvedValue({ data: [] });
 });
 
 describe("resolveInsertError", () => {
@@ -93,5 +99,39 @@ describe("resolveInsertError", () => {
     expect(result).toBe(
       "A contact with this email was previously deleted. Restore them in the Supabase dashboard to re-add."
     );
+  });
+});
+
+describe("checkDuplicateEmails", () => {
+  it("returns empty set for empty input without querying Supabase", async () => {
+    const result = await checkDuplicateEmails([]);
+    expect(result.size).toBe(0);
+    expect(inMock).not.toHaveBeenCalled();
+  });
+
+  it("returns empty set when no emails match", async () => {
+    inMock.mockResolvedValueOnce({ data: [] });
+    const result = await checkDuplicateEmails(["test@example.com"]);
+    expect(result.size).toBe(0);
+  });
+
+  it("returns matched emails as a Set", async () => {
+    inMock.mockResolvedValueOnce({ data: [{ email: "jane@example.com" }] });
+    const result = await checkDuplicateEmails(["jane@example.com", "bob@example.com"]);
+    expect(result.has("jane@example.com")).toBe(true);
+    expect(result.has("bob@example.com")).toBe(false);
+  });
+
+  it("handles null data gracefully", async () => {
+    inMock.mockResolvedValueOnce({ data: null });
+    const result = await checkDuplicateEmails(["x@example.com"]);
+    expect(result.size).toBe(0);
+  });
+
+  it("deduplicates and trims input emails before querying", async () => {
+    inMock.mockResolvedValueOnce({ data: [] });
+    await checkDuplicateEmails(["  a@example.com  ", "a@example.com"]);
+    const calledWith = (inMock.mock.calls[0] as [string, string[]])[1];
+    expect(calledWith).toEqual(["a@example.com"]);
   });
 });

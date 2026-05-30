@@ -4,10 +4,12 @@ import userEvent from "@testing-library/user-event";
 
 const toastErrorMock = vi.fn();
 const toastSuccessMock = vi.fn();
+const toastInfoMock = vi.fn();
 vi.mock("sonner", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
   },
 }));
 
@@ -26,6 +28,7 @@ import { ImportPage } from "./ImportPage";
 beforeEach(() => {
   toastErrorMock.mockReset();
   toastSuccessMock.mockReset();
+  toastInfoMock.mockReset();
 });
 
 const sampleContacts = [
@@ -152,5 +155,37 @@ describe("ImportPage — review phase", () => {
     await user.click(screen.getByRole("button", { name: /back/i }));
     expect(screen.getByRole("heading", { name: /import contacts/i })).toBeInTheDocument();
     expect(screen.queryByTestId("review-flow")).not.toBeInTheDocument();
+  });
+});
+
+describe("ImportPage — intra-batch deduplication", () => {
+  it("removes contacts with duplicate emails and shows info toast", async () => {
+    const user = userEvent.setup();
+    const withDupe = JSON.stringify([
+      { name: "Alice", email: "alice@example.com", company: "Acme", dartmouth: true, mode: "outreach", tier: 2 },
+      { name: "Alice Again", email: "alice@example.com", company: "Acme", dartmouth: true, mode: "outreach", tier: 2 },
+      { name: "Bob", email: "bob@example.com", company: "Corp", dartmouth: true, mode: "outreach", tier: 2 },
+    ]);
+    render(<ImportPage />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: withDupe } });
+    await user.click(screen.getByRole("button", { name: /review contacts/i }));
+
+    // Only 2 unique contacts should reach ReviewFlow
+    expect(screen.getByTestId("contact-count").textContent).toBe("2");
+    expect(toastInfoMock).toHaveBeenCalledWith("1 duplicate email removed from this batch");
+  });
+
+  it("keeps contacts with no email even when there are multiple", async () => {
+    const user = userEvent.setup();
+    const withNoEmail = JSON.stringify([
+      { name: "Alice", email: null, company: "Acme", dartmouth: true, mode: "outreach", tier: 2 },
+      { name: "Bob", email: null, company: "Corp", dartmouth: true, mode: "outreach", tier: 2 },
+    ]);
+    render(<ImportPage />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: withNoEmail } });
+    await user.click(screen.getByRole("button", { name: /review contacts/i }));
+
+    expect(screen.getByTestId("contact-count").textContent).toBe("2");
+    expect(toastInfoMock).not.toHaveBeenCalled();
   });
 });

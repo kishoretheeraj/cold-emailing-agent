@@ -63,7 +63,19 @@ export function ImportPage() {
         toast.error("No contacts found in the pasted JSON");
         return;
       }
-      setContacts(parsed);
+      // Deduplicate within the batch by email (keep first occurrence)
+      const seen = new Set<string>();
+      const deduped = parsed.filter((c) => {
+        if (!c.email) return true;
+        const key = c.email.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const removed = parsed.length - deduped.length;
+      if (removed > 0)
+        toast.info(`${removed} duplicate email${removed > 1 ? "s" : ""} removed from this batch`);
+      setContacts(deduped);
       setPhase("review");
     } catch {
       toast.error("Invalid JSON — paste the output from the TuckConnect bookmarklet");

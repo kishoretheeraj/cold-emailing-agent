@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const insertMock = vi.fn();
+const { insertMock, checkDuplicateMock } = vi.hoisted(() => ({
+  insertMock: vi.fn(),
+  checkDuplicateMock: vi.fn(),
+}));
 vi.mock("@/lib/supabase", () => ({
   supabase: {
     from: vi.fn(() => ({ insert: insertMock })),
   },
   resolveInsertError: vi.fn((err: { message: string }) => Promise.resolve(err.message)),
+  checkDuplicateEmails: checkDuplicateMock,
 }));
 
 import { ReviewFlow } from "./ReviewFlow";
@@ -63,6 +67,8 @@ function makeProps(
 beforeEach(() => {
   insertMock.mockReset();
   insertMock.mockResolvedValue({ error: null });
+  checkDuplicateMock.mockReset();
+  checkDuplicateMock.mockResolvedValue(new Set());
 });
 
 describe("ReviewFlow — reviewing phase", () => {
@@ -517,5 +523,38 @@ describe("SmartInput — bulk mode via onError", () => {
     // which covers the fetch error path for both single and bulk inputs.
     // The onError callback is always used for network/API failures in SmartInput.
     expect(true).toBe(true);
+  });
+});
+
+describe("ReviewFlow — duplicate pre-flight", () => {
+  it("skips duplicate contacts during bulk import and marks them amber", async () => {
+    const user = userEvent.setup();
+    const contacts = [
+      makeContact({ name: "Alice Smith", email: "alice@example.com" }),
+      makeContact({ name: "Bob Jones", email: "bob@example.com" }),
+    ];
+    const onUpdate = vi.fn((i: number, c: ReviewContact) => { contacts[i] = c; });
+    checkDuplicateMock.mockResolvedValueOnce(new Set(["alice@example.com"]));
+
+    render(<ReviewFlow {...makeProps(contacts, { onUpdate })} />);
+
+    // Confirm alice (not last — button says "Confirm and next")
+    await user.click(screen.getByRole("button", { name: /confirm and next/i }));
+    // Confirm bob (last — button says "Confirm and review")
+    await waitFor(() => screen.getByRole("button", { name: /confirm and review/i }));
+    await user.click(screen.getByRole("button", { name: /confirm and review/i }));
+
+    // Summary phase
+    await waitFor(() => screen.getByText(/Ready to import/i));
+    await user.click(screen.getByRole("button", { name: /Import 2 contacts/i }));
+
+    // Bob should be inserted; Alice should be skipped as duplicate
+    await waitFor(() => expect(insertMock).toHaveBeenCalledTimes(1));
+    expect(insertMock.mock.calls[0][0].email).toBe("bob@example.com");
+
+    // Done phase should mention the duplicate
+    await waitFor(() =>
+      expect(screen.getByText(/already in your pipeline/i)).toBeInTheDocument()
+    );
   });
 });

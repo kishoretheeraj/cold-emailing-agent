@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const insertMock = vi.fn();
+const { insertMock, checkDuplicateMock } = vi.hoisted(() => ({
+  insertMock: vi.fn(),
+  checkDuplicateMock: vi.fn(),
+}));
 vi.mock("@/lib/supabase", () => ({
   supabase: {
     from: vi.fn(() => ({ insert: insertMock })),
   },
   resolveInsertError: vi.fn((err: { message: string }) => Promise.resolve(err.message)),
+  checkDuplicateEmails: checkDuplicateMock,
 }));
 
 import { StructuredForm } from "./StructuredForm";
@@ -15,6 +19,8 @@ import { StructuredForm } from "./StructuredForm";
 beforeEach(() => {
   insertMock.mockReset();
   insertMock.mockResolvedValue({ error: null });
+  checkDuplicateMock.mockReset();
+  checkDuplicateMock.mockResolvedValue(new Set());
 });
 
 function fillByLabel(label: RegExp | string, value: string) {
@@ -144,5 +150,26 @@ describe("StructuredForm — applied mode", () => {
     expect(payload.applied_date).toBe("2026-04-21");
     expect(payload.stage).toBe("new");
     expect(onAdded).toHaveBeenCalled();
+  });
+});
+
+describe("StructuredForm — duplicate pre-flight", () => {
+  it("blocks outreach insert and calls onError when email already exists", async () => {
+    const user = userEvent.setup();
+    checkDuplicateMock.mockResolvedValueOnce(new Set(["alice@example.com"]));
+    const onError = vi.fn();
+    render(<StructuredForm onAdded={() => {}} onError={onError} />);
+
+    await fillByLabel(/^Name/i, "Alice");
+    await fillByLabel(/^Email/i, "alice@example.com");
+    await fillByLabel(/^Company/i, "Acme");
+    await user.click(screen.getByRole("button", { name: /Add Contact/i }));
+
+    await waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        "A contact with this email is already in your list."
+      )
+    );
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });

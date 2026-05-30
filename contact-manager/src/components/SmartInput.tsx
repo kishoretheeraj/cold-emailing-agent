@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { supabase, resolveInsertError } from "@/lib/supabase";
+import { supabase, resolveInsertError, checkDuplicateEmails } from "@/lib/supabase";
 import { US_STATES } from "@/lib/timezone";
 import type { ExtractedContact, ReviewContact, BulkImportWindow } from "@/lib/types";
 import { Label, TextInput, TextArea, ToggleSwitch, TierSelector } from "./Field";
@@ -91,6 +91,8 @@ export function SmartInput({
         stage: "new",
         reply_status: "no_reply",
       };
+      const dupes = await checkDuplicateEmails([row.email as string ?? ""]);
+      if (dupes.size > 0) throw new Error("A contact with this email is already in your list.");
       const { error } = await supabase.from("contacts").insert(row);
       if (error) throw new Error(await resolveInsertError(error, row.email as string ?? ""));
       setText("");
