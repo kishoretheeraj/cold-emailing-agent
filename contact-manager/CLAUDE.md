@@ -42,6 +42,7 @@ src/
 │   ├── api/send-draft/route.ts
 │   ├── api/update-draft/route.ts
 │   ├── api/trash-message/route.ts
+│   ├── import/page.tsx
 │   ├── overview/page.tsx
 │   ├── prompts/page.tsx
 │   ├── queue/page.tsx
@@ -73,6 +74,7 @@ src/
 │   ├── QueuePage.tsx
 │   ├── RepliesPage.tsx
 │   ├── ImportPage.tsx
+│   ├── ReviewFlow.tsx
 │   └── Field.tsx
 └── lib/
     ├── supabase.ts
@@ -222,7 +224,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 57** (as of `14-import.spec.ts`; vitest: 396 passed, playwright: 57 passed).
+- **Current test count: 59** (as of `14-import.spec.ts`; vitest: 406 passed, playwright: 59 passed).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
