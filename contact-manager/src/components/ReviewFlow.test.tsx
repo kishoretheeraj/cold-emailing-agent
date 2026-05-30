@@ -459,6 +459,46 @@ describe("ReviewFlow — always-editable identity fields", () => {
   });
 });
 
+describe("ReviewFlow — search web link", () => {
+  it("renders 'Search web' link with correct Google href when name and company are present", () => {
+    const contacts = [makeContact({ name: "Alice Smith", company: "Acme" })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    const link = screen.getByRole("link", { name: /search web/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute(
+      "href",
+      "https://www.google.com/search?q=Alice%20Smith%20Acme"
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("search link href encodes spaces and special characters", () => {
+    const contacts = [makeContact({ name: "O'Brien, Pat", company: "AT&T" })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    const link = screen.getByRole("link", { name: /search web/i });
+    expect(link).toHaveAttribute(
+      "href",
+      `https://www.google.com/search?q=${encodeURIComponent("O'Brien, Pat AT&T")}`
+    );
+  });
+
+  it("search link is absent when both name and company are empty", () => {
+    const contacts = [makeContact({ name: null, company: null })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    expect(screen.queryByRole("link", { name: /search web/i })).toBeNull();
+  });
+
+  it("search link still renders when only name is present (no company)", () => {
+    const contacts = [makeContact({ name: "Alice Smith", company: null })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+    const link = screen.getByRole("link", { name: /search web/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://www.google.com/search?q=Alice%20Smith"
+    );
+  });
+});
+
 describe("SmartInput — bulk mode via onError", () => {
   it("calls onError (not inline error) when /api/extract returns 500 for bulk input", async () => {
     // This is tested in SmartInput.test.tsx via the extraction error test

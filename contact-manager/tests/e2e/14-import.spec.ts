@@ -88,6 +88,22 @@ test("/import review — company and role fields are visible and editable", asyn
   await page.screenshot({ path: "tests/e2e/screenshots/14-import-editable-fields.png" });
 });
 
+test("/import review — Search web link is visible with correct href", async ({ page }) => {
+  await page.goto("/import");
+  await page.getByRole("textbox").fill(sampleContacts);
+  await page.getByRole("button", { name: /review contacts/i }).click();
+  await expect(page.getByRole("button", { name: /skip/i }).first()).toBeVisible({
+    timeout: 5_000,
+  });
+
+  const searchLink = page.getByRole("link", { name: /search web/i });
+  await expect(searchLink).toBeVisible();
+  const href = await searchLink.getAttribute("href");
+  expect(href).toContain("google.com/search");
+  expect(href).toContain("Sonali");
+  expect(href).toContain("Workiva");
+});
+
 test("/import — non-array JSON keeps button disabled", async ({ page }) => {
   await page.goto("/import");
   // Object (not array) starts with { so the button stays disabled

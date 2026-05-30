@@ -664,6 +664,25 @@ export function ReviewFlow({
                 }}
               />
             </div>
+
+            {(contact.name || contact.company) && (
+              <a
+                href={`https://www.google.com/search?q=${encodeURIComponent(
+                  [contact.name, contact.company].filter(Boolean).join(" ")
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                tabIndex={-1}
+                className="inline-flex items-center gap-1 text-xs text-fg-muted hover:text-fg transition-colors"
+              >
+                <svg width="12" height="12" viewBox="0 0 20 20" fill="none"
+                     stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="9" cy="9" r="7"/>
+                  <line x1="15" y1="15" x2="20" y2="20"/>
+                </svg>
+                Search web
+              </a>
+            )}
           </div>
 
           {/* ── Right column — editable fields ── */}
