@@ -28,6 +28,10 @@ test("main page has expected chrome: title, nav links, input toggle", async ({
   await expect(repliesLink).toBeVisible();
   await expect(repliesLink).toHaveAttribute("href", "/replies");
 
+  const importLink = page.getByRole("link", { name: /^import$/i });
+  await expect(importLink).toBeVisible();
+  await expect(importLink).toHaveAttribute("href", "/import");
+
   const runsLink = page.getByRole("link", { name: /activity/i });
   await expect(runsLink).toBeVisible();
   await expect(runsLink).toHaveAttribute("href", "/runs");

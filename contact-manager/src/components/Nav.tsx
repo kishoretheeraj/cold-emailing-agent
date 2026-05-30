@@ -11,6 +11,7 @@ const NAV_LINKS = [
   { href: "/overview", label: "Overview" },
   { href: "/queue", label: "Queue" },
   { href: "/replies", label: "Replies" },
+  { href: "/import", label: "Import" },
   { href: "/prompts", label: "Prompts" },
   { href: "/runs", label: "Activity" },
 ] as const;
