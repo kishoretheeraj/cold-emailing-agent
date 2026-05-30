@@ -202,6 +202,7 @@ export function ReviewFlow({
             dartmouth: c.dartmouth ?? false,
             notes: c.notes,
             resume_url: c.resume_url ?? null,
+            state: c.state ?? null,
             stage: "new",
             reply_status: "no_reply",
           });
@@ -750,6 +751,17 @@ export function ReviewFlow({
                     ...contacts[currentIndex],
                     resume_url: e.target.value,
                   })
+                }
+              />
+            </div>
+
+            <div>
+              <Label>State</Label>
+              <TextInput
+                value={contact.state ?? ""}
+                placeholder="e.g. NY, CA"
+                onChange={(e) =>
+                  onUpdate(currentIndex, { ...contacts[currentIndex], state: e.target.value })
                 }
               />
             </div>

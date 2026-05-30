@@ -457,6 +457,18 @@ describe("ReviewFlow — always-editable identity fields", () => {
     render(<ReviewFlow {...makeProps(contacts)} />);
     expect(screen.getByDisplayValue("bob@example.com")).toBeInTheDocument();
   });
+
+  it("state TextInput renders and calls onUpdate when edited", () => {
+    const onUpdate = vi.fn();
+    const contacts = [makeContact({ state: "NY" })];
+    render(<ReviewFlow {...makeProps(contacts, { onUpdate })} />);
+    expect(screen.getByDisplayValue("NY")).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue("NY"), { target: { value: "CA" } });
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      0,
+      expect.objectContaining({ state: "CA" })
+    );
+  });
 });
 
 describe("ReviewFlow — search web link", () => {
