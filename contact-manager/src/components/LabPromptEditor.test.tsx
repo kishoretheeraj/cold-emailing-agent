@@ -53,10 +53,11 @@ describe("getActiveTabForContact", () => {
     expect(getActiveTabForContact(null, null)).toBe("sender_profile");
   });
 
-  it("returns outreach_prompt for outreach actions", () => {
-    expect(getActiveTabForContact(CONTACT, "send_first_touch")).toBe("outreach_prompt");
-    expect(getActiveTabForContact(CONTACT, "send_followup1")).toBe("outreach_prompt");
-    expect(getActiveTabForContact(CONTACT, "send_breakup")).toBe("outreach_prompt");
+  it("returns specific outreach sub-instruction for each outreach action", () => {
+    expect(getActiveTabForContact(CONTACT, "send_first_touch")).toBe("outreach_first_touch_instruction");
+    expect(getActiveTabForContact(CONTACT, "send_followup1")).toBe("outreach_followup1_instruction");
+    expect(getActiveTabForContact(CONTACT, "send_followup2")).toBe("outreach_followup2_instruction");
+    expect(getActiveTabForContact(CONTACT, "send_breakup")).toBe("outreach_breakup_instruction");
   });
 
   it("returns applied_intro_prompt for send_applied_intro", () => {
@@ -71,10 +72,14 @@ describe("getActiveTabForContact", () => {
 // ── Tab visibility ─────────────────────────────────────────────────────────────
 
 describe("LabPromptEditor — tab visibility", () => {
-  it("shows 5 tabs in writer mode", () => {
+  it("shows 9 tabs in writer mode including outreach sub-instructions", () => {
     render(<LabPromptEditor {...DEFAULT_PROPS} />);
     expect(screen.getByRole("tab", { name: /sender profile/i })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /outreach/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /^outreach$/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /first touch/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /followup 1/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /followup 2/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /breakup/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /applied intro/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /applied followup/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /subject/i })).toBeInTheDocument();
@@ -85,7 +90,8 @@ describe("LabPromptEditor — tab visibility", () => {
     render(<LabPromptEditor {...DEFAULT_PROPS} mode="critic" activeTab="critic_prompt" />);
     expect(screen.getByRole("tab", { name: /sender profile/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /critic/i })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /outreach/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /^outreach$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /first touch/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /applied intro/i })).not.toBeInTheDocument();
   });
 });

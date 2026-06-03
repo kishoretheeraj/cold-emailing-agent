@@ -20,6 +20,11 @@ export const PROMPT_VALID_KEYS: Record<string, ReadonlySet<string>> = {
     "profile", "name", "company", "role", "detail", "tier",
     "tier_instruction", "template", "template_instruction", "dartmouth_instruction",
   ]),
+  // Per-action instructions injected as {template_instruction} — free-text, no format variables
+  outreach_first_touch_instruction: new Set<string>([]),
+  outreach_followup1_instruction: new Set<string>([]),
+  outreach_followup2_instruction: new Set<string>([]),
+  outreach_breakup_instruction: new Set<string>([]),
   applied_intro_prompt: new Set([
     "profile", "name", "role", "company", "job_title", "job_description",
     "applied_date", "dartmouth_instruction",

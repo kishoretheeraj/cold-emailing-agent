@@ -1,7 +1,7 @@
 "use client";
 
+import { Fragment } from "react";
 import { extractVariables } from "@/lib/promptVariables";
-import { Badge } from "@/components/ui/Badge";
 import type { Contact } from "@/lib/types";
 import type { AgentAction } from "@/lib/assembleUserMessage";
 
@@ -12,27 +12,44 @@ export type LabMode = "writer" | "critic";
 export type PromptTab =
   | "sender_profile"
   | "outreach_prompt"
+  | "outreach_first_touch_instruction"
+  | "outreach_followup1_instruction"
+  | "outreach_followup2_instruction"
+  | "outreach_breakup_instruction"
   | "applied_intro_prompt"
   | "applied_followup_prompt"
   | "subject_prompt"
   | "critic_prompt";
 
-type TabDef = { key: PromptTab; label: string; modes: LabMode[] };
+type TabGroup = "main" | "outreach-master" | "outreach-sub";
+type TabDef = { key: PromptTab; label: string; modes: LabMode[]; group: TabGroup };
 
 // ── Tab definitions ────────────────────────────────────────────────────────────
 
 const ALL_TABS: TabDef[] = [
-  { key: "sender_profile",         label: "Sender Profile",  modes: ["writer", "critic"] },
-  { key: "outreach_prompt",        label: "Outreach",        modes: ["writer"] },
-  { key: "applied_intro_prompt",   label: "Applied Intro",   modes: ["writer"] },
-  { key: "applied_followup_prompt",label: "Applied Followup",modes: ["writer"] },
-  { key: "subject_prompt",         label: "Subject",         modes: ["writer"] },
-  { key: "critic_prompt",          label: "Critic",          modes: ["critic"] },
+  { key: "sender_profile",                   label: "Sender Profile",  modes: ["writer", "critic"], group: "main" },
+  { key: "outreach_prompt",                  label: "Outreach",        modes: ["writer"],           group: "outreach-master" },
+  { key: "outreach_first_touch_instruction", label: "First Touch",     modes: ["writer"],           group: "outreach-sub" },
+  { key: "outreach_followup1_instruction",   label: "Followup 1",      modes: ["writer"],           group: "outreach-sub" },
+  { key: "outreach_followup2_instruction",   label: "Followup 2",      modes: ["writer"],           group: "outreach-sub" },
+  { key: "outreach_breakup_instruction",     label: "Breakup",         modes: ["writer"],           group: "outreach-sub" },
+  { key: "applied_intro_prompt",             label: "Applied Intro",   modes: ["writer"],           group: "main" },
+  { key: "applied_followup_prompt",          label: "Applied Followup",modes: ["writer"],           group: "main" },
+  { key: "subject_prompt",                   label: "Subject",         modes: ["writer"],           group: "main" },
+  { key: "critic_prompt",                    label: "Critic",          modes: ["critic"],           group: "main" },
 ];
+
+const OUTREACH_SUB_KEYS = new Set<PromptTab>([
+  "outreach_first_touch_instruction",
+  "outreach_followup1_instruction",
+  "outreach_followup2_instruction",
+  "outreach_breakup_instruction",
+]);
 
 // ── Active-tab detection ───────────────────────────────────────────────────────
 
-// Returns which prompt tab is "active" (what the agent would use) for a contact.
+// Returns the specific sub-instruction tab that the agent would use for a contact,
+// so users land directly on the relevant prompt (not just the master outreach template).
 export function getActiveTabForContact(
   contact: Contact | null,
   action: AgentAction | null
@@ -40,14 +57,10 @@ export function getActiveTabForContact(
   if (!contact) return "sender_profile";
   if (!action) return "sender_profile";
 
-  if (
-    action === "send_first_touch" ||
-    action === "send_followup1" ||
-    action === "send_followup2" ||
-    action === "send_breakup"
-  ) {
-    return "outreach_prompt";
-  }
+  if (action === "send_first_touch") return "outreach_first_touch_instruction";
+  if (action === "send_followup1")   return "outreach_followup1_instruction";
+  if (action === "send_followup2")   return "outreach_followup2_instruction";
+  if (action === "send_breakup")     return "outreach_breakup_instruction";
   if (action === "send_applied_intro") return "applied_intro_prompt";
   if (action === "send_applied_followup") return "applied_followup_prompt";
   return "sender_profile";
@@ -89,6 +102,7 @@ export function LabPromptEditor({
   const visibleTabs = ALL_TABS.filter((t) => t.modes.includes(mode));
   const isDirty = sandboxValue !== savedValue;
   const autoSelectedTab = getActiveTabForContact(contact, action);
+  const activeIsOutreachSub = OUTREACH_SUB_KEYS.has(activeTab);
 
   const variables = extractVariables(sandboxValue);
 
@@ -100,32 +114,55 @@ export function LabPromptEditor({
         role="tablist"
         aria-label="Prompt tabs"
       >
-        {visibleTabs.map((tab) => {
+        {visibleTabs.map((tab, i) => {
           const isActive = activeTab === tab.key;
+          const isSubTab = tab.group === "outreach-sub";
+          // Dim the master "Outreach" tab when a sub-instruction tab is active
+          const isParentOfActive = tab.key === "outreach_prompt" && activeIsOutreachSub;
           const isAutoSelected = tab.key === autoSelectedTab || tab.key === "sender_profile";
+
+          // Vertical divider before "Applied Intro" (first main tab after the outreach group)
+          const prevTab = visibleTabs[i - 1];
+          const showDivider =
+            tab.group === "main" &&
+            (prevTab?.group === "outreach-sub" || prevTab?.group === "outreach-master");
+
           return (
-            <button
-              key={tab.key}
-              role="tab"
-              aria-selected={isActive}
-              type="button"
-              onClick={() => onTabChange(tab.key)}
-              className={[
-                "relative shrink-0 rounded-lg border px-3 py-1.5 text-xs transition whitespace-nowrap",
-                isActive
-                  ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-300"
-                  : "border-border text-fg-muted hover:text-fg hover:border-border-strong",
-              ].join(" ")}
-            >
-              {tab.label}
-              {isAutoSelected && contact && (
+            <Fragment key={tab.key}>
+              {showDivider && (
                 <span
-                  title="Active for this contact"
-                  className="absolute -top-1 -right-1 size-2 rounded-full bg-indigo-400"
+                  className="shrink-0 w-px h-4 bg-border self-center mx-0.5"
                   aria-hidden="true"
                 />
               )}
-            </button>
+              <button
+                role="tab"
+                aria-selected={isActive}
+                type="button"
+                onClick={() => onTabChange(tab.key)}
+                className={[
+                  "relative shrink-0 rounded-lg border transition whitespace-nowrap",
+                  isSubTab ? "px-2 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
+                  isActive
+                    ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-300"
+                    : isParentOfActive
+                    ? "border-indigo-500/20 bg-indigo-500/5 text-indigo-400/60"
+                    : "border-border text-fg-muted hover:text-fg hover:border-border-strong",
+                ].join(" ")}
+              >
+                {isSubTab && (
+                  <span className="mr-1 opacity-40 font-mono" aria-hidden="true">↳</span>
+                )}
+                {tab.label}
+                {isAutoSelected && contact && (
+                  <span
+                    title="Active for this contact"
+                    className="absolute -top-1 -right-1 size-2 rounded-full bg-indigo-400"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            </Fragment>
           );
         })}
       </div>
