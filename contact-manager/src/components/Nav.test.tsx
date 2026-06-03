@@ -61,6 +61,13 @@ describe("Nav", () => {
     expect(link).toHaveAttribute("href", "/runs");
   });
 
+  it("renders Lab nav link pointing to /lab", () => {
+    render(<Nav />);
+    const link = screen.getByRole("link", { name: /^lab$/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/lab");
+  });
+
   it("renders Run Agent button", () => {
     render(<Nav />);
     expect(screen.getByRole("button", { name: /run agent/i })).toBeInTheDocument();

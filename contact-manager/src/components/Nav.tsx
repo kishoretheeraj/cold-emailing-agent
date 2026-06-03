@@ -14,6 +14,7 @@ const NAV_LINKS = [
   { href: "/import", label: "Import" },
   { href: "/prompts", label: "Prompts" },
   { href: "/runs", label: "Activity" },
+  { href: "/lab", label: "Lab" },
 ] as const;
 
 export function Nav() {

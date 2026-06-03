@@ -182,9 +182,10 @@ export async function mockSupabase(page: Page) {
     }
   });
 
-  // Intercept GET /rest/v1/prompts
+  // Intercept GET/PATCH /rest/v1/prompts
   await page.route(/\/rest\/v1\/prompts(\?.*)?$/, async (route) => {
-    if (route.request().method() === "GET") {
+    const method = route.request().method();
+    if (method === "GET") {
       const prompts = JSON.parse(
         fs.readFileSync(path.join(FIXTURES_DIR, "prompts.json"), "utf-8")
       ) as unknown[];
@@ -192,6 +193,13 @@ export async function mockSupabase(page: Page) {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(prompts),
+      });
+    } else if (method === "PATCH") {
+      // Acknowledge prompt saves without persisting to disk
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
       });
     } else {
       await route.continue();
@@ -338,6 +346,23 @@ export async function mockSupabase(page: Page) {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ ok: true }),
+      });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // Intercept POST /api/preview-draft (Lab page)
+  await page.route(/\/api\/preview-draft$/, async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          kind: "writer",
+          subject: "Quick question for Alice",
+          body: "Hi Alice, I noticed your work at Acme Corp. Let's connect.",
+        }),
       });
     } else {
       await route.continue();

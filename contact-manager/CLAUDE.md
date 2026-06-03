@@ -42,7 +42,9 @@ src/
 │   ├── api/send-draft/route.ts
 │   ├── api/update-draft/route.ts
 │   ├── api/trash-message/route.ts
+│   ├── api/preview-draft/route.ts
 │   ├── import/page.tsx
+│   ├── lab/page.tsx
 │   ├── overview/page.tsx
 │   ├── prompts/page.tsx
 │   ├── queue/page.tsx
@@ -75,6 +77,10 @@ src/
 │   ├── RepliesPage.tsx
 │   ├── ImportPage.tsx
 │   ├── ReviewFlow.tsx
+│   ├── LabRoot.tsx
+│   ├── LabContactPicker.tsx
+│   ├── LabPromptEditor.tsx
+│   ├── LabPreviewPanel.tsx
 │   └── Field.tsx
 └── lib/
     ├── supabase.ts
@@ -83,6 +89,7 @@ src/
     ├── personalization.ts
     ├── promptCategories.ts
     ├── promptVariables.ts
+    ├── assembleUserMessage.ts
     └── types.ts
 tests/
 └── e2e/
@@ -224,7 +231,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 59** (vitest: 417 passed, playwright: 59 passed).
+- **Current test count: 67** (vitest: 525 passed, playwright: 67 passed).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
