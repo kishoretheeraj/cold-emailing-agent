@@ -60,3 +60,26 @@ test("nav bar is present on /queue (global layout)", async ({ page }) => {
   await expect(page.getByRole("link", { name: /^replies$/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /run agent/i })).toBeVisible();
 });
+
+test("Pause Agent button is visible in the nav", async ({ page }) => {
+  await page.route("**/api/agent-config", (route) =>
+    route.fulfill({ json: { scope: "none" } })
+  );
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /pause agent/i })).toBeVisible({
+    timeout: 5000,
+  });
+});
+
+test("Run Agent opens confirmation modal", async ({ page }) => {
+  await page.route("**/api/agent-config", (route) =>
+    route.fulfill({ json: { scope: "none" } })
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: /pause agent/i }).waitFor({ timeout: 5000 });
+  await page.getByRole("button", { name: /run agent/i }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByText(/trigger agent now/i)).toBeVisible();
+  const screenshot = await page.screenshot();
+  expect(screenshot).toBeTruthy();
+});

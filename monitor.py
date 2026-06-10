@@ -41,7 +41,7 @@ from constants import TERMINAL_DRAFTED_STAGES
 from db import (
     get_drafted_contacts, get_sent_contacts, update_contact, update_reply_status,
     log_agent_event, update_classifier_status, insert_email_message, load_prompts,
-    update_message_id, update_latest_message_id, record_run,
+    get_pause_scope, update_message_id, update_latest_message_id, record_run,
 )
 from gmail import (
     create_gmail_label_if_not_exists, find_sent_for_thread,
@@ -517,6 +517,11 @@ def run():
     log.info("START | monitor run")
     _start = _time.time()
     _errors = 0
+
+    scope = get_pause_scope()
+    if scope == "all":
+        log.info("PAUSED | monitor is paused — exiting without scanning")
+        return
 
     prompts = {}
     try:

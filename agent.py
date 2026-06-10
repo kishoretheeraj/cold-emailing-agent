@@ -23,7 +23,7 @@ import anthropic
 
 from config import ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL, EMAIL_MODEL, FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id
 from emailer import generate_email, prepare_email, finalize_email
 from gmail import create_draft, apply_label_to_latest_draft, find_sent_by_thread_id, find_sent_by_subject
 
@@ -328,6 +328,11 @@ def _execute_draft(contact, action, subject, body, thread_message_id,
 def run():
     today = date.today()
     start = time.time()
+
+    scope = get_pause_scope()
+    if scope in ("agent", "all"):
+        log.info("PAUSED | agent is paused — exiting without drafting")
+        return
 
     # Load live prompts and sender profile from Supabase; fall back to config.py defaults.
     try:

@@ -171,6 +171,21 @@ def load_prompts():
     result = _retry(lambda: get_client().table("prompts").select("key, value").execute())
     return {r["key"]: r["value"] for r in (result.data or [])}
 
+def get_pause_scope():
+    """Return the current pause_scope: 'none', 'agent', or 'all'. Defaults to 'none' on any error."""
+    try:
+        result = _retry(lambda: (
+            get_client()
+            .table("system_config")
+            .select("value")
+            .eq("key", "pause_scope")
+            .single()
+            .execute()
+        ))
+        return (result.data or {}).get("value", "none")
+    except Exception:
+        return "none"
+
 def record_run(status, drafted, skipped, errors, elapsed, failure_reason=None, source="agent"):
     """Insert a row into agent_runs after every run, success or failure."""
     row = {

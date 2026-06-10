@@ -54,9 +54,9 @@ format:
 2026-04-21 08:00 EST | <event marker> | <details>
 ```
 
-The marker is one of: `START`, `DONE`, `[OUTREACH]`, `[APPLIED]`, `[CRITIC]`,
-`[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`, `[RESEARCH-C]`,
-or a level tag from a warning/error. Don't change the timestamp format — the
+The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`,
+`[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
+`[RESEARCH-C]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it.
 
 **Logging setup order invariant:** `logging.basicConfig` must be called before
@@ -207,6 +207,13 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
   empty briefs is intentional — prevents re-querying Tavily for contacts with no
   public footprint every run. `db.get_research_cache` / `db.set_research_cache`
   are the only accessors; both use `db._retry`.
+- **`system_config` table**: key-value store for runtime control flags. Currently
+  one row: `key='pause_scope'`, value `'none'` | `'agent'` | `'all'`. Read at
+  startup by both `agent.py` and `monitor.py` via `db.get_pause_scope()`.
+  Written by the contact-manager's `/api/agent-config` route.
+  `get_pause_scope()` returns `"none"` on any DB error (fail-open — never
+  accidentally blocks a healthy run). Do not call `record_run` on a paused exit;
+  `monitor.py` runs ~50×/day and would flood `agent_runs` otherwise.
 
 ## GitHub Actions
 
@@ -281,6 +288,7 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_research_curate.py` — `_curate_brief` unit tests (includes disambiguation guard).
 - `tests/test_research_brief.py` — `get_research_brief` integration tests (cache TTL, pipeline, never-raises parametrize).
 - `tests/test_emailer_research.py` — research gating (tier/action matrix) and injection behavior in `generate_email`.
+- `tests/test_agent_paused.py` — pause guard: `get_pause_scope` error handling, `agent.run()` early-exit for `scope in ("agent","all")`, `monitor.run()` early-exit for `scope=="all"` only.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
 

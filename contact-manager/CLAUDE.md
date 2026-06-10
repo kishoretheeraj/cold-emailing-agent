@@ -39,6 +39,7 @@ src/
 ├── app/
 │   ├── api/extract/route.ts
 │   ├── api/trigger-agent/route.ts
+│   ├── api/agent-config/route.ts
 │   ├── api/send-draft/route.ts
 │   ├── api/update-draft/route.ts
 │   ├── api/trash-message/route.ts
@@ -124,7 +125,9 @@ tests/
   `open`, `title`, `body`, `confirmLabel`, `confirmVariant`, `onConfirm`, `onCancel`,
   `loading`.
 - Tooltips: wrap trigger in `<Tooltip content="...">`. `TooltipProvider` is at the root
-  (in AppProviders.tsx) — don't add another one.
+  (in AppProviders.tsx) — don't add another one. In unit tests that render components
+  containing `<Tooltip>`, mock the whole module:
+  `vi.mock("@/components/ui/Tooltip", () => ({ Tooltip: ({ children }) => <>{children}</> }))`
 
 ## API route conventions
 
@@ -134,6 +137,22 @@ tests/
 - Validate the body shape: `400` for missing input, `502` for malformed downstream data,
   `500` for unexpected SDK errors.
 - Strip ` ```json` code fences from Claude responses before `JSON.parse`.
+
+### `/api/agent-config` — pause control
+
+**GET** — returns `{ scope: "none" | "agent" | "all" }` from `system_config` table.
+Returns `{ scope: "none" }` if the table is missing (fresh deploy, no migration yet).
+
+**POST** — body: `{ scope: "none" | "agent" | "all" }`. Validates the enum, upserts
+the `pause_scope` row. Returns `{ ok: true }` on success.
+
+Scope semantics (mirrors `db.get_pause_scope()` in Python):
+- `none` — nothing paused
+- `agent` — daily outbound drafts paused; monitor still detects replies and flips `*_drafted → *_sent`
+- `all` — both agent and monitor frozen
+
+`Nav.tsx` fetches this on mount and shows a Pause/Resume button and an amber/red banner
+when paused. "Run Agent" is disabled while `scope !== "none"`.
 
 ### Gmail API routes (Phase 0 — bulk-send infrastructure)
 
@@ -231,7 +250,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 67** (vitest: 525 passed, playwright: 67 passed).
+- **Current test count: 69** (vitest: 537 passed, playwright: 69 passed).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
