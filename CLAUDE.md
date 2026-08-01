@@ -28,7 +28,7 @@ supabase/migrations/
 
 Every module that touches the outside world is wrapped behind a function so
 tests can mock it. Pure decision logic stays in `agent.py` (`decide_action`,
-`_decide_outreach`, `_decide_applied`, `_skip_reason`, `_parse_date`).
+`_decide_outreach`, `_decide_applied`, `_decide_networking`, `_skip_reason`, `_parse_date`).
 
 ## Code style
 
@@ -54,10 +54,12 @@ format:
 2026-04-21 08:00 EST | <event marker> | <details>
 ```
 
-The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`,
+The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
 `[RESEARCH-C]`, or a level tag from a warning/error. Don't change the timestamp format — the
-GitHub Actions artifacts and downstream scripts read it.
+GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
+`agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
+to both.
 
 **Logging setup order invariant:** `logging.basicConfig` must be called before
 any project-module import in every script. `agent.py` calls `basicConfig` at
@@ -80,6 +82,12 @@ script, above all project imports.
 - `_parse_date` accepts: `None`, `""`, a `date` object, an ISO date string,
   or a string with a date prefix (the function takes the first 10 chars).
   Anything else returns `None`.
+- **Modes**: `outreach`, `applied`, `networking` (enforced by a Postgres CHECK
+  constraint on `contacts.mode`). `networking` is a relationship-first track —
+  one first-touch + one follow-up, never a role pitch. The prompt leads with
+  `contacts.connection_context` (free text) when present; when empty, the
+  prompt is instructed to degrade to a genuinely low-ask cold opener rather
+  than fabricate a connection. See `docs/python/db-schema.md`.
 
 ## Stage / template / label maps
 
@@ -96,7 +104,9 @@ When you add a new action:
 2. Add the `*_drafted → *_sent` entry to `agent.DRAFTED_TO_SENT`.
 3. Add the action's prompt template to `config.py` if it's outreach.
 4. Add a `decide_*` branch that returns the action.
-5. Add `Cold Outreach/<Label>` formatted label.
+5. Add a `<Mode>/<Label>` formatted Gmail label — `Cold Outreach/<Label>` for
+   outreach/applied actions, `Networking/<Label>` for networking actions.
+   Each mode groups under its own top-level Gmail label.
 
 ## Best-effort labeling rule
 
@@ -134,9 +144,12 @@ Follow-up emails must land in the same Gmail thread as the original.
   searches `[Gmail]/Drafts` for that key; if found, it returns `None` without
   creating a duplicate. `agent.py` treats a `None` return as "already drafted
   today" and increments `skipped` instead of calling `update_contact()`.
-- `_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}` is
-  defined in both `agent.py` and `emailer.py`. Keep them in sync manually if
-  new first-touch actions are added.
+- `_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro", "send_networking_first_touch"}`
+  is defined in both `agent.py` and `emailer.py`. Keep them in sync manually if
+  new first-touch actions are added. Membership here also gates research
+  injection and Tier-1 critic eligibility in `emailer.py` — adding an action
+  to this set silently turns both on, so decide that deliberately, not by
+  accident.
 - After a first-touch draft is created, `agent.py` calls `save_thread_info()`
   to persist `message_id` and `original_subject` in Supabase.
 - For all follow-up actions, `agent.py` calls `get_thread_info()` first and
@@ -196,6 +209,7 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
 - **`prompts` table**: `db.load_prompts()` reads all rows at agent startup and
   returns `{key: value}`. Keys used by the agent: `sender_profile`,
   `outreach_prompt`, `applied_intro_prompt`, `applied_followup_prompt`,
+  `networking_prompt`, `networking_followup_prompt`, `networking_subject_prompt`,
   `subject_prompt`, `critic_prompt`, `research_query_prompt`,
   `research_curate_prompt`, `research_injection`. If the table is unreachable,
   `run()` falls back to an empty dict and each module uses its `config.py`

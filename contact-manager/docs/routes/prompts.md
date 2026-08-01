@@ -1,6 +1,6 @@
 # /prompts page (app/prompts/page.tsx)
 
-Client component (`PromptsPage.tsx`). Fetches all prompts ordered by `sort_order`. Sticky search (title + description). 7 collapsible categories via `PROMPT_CATEGORY_MAP` in `src/lib/promptCategories.ts`; unknown keys fall into "Shared". Only "Sender & Core" open by default; state persists in `localStorage` (`"prompts-open-categories"`). localStorage read in `useEffect` post-mount (SSR-safe skeleton pattern). `PromptCategory.tsx` is the collapsible section wrapper; `PromptSection.tsx` (individual card) unchanged.
+Client component (`PromptsPage.tsx`). Fetches all prompts ordered by `sort_order`. Sticky search (title + description). 8 collapsible categories via `PROMPT_CATEGORY_MAP` in `src/lib/promptCategories.ts` (added "Networking" between "Applied" and "Research Pipeline" — one category per mode is the established convention, not the exception); unknown keys fall into "Shared". Only "Sender & Core" open by default; state persists in `localStorage` (`"prompts-open-categories"`). localStorage read in `useEffect` post-mount (SSR-safe skeleton pattern). `PromptCategory.tsx` is the collapsible section wrapper; `PromptSection.tsx` (individual card) unchanged.
 
 **Categorization drift:** When adding new prompt rows to Supabase, add the key to `promptCategories.ts` — omitted keys silently land in "Shared".
 

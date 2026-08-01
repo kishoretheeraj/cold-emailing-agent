@@ -56,6 +56,8 @@ def decide_action(contact, today):
         return _decide_outreach(contact, today)
     if mode == "applied":
         return _decide_applied(contact, today)
+    if mode == "networking":
+        return _decide_networking(contact, today)
     return "skip"
 
 
@@ -93,6 +95,22 @@ def _decide_applied(contact, today):
     return "skip"
 
 
+def _decide_networking(contact, today):
+    stage = contact.get("stage", "new")
+    followup = _parse_date(contact.get("followup_date"))
+
+    if stage == "new":
+        return "send_networking_first_touch"
+    if stage in ("networking_drafted", "networking_followup_drafted"):
+        return "skip"
+    if stage == "networking_followup_sent":
+        return "skip"
+    if followup and followup <= today:
+        if stage == "networking_sent":
+            return "send_networking_followup"
+    return "skip"
+
+
 def _parse_date(value):
     if not value:
         return None
@@ -105,7 +123,13 @@ def _parse_date(value):
 
 
 # Actions that open a new thread — first email in a sequence.
-_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
+_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro", "send_networking_first_touch"}
+
+_MODE_TAGS = {
+    "outreach":   "[OUTREACH]",
+    "applied":    "[APPLIED]",
+    "networking": "[NETWORKING]",
+}
 
 
 def _resolve_thread_message_id(contact, thread_message_id):
@@ -141,40 +165,48 @@ def _resolve_thread_message_id(contact, thread_message_id):
 # ── Stage transitions ──────────────────────────────────────────────────────────
 
 NEXT_STAGE = {
-    "send_first_touch":      "first_touch_drafted",
-    "send_followup1":        "followup1_drafted",
-    "send_followup2":        "followup2_drafted",
-    "send_breakup":          "breakup_drafted",
-    "send_applied_intro":    "applied_intro_drafted",
-    "send_applied_followup": "applied_followup_drafted",
+    "send_first_touch":            "first_touch_drafted",
+    "send_followup1":              "followup1_drafted",
+    "send_followup2":              "followup2_drafted",
+    "send_breakup":                "breakup_drafted",
+    "send_applied_intro":          "applied_intro_drafted",
+    "send_applied_followup":       "applied_followup_drafted",
+    "send_networking_first_touch": "networking_drafted",
+    "send_networking_followup":    "networking_followup_drafted",
 }
 
 DRAFTED_TO_SENT = {
-    "first_touch_drafted":      "first_touch_sent",
-    "followup1_drafted":        "followup1_sent",
-    "followup2_drafted":        "followup2_sent",
-    "breakup_drafted":          "breakup_sent",
-    "applied_intro_drafted":    "applied_intro_sent",
-    "applied_followup_drafted": "applied_followup_sent",
-    "reply_drafted":            "reply_sent",
+    "first_touch_drafted":        "first_touch_sent",
+    "followup1_drafted":          "followup1_sent",
+    "followup2_drafted":          "followup2_sent",
+    "breakup_drafted":            "breakup_sent",
+    "applied_intro_drafted":      "applied_intro_sent",
+    "applied_followup_drafted":   "applied_followup_sent",
+    "networking_drafted":         "networking_sent",
+    "networking_followup_drafted": "networking_followup_sent",
+    "reply_drafted":              "reply_sent",
 }
 
 NEXT_TEMPLATE = {
-    "send_first_touch":      "cold_intro",
-    "send_followup1":        "follow_up_1",
-    "send_followup2":        "follow_up_2",
-    "send_breakup":          "breakup",
-    "send_applied_intro":    "applied_intro",
-    "send_applied_followup": "applied_followup",
+    "send_first_touch":            "cold_intro",
+    "send_followup1":              "follow_up_1",
+    "send_followup2":              "follow_up_2",
+    "send_breakup":                "breakup",
+    "send_applied_intro":          "applied_intro",
+    "send_applied_followup":       "applied_followup",
+    "send_networking_first_touch": "networking_intro",
+    "send_networking_followup":    "networking_followup",
 }
 
 ACTION_LABEL = {
-    "send_first_touch":      "Cold Outreach/First Touch",
-    "send_followup1":        "Cold Outreach/Follow-up #1",
-    "send_followup2":        "Cold Outreach/Follow-up #2",
-    "send_breakup":          "Cold Outreach/Break-up",
-    "send_applied_intro":    "Cold Outreach/Applied Intro",
-    "send_applied_followup": "Cold Outreach/Applied Follow-up",
+    "send_first_touch":            "Cold Outreach/First Touch",
+    "send_followup1":              "Cold Outreach/Follow-up #1",
+    "send_followup2":              "Cold Outreach/Follow-up #2",
+    "send_breakup":                "Cold Outreach/Break-up",
+    "send_applied_intro":          "Cold Outreach/Applied Intro",
+    "send_applied_followup":       "Cold Outreach/Applied Follow-up",
+    "send_networking_first_touch": "Networking/Intro",
+    "send_networking_followup":    "Networking/Follow-up",
 }
 
 # ── Prompt validation ──────────────────────────────────────────────────────────
@@ -184,6 +216,9 @@ _PROMPT_VALID_KEYS = {
     "outreach_prompt":           {"profile","name","company","role","detail","tier","tier_instruction","template","template_instruction","dartmouth_instruction"},
     "applied_intro_prompt":      {"profile","name","role","company","job_title","job_description","applied_date","dartmouth_instruction"},
     "applied_followup_prompt":   {"profile","name","role","company","job_title","dartmouth_instruction"},
+    "networking_prompt":         {"profile","name","company","connection_context_instruction","dartmouth_instruction"},
+    "networking_followup_prompt": {"profile","name","company","dartmouth_instruction"},
+    "networking_subject_prompt": {"name","company","body"},
     "subject_prompt":            {"name","company","mode","job_title","body"},
     "critic_prompt":             {"sender_profile","contact_context","subject","body"},
     "research_injection":        {"brief_text"},
@@ -357,10 +392,14 @@ def run():
         raise ValueError(f"Output schema validation failed: {schema_errors}")
 
     contacts = get_all_contacts()
-    outreach_count = sum(1 for c in contacts if c.get("mode", "outreach") == "outreach")
-    applied_count  = sum(1 for c in contacts if c.get("mode") == "applied")
+    outreach_count   = sum(1 for c in contacts if c.get("mode", "outreach") == "outreach")
+    applied_count    = sum(1 for c in contacts if c.get("mode") == "applied")
+    networking_count = sum(1 for c in contacts if c.get("mode") == "networking")
 
-    log.info(f"START | {len(contacts)} contacts | {outreach_count} outreach | {applied_count} applied")
+    log.info(
+        f"START | {len(contacts)} contacts | {outreach_count} outreach | "
+        f"{applied_count} applied | {networking_count} networking"
+    )
 
     drafted = 0
     skipped = 0
@@ -375,7 +414,7 @@ def run():
         name    = contact.get("name", "Unknown")
         company = contact.get("company", "Unknown")
         mode    = contact.get("mode", "outreach")
-        mode_tag = "[OUTREACH]" if mode == "outreach" else "[APPLIED] "
+        mode_tag = _MODE_TAGS.get(mode, "[OUTREACH]")
 
         last_emailed = _parse_date(contact.get("last_emailed"))
         if last_emailed == today:

@@ -91,6 +91,36 @@ describe("getUnknownVariables", () => {
       getUnknownVariables("subject_prompt", "{bad_one} {name} {bad_two}")
     ).toEqual(["bad_one", "bad_two"]);
   });
+
+  it("recognizes networking_prompt's valid placeholders", () => {
+    expect(
+      getUnknownVariables(
+        "networking_prompt",
+        "{profile} {name} {company} {connection_context_instruction} {dartmouth_instruction}"
+      )
+    ).toEqual([]);
+  });
+
+  it("flags an unknown placeholder in networking_prompt", () => {
+    expect(getUnknownVariables("networking_prompt", "{job_title}")).toEqual([
+      "job_title",
+    ]);
+  });
+
+  it("recognizes networking_followup_prompt's valid placeholders", () => {
+    expect(
+      getUnknownVariables(
+        "networking_followup_prompt",
+        "{profile} {name} {company} {dartmouth_instruction}"
+      )
+    ).toEqual([]);
+  });
+
+  it("recognizes networking_subject_prompt's valid placeholders", () => {
+    expect(
+      getUnknownVariables("networking_subject_prompt", "{name} {company} {body}")
+    ).toEqual([]);
+  });
 });
 
 describe("PROMPT_OUTPUT_SCHEMAS", () => {

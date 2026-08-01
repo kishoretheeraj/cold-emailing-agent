@@ -85,6 +85,7 @@ export function SmartInput({
         job_title: preview.job_title,
         job_description: preview.job_description,
         applied_date: preview.applied_date,
+        connection_context: preview.connection_context,
         notes: preview.notes,
         resume_url: preview.resume_url ?? null,
         state: preview.state ?? null,
@@ -249,8 +250,8 @@ export function SmartInput({
             </div>
             <div>
               <Label>Mode</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(["outreach", "applied"] as const).map((m) => {
+              <div className="grid grid-cols-3 gap-2">
+                {(["outreach", "applied", "networking"] as const).map((m) => {
                   const active = (preview.mode ?? "outreach") === m;
                   return (
                     <button
@@ -270,6 +271,17 @@ export function SmartInput({
               </div>
             </div>
           </div>
+
+          {preview.mode === "networking" && (
+            <Field label="Connection (the hook to lead with — never fabricated if left blank)">
+              <TextArea
+                value={preview.connection_context ?? ""}
+                onChange={(e) => updateSingle("connection_context", e.target.value)}
+                placeholder="e.g. Fellow Tuck/Thayer MEM, met at an alumni event, mutual contact"
+                rows={2}
+              />
+            </Field>
+          )}
 
           {preview.mode === "applied" && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

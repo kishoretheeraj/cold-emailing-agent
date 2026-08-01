@@ -219,14 +219,31 @@ Stage display uses Badge variants in `ContactsList.tsx::stageVariant`:
 
 Tier display: T1 → indigo, T2 → default, T3 → muted.
 
-If you add a stage, update `OUTREACH_STAGES` / `APPLIED_STAGES` in `types.ts` and
-`STAGE_LABELS` map in `ContactsList.tsx`.
+If you add a stage, update `OUTREACH_STAGES` / `APPLIED_STAGES` / `NETWORKING_STAGES` in
+`types.ts` and `STAGE_LABELS` map in `ContactsList.tsx`.
+
+The stage `<Select>` in `ContactsList.tsx` renders exactly one of the Outreach / Applied /
+Networking `SelectGroup`s, gated by explicit `selectedContact.mode === "<mode>"` checks (not
+a double-negative like `mode !== "applied"` — that pattern breaks the moment there are more
+than two modes, since two negatives can both be true at once). Add new modes as an explicit
+`mode === "<newmode>"` branch, not another negation.
 
 `REPLY_STAGES` (`reply_drafted`, `reply_sent`) render in a separate "Reply" SelectGroup
-in the stage dropdown — distinct from Outreach and Applied groups. If adding new reply
-stages, update all three: `REPLY_STAGES` in `types.ts`, `STAGE_LABELS` in
-`ContactsList.tsx`, and the Reply SelectGroup in the stage `<Select>` inside
-`ContactsList.tsx`. **Do not add reply stages to `OUTREACH_STAGES` or `APPLIED_STAGES`.**
+in the stage dropdown — distinct from the three mode groups above, and mode-agnostic (every
+mode gets the same Reply group). If adding new reply stages, update all three: `REPLY_STAGES`
+in `types.ts`, `STAGE_LABELS` in `ContactsList.tsx`, and the Reply SelectGroup in the stage
+`<Select>` inside `ContactsList.tsx`. **Do not add reply stages to `OUTREACH_STAGES`,
+`APPLIED_STAGES`, or `NETWORKING_STAGES`.**
+
+**Networking mode** (`mode: "networking"`) is a relationship-first track: one first-touch +
+one follow-up nudge (`NETWORKING_STAGES` in `types.ts`), never a role pitch. Contacts carry
+a `connection_context` free-text field (sheet-only, not in `LIST_COLUMNS`) that the agent's
+`networking_prompt` leads with; empty means "no hook asserted," not a network error — the
+UI must never auto-write a value into it (a Dartmouth-flavored `placeholder` is fine, an
+auto-populated value is not). A networking contact can be **promoted** to outreach/applied
+via the sheet's "Promote to role track" button (`ContactsList.tsx`), which atomically sets
+`mode`, resets `stage` to `"new"`, clears `followup_date`, and appends a note — this is the
+only place mode is changed together with other fields in one write.
 
 ## Tests (Vitest)
 
@@ -250,11 +267,17 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 69** (vitest: 537 passed, playwright: 69 passed).
+- **Current test count: 72** (vitest: 584 passed, playwright: 72 passed).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
-- Fixtures: `tests/e2e/fixtures/contacts.json` (50 rows) and `prompts.json`.
+  Handles GET/PATCH for `contacts`/`prompts` and POST for `contacts` (insert — appends to
+  the in-memory fixture array and returns 201; needed by any e2e test that adds a contact
+  via Smart Input / Structured Form / bulk import). `email=in.(...)` is also filtered
+  (used by `checkDuplicateEmails`'s preflight check) — without it every add-contact test
+  would see a false-positive duplicate, since an unfiltered response returns unrelated rows.
+- Fixtures: `tests/e2e/fixtures/contacts.json` (51 rows, includes one `mode: "networking"`
+  contact) and `prompts.json`.
 - Do NOT hit the real Supabase from e2e tests.
 - Do NOT change `NEXT_PUBLIC_SUPABASE_URL` for e2e runs — `page.route()` intercepts at
   the browser level regardless of which URL is compiled into the bundle.

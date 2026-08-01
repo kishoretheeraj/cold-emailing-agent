@@ -184,6 +184,55 @@ def test_applied_intro_sent_followup_not_due():
     assert agent.decide_action(contact, TODAY) == "skip"
 
 
+# ── _decide_networking ────────────────────────────────────────────────────────
+
+
+def test_networking_new_contact():
+    contact = {"mode": "networking", "stage": "new", "reply_status": "no_reply"}
+    assert agent.decide_action(contact, TODAY) == "send_networking_first_touch"
+
+
+@pytest.mark.parametrize("stage", ["networking_drafted", "networking_followup_drafted"])
+def test_networking_drafted_stages_skip(stage):
+    contact = {"mode": "networking", "stage": stage, "reply_status": "no_reply"}
+    assert agent.decide_action(contact, TODAY) == "skip"
+
+
+def test_networking_followup_sent_skips_terminal():
+    contact = {
+        "mode": "networking",
+        "stage": "networking_followup_sent",
+        "reply_status": "no_reply",
+        "followup_date": YESTERDAY,
+    }
+    assert agent.decide_action(contact, TODAY) == "skip"
+
+
+def test_networking_sent_followup_due():
+    contact = {
+        "mode": "networking",
+        "stage": "networking_sent",
+        "reply_status": "no_reply",
+        "followup_date": str(YESTERDAY),
+    }
+    assert agent.decide_action(contact, TODAY) == "send_networking_followup"
+
+
+def test_networking_sent_followup_not_due():
+    contact = {
+        "mode": "networking",
+        "stage": "networking_sent",
+        "reply_status": "no_reply",
+        "followup_date": str(TOMORROW),
+    }
+    assert agent.decide_action(contact, TODAY) == "skip"
+
+
+def test_networking_sent_with_no_followup_skips():
+    contact = {"mode": "networking", "stage": "networking_sent", "reply_status": "no_reply"}
+    assert agent.decide_action(contact, TODAY) == "skip"
+
+
 # ── _skip_reason ──────────────────────────────────────────────────────────────
 
 
@@ -247,9 +296,9 @@ def test_action_maps_have_consistent_keys():
 
 
 def test_action_label_format():
-    """All labels are nested under 'Cold Outreach/' so they group in Gmail."""
+    """All labels are nested under 'Cold Outreach/' or 'Networking/' so they group in Gmail."""
     for action, label in agent.ACTION_LABEL.items():
-        assert label.startswith("Cold Outreach/"), f"{action} -> {label}"
+        assert label.startswith(("Cold Outreach/", "Networking/")), f"{action} -> {label}"
 
 
 def test_next_stage_values_end_in_drafted():
@@ -398,6 +447,31 @@ def test_run_followup_passes_thread_headers(mocker):
     assert kwargs.get("stage") == "first_touch_sent"
     # Thread info not re-saved for follow-ups
     save_thread_info.assert_not_called()
+
+
+def test_run_logs_networking_mode_tag(mocker, caplog):
+    """A networking contact's log lines must use [NETWORKING], not [APPLIED]."""
+    contact = _build_contact(mode="networking", stage="closed")
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    mocker.patch("agent.time.sleep")
+
+    with caplog.at_level("INFO"):
+        agent.run()
+
+    assert any("[NETWORKING]" in r.message for r in caplog.records)
+    assert not any("[APPLIED]" in r.message for r in caplog.records)
+
+
+def test_run_counts_networking_contacts_at_startup(mocker, caplog):
+    contact = _build_contact(mode="networking", stage="closed")
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    mocker.patch("agent.time.sleep")
+
+    with caplog.at_level("INFO"):
+        agent.run()
+
+    start_line = next(r.message for r in caplog.records if r.message.startswith("START"))
+    assert "networking" in start_line
 
 
 def test_run_skips_replied_contacts(mocker):

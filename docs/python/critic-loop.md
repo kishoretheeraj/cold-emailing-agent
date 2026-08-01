@@ -1,8 +1,13 @@
 # Critic loop (v1)
 
 `emailer.critique_and_revise()` runs on Tier 1 first-touch emails only
-(`send_first_touch` and `send_applied_intro` when `contact["tier"] == 1`).
-All other tiers and all follow-up actions skip it entirely.
+(`send_first_touch`, `send_applied_intro`, and `send_networking_first_touch`
+when `contact["tier"] == 1`). All other tiers and all follow-up actions skip
+it entirely. Networking reuses the existing criteria unchanged — no new
+criteria were added; the length (S-under-120-words) and specific-ask
+criteria already cover networking's constraints. This only fires if the
+contact has a real `tier` set — the Structured Form's Networking tab
+includes a `TierSelector` for this reason.
 
 - **Pass condition**: `rewrite_required == False` in the critic JSON response.
   The critic now returns an 8-key dict: `verdict` (PASS/FAIL), `score` (0–21),

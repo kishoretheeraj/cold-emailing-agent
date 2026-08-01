@@ -212,6 +212,7 @@ export function ReviewFlow({
             tier: c.tier ?? 2,
             mode: c.mode ?? "outreach",
             dartmouth: c.dartmouth ?? false,
+            connection_context: c.connection_context ?? null,
             notes: c.notes,
             resume_url: c.resume_url ?? null,
             state: c.state ?? null,
@@ -255,6 +256,7 @@ export function ReviewFlow({
           tier: c.tier ?? 2,
           mode: c.mode ?? "outreach",
           dartmouth: c.dartmouth ?? false,
+          connection_context: c.connection_context ?? null,
           notes: c.notes,
           resume_url: c.resume_url ?? null,
           state: c.state ?? null,
@@ -720,8 +722,8 @@ export function ReviewFlow({
 
             <div>
               <Label>Mode</Label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {(["outreach", "applied"] as const).map((m) => {
+              <div className="grid grid-cols-3 gap-1.5">
+                {(["outreach", "applied", "networking"] as const).map((m) => {
                   const active = (contact.mode ?? "outreach") === m;
                   return (
                     <button
@@ -760,6 +762,22 @@ export function ReviewFlow({
                 }
               />
             </div>
+
+            {contact.mode === "networking" && (
+              <div>
+                <Label>Connection (the hook to lead with — never fabricated if left blank)</Label>
+                <TextInput
+                  value={contact.connection_context ?? ""}
+                  placeholder="e.g. Fellow Tuck/Thayer MEM, mutual contact"
+                  onChange={(e) =>
+                    onUpdate(currentIndex, {
+                      ...contacts[currentIndex],
+                      connection_context: e.target.value,
+                    })
+                  }
+                />
+              </div>
+            )}
 
             <div>
               <Label>Resume link</Label>

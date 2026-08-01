@@ -36,6 +36,7 @@ const sample = {
   job_title: null,
   job_description: null,
   applied_date: null,
+  connection_context: null,
   notes: null,
 };
 
@@ -175,6 +176,62 @@ describe("SmartInput — extraction flow", () => {
 
     expect(screen.getByDisplayValue("Senior PM")).toBeInTheDocument();
     expect(screen.getByDisplayValue("2026-04-21")).toBeInTheDocument();
+  });
+
+  it("mode toggle offers networking as a third option", async () => {
+    const user = userEvent.setup();
+    mockFetchOk(sample);
+
+    render(<SmartInput onAdded={() => {}} onError={() => {}} />);
+    await user.type(screen.getByPlaceholderText(/Examples:/), "Dana");
+    await user.click(screen.getByRole("button", { name: /Extract with Claude/i }));
+    await waitFor(() => screen.getByText(/Preview/));
+
+    await user.click(screen.getByRole("button", { name: /^networking$/i }));
+    expect(screen.getAllByText("networking").length).toBeGreaterThan(0);
+  });
+
+  it("shows connection_context field only when mode is networking", async () => {
+    const user = userEvent.setup();
+    mockFetchOk({ ...sample, mode: "networking" });
+
+    render(<SmartInput onAdded={() => {}} onError={() => {}} />);
+    await user.type(screen.getByPlaceholderText(/Examples:/), "Priya");
+    await user.click(screen.getByRole("button", { name: /Extract with Claude/i }));
+    await waitFor(() => screen.getByText(/Preview/));
+
+    expect(screen.getByText(/^Connection \(/i)).toBeInTheDocument();
+  });
+
+  it("hides connection_context field for outreach mode", async () => {
+    const user = userEvent.setup();
+    mockFetchOk(sample);
+
+    render(<SmartInput onAdded={() => {}} onError={() => {}} />);
+    await user.type(screen.getByPlaceholderText(/Examples:/), "Dana");
+    await user.click(screen.getByRole("button", { name: /Extract with Claude/i }));
+    await waitFor(() => screen.getByText(/Preview/));
+
+    expect(screen.queryByText(/^Connection \(/i)).toBeNull();
+  });
+
+  it("includes connection_context in the insert payload", async () => {
+    const user = userEvent.setup();
+    mockFetchOk({ ...sample, mode: "networking" });
+
+    render(<SmartInput onAdded={() => {}} onError={() => {}} />);
+    await user.type(screen.getByPlaceholderText(/Examples:/), "Priya");
+    await user.click(screen.getByRole("button", { name: /Extract with Claude/i }));
+    await waitFor(() => screen.getByText(/Preview/));
+
+    const field = screen.getByText(/^Connection \(/i).parentElement?.querySelector(
+      "input, textarea"
+    ) as HTMLElement;
+    await user.type(field, "Fellow Tuck MEM");
+    await user.click(screen.getByRole("button", { name: /Confirm & Add Contact/i }));
+
+    await waitFor(() => expect(insertMock).toHaveBeenCalled());
+    expect(insertMock.mock.calls[0][0].connection_context).toBe("Fellow Tuck MEM");
   });
 
   it("Discard preview clears the preview card", async () => {

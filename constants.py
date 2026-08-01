@@ -22,6 +22,15 @@ APPLIED_STAGES = [
     "closed",
 ]
 
+NETWORKING_STAGES = [
+    "new",
+    "networking_drafted",
+    "networking_sent",
+    "networking_followup_drafted",
+    "networking_followup_sent",
+    "closed",
+]
+
 # ── Reply status values ────────────────────────────────────────────────────────
 
 REPLY_STATUSES = ["no_reply", "replied", "interested", "call_scheduled", "dead"]
@@ -37,7 +46,10 @@ REPLY_STAGES = ["reply_drafted", "reply_sent"]
 # ── Derived sets ──────────────────────────────────────────────────────────────
 
 DRAFTED_STAGES = [
-    s for s in OUTREACH_STAGES + APPLIED_STAGES + REPLY_STAGES if "drafted" in s
+    s for s in OUTREACH_STAGES + APPLIED_STAGES + NETWORKING_STAGES + REPLY_STAGES
+    if "drafted" in s
 ]
 
-TERMINAL_DRAFTED_STAGES = {"breakup_drafted", "applied_followup_drafted", "reply_drafted"}
+TERMINAL_DRAFTED_STAGES = {
+    "breakup_drafted", "applied_followup_drafted", "networking_followup_drafted", "reply_drafted",
+}

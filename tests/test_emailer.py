@@ -119,6 +119,60 @@ def test_generate_email_applied_intro(mocker):
     assert body == "Email body."
 
 
+def _networking_contact(**overrides):
+    base = {
+        "name": "Priya",
+        "email": "priya@example.com",
+        "company": "Northwind",
+        "mode": "networking",
+        "connection_context": "Fellow Tuck MEM",
+        "tier": 2,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_generate_email_networking_first_touch(mocker):
+    mocker.patch.object(
+        emailer, "_call_claude", side_effect=["Networking body.", "coffee?"],
+    )
+    subject, body = emailer.generate_email(_networking_contact(), "send_networking_first_touch")
+    assert body == "Networking body."
+    assert subject == "coffee?"
+
+
+def test_generate_email_networking_followup_uses_re_prefix(mocker):
+    mock_claude = mocker.patch.object(emailer, "_call_claude", return_value="follow body")
+    subject, _ = emailer.generate_email(
+        _networking_contact(), "send_networking_followup", original_subject="coffee?"
+    )
+    assert subject == "Re: coffee?"
+    assert mock_claude.call_count == 1  # body only, no subject call
+
+
+def test_networking_prompt_uses_connection_context_hook():
+    contact = _networking_contact(connection_context="We met at the Tuck info session")
+    prompt = emailer._build_networking_prompt(contact, "", {})
+    assert "We met at the Tuck info session" in prompt
+    assert "do not invent one" not in prompt
+
+
+def test_networking_prompt_degrades_when_no_connection_context():
+    contact = _networking_contact(connection_context="")
+    prompt = emailer._build_networking_prompt(contact, "", {})
+    assert "do not invent one" in prompt
+
+
+def test_generate_subject_uses_networking_subject_prompt(mocker):
+    captured = []
+    mocker.patch.object(
+        emailer, "_call_claude",
+        side_effect=lambda p, **kw: (captured.append(p), "casual subject")[1],
+    )
+    emailer._generate_subject(_networking_contact(), "networking", "body text", {})
+    assert "never mention role" in captured[0].lower()
+
+
 def test_generate_email_applied_followup(mocker):
     mock_claude = mocker.patch.object(emailer, "_call_claude", return_value="Quick follow-up.")
     subject, body = emailer.generate_email(
@@ -272,6 +326,31 @@ def test_generate_email_custom_subject_prompt(mocker):
     )
     subject_prompt = captured[1]  # second call is subject
     assert subject_prompt.startswith("SUBJ")
+
+
+# ── prepare_email log marker ─────────────────────────────────────────────────
+
+
+def _networking_contact(**overrides):
+    base = {
+        "name": "Priya",
+        "email": "priya@example.com",
+        "company": "Northwind",
+        "mode": "networking",
+        "connection_context": "Fellow Tuck MEM",
+        "tier": 2,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_prepare_email_logs_networking_marker_not_outreach(mocker, caplog):
+    """prepare_email's log line must reflect the contact's actual mode."""
+    mocker.patch.object(emailer, "_call_claude", return_value="ignored")
+    with caplog.at_level("INFO"):
+        emailer.prepare_email(_networking_contact(), "send_networking_first_touch")
+    assert any("[NETWORKING]" in r.message for r in caplog.records)
+    assert not any("[OUTREACH]" in r.message for r in caplog.records)
 
 
 # ── Credit exhaustion sentinel ────────────────────────────────────────────────

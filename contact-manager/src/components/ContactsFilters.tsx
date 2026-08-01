@@ -18,6 +18,7 @@ import {
   EMPTY_FILTERS,
   OUTREACH_STAGES,
   APPLIED_STAGES,
+  NETWORKING_STAGES,
   filtersEqual,
 } from "@/lib/types";
 
@@ -32,6 +33,9 @@ const OUTREACH_FILTER_STAGES = OUTREACH_STAGES.filter(
   (s) => s !== "new" && s !== "closed"
 );
 const APPLIED_FILTER_STAGES = APPLIED_STAGES.filter(
+  (s) => s !== "new" && s !== "closed"
+);
+const NETWORKING_FILTER_STAGES = NETWORKING_STAGES.filter(
   (s) => s !== "new" && s !== "closed"
 );
 
@@ -55,7 +59,7 @@ export function ContactsFilters({ filters, onChange }: Props) {
     onChange({ ...filters, tiers: next });
   }
 
-  function toggleMode(mode: "outreach" | "applied") {
+  function toggleMode(mode: "outreach" | "applied" | "networking") {
     const next = filters.modes.includes(mode)
       ? filters.modes.filter((m) => m !== mode)
       : [...filters.modes, mode];
@@ -125,7 +129,7 @@ export function ContactsFilters({ filters, onChange }: Props) {
           <span className="text-fg-dim text-xs uppercase tracking-wider">
             Mode
           </span>
-          {(["outreach", "applied"] as const).map((mode) => {
+          {(["outreach", "applied", "networking"] as const).map((mode) => {
             const active = filters.modes.includes(mode);
             return (
               <button
@@ -167,6 +171,14 @@ export function ContactsFilters({ filters, onChange }: Props) {
               <SelectGroup>
                 <SelectLabel>Applied</SelectLabel>
                 {APPLIED_FILTER_STAGES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {formatStageLabel(s)}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+              <SelectGroup>
+                <SelectLabel>Networking</SelectLabel>
+                {NETWORKING_FILTER_STAGES.map((s) => (
                   <SelectItem key={s} value={s}>
                     {formatStageLabel(s)}
                   </SelectItem>

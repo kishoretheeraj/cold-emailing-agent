@@ -44,6 +44,31 @@
 
 **`contacts.classifier_status TEXT nullable`** — written by monitor's reply classifier; never by user or agent. User manages `reply_status` separately. "Needs response" filter: `classifier_status IN ('positive_reply','soft_yes') AND reply_status NOT IN ('interested','call_scheduled','dead')`.
 
+**`contacts.connection_context TEXT nullable`** (added 2026-08-01, migration
+`20260801005138_add_networking_mode.sql`) — free-text networking connection
+hook (Dartmouth affiliation, mutual contact, shared background). Sheet-only
+(not in `LIST_COLUMNS` on either side). Consumed by `emailer._connection_context_instruction()`
+to build `{connection_context_instruction}` for `networking_prompt`; empty
+means "no hook was asserted" and the prompt is instructed to degrade rather
+than fabricate one. User-editable placeholder text (not an auto-written
+value) suggests Dartmouth-flavored phrasing in the UI when `dartmouth=true`.
+
+## Networking mode (added 2026-08-01)
+
+Same migration widened `contacts.mode`'s CHECK constraint to
+`IN ('outreach', 'applied', 'networking')` and seeded three prompt rows
+(`networking_prompt`, `networking_followup_prompt`, `networking_subject_prompt`
+— see `docs/python/prompt-keys.md`). `NETWORKING_STAGES` in `constants.py`:
+`new → networking_drafted → networking_sent → networking_followup_drafted →
+networking_followup_sent → closed` — one send + one follow-up nudge, no
+further cadence. Reuses the generic reply pipeline unchanged (`REPLY_STAGES`,
+`reply_status`) — no networking-specific reply stage or classifier category
+exists. The migration's constraint widening uses a `pg_constraint` lookup
+rather than a hardcoded constraint name, since the live schema had already
+drifted from `setup_supabase.sql` before this change (see the migration file
+for details) — don't assume `setup_supabase.sql` fully describes the live
+schema.
+
 ## Reply stages
 
 `REPLY_STAGES = ["reply_drafted", "reply_sent"]` in `constants.py`. These are included in `DRAFTED_STAGES` (comprehension extended to include `REPLY_STAGES`). `reply_drafted` is in `TERMINAL_DRAFTED_STAGES`. `DRAFTED_TO_SENT` in `agent.py` includes `"reply_drafted": "reply_sent"`.

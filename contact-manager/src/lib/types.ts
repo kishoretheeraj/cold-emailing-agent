@@ -1,4 +1,4 @@
-export type Mode = "outreach" | "applied";
+export type Mode = "outreach" | "applied" | "networking";
 export type ReplyStatus =
   | "no_reply"
   | "replied"
@@ -23,6 +23,7 @@ export type Contact = {
   job_description: string | null;
   company_applied: string | null;
   applied_date: string | null;
+  connection_context: string | null;
   followup_date: string | null;
   notes: string | null;
   resume_url?: string | null;
@@ -87,6 +88,7 @@ export type ExtractedContact = {
   job_title: string | null;
   job_description: string | null;
   applied_date: string | null;
+  connection_context: string | null;
   notes: string | null;
   resume_url?: string | null;
   state?: string | null;
@@ -146,6 +148,15 @@ export const APPLIED_STAGES = [
   "closed",
 ];
 
+export const NETWORKING_STAGES = [
+  "new",
+  "networking_drafted",
+  "networking_sent",
+  "networking_followup_drafted",
+  "networking_followup_sent",
+  "closed",
+];
+
 export const REPLY_STATUSES: ReplyStatus[] = [
   "no_reply",
   "replied",
@@ -158,7 +169,7 @@ export type ContactsQueryFilters = {
   nameOrCompany: string;
   stages: string[];
   tiers: number[];
-  modes: ("outreach" | "applied")[];
+  modes: ("outreach" | "applied" | "networking")[];
   dartmouthOnly: boolean;
   needsResponseOnly: boolean;
 };

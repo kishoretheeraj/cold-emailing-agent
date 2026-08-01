@@ -37,6 +37,7 @@ function parseContacts(raw: string): ReviewContact[] {
       job_title: null,
       job_description: null,
       applied_date: null,
+      connection_context: null,
       notes: typeof obj.notes === "string" ? obj.notes.trim() || null : null,
       resume_url: null,
       state: null,

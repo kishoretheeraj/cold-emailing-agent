@@ -18,7 +18,7 @@ import {
   SelectItem,
 } from "@/components/ui/Select";
 
-type FormMode = "outreach" | "applied";
+type FormMode = "outreach" | "applied" | "networking";
 
 export function StructuredForm({
   onAdded,
@@ -32,8 +32,14 @@ export function StructuredForm({
   return (
     <div className="space-y-5">
       <div className="inline-flex rounded-lg border border-border bg-surface p-1">
-        {(["outreach", "applied"] as const).map((m) => {
+        {(["outreach", "applied", "networking"] as const).map((m) => {
           const active = section === m;
+          const label =
+            m === "outreach"
+              ? "Outreach Contact"
+              : m === "applied"
+              ? "Applied Contact"
+              : "Networking Contact";
           return (
             <button
               key={m}
@@ -44,17 +50,15 @@ export function StructuredForm({
                   : "text-fg-muted hover:text-fg"
               }`}
             >
-              {m === "outreach" ? "Outreach Contact" : "Applied Contact"}
+              {label}
             </button>
           );
         })}
       </div>
 
-      {section === "outreach" ? (
-        <OutreachForm onAdded={onAdded} onError={onError} />
-      ) : (
-        <AppliedForm onAdded={onAdded} onError={onError} />
-      )}
+      {section === "outreach" && <OutreachForm onAdded={onAdded} onError={onError} />}
+      {section === "applied" && <AppliedForm onAdded={onAdded} onError={onError} />}
+      {section === "networking" && <NetworkingForm onAdded={onAdded} onError={onError} />}
     </div>
   );
 }
@@ -338,6 +342,145 @@ function AppliedForm({
           onChange={(e) => setJobDescription(e.target.value)}
           rows={8}
         />
+      </div>
+
+      <ToggleSwitch
+        on={dartmouth}
+        onChange={setDartmouth}
+        label="Dartmouth / Tuck / Thayer / Irving connection"
+      />
+
+      <div>
+        <Label>Notes</Label>
+        <TextArea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+        />
+      </div>
+
+      <div>
+        <Label>Resume link (optional)</Label>
+        <TextInput
+          value={resumeUrl}
+          onChange={(e) => setResumeUrl(e.target.value)}
+          placeholder="Google Drive URL"
+        />
+      </div>
+
+      <div className="flex justify-end pt-1">
+        <button
+          onClick={submit}
+          disabled={saving}
+          className="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 disabled:bg-indigo-500/30"
+        >
+          {saving ? "Saving…" : "Add Contact"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function NetworkingForm({
+  onAdded,
+  onError,
+}: {
+  onAdded: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [company, setCompany] = useState("");
+  const [role, setRole] = useState("");
+  const [connectionContext, setConnectionContext] = useState("");
+  const [tier, setTier] = useState(2);
+  const [dartmouth, setDartmouth] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [resumeUrl, setResumeUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!name.trim() || !email.trim() || !company.trim()) {
+      onError("Name, Email, and Company are required");
+      return;
+    }
+    setSaving(true);
+    try {
+      const dupes = await checkDuplicateEmails([email]);
+      if (dupes.size > 0) throw new Error("A contact with this email is already in your list.");
+      const { error } = await supabase.from("contacts").insert({
+        name,
+        email,
+        company,
+        role: role || null,
+        connection_context: connectionContext || null,
+        tier,
+        mode: "networking",
+        dartmouth,
+        notes: notes || null,
+        resume_url: resumeUrl || null,
+        stage: "new",
+        reply_status: "no_reply",
+      });
+      if (error) throw new Error(await resolveInsertError(error, email));
+      setName("");
+      setEmail("");
+      setCompany("");
+      setRole("");
+      setConnectionContext("");
+      setTier(2);
+      setDartmouth(false);
+      setNotes("");
+      setResumeUrl("");
+      onAdded();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-surface-2 p-5 space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <Label required>Name</Label>
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <Label required>Email</Label>
+          <TextInput
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <div>
+          <Label required>Company</Label>
+          <TextInput
+            value={company}
+            onChange={(e) => setCompany(e.target.value)}
+          />
+        </div>
+        <div>
+          <Label>Role</Label>
+          <TextInput value={role} onChange={(e) => setRole(e.target.value)} />
+        </div>
+      </div>
+
+      <div>
+        <Label>Connection (the hook to lead with — never fabricated if left blank)</Label>
+        <TextArea
+          value={connectionContext}
+          onChange={(e) => setConnectionContext(e.target.value)}
+          placeholder="e.g. Fellow Tuck/Thayer MEM, met at an alumni event, mutual contact"
+          rows={2}
+        />
+      </div>
+
+      <div>
+        <Label>Tier</Label>
+        <TierSelector value={tier} onChange={setTier} />
       </div>
 
       <ToggleSwitch

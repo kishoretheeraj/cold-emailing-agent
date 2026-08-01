@@ -32,6 +32,7 @@ describe("STAGE_TRANSITIONS", () => {
     const terminals = [
       "breakup_drafted",
       "applied_followup_drafted",
+      "networking_followup_drafted",
       "reply_drafted",
     ] as const;
     for (const stage of terminals) {
@@ -45,12 +46,18 @@ describe("STAGE_TRANSITIONS", () => {
       "followup1_drafted",
       "followup2_drafted",
       "applied_intro_drafted",
+      "networking_drafted",
     ] as const;
     for (const stage of nonTerminals) {
       const key = STAGE_TRANSITIONS[stage].cadenceKey;
       expect(key).not.toBeNull();
       expect(key! in CADENCE).toBe(true);
     }
+  });
+
+  it("networking_drafted and networking_followup_drafted are QUEUE_STAGES", () => {
+    expect(QUEUE_STAGES).toContain("networking_drafted");
+    expect(QUEUE_STAGES).toContain("networking_followup_drafted");
   });
 
   it("each transition maps to a *_sent next stage", () => {

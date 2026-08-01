@@ -54,3 +54,14 @@ changes (days between emails), update **both** files. Same pattern as `REPLY_STA
 in `types.ts` mirroring `constants.py`. The `STAGE_TRANSITIONS` map in `cadence.ts`
 is the authoritative transition table for all `/api/send-draft` stage flips.
 `QUEUE_STAGES` (in `cadence.ts`) is used by `/queue` page to filter contacts for bulk approval.
+
+## Networking mode (added 2026-08-01)
+
+`networking_drafted` and `networking_followup_drafted` are in `QUEUE_STAGES`, so
+networking drafts appear in `/queue` alongside outreach/applied drafts — no separate
+page. `CADENCE.NETWORKING_TO_FOLLOWUP_DAYS = 6` is the only cadence value (the
+follow-up is terminal — `networking_followup_drafted`'s `cadenceKey` is `null`, same
+shape as `applied_followup_drafted`, so no further follow-up is ever scheduled).
+`STAGE_TO_LABEL` in `src/app/api/send-draft/route.ts` applies `Networking/Intro` and
+`Networking/Follow-up` Gmail labels for these stages (a separate top-level Gmail label
+from `Cold Outreach/...`).

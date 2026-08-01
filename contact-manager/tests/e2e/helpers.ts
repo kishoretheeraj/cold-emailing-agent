@@ -115,6 +115,16 @@ export async function mockSupabase(page: Page) {
       rows = rows.filter((c) => c.dartmouth === true);
     }
 
+    // email=in.(a@x.com,b@y.com) — used by checkDuplicateEmails preflight
+    const emailParam = params.get("email");
+    if (emailParam) {
+      const m = /in\.\((.*?)\)/.exec(emailParam);
+      if (m) {
+        const emails = m[1] ? m[1].split(",") : [];
+        rows = rows.filter((c) => emails.includes(String(c.email ?? "")));
+      }
+    }
+
     // created_at=lt.ISO
     const createdAt = params.get("created_at");
     if (createdAt?.startsWith("lt.")) {
@@ -177,6 +187,28 @@ export async function mockSupabase(page: Page) {
         }
       }
       await route.fulfill({ status: 404, body: JSON.stringify({ error: "not found" }) });
+    } else if (request.method() === "POST") {
+      // Insert a new contact (Smart Input / Structured Form / bulk import).
+      const body = JSON.parse(request.postData() ?? "{}") as Partial<Contact>;
+      const newContact: Contact = {
+        id: String(1000 + contacts.length),
+        created_at: new Date().toISOString(),
+        deleted_at: null,
+        name: null,
+        company: null,
+        stage: "new",
+        tier: null,
+        mode: "outreach",
+        dartmouth: false,
+        message_id: null,
+        ...body,
+      };
+      contacts.push(newContact);
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify([newContact]),
+      });
     } else {
       await route.continue();
     }

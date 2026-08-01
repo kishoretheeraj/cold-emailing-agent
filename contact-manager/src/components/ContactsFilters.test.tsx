@@ -147,6 +147,15 @@ describe("ContactsFilters", () => {
     );
   });
 
+  it("renders a networking mode pill and toggles it", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderFilters();
+    await user.click(screen.getByRole("button", { name: /^networking$/i }));
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ modes: ["networking"] })
+    );
+  });
+
   it("stage Select option click updates filters.stages", async () => {
     const user = userEvent.setup();
     const { onChange } = renderFilters();

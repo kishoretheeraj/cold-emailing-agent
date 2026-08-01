@@ -18,6 +18,8 @@ const STAGE_TO_LABEL: Record<string, string> = {
   breakup_drafted:          "Cold Outreach/Break-up",
   applied_intro_drafted:    "Cold Outreach/Applied Intro",
   applied_followup_drafted: "Cold Outreach/Applied Follow-up",
+  networking_drafted:          "Networking/Intro",
+  networking_followup_drafted: "Networking/Follow-up",
 };
 
 function todayUTC(): string {

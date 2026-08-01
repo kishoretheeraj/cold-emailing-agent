@@ -9,6 +9,7 @@ import {
   type ContactsQueryFilters,
   OUTREACH_STAGES,
   APPLIED_STAGES,
+  NETWORKING_STAGES,
   REPLY_STAGES,
   REPLY_STATUSES,
   EMPTY_FILTERS,
@@ -64,6 +65,10 @@ const STAGE_LABELS: Record<string, string> = {
   applied_intro_sent: "App Intro Sent",
   applied_followup_drafted: "App Followup Draft",
   applied_followup_sent: "App Followup Sent",
+  networking_drafted: "Networking Draft",
+  networking_sent: "Networking Sent",
+  networking_followup_drafted: "Networking Followup Draft",
+  networking_followup_sent: "Networking Followup Sent",
   closed: "Closed",
   bounced: "Bounced",
   unsubscribed: "Unsub",
@@ -202,6 +207,10 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
   const [resumeUrl, setResumeUrl] = useState("");
   const [jobTitle, setJobTitle] = useState("");
   const [contactState, setContactState] = useState("");
+  const [connectionContext, setConnectionContext] = useState("");
+  const [showPromoteModal, setShowPromoteModal] = useState(false);
+  const [promoteTarget, setPromoteTarget] = useState<"outreach" | "applied">("outreach");
+  const [promoting, setPromoting] = useState(false);
 
   const fetchIdRef = useRef(0);
   const prevFiltersRef = useRef<ContactsQueryFilters>(EMPTY_FILTERS);
@@ -225,6 +234,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
     setResumeUrl(selectedContact?.resume_url ?? "");
     setJobTitle(selectedContact?.job_title ?? "");
     setContactState(selectedContact?.state ?? "");
+    setConnectionContext(selectedContact?.connection_context ?? "");
   }, [selectedContact?.id]);
 
   // ── Fetch functions ──────────────────────────────────────────────────────────
@@ -396,7 +406,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
 
   // ── Mode change (immediate optimistic) ──────────────────────────────────────
 
-  async function handleModeChange(mode: "outreach" | "applied") {
+  async function handleModeChange(mode: "outreach" | "applied" | "networking") {
     if (!selectedContact) return;
     const prev = selectedContact;
     const updated = { ...selectedContact, mode };
@@ -469,6 +479,35 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
     setSelectedContact(null);
     setShowDeleteModal(false);
     onSuccess("Contact deleted");
+  }
+
+  // ── Promote networking contact to a role track ──────────────────────────────
+
+  async function handlePromote() {
+    if (!selectedContact) return;
+    setPromoting(true);
+    const today = new Date().toISOString().slice(0, 10);
+    const annotation = `[Promoted from networking to ${promoteTarget} on ${today}]`;
+    const payload = {
+      mode: promoteTarget,
+      stage: "new",
+      followup_date: null,
+      notes: selectedContact.notes ? `${selectedContact.notes}\n${annotation}` : annotation,
+    };
+    const { error } = await supabase
+      .from("contacts")
+      .update(payload)
+      .eq("id", selectedContact.id);
+    setPromoting(false);
+    if (error) {
+      onError(`Failed to promote contact: ${error.message}`);
+      return;
+    }
+    const updated = { ...selectedContact, ...payload };
+    setSelectedContact(updated);
+    setContacts((cs) => cs.map((c) => (c.id === updated.id ? updated : c)));
+    setShowPromoteModal(false);
+    onSuccess(`Promoted to ${promoteTarget}`);
   }
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -677,7 +716,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {selectedContact.mode !== "applied" && (
+                        {selectedContact.mode === "outreach" && (
                           <SelectGroup>
                             <SelectLabel>Outreach</SelectLabel>
                             {OUTREACH_STAGES.filter(
@@ -689,14 +728,20 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                             ))}
                           </SelectGroup>
                         )}
-                        {selectedContact.mode !== "outreach" && (
+                        {selectedContact.mode === "applied" && (
                           <SelectGroup>
                             <SelectLabel>Applied</SelectLabel>
-                            {APPLIED_STAGES.filter(
-                              (s) =>
-                                s !== "closed" &&
-                                (selectedContact.mode === "applied" || s !== "new")
-                            ).map((s) => (
+                            {APPLIED_STAGES.filter((s) => s !== "closed").map((s) => (
+                              <SelectItem key={s} value={s}>
+                                {stageLabel(s)}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                        {selectedContact.mode === "networking" && (
+                          <SelectGroup>
+                            <SelectLabel>Networking</SelectLabel>
+                            {NETWORKING_STAGES.filter((s) => s !== "closed").map((s) => (
                               <SelectItem key={s} value={s}>
                                 {stageLabel(s)}
                               </SelectItem>
@@ -909,6 +954,32 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                     </div>
                   )}
 
+                  {selectedContact.mode === "networking" && (
+                    <div>
+                      <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
+                        Connection
+                      </label>
+                      <TextArea
+                        value={connectionContext}
+                        onChange={(e) => setConnectionContext(e.target.value)}
+                        onBlur={() =>
+                          handleBlurSave(
+                            "connection_context",
+                            connectionContext,
+                            "Connection",
+                            () => setConnectionContext(selectedContact.connection_context ?? "")
+                          )
+                        }
+                        placeholder={
+                          selectedContact.dartmouth
+                            ? "e.g. Fellow Tuck/Thayer MEM, met at an alumni event"
+                            : "e.g. Mutual contact, met at a conference"
+                        }
+                        rows={2}
+                      />
+                    </div>
+                  )}
+
                   <div>
                     <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
                       Resume URL
@@ -928,8 +999,8 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                     <label className="text-xs uppercase tracking-wider text-fg-dim mb-1.5 block">
                       Mode
                     </label>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {(["outreach", "applied"] as const).map((m) => {
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(["outreach", "applied", "networking"] as const).map((m) => {
                         const active = (selectedContact.mode ?? "outreach") === m;
                         return (
                           <button
@@ -948,6 +1019,21 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                       })}
                     </div>
                   </div>
+
+                  {selectedContact.mode === "networking" && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPromoteTarget("outreach");
+                          setShowPromoteModal(true);
+                        }}
+                        className="w-full rounded-lg border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 py-2 text-xs hover:bg-indigo-500/20 transition-colors"
+                      >
+                        Promote to role track
+                      </button>
+                    </div>
+                  )}
 
                   <ToggleSwitch
                     on={selectedContact.dartmouth ?? false}
@@ -1055,6 +1141,42 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
         loading={deleting}
         onCancel={() => setShowDeleteModal(false)}
         onConfirm={handleDelete}
+      />
+
+      {/* ── Promote confirmation modal ───────────────────────────────────────── */}
+      <ConfirmModal
+        open={showPromoteModal}
+        title="Promote to a role track?"
+        body={
+          <div className="space-y-3">
+            <p>
+              This moves {selectedContact?.name} off the networking track and
+              starts a fresh outreach or applied sequence: stage resets to New
+              and the follow-up date is cleared.
+            </p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(["outreach", "applied"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setPromoteTarget(m)}
+                  className={`rounded-lg border py-2 text-xs capitalize transition ${
+                    promoteTarget === m
+                      ? "border-indigo-500 bg-indigo-500/10 text-indigo-300"
+                      : "border-border bg-surface text-fg-muted hover:border-border-strong"
+                  }`}
+                >
+                  Promote to {m}
+                </button>
+              ))}
+            </div>
+          </div>
+        }
+        confirmLabel="Promote"
+        confirmVariant="primary"
+        loading={promoting}
+        onCancel={() => setShowPromoteModal(false)}
+        onConfirm={handlePromote}
       />
     </>
   );

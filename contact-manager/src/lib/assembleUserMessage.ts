@@ -8,7 +8,9 @@ export type AgentAction =
   | "send_followup2"
   | "send_breakup"
   | "send_applied_intro"
-  | "send_applied_followup";
+  | "send_applied_followup"
+  | "send_networking_first_touch"
+  | "send_networking_followup";
 
 export type AssembleResult = {
   userMessage: string;
@@ -192,6 +194,55 @@ code fences, no preamble:
                specifically what to fix, written as a direct
                instruction>"}}`;
 
+const NETWORKING_PROMPT_FALLBACK = `You are writing a warm networking email for a job seeker.
+This is NOT a job pitch. Do not mention roles, openings, hiring, or applying.
+The only goal is a genuine, low-pressure ask for a short conversation.
+Generate ONLY the email body. No subject line, no sign-off name, no metadata.
+
+SENDER PROFILE:
+{profile}
+
+RECIPIENT:
+- Name: {name}
+- Company: {company}
+
+CONNECTION:
+{connection_context_instruction}
+{dartmouth_instruction}
+
+RULES:
+- Max 120 words
+- No filler phrases ("I hope this finds you well", etc.)
+- No em dashes
+- Never mention a role, opening, application, or hiring
+- No attachment references
+- One clear, low-commitment ask: a 15-20 minute chat, with a couple of
+  flexible time windows offered so it's easy to say yes
+- Simple, conversational, personal tone — not a pitch
+- Sound human, not AI-generated`;
+
+const NETWORKING_FOLLOWUP_PROMPT_FALLBACK = `You are writing a brief, gentle follow-up to a
+networking email sent about a week ago. This is the only follow-up that will
+be sent — do not imply there will be another. Keep it low-pressure; the
+recipient owes nothing.
+
+SENDER PROFILE:
+{profile}
+
+RECIPIENT:
+- Name: {name}
+- Company: {company}
+{dartmouth_instruction}
+
+RULES:
+- Max 60 words
+- Briefly reference that a previous note was sent
+- Restate the same low-commitment ask (15-20 minute chat), do not escalate it
+- No role, opening, application, or hiring language
+- No em dashes, no filler
+- End with a soft, easy-out close (e.g. "No worries at all if timing's not right")
+- Do NOT include subject line or name sign-off`;
+
 // ── Internal maps (mirrors emailer.py) ────────────────────────────────────────
 
 const ACTION_TO_TEMPLATE: Record<string, string> = {
@@ -241,6 +292,16 @@ function getDartmouthInstruction(prompts: Record<string, string>, dart: boolean)
   return prompts["dartmouth_instruction"] ?? DARTMOUTH_INSTRUCTION_FALLBACK;
 }
 
+// Mirrors emailer._connection_context_instruction
+function getConnectionContextInstruction(contact: Contact): string {
+  const value = (contact.connection_context ?? "").trim();
+  if (value) return `Lead with this specific hook: ${value}`;
+  return (
+    "No connection hook provided — do not invent one. Open with a brief, " +
+    "honest, low-pressure reason for reaching out instead."
+  );
+}
+
 // ── deriveAction ───────────────────────────────────────────────────────────────
 
 // Mirrors _decide_outreach / _decide_applied from agent.py.
@@ -258,6 +319,16 @@ export function deriveAction(contact: Contact): AgentAction {
       return "send_applied_followup";
     }
     return "send_applied_intro";
+  }
+
+  if (mode === "networking") {
+    if (
+      stage === "networking_followup_drafted" ||
+      stage === "networking_followup_sent"
+    ) {
+      return "send_networking_followup";
+    }
+    return "send_networking_first_touch";
   }
 
   // outreach (and all other modes fall through to outreach)
@@ -290,6 +361,29 @@ export function assembleUserMessage(
       role: contact.role ?? "",
       company: contact.company ?? "",
       job_title: contact.job_title ?? "the role",
+      dartmouth_instruction,
+    });
+    return { userMessage, systemMessage };
+  }
+
+  if (action === "send_networking_followup") {
+    const tpl = prompts["networking_followup_prompt"] ?? NETWORKING_FOLLOWUP_PROMPT_FALLBACK;
+    const userMessage = pythonFormat(tpl, {
+      profile,
+      name: contact.name ?? "",
+      company: contact.company ?? "",
+      dartmouth_instruction,
+    });
+    return { userMessage, systemMessage };
+  }
+
+  if (action === "send_networking_first_touch") {
+    const tpl = prompts["networking_prompt"] ?? NETWORKING_PROMPT_FALLBACK;
+    const userMessage = pythonFormat(tpl, {
+      profile,
+      name: contact.name ?? "",
+      company: contact.company ?? "",
+      connection_context_instruction: getConnectionContextInstruction(contact),
       dartmouth_instruction,
     });
     return { userMessage, systemMessage };

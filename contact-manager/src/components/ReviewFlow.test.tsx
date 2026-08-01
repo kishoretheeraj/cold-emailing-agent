@@ -30,6 +30,7 @@ function makeContact(overrides: Partial<ReviewContact> = {}): ReviewContact {
     job_title: null,
     job_description: null,
     applied_date: null,
+    connection_context: null,
     notes: null,
     resume_url: null,
     missing_email: false,
@@ -81,6 +82,34 @@ describe("ReviewFlow — reviewing phase", () => {
     render(<ReviewFlow {...makeProps(contacts)} />);
     expect(screen.getByDisplayValue("Alice Smith")).toBeInTheDocument();
     expect(screen.getByText(/Reviewing 1 of 3/i)).toBeInTheDocument();
+  });
+
+  it("mode toggle offers networking and calls onUpdate", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    const contacts = [makeContact({ name: "Alice Smith" })];
+    render(<ReviewFlow {...makeProps(contacts, { onUpdate })} />);
+
+    await user.click(screen.getByRole("button", { name: /^networking$/i }));
+
+    expect(onUpdate).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ mode: "networking" })
+    );
+  });
+
+  it("shows connection_context field only when mode is networking", () => {
+    const contacts = [makeContact({ name: "Alice Smith", mode: "networking" })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+
+    expect(screen.getByText(/^Connection \(/i)).toBeInTheDocument();
+  });
+
+  it("hides connection_context field for outreach mode", () => {
+    const contacts = [makeContact({ name: "Alice Smith", mode: "outreach" })];
+    render(<ReviewFlow {...makeProps(contacts)} />);
+
+    expect(screen.queryByText(/^Connection \(/i)).toBeNull();
   });
 
   it("Skip on card 1 marks it skipped and calls onUpdate", async () => {

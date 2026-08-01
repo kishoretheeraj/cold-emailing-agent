@@ -268,6 +268,28 @@ describe("POST /api/send-draft", () => {
     });
   });
 
+  it("applies the Networking/Intro label for a networking_drafted contact", async () => {
+    const networkingContact = { ...contact, stage: "networking_drafted", mode: "networking" };
+    const networkingDraft = { ...draftRow, stage: "networking_drafted" };
+    mockSingle
+      .mockResolvedValueOnce({ data: networkingContact, error: null })
+      .mockResolvedValueOnce({ data: networkingDraft, error: null });
+    mockDraftsSend.mockResolvedValueOnce({
+      data: { id: "hex-msg-id-2", threadId: "thread-02" },
+    });
+    mockLabelsList.mockResolvedValueOnce({
+      data: { labels: [{ id: "Label_NW", name: "Networking/Intro" }] },
+    });
+
+    await POST(req({ contact_id: "1" }));
+
+    expect(mockMessagesModify).toHaveBeenCalledWith({
+      userId: "me",
+      id: "hex-msg-id-2",
+      requestBody: { addLabelIds: ["Label_NW"] },
+    });
+  });
+
   it("does not fail if label application throws", async () => {
     mockSingle
       .mockResolvedValueOnce({ data: contact, error: null })

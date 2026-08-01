@@ -2,6 +2,7 @@ export const CATEGORY_ORDER = [
   "Sender & Core",
   "Outreach Modifiers",
   "Applied",
+  "Networking",
   "Research Pipeline",
   "Reply Pipeline",
   "Retrospective",
@@ -28,6 +29,10 @@ export const PROMPT_CATEGORY_MAP: Record<string, PromptCategory> = {
 
   applied_intro_prompt: "Applied",
   applied_followup_prompt: "Applied",
+
+  networking_prompt: "Networking",
+  networking_followup_prompt: "Networking",
+  networking_subject_prompt: "Networking",
 
   research_query_prompt: "Research Pipeline",
   research_curate_prompt: "Research Pipeline",

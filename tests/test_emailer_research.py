@@ -48,6 +48,21 @@ def _applied_contact(**overrides):
     return base
 
 
+def _networking_contact(**overrides):
+    base = {
+        "name": "Priya",
+        "email": "priya@example.com",
+        "company": "Northwind",
+        "mode": "networking",
+        "connection_context": "Fellow Tuck MEM",
+        "tier": 1,
+        "notes": "",
+        "dartmouth": False,
+    }
+    base.update(overrides)
+    return base
+
+
 # ── Research gating ────────────────────────────────────────────────────────────
 
 
@@ -61,10 +76,16 @@ def _applied_contact(**overrides):
     (2,    "send_first_touch",      True),
     (3,    "send_first_touch",      False),
     (None, "send_first_touch",      False),
+    (1,    "send_networking_first_touch", True),
+    (2,    "send_networking_first_touch", True),
+    (3,    "send_networking_first_touch", False),
+    (1,    "send_networking_followup",    False),
 ])
 def test_research_gating(tier, action, expects_research, mocker):
     if action in ("send_applied_intro", "send_applied_followup"):
         contact = _applied_contact()
+    elif action in ("send_networking_first_touch", "send_networking_followup"):
+        contact = _networking_contact()
     else:
         contact = _outreach_contact()
 
@@ -86,7 +107,10 @@ def test_research_gating(tier, action, expects_research, mocker):
         return_value="",
     )
 
-    followup_actions = {"send_followup1", "send_followup2", "send_breakup", "send_applied_followup"}
+    followup_actions = {
+        "send_followup1", "send_followup2", "send_breakup",
+        "send_applied_followup", "send_networking_followup",
+    }
     kwargs = {}
     if action in followup_actions:
         kwargs["original_subject"] = "some subject"

@@ -72,6 +72,11 @@ function normalizeContact(c: Record<string, unknown>): ExtractedContact {
     job_title: null,
     job_description: null,
     applied_date: null,
+    // Bulk-paste extraction never infers a networking connection hook or mode —
+    // a genuine hook can't be reliably read off pasted directory/conference text,
+    // and guessing one risks fabricating it. Always null/outreach out of extraction;
+    // networking contacts are created deliberately via the Structured Form.
+    connection_context: null,
     notes: typeof c.notes === "string" ? c.notes : null,
     resume_url: typeof c.resume_url === "string" ? c.resume_url : null,
     state: rawState && rawState.length === 2 ? rawState : null,

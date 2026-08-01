@@ -27,6 +27,7 @@ function makeContact(overrides: Partial<Contact> = {}): Contact {
     job_description: null,
     company_applied: null,
     applied_date: null,
+    connection_context: null,
     followup_date: null,
     notes: null,
     resume_url: null,
@@ -94,6 +95,11 @@ describe("deriveAction", () => {
     ["applied_intro_sent", "applied", "send_applied_intro"],
     ["applied_followup_drafted", "applied", "send_applied_followup"],
     ["applied_followup_sent", "applied", "send_applied_followup"],
+    ["new", "networking", "send_networking_first_touch"],
+    ["networking_drafted", "networking", "send_networking_first_touch"],
+    ["networking_sent", "networking", "send_networking_first_touch"],
+    ["networking_followup_drafted", "networking", "send_networking_followup"],
+    ["networking_followup_sent", "networking", "send_networking_followup"],
   ] as const)("stage=%s mode=%s → %s", (stage, mode, expected) => {
     expect(deriveAction(makeContact({ stage, mode }))).toBe(expected);
   });
@@ -243,6 +249,74 @@ describe("assembleUserMessage — applied followup (Dartmouth via detail)", () =
 
   it("includes sender profile", () => {
     expect(userMessage).toContain("Name: Kishore");
+  });
+
+  it("has no unreplaced {placeholders}", () => {
+    expect(userMessage).not.toMatch(/\{[a-z_]+\}/);
+  });
+});
+
+describe("assembleUserMessage — networking first touch (with connection_context)", () => {
+  const contact = makeContact({
+    name: "Priya Nair",
+    company: "Northwind",
+    mode: "networking",
+    stage: "new",
+    connection_context: "We met at the Tuck info session last spring",
+    dartmouth: false,
+  });
+  const { userMessage, systemMessage } = assembleUserMessage(
+    contact,
+    "send_networking_first_touch",
+    {}
+  );
+
+  it("systemMessage is the sender profile", () => {
+    expect(systemMessage).toContain("Name: Kishore");
+  });
+
+  it("leads with the connection_context hook", () => {
+    expect(userMessage).toContain("We met at the Tuck info session last spring");
+  });
+
+  it("does not include the no-hook degrade instruction", () => {
+    expect(userMessage).not.toContain("do not invent one");
+  });
+
+  it("includes contact name and company", () => {
+    expect(userMessage).toContain("Priya Nair");
+    expect(userMessage).toContain("Northwind");
+  });
+
+  it("has no unreplaced {placeholders}", () => {
+    expect(userMessage).not.toMatch(/\{[a-z_]+\}/);
+  });
+});
+
+describe("assembleUserMessage — networking first touch (no connection_context)", () => {
+  const contact = makeContact({
+    mode: "networking",
+    stage: "new",
+    connection_context: null,
+    dartmouth: false,
+  });
+  const { userMessage } = assembleUserMessage(contact, "send_networking_first_touch", {});
+
+  it("degrades to the no-hook instruction, never fabricating one", () => {
+    expect(userMessage).toContain("do not invent one");
+  });
+});
+
+describe("assembleUserMessage — networking followup", () => {
+  const contact = makeContact({
+    mode: "networking",
+    stage: "networking_sent",
+    dartmouth: true,
+  });
+  const { userMessage } = assembleUserMessage(contact, "send_networking_followup", {});
+
+  it("includes dartmouth instruction when alumni", () => {
+    expect(userMessage).toContain("ALUMNI CONNECTION DETECTED:");
   });
 
   it("has no unreplaced {placeholders}", () => {

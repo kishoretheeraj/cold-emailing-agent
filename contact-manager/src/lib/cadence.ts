@@ -6,6 +6,7 @@ export const CADENCE = {
   FU1_TO_FU2_DAYS: 4,
   FU2_TO_BREAKUP_DAYS: 3,
   APPLIED_INTRO_TO_FU_DAYS: 5,
+  NETWORKING_TO_FOLLOWUP_DAYS: 6,
 } as const;
 
 export type CadenceKey = keyof typeof CADENCE;
@@ -38,6 +39,14 @@ export const STAGE_TRANSITIONS: Record<
     next: "applied_followup_sent",
     cadenceKey: null,
   },
+  networking_drafted: {
+    next: "networking_sent",
+    cadenceKey: "NETWORKING_TO_FOLLOWUP_DAYS",
+  },
+  networking_followup_drafted: {
+    next: "networking_followup_sent",
+    cadenceKey: null,
+  },
   reply_drafted: {
     next: "reply_sent",
     cadenceKey: null,
@@ -52,4 +61,6 @@ export const QUEUE_STAGES = [
   "breakup_drafted",
   "applied_intro_drafted",
   "applied_followup_drafted",
+  "networking_drafted",
+  "networking_followup_drafted",
 ] as const;

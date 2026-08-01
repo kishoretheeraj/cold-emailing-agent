@@ -1155,5 +1155,29 @@
     "message_id": "msg-thread-50",
     "last_emailed": null,
     "deleted_at": null
+  },
+  {
+    "id": "999",
+    "name": "Priya Nair",
+    "email": "priya.nair@example.com",
+    "company": "Northwind",
+    "role": "Director of Product",
+    "detail": null,
+    "tier": 2,
+    "mode": "networking",
+    "stage": "networking_sent",
+    "reply_status": "no_reply",
+    "dartmouth": true,
+    "job_title": null,
+    "job_description": null,
+    "company_applied": null,
+    "applied_date": null,
+    "connection_context": "Fellow Tuck MEM, met at an alumni event",
+    "followup_date": null,
+    "notes": null,
+    "created_at": "2026-05-01T05:00:00.000Z",
+    "message_id": null,
+    "last_emailed": null,
+    "deleted_at": null
   }
 ]

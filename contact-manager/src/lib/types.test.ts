@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   OUTREACH_STAGES,
   APPLIED_STAGES,
+  NETWORKING_STAGES,
   REPLY_STATUSES,
   type ReplyStatus,
 } from "./types";
@@ -37,6 +38,28 @@ describe("stage and status enums", () => {
       const sent = d.replace("_drafted", "_sent");
       expect(APPLIED_STAGES).toContain(sent);
     }
+  });
+
+  it("networking stages start at new and end at closed", () => {
+    expect(NETWORKING_STAGES[0]).toBe("new");
+    expect(NETWORKING_STAGES.at(-1)).toBe("closed");
+  });
+
+  it("networking stages have no duplicates", () => {
+    expect(new Set(NETWORKING_STAGES).size).toBe(NETWORKING_STAGES.length);
+  });
+
+  it("each networking drafted stage has a matching sent stage", () => {
+    const drafted = NETWORKING_STAGES.filter((s) => s.endsWith("_drafted"));
+    for (const d of drafted) {
+      const sent = d.replace("_drafted", "_sent");
+      expect(NETWORKING_STAGES).toContain(sent);
+    }
+  });
+
+  it("networking has exactly one drafted/sent pair (one send + one nudge)", () => {
+    const drafted = NETWORKING_STAGES.filter((s) => s.endsWith("_drafted"));
+    expect(drafted).toHaveLength(2);
   });
 
   it("reply statuses cover the user-facing options", () => {

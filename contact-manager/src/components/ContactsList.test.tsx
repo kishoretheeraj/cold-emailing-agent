@@ -153,10 +153,11 @@ vi.mock("@/components/ThreadView", () => ({
 }));
 
 // vi.hoisted ensures these are available inside vi.mock factory (which is hoisted)
-const { limitMock, updateEqMock, singleMock } = vi.hoisted(() => ({
+const { limitMock, updateEqMock, singleMock, updateMock } = vi.hoisted(() => ({
   limitMock: vi.fn(),
   updateEqMock: vi.fn(),
   singleMock: vi.fn(),
+  updateMock: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase", () => {
@@ -171,7 +172,7 @@ vi.mock("@/lib/supabase", () => {
     supabase: {
       from: vi.fn(() => ({
         select: vi.fn(() => readChain),
-        update: vi.fn(() => ({ eq: updateEqMock })),
+        update: updateMock,
       })),
     },
   };
@@ -198,6 +199,7 @@ const makeContact = (overrides: Partial<Contact> = {}): Contact => ({
   job_description: null,
   company_applied: null,
   applied_date: null,
+  connection_context: null,
   followup_date: null,
   notes: null,
   created_at: "2026-05-01T10:00:00Z",
@@ -217,6 +219,15 @@ const sarah = makeContact({
   stage: "applied_intro_drafted",
   message_id: "msg-xyz-123",
 });
+const priya = makeContact({
+  id: "3",
+  name: "Priya Nair",
+  email: "priya@northwind.com",
+  company: "Northwind",
+  mode: "networking",
+  stage: "networking_sent",
+  connection_context: "Fellow Tuck MEM",
+});
 
 const defaultProps = {
   refreshKey: 0,
@@ -228,11 +239,13 @@ beforeEach(() => {
   limitMock.mockReset();
   updateEqMock.mockReset();
   singleMock.mockReset();
+  updateMock.mockReset();
   selectInstances.length = 0;
   ioCallback = null;
   defaultProps.onError.mockReset();
   defaultProps.onSuccess.mockReset();
   updateEqMock.mockResolvedValue({ error: null });
+  updateMock.mockImplementation(() => ({ eq: updateEqMock }));
   // Return null data by default so the component keeps the list data as selectedContact.
   // Tests that need specific full-record data can override with singleMock.mockResolvedValueOnce.
   singleMock.mockResolvedValue({ data: null, error: null });
@@ -552,6 +565,137 @@ describe("ContactsList — side sheet", () => {
 
     await waitFor(() => expect(updateEqMock).toHaveBeenCalled());
     expect(updateEqMock).toHaveBeenCalledWith("id", dana.id);
+  });
+
+  it("mode button-group renders 3 options including networking", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(within(sheet).getByRole("button", { name: /^outreach$/i })).toBeInTheDocument();
+    expect(within(sheet).getByRole("button", { name: /^applied$/i })).toBeInTheDocument();
+    expect(within(sheet).getByRole("button", { name: /^networking$/i })).toBeInTheDocument();
+  });
+
+  it("networking mode toggle saves to Supabase immediately", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    await user.click(within(sheet).getByRole("button", { name: /^networking$/i }));
+
+    await waitFor(() => expect(updateEqMock).toHaveBeenCalled());
+    expect(updateEqMock).toHaveBeenCalledWith("id", dana.id);
+  });
+
+  it("stage Select shows only the Networking group for a networking contact", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [priya], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Priya Nair"));
+    await user.click(screen.getByRole("button", { name: /priya nair/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(within(sheet).getByText("Networking")).toBeInTheDocument();
+    expect(within(sheet).queryByText("Outreach")).toBeNull();
+    expect(within(sheet).queryByText("Applied")).toBeNull();
+    expect(within(sheet).getByText("Reply")).toBeInTheDocument();
+  });
+
+  it("stage Select shows only the Outreach group for an outreach contact", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(within(sheet).getByText("Outreach")).toBeInTheDocument();
+    expect(within(sheet).queryByText("Applied")).toBeNull();
+    expect(within(sheet).queryByText("Networking")).toBeNull();
+  });
+
+  it("shows connection_context field only for networking contacts", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [priya], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Priya Nair"));
+    await user.click(screen.getByRole("button", { name: /priya nair/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(within(sheet).getByText("Connection")).toBeInTheDocument();
+  });
+
+  it("hides connection_context field for non-networking contacts", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(within(sheet).queryByText("Connection")).toBeNull();
+  });
+
+  it("Promote button appears only for networking contacts and opens the promote modal", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [priya], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Priya Nair"));
+    await user.click(screen.getByRole("button", { name: /priya nair/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    await user.click(within(sheet).getByRole("button", { name: /promote/i }));
+
+    expect(screen.getByTestId("confirm-modal")).toBeInTheDocument();
+  });
+
+  it("hides the Promote button for non-networking contacts", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(within(sheet).queryByRole("button", { name: /promote/i })).toBeNull();
+  });
+
+  it("confirming promote sets mode, resets stage to new, clears followup_date, and annotates notes", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [priya], error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Priya Nair"));
+    await user.click(screen.getByRole("button", { name: /priya nair/i }));
+
+    const sheet = screen.getByTestId("sheet-content");
+    await user.click(within(sheet).getByRole("button", { name: /promote/i }));
+
+    const modal = screen.getByTestId("confirm-modal");
+    await user.click(within(modal).getByRole("button", { name: /promote to outreach/i }));
+    await user.click(within(modal).getByRole("button", { name: /^promote$/i }));
+
+    await waitFor(() => expect(updateEqMock).toHaveBeenCalled());
+    const payload = updateMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(payload.mode).toBe("outreach");
+    expect(payload.stage).toBe("new");
+    expect(payload.followup_date).toBeNull();
+    expect(payload.notes as string).toContain("Promoted from networking to outreach");
   });
 
   it("dartmouth toggle saves to Supabase immediately", async () => {

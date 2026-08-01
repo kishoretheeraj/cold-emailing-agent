@@ -12,6 +12,7 @@ from config import (
     TIER_INSTRUCTIONS, TEMPLATE_INSTRUCTIONS,
     OUTREACH_PROMPT, APPLIED_INTRO_PROMPT,
     APPLIED_FOLLOWUP_PROMPT, SUBJECT_PROMPT,
+    NETWORKING_PROMPT, NETWORKING_FOLLOWUP_PROMPT, NETWORKING_SUBJECT_PROMPT,
     CRITIC_PROMPT_DEFAULT, CRITIC_PASS_THRESHOLD,
     INTER_CALL_SLEEP,
     RESEARCH_TIERS, RESEARCH_INJECTION_DEFAULT,
@@ -23,15 +24,24 @@ _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=4)
 _credit_exhausted = False  # set on first 400 credit error; makes all further calls fail fast
 
 # ── Action → template name mapping ────────────────────────────────────────────
-_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro"}
+_FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro", "send_networking_first_touch"}
 
 ACTION_TO_TEMPLATE = {
-    "send_first_touch":      "cold_intro",
-    "send_followup1":        "follow_up_1",
-    "send_followup2":        "follow_up_2",
-    "send_breakup":          "breakup",
-    "send_applied_intro":    "applied_intro",
-    "send_applied_followup": "applied_followup",
+    "send_first_touch":            "cold_intro",
+    "send_followup1":              "follow_up_1",
+    "send_followup2":              "follow_up_2",
+    "send_breakup":                "breakup",
+    "send_applied_intro":          "applied_intro",
+    "send_applied_followup":       "applied_followup",
+    "send_networking_first_touch": "networking_intro",
+    "send_networking_followup":    "networking_followup",
+}
+
+# Mirrors agent._MODE_TAGS — duplicated by the same convention as ACTION_TO_TEMPLATE.
+_MODE_TAGS = {
+    "outreach":   "[OUTREACH]",
+    "applied":    "[APPLIED]",
+    "networking": "[NETWORKING]",
 }
 
 def _is_dartmouth(contact):
@@ -174,8 +184,9 @@ def prepare_email(contact, action, prompts=None):
             )
             research_block = ""
 
+    mode_tag = _MODE_TAGS.get(contact.get("mode", "outreach"), "[OUTREACH]")
     log.info(
-        f"[OUTREACH] | {contact.get('name')} | "
+        f"{mode_tag} | {contact.get('name')} | "
         f"{contact.get('company')} | tier={tier} | "
         f"has_brief={bool(research_brief)}"
     )
@@ -191,6 +202,11 @@ def prepare_email(contact, action, prompts=None):
                                                   research_block=research_block)
     elif action == "send_applied_followup":
         user_prompt = _build_applied_followup_prompt(contact, dart_instr, _prompts)
+    elif action == "send_networking_first_touch":
+        user_prompt = _build_networking_prompt(contact, dart_instr, _prompts,
+                                                research_block=research_block)
+    elif action == "send_networking_followup":
+        user_prompt = _build_networking_followup_prompt(contact, dart_instr, _prompts)
     else:
         raise ValueError(f"Unknown action: {action}")
 
@@ -228,6 +244,13 @@ def finalize_email(contact, action, body, original_subject=None, prompts=None,
                 body = _normalize_body(_generate_applied_intro(
                     contact, dart_instr, _prompts,
                     extra_instruction=_pf_extra, research_block=research_block))
+            elif action == "send_networking_first_touch":
+                body = _normalize_body(_generate_networking(
+                    contact, dart_instr, _prompts,
+                    extra_instruction=_pf_extra, research_block=research_block))
+            elif action == "send_networking_followup":
+                body = _normalize_body(_generate_networking_followup(
+                    contact, dart_instr, _prompts, extra_instruction=_pf_extra))
             else:
                 body = _normalize_body(_generate_applied_followup(
                     contact, dart_instr, _prompts, extra_instruction=_pf_extra))
@@ -262,11 +285,19 @@ def finalize_email(contact, action, body, original_subject=None, prompts=None,
         sender_profile_text = _prompts.get("sender_profile", SENDER_PROFILE)
 
         def regenerate(feedback):
+            # Only reachable for actions in _FIRST_TOUCH_ACTIONS with tier == 1:
+            # send_first_touch, send_applied_intro, send_networking_first_touch.
             if action == "send_first_touch":
                 new_body = _normalize_body(
                     _generate_outreach(contact, action, dart_instr, _prompts,
                                        extra_instruction=feedback,
                                        research_block=research_block)
+                )
+            elif action == "send_networking_first_touch":
+                new_body = _normalize_body(
+                    _generate_networking(contact, dart_instr, _prompts,
+                                         extra_instruction=feedback,
+                                         research_block=research_block)
                 )
             else:
                 new_body = _normalize_body(
@@ -367,16 +398,70 @@ def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=N
     prompt = _build_applied_followup_prompt(contact, dart_instr, prompts, extra_instruction)
     return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
 
-def _generate_subject(contact, mode, body, prompts):
+def _connection_context_instruction(contact):
+    value = (contact.get("connection_context") or "").strip()
+    if value:
+        return f"Lead with this specific hook: {value}"
+    return (
+        "No connection hook provided — do not invent one. Open with a brief, "
+        "honest, low-pressure reason for reaching out instead."
+    )
+
+def _build_networking_prompt(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
-    tpl = prompts.get("subject_prompt", SUBJECT_PROMPT)
+    tpl = prompts.get("networking_prompt", NETWORKING_PROMPT)
     prompt = tpl.format(
+        profile=profile,
         name=contact.get("name", ""),
         company=contact.get("company", ""),
-        mode=mode,
-        job_title=contact.get("job_title", ""),
-        body=body[:500],
+        connection_context_instruction=_connection_context_instruction(contact),
+        dartmouth_instruction=dart_instr,
     )
+    if research_block:
+        prompt += research_block
+    if extra_instruction is not None:
+        prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
+    return prompt
+
+def _generate_networking(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
+    prompt = _build_networking_prompt(contact, dart_instr, prompts, extra_instruction, research_block)
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+
+def _build_networking_followup_prompt(contact, dart_instr, prompts, extra_instruction=None):
+    profile = prompts.get("sender_profile", SENDER_PROFILE)
+    tpl = prompts.get("networking_followup_prompt", NETWORKING_FOLLOWUP_PROMPT)
+    prompt = tpl.format(
+        profile=profile,
+        name=contact.get("name", ""),
+        company=contact.get("company", ""),
+        dartmouth_instruction=dart_instr,
+    )
+    if extra_instruction is not None:
+        prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
+    return prompt
+
+def _generate_networking_followup(contact, dart_instr, prompts, extra_instruction=None):
+    prompt = _build_networking_followup_prompt(contact, dart_instr, prompts, extra_instruction)
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+
+def _generate_subject(contact, mode, body, prompts):
+    profile = prompts.get("sender_profile", SENDER_PROFILE)
+    if mode == "networking":
+        tpl = prompts.get("networking_subject_prompt", NETWORKING_SUBJECT_PROMPT)
+        prompt = tpl.format(
+            name=contact.get("name", ""),
+            company=contact.get("company", ""),
+            body=body[:500],
+        )
+    else:
+        tpl = prompts.get("subject_prompt", SUBJECT_PROMPT)
+        prompt = tpl.format(
+            name=contact.get("name", ""),
+            company=contact.get("company", ""),
+            mode=mode,
+            job_title=contact.get("job_title", ""),
+            body=body[:500],
+        )
     subject = _call_claude(prompt, system=profile)
     return subject.strip().strip('"').strip("'")
 

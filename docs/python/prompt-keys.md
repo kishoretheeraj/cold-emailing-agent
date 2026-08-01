@@ -1,4 +1,4 @@
-# Prompt keys (Supabase prompts table — 21 rows)
+# Prompt keys (Supabase prompts table — 24 rows)
 
 Loaded at startup by `db.load_prompts()` → `{key: value}`. Absent keys fall back to
 `config.py` constants; `emailer.py` logs `[WARN] prompt key X not in DB — using fallback`.
@@ -23,7 +23,10 @@ Instruction-level keys (sort_orders 11–18) use `get_tier_instruction()`,
 | `research_injection` | 28 | Wraps curated brief before appending to outreach/applied-intro |
 | `applied_intro_prompt` | 30 | Applied intro email with 3 bullets |
 | `applied_followup_prompt` | 40 | Applied follow-up; short, adds one new value |
-| `subject_prompt` | 50 | Subject line; called once per first-touch email |
+| `networking_prompt` | 41 | Networking first touch; leads with `{connection_context_instruction}`, never a role pitch |
+| `networking_followup_prompt` | 42 | The single networking follow-up nudge; no role/hiring language |
+| `networking_subject_prompt` | 43 | Networking subject line; casual, never job-flavored (dedicated key, not a branch in `subject_prompt`) |
+| `subject_prompt` | 50 | Subject line for outreach/applied; called once per first-touch email |
 | `reply_classification_prompt` | 60 | Claude Haiku classifier; returns `{"classifier_status": "..."}` JSON |
 | `reply_response_prompt` | 61 | Reply body template for `reply_drafter.py` |
 | `forbidden_phrases` | 62 | Newline-delimited banned substrings for pre-flight check 6 |

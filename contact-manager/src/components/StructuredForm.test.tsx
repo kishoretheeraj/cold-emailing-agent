@@ -153,6 +153,87 @@ describe("StructuredForm — applied mode", () => {
   });
 });
 
+describe("StructuredForm — networking mode", () => {
+  it("switches to the networking form section", async () => {
+    const user = userEvent.setup();
+    render(<StructuredForm onAdded={() => {}} onError={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: /Networking Contact/i }));
+    expect(screen.getByText(/^Connection \(/i)).toBeInTheDocument();
+    expect(screen.getByText("Tier")).toBeInTheDocument();
+  });
+
+  it("validates required fields", async () => {
+    const user = userEvent.setup();
+    const onError = vi.fn();
+    render(<StructuredForm onAdded={() => {}} onError={onError} />);
+
+    await user.click(screen.getByRole("button", { name: /Networking Contact/i }));
+    await user.click(screen.getByRole("button", { name: /Add Contact/i }));
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.stringMatching(/Name, Email, and Company/i)
+    );
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it("submits with mode=networking, stage=new, reply_status=no_reply, and tier field present", async () => {
+    const user = userEvent.setup();
+    const onAdded = vi.fn();
+    render(<StructuredForm onAdded={onAdded} onError={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: /Networking Contact/i }));
+
+    const inputs = screen.getAllByRole("textbox");
+    await user.type(inputs[0], "Priya");
+    await user.type(inputs[1], "priya@northwind.com");
+    await user.type(inputs[2], "Northwind");
+
+    await user.click(screen.getByRole("button", { name: /Add Contact/i }));
+
+    await waitFor(() => expect(insertMock).toHaveBeenCalled());
+    const payload = insertMock.mock.calls[0][0];
+    expect(payload.mode).toBe("networking");
+    expect(payload.stage).toBe("new");
+    expect(payload.reply_status).toBe("no_reply");
+    expect(payload.tier).toBe(2); // default, TierSelector present
+    expect(onAdded).toHaveBeenCalled();
+  });
+
+  it("includes connection_context in payload when provided", async () => {
+    const user = userEvent.setup();
+    const onAdded = vi.fn();
+    render(<StructuredForm onAdded={onAdded} onError={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: /Networking Contact/i }));
+
+    await fillByLabel(/^Name/i, "Priya");
+    await fillByLabel(/^Email/i, "priya@northwind.com");
+    await fillByLabel(/^Company/i, "Northwind");
+    await fillByLabel(/^Connection \(/i, "Fellow Tuck MEM");
+
+    await user.click(screen.getByRole("button", { name: /Add Contact/i }));
+
+    await waitFor(() => expect(insertMock).toHaveBeenCalled());
+    expect(insertMock.mock.calls[0][0].connection_context).toBe("Fellow Tuck MEM");
+  });
+
+  it("connection_context is null when left blank", async () => {
+    const user = userEvent.setup();
+    const onAdded = vi.fn();
+    render(<StructuredForm onAdded={onAdded} onError={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: /Networking Contact/i }));
+    await fillByLabel(/^Name/i, "Priya");
+    await fillByLabel(/^Email/i, "priya@northwind.com");
+    await fillByLabel(/^Company/i, "Northwind");
+    await user.click(screen.getByRole("button", { name: /Add Contact/i }));
+
+    await waitFor(() => expect(insertMock).toHaveBeenCalled());
+    expect(insertMock.mock.calls[0][0].connection_context).toBeNull();
+  });
+});
+
 describe("StructuredForm — duplicate pre-flight", () => {
   it("blocks outreach insert and calls onError when email already exists", async () => {
     const user = userEvent.setup();

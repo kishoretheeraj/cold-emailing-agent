@@ -32,6 +32,11 @@ export const PROMPT_VALID_KEYS: Record<string, ReadonlySet<string>> = {
   applied_followup_prompt: new Set([
     "profile", "name", "role", "company", "job_title", "dartmouth_instruction",
   ]),
+  networking_prompt: new Set([
+    "profile", "name", "company", "connection_context_instruction", "dartmouth_instruction",
+  ]),
+  networking_followup_prompt: new Set(["profile", "name", "company", "dartmouth_instruction"]),
+  networking_subject_prompt: new Set(["name", "company", "body"]),
   subject_prompt: new Set(["name", "company", "mode", "job_title", "body"]),
   critic_prompt: new Set(["sender_profile", "contact_context", "subject", "body"]),
   research_injection: new Set(["brief_text"]),
