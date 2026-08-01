@@ -40,6 +40,10 @@
 
 **`prompts_history`** — append-only audit log of every prompt value change. Populated automatically via a Supabase BEFORE UPDATE trigger on the `prompts` table (no application code needed). Columns: `id`, `key`, `old_value`, `new_value`, `changed_at`.
 
+**`employer_h1b_stats`** and **`company_intel`** — added 2026-08-01 for the
+visa & wage intelligence gate (Stage 1: H-1B sponsorship signal). See the
+dedicated section below.
+
 ## New contacts column
 
 **`contacts.classifier_status TEXT nullable`** — written by monitor's reply classifier; never by user or agent. User manages `reply_status` separately. "Needs response" filter: `classifier_status IN ('positive_reply','soft_yes') AND reply_status NOT IN ('interested','call_scheduled','dead')`.
@@ -75,6 +79,70 @@ schema.
 
 **`REPLY_STAGES` is a mirrored constant** — update both `constants.py` (Python) and `types.ts` (TypeScript) if adding new reply stages.
 
+## Visa & wage intelligence gate — Stage 1 (H-1B sponsorship), added 2026-08-01
+
+Decision-support signal, never an auto-reject: tags each target company with
+its H-1B sponsorship history from free DOL/USCIS open data. See
+`entity_resolution.py`, `ingest_oflc_lca.py`, `ingest_uscis_datahub.py`,
+`visa_matching.py`, `visa_match_new.py`.
+
+**`employer_h1b_stats`** — reference table, aggregated per resolved/consolidated
+employer identity from DOL OFLC LCA disclosure files (+ USCIS Data Hub
+enrichment). Materiality-filtered at ingestion (`lca_recent_2fy >= 1`, hard row
+cap) — an employer absent from this table means "unknown", never "confirmed
+non-sponsor". Columns: `normalized_name` (unique), `display_name`, `aliases[]`,
+`lca_total`, `lca_recent_2fy`, `distinct_socs`, `latest_filing_fy`,
+`worksite_states[]`, `wage_level_dist JSONB` (raw counts, Stage 2 extension
+point), `uscis_approvals`, `uscis_denials`, `approval_rate`, `naics_code`,
+`source_vintages JSONB`. Migration: `20260801010000_create_employer_h1b_stats.sql`.
+
+**`company_intel`** — one row per normalized target company (a `contacts.company`
+value), joined via `contacts.company_intel_id`. Governance rule (enforced in
+`visa_matching.resolve_company`, not the DB): code only ever writes
+`sponsors_h1b` as `NULL` or `true`; `false` requires an explicit human
+`confirmed` decision via `/visa-review`. `match_status` is one of `unknown`,
+`auto`, `needs_review`, `confirmed`, `rejected`. `top_candidates JSONB` stores
+the top-3 fuzzy-match candidates (employer id + score) so the review screen
+never needs to re-run rapidfuzz client-side. `typical_wage_level` and
+`cap_exempt_likely` are Stage 2/3 extension points, always NULL in Stage 1.
+Migration: `20260801010100_create_company_intel.sql`.
+
+**`contacts.company_intel_id`** — nullable FK to `company_intel(id)`, added by
+`20260801010200_add_company_intel_id_to_contacts.sql`. NULL is the permanent
+"not yet matched" state.
+
+**Entity resolution** (`entity_resolution.py`): `normalize()` strips legal
+suffixes/punctuation; `resolve()`/`classify()` use `rapidfuzz.fuzz.token_set_ratio`
+with `AUTO_THRESHOLD = 93` / `REVIEW_FLOOR = 80` (provisional, calibrate against
+real data after first ingest). An exact match after normalization always
+auto-classifies; a fuzzy single-token match never does (`token_set_ratio`'s
+known false-positive mode). `KNOWN_ALIAS_GROUPS` is a small curated dict for
+multi-legal-entity employers (e.g. Amazon subsidiaries) — not solved
+algorithmically in Stage 1.
+
+**Ingestion** (`ingest_oflc_lca.py`, `ingest_uscis_datahub.py`): stream-parse
+with `openpyxl`/`csv`, no DataFrame materialization. `COLUMN_ALIASES` maps
+canonical fields to known raw header spellings per FY vintage — `employer_name`
+is the only required field (unresolvable → abort that file, log, continue);
+everything else degrades gracefully. First ingest covers the last ~4 fiscal
+years (recency is what the signal needs, not full FY2008+ history). USCIS
+enrichment only updates existing `employer_h1b_stats` rows and only applies
+`auto`-confidence matches — never creates new rows.
+
+**Daily matching** (`visa_match_new.py`): fully separate from `agent.py::run()`
+— wired as a `continue-on-error: true` step in `daily_agent.yml`. Links any
+contact with `company_intel_id IS NULL` against the already-materialized
+`employer_h1b_stats` corpus. Records its own run status via
+`db.record_run(source="visa_match")`.
+
+**Quarterly ingestion workflow**: `.github/workflows/visa_intel_ingest.yml`,
+cron `0 10 5 1,4,7,10 *`. Runs `ingest_oflc_lca.py` → `ingest_uscis_datahub.py`
+→ `visa_match_new.py` (full re-match pass). Re-matching **skips**
+`confirmed`/`rejected` `company_intel` rows (never overwrites a human decision)
+but still refreshes their denormalized stats (`h1b_recent_count`,
+`latest_filing_fy`, `approval_rate`) from the linked employer — see
+`visa_matching._refresh_confirmed_row`.
+
 ## New db.py functions
 
 - `log_agent_event(event_type, contact_id, contact_name, status, metadata, ...)` — best-effort insert to agent_events; never raises. `metadata` replaces the old `blocked_checks` param — pass a dict, not a list.
@@ -86,6 +154,11 @@ schema.
 - `record_run(status, drafted, skipped, errors, elapsed, failure_reason, source)` — `source` defaults to `'agent'`; pass `source='monitor'` from monitor.py
 - `set_research_cache(..., queries_generated, brief_reliable)` — two new optional params populate the analytics columns
 - `log_drafted_email(contact_id, stage, subject, body, message_id=None, gmail_draft_id=None)` — best-effort insert to draft_history; never raises. Called from `agent._execute_draft` and `reply_drafter.draft_reply` after IMAP APPEND.
+- `get_employer_h1b_stats_corpus()` — fetches id/normalized_name/lca_recent_2fy/latest_filing_fy/approval_rate for every cached employer; raises on failure (caller must have a fresh corpus to match against).
+- `upsert_employer_h1b_stats(rows)` — best-effort batch upsert on `normalized_name`; never raises.
+- `get_company_intel_by_normalized_names(names)` — raises on failure (used to check confirmed/rejected status before a re-match, so a silent failure would risk overwriting a human decision).
+- `upsert_company_intel(rows)` — best-effort batch upsert on `normalized_name`; never raises.
+- `update_contact_company_intel_id(contact_id, company_intel_id)` — best-effort; never raises.
 
 ## New config.py constants
 

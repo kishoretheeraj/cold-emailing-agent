@@ -270,6 +270,28 @@ describe("ContactsList — fetching", () => {
     expect(screen.getByText("Sarah Kim")).toBeInTheDocument();
   });
 
+  it("renders the visa signal badge per company_intel match_status", async () => {
+    const sponsor = makeContact({
+      id: "10",
+      name: "Auto Match Co",
+      company_intel: { sponsors_h1b: true, h1b_recent_count: 5, match_status: "auto" },
+    });
+    const underReview = makeContact({
+      id: "11",
+      name: "Needs Review Co",
+      company_intel: { sponsors_h1b: null, h1b_recent_count: null, match_status: "needs_review" },
+    });
+    const noData = makeContact({ id: "12", name: "No Data Co" }); // no company_intel at all
+
+    limitMock.mockResolvedValue({ data: [sponsor, underReview, noData], error: null });
+    render(<ContactsList {...defaultProps} />);
+    await waitFor(() => screen.getByText("Auto Match Co"));
+
+    expect(screen.getByText("Sponsor")).toBeInTheDocument();
+    expect(screen.getByText("Review")).toBeInTheDocument();
+    expect(screen.getByText("No data")).toBeInTheDocument();
+  });
+
   it("passes deleted_at=null filter to query", async () => {
     limitMock.mockResolvedValue({ data: [], error: null });
     render(<ContactsList {...defaultProps} />);

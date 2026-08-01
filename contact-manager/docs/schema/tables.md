@@ -1,5 +1,36 @@
 # Schema: tables and types
 
+## New tables (Visa & wage intelligence gate, Stage 1 — 2026-08-01)
+
+**`employer_h1b_stats`** — reference table of aggregated H-1B filing stats per
+resolved employer, ingested quarterly from DOL/USCIS open data by
+`ingest_oflc_lca.py`/`ingest_uscis_datahub.py`. Read-only from the frontend
+(the review screen reads it to show candidate stats). RLS disabled.
+- `lca_recent_2fy`, `latest_filing_fy`, `approval_rate` — the fields
+  `/visa-review` denormalizes onto `company_intel` on confirm.
+- Query pattern: `.select("id,display_name,lca_recent_2fy,latest_filing_fy,approval_rate").in("id", employerIds)` — the review screen fetches only the ids referenced in the current page's `top_candidates`, not the whole table.
+
+**`company_intel`** — one row per normalized target company. Read/write from
+the frontend: `ContactsList.tsx` reads it via an embedded `contacts` select
+for the list badge/filter; `/visa-review` (`VisaMatchReview.tsx`) reads
+`needs_review` rows directly and writes `confirmed`/`rejected` decisions.
+RLS disabled.
+- `match_status`: `"unknown" | "auto" | "needs_review" | "confirmed" | "rejected"`.
+- `sponsors_h1b`: `boolean | null`. **Governance rule**: the frontend never
+  writes `false` except via the explicit "No match" action on `/visa-review`
+  (which actually sets `match_status="rejected"` and leaves `sponsors_h1b`
+  `null` — Stage 1 never asserts a confirmed non-sponsor at all, since a
+  rejected fuzzy-match candidate doesn't mean the company truly has zero
+  H-1B history, just that this candidate wasn't them).
+- `top_candidates JSONB` — `{employer_id, normalized_name, score}[]`, written
+  by the Python matching jobs so `/visa-review` never needs to run
+  entity-resolution client-side.
+- Query pattern for the list embed: `.from("contacts").select("...,company_intel(sponsors_h1b,h1b_recent_count,match_status)")` for the unfiltered case; add `!inner` on the embed (`company_intel!inner(...)`) only when the `sponsorsH1bOnly` filter is active — a plain embed's `.eq()` filters the embedded object, not the parent row set, and silently returns every contact if `!inner` is missing.
+
+**`contacts.company_intel_id INTEGER NULL`** — FK to `company_intel(id)`, added
+by `20260801010200_add_company_intel_id_to_contacts.sql`. Included in
+`LIST_COLUMNS_BASE` in `ContactsList.tsx`.
+
 ## New tables (Phase 0 — 2026-05-20)
 
 **`draft_history`** — lifecycle of every Gmail draft created by the agent.
@@ -43,3 +74,5 @@ Two new Supabase tables are readable by the frontend. Both have RLS disabled.
 - `ContactsQueryFilters.needsResponseOnly: boolean` — filter: `classifier_status IN (positive_reply, soft_yes) AND reply_status NOT IN (interested, call_scheduled, dead)`.
 - `EmailMessage` type — mirrors `email_messages` table.
 - `AgentEvent` type — mirrors `agent_events` table.
+- `CompanyIntel` type — mirrors `company_intel` table. `Contact.company_intel` is a `Pick<CompanyIntel, "sponsors_h1b"|"h1b_recent_count"|"match_status"> | null`, populated only when the query embeds it.
+- `ContactsQueryFilters.sponsorsH1bOnly: boolean` — see the `company_intel` table entry above for the `!inner`-join requirement this filter depends on.

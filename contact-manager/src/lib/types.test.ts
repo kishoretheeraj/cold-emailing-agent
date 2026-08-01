@@ -4,6 +4,8 @@ import {
   APPLIED_STAGES,
   NETWORKING_STAGES,
   REPLY_STATUSES,
+  EMPTY_FILTERS,
+  filtersEqual,
   type ReplyStatus,
 } from "./types";
 
@@ -71,5 +73,26 @@ describe("stage and status enums", () => {
       "dead",
     ];
     expect(REPLY_STATUSES).toEqual(expected);
+  });
+});
+
+describe("filtersEqual / sponsorsH1bOnly", () => {
+  it("EMPTY_FILTERS defaults sponsorsH1bOnly to false", () => {
+    expect(EMPTY_FILTERS.sponsorsH1bOnly).toBe(false);
+  });
+
+  it("filtersEqual is true for two default filter objects", () => {
+    expect(filtersEqual(EMPTY_FILTERS, { ...EMPTY_FILTERS })).toBe(true);
+  });
+
+  it("filtersEqual detects a sponsorsH1bOnly difference", () => {
+    const changed = { ...EMPTY_FILTERS, sponsorsH1bOnly: true };
+    expect(filtersEqual(EMPTY_FILTERS, changed)).toBe(false);
+  });
+
+  it("filtersEqual is true when sponsorsH1bOnly matches but other fields differ correctly", () => {
+    const a = { ...EMPTY_FILTERS, sponsorsH1bOnly: true, tiers: [1] };
+    const b = { ...EMPTY_FILTERS, sponsorsH1bOnly: true, tiers: [1] };
+    expect(filtersEqual(a, b)).toBe(true);
   });
 });

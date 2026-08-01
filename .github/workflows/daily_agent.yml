@@ -73,6 +73,25 @@ jobs:
           path: agent.log
           retention-days: 30
 
+      - name: Match new companies against visa intel cache
+        if: always()
+        continue-on-error: true
+        run: python visa_match_new.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Upload visa-match log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visa-match-log-${{ github.run_id }}
+          path: visa_match.log
+          retention-days: 30
+
       - name: Notify on failure
         if: failure()
         run: python notify_failure.py

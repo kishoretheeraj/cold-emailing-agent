@@ -1,0 +1,18 @@
+[
+  {
+    "id": 100,
+    "normalized_name": "acme",
+    "display_name": "Acme Corp",
+    "lca_recent_2fy": 42,
+    "latest_filing_fy": 2025,
+    "approval_rate": 0.95
+  },
+  {
+    "id": 101,
+    "normalized_name": "bolt industries",
+    "display_name": "Bolt Industries LLC",
+    "lca_recent_2fy": 6,
+    "latest_filing_fy": 2025,
+    "approval_rate": 0.7
+  }
+]

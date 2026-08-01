@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { toast } from "sonner";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { supabase } from "@/lib/supabase";
 
 type TriggerState = "idle" | "loading" | "ok" | "err";
 type PauseScope = "none" | "agent" | "all";
@@ -19,6 +20,7 @@ const NAV_LINKS = [
   { href: "/prompts", label: "Prompts" },
   { href: "/runs", label: "Activity" },
   { href: "/lab", label: "Lab" },
+  { href: "/visa-review", label: "Visa" },
 ] as const;
 
 export function Nav() {
@@ -28,6 +30,19 @@ export function Nav() {
   const [pauseScope, setPauseScope] = useState<PauseScope>("none");
   const [configLoading, setConfigLoading] = useState(true);
   const [pauseLoading, setPauseLoading] = useState(false);
+  const [visaReviewCount, setVisaReviewCount] = useState(0);
+
+  // Pending visa-match-review count — best-effort, never blocks the nav.
+  useEffect(() => {
+    supabase
+      .from("company_intel")
+      .select("id")
+      .eq("match_status", "needs_review")
+      .then(
+        ({ data }) => setVisaReviewCount((data ?? []).length),
+        () => {}
+      );
+  }, []);
 
   const [showRunModal, setShowRunModal] = useState(false);
   const [showPauseModal, setShowPauseModal] = useState(false);
@@ -115,13 +130,18 @@ export function Nav() {
               <Link
                 key={href}
                 href={href}
-                className={`rounded-lg border px-3 py-1.5 text-xs transition ${
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition ${
                   active
                     ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-300"
                     : "border-border text-fg-muted hover:text-fg hover:border-border-strong"
                 }`}
               >
                 {label}
+                {href === "/visa-review" && visaReviewCount > 0 && (
+                  <span className="inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] rounded-full bg-amber-500/20 text-amber-300 text-[10px] px-1">
+                    {visaReviewCount}
+                  </span>
+                )}
               </Link>
             );
           })}

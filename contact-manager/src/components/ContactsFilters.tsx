@@ -204,6 +204,13 @@ export function ContactsFilters({ filters, onChange }: Props) {
           onChange={(v) => onChange({ ...filters, needsResponseOnly: v })}
           label="Needs response"
         />
+
+        {/* Confirmed H-1B sponsor toggle */}
+        <ToggleSwitch
+          on={filters.sponsorsH1bOnly}
+          onChange={(v) => onChange({ ...filters, sponsorsH1bOnly: v })}
+          label="Confirmed H-1B sponsor"
+        />
       </div>
 
       {/* Row 3: clear button */}

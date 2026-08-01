@@ -46,3 +46,30 @@ test("tier and mode pills filter list, Clear filters resets", async ({
   // Clear button should be gone from filter bar (but EmptyState's might not be relevant here)
   await expect(clearBtn).not.toBeVisible({ timeout: 3_000 });
 });
+
+test("visa signal badge renders per match status, sponsor filter narrows the list", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
+
+  // Alice Chen (fixture id 1) is an "auto" match — badge reads "Sponsor"
+  const aliceRow = page.locator("button", { hasText: "Alice Chen" });
+  await expect(aliceRow.getByText("Sponsor")).toBeVisible({ timeout: 5_000 });
+
+  // Bob Martinez (fixture id 2) is "needs_review" — badge reads "Review"
+  const bobRow = page.locator("button", { hasText: "Bob Martinez" });
+  await expect(bobRow.getByText("Review")).toBeVisible({ timeout: 5_000 });
+
+  // Toggle "Confirmed H-1B sponsor" — only Alice (a real sponsor match) remains
+  const sponsorToggle = page.getByRole("button", { name: /confirmed h-1b sponsor/i });
+  await sponsorToggle.click();
+  await page.waitForTimeout(300);
+
+  await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText("Bob Martinez")).not.toBeVisible({ timeout: 3_000 });
+
+  await sponsorToggle.click();
+  await page.waitForTimeout(300);
+  await expect(page.getByText("Bob Martinez")).toBeVisible({ timeout: 5_000 });
+});

@@ -189,6 +189,16 @@ describe("ContactsFilters", () => {
     );
   });
 
+  it("sponsors H-1B toggle updates filters.sponsorsH1bOnly", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderFilters();
+    const toggle = screen.getByRole("button", { name: /confirmed h-1b sponsor/i });
+    await user.click(toggle);
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ sponsorsH1bOnly: true })
+    );
+  });
+
   it("clear button is hidden when filters equal EMPTY_FILTERS", () => {
     renderFilters(EMPTY_FILTERS);
     expect(screen.queryByRole("button", { name: /clear filters/i })).toBeNull();

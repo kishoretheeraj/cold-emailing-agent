@@ -47,7 +47,7 @@ import { ThreadView } from "@/components/ThreadView";
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 30;
-const GRID_COLS = "grid-cols-[1fr_140px_60px_90px_100px_80px]";
+const GRID_COLS = "grid-cols-[1fr_140px_60px_90px_100px_80px_90px]";
 
 // ── Stage helpers ──────────────────────────────────────────────────────────────
 
@@ -123,6 +123,32 @@ function replyVariant(status: ReplyStatus | null): BadgeVariant {
   return "default";
 }
 
+// H-1B sponsorship signal — decision support, never a verdict. "unknown" and
+// missing company_intel both render as "No data", not "Does not sponsor".
+function signalVariant(intel: Contact["company_intel"]): BadgeVariant {
+  const status = intel?.match_status;
+  if (status === "auto" || status === "confirmed") return "emerald";
+  if (status === "needs_review") return "amber";
+  return "muted";
+}
+
+function signalLabel(intel: Contact["company_intel"]): string {
+  const status = intel?.match_status;
+  if (status === "auto" || status === "confirmed") return "Sponsor";
+  if (status === "needs_review") return "Review";
+  if (status === "rejected") return "No match";
+  return "No data";
+}
+
+function signalTooltip(intel: Contact["company_intel"]): string {
+  const status = intel?.match_status;
+  if (status === "auto" || status === "confirmed")
+    return "Sponsors H-1B (recent filings) — decision support, not a guarantee";
+  if (status === "needs_review") return "Possible H-1B sponsor match — awaiting review";
+  if (status === "rejected") return "No confirmed employer match for this company";
+  return "No H-1B sponsorship data available";
+}
+
 function formatRelativeDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "Never";
   const date = new Date(dateStr);
@@ -147,8 +173,19 @@ function extractTuckYear(notes: string | null | undefined): string | null {
 
 // ── Query builder ──────────────────────────────────────────────────────────────
 
-const LIST_COLUMNS =
-  "id,name,company,email,stage,tier,mode,last_emailed,reply_status,classifier_status,dartmouth,notes,message_id,followup_date,created_at,state";
+const LIST_COLUMNS_BASE =
+  "id,name,company,email,stage,tier,mode,last_emailed,reply_status,classifier_status,dartmouth,notes,message_id,followup_date,created_at,state,company_intel_id";
+
+// The company_intel embed must be a plain (left) join by default — most
+// contacts have no company_intel row yet, and !inner would drop them from
+// the unfiltered list. Only the sponsorsH1bOnly filter needs !inner, since
+// PostgREST's `.eq()` on an embedded resource filters the embedded object,
+// not the parent row set — !inner is what actually reduces which contacts
+// come back.
+function buildSelectColumns(filters: ContactsQueryFilters) {
+  const joinType = filters.sponsorsH1bOnly ? "!inner" : "";
+  return `${LIST_COLUMNS_BASE},company_intel${joinType}(sponsors_h1b,h1b_recent_count,match_status)`;
+}
 
 function buildContactsQuery(filters: ContactsQueryFilters, cursor: string | null) {
   const escaped = filters.nameOrCompany.trim().replace(/[%_]/g, "\\$&");
@@ -157,7 +194,7 @@ function buildContactsQuery(filters: ContactsQueryFilters, cursor: string | null
   // (detail, job_description, job_title, etc.) are fetched on row-click.
   let q = supabase
     .from("contacts")
-    .select(LIST_COLUMNS)
+    .select(buildSelectColumns(filters))
     .is("deleted_at", null);
 
   if (escaped) {
@@ -172,6 +209,7 @@ function buildContactsQuery(filters: ContactsQueryFilters, cursor: string | null
       .in("classifier_status", ["positive_reply", "soft_yes"])
       .not("reply_status", "in", "(interested,call_scheduled,dead)");
   }
+  if (filters.sponsorsH1bOnly) q = q.eq("company_intel.sponsors_h1b", true);
   if (cursor) q = q.lt("created_at", cursor);
 
   // .limit() must be last — resolves the query chain
@@ -250,7 +288,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
         setLoading(false);
         return;
       }
-      const rows = (data ?? []) as Contact[];
+      const rows = (data ?? []) as unknown as Contact[];
       setContacts(rows);
       setLastFetchedCreatedAt(rows.length ? (rows[rows.length - 1].created_at ?? null) : null);
       setHasMore(rows.length === PAGE_SIZE);
@@ -274,7 +312,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
       onError("Failed to load more contacts");
       return;
     }
-    const rows = (data ?? []) as Contact[];
+    const rows = (data ?? []) as unknown as Contact[];
     if (rows.length > 0) {
       setContacts((prev) => [...prev, ...rows]);
       setLastFetchedCreatedAt(rows[rows.length - 1].created_at ?? null);
@@ -530,6 +568,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
           <div>Mode</div>
           <div>Last contact</div>
           <div>Reply</div>
+          <div>Visa</div>
         </div>
 
         {/* Initial loading skeletons */}
@@ -548,6 +587,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                 <Skeleton className="h-5 w-10 self-center" />
                 <Skeleton className="h-4 w-16 self-center" />
                 <Skeleton className="h-4 w-12 self-center" />
+                <Skeleton className="h-5 w-14 self-center" />
                 <Skeleton className="h-5 w-14 self-center" />
               </div>
             ))}
@@ -639,6 +679,15 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                   </Badge>
                 )}
               </div>
+              <div className="flex items-center">
+                <Tooltip content={signalTooltip(c.company_intel)}>
+                  <span>
+                    <Badge variant={signalVariant(c.company_intel)}>
+                      {signalLabel(c.company_intel)}
+                    </Badge>
+                  </span>
+                </Tooltip>
+              </div>
             </button>
           );
         })}
@@ -662,6 +711,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
                 <Skeleton className="h-5 w-10 self-center" />
                 <Skeleton className="h-4 w-16 self-center" />
                 <Skeleton className="h-4 w-12 self-center" />
+                <Skeleton className="h-5 w-14 self-center" />
                 <Skeleton className="h-5 w-14 self-center" />
               </div>
             ))}

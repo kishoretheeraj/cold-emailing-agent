@@ -51,6 +51,7 @@ src/
 │   ├── queue/page.tsx
 │   ├── replies/page.tsx
 │   ├── runs/page.tsx
+│   ├── visa-review/page.tsx
 │   ├── globals.css
 │   ├── layout.tsx
 │   └── page.tsx
@@ -78,6 +79,7 @@ src/
 │   ├── RepliesPage.tsx
 │   ├── ImportPage.tsx
 │   ├── ReviewFlow.tsx
+│   ├── VisaMatchReview.tsx
 │   ├── LabRoot.tsx
 │   ├── LabContactPicker.tsx
 │   ├── LabPromptEditor.tsx
@@ -219,6 +221,19 @@ Stage display uses Badge variants in `ContactsList.tsx::stageVariant`:
 
 Tier display: T1 → indigo, T2 → default, T3 → muted.
 
+Visa signal display uses `ContactsList.tsx::signalVariant` (H-1B sponsorship,
+Stage 1 of the visa & wage intelligence gate — see root `CLAUDE.md`):
+`auto`/`confirmed` → emerald ("Sponsor"), `needs_review` → amber ("Review"),
+`unknown`/missing `company_intel`/`rejected` → muted ("No data" / "No match").
+Label copy deliberately never says "Does not sponsor" — `unknown` means no
+data, not a confirmed negative. Rendered as a 7th grid column (`GRID_COLS`,
+header row, row JSX, and **both** loading-skeleton blocks must stay in sync —
+`LIST_COLUMNS_BASE`'s embedded `company_intel(...)` select alone does not
+render anything). The `sponsorsH1bOnly` filter requires `company_intel!inner(...)`
+in the select (only when the filter is active) — a plain embed's `.eq()` on
+`company_intel.sponsors_h1b` filters the embedded object, not the parent row
+set, and would silently no-op.
+
 If you add a stage, update `OUTREACH_STAGES` / `APPLIED_STAGES` / `NETWORKING_STAGES` in
 `types.ts` and `STAGE_LABELS` map in `ContactsList.tsx`.
 
@@ -267,7 +282,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 72** (vitest: 584 passed, playwright: 72 passed).
+- **Current test count: 76** (vitest: 599 passed, playwright: 76 passed).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.

@@ -6,6 +6,28 @@ export type ReplyStatus =
   | "call_scheduled"
   | "dead";
 
+export type CompanyIntelMatchStatus = "unknown" | "auto" | "needs_review" | "confirmed" | "rejected";
+
+export type CompanyIntel = {
+  id: number;
+  normalized_name: string;
+  raw_company_names: string[];
+  matched_employer_id: number | null;
+  match_confidence: number | null;
+  match_status: CompanyIntelMatchStatus;
+  top_candidates: { employer_id: number | null; normalized_name: string; score: number }[] | null;
+  sponsors_h1b: boolean | null;
+  h1b_recent_count: number | null;
+  latest_filing_fy: number | null;
+  approval_rate: number | null;
+  typical_wage_level: string | null;
+  cap_exempt_likely: boolean | null;
+  source_vintages: Record<string, unknown> | null;
+  reviewed_by_user_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Contact = {
   id: string;
   name: string | null;
@@ -32,6 +54,8 @@ export type Contact = {
   last_emailed: string | null;
   deleted_at: string | null;
   state?: string | null;
+  company_intel_id?: number | null;
+  company_intel?: Pick<CompanyIntel, "sponsors_h1b" | "h1b_recent_count" | "match_status"> | null;
 };
 
 export type EmailMessage = {
@@ -172,6 +196,7 @@ export type ContactsQueryFilters = {
   modes: ("outreach" | "applied" | "networking")[];
   dartmouthOnly: boolean;
   needsResponseOnly: boolean;
+  sponsorsH1bOnly: boolean;
 };
 
 export const EMPTY_FILTERS: ContactsQueryFilters = {
@@ -181,6 +206,7 @@ export const EMPTY_FILTERS: ContactsQueryFilters = {
   modes: [],
   dartmouthOnly: false,
   needsResponseOnly: false,
+  sponsorsH1bOnly: false,
 };
 
 export function filtersEqual(
@@ -196,6 +222,7 @@ export function filtersEqual(
     a.modes.length === b.modes.length &&
     a.modes.every((m, i) => m === b.modes[i]) &&
     a.dartmouthOnly === b.dartmouthOnly &&
-    a.needsResponseOnly === b.needsResponseOnly
+    a.needsResponseOnly === b.needsResponseOnly &&
+    a.sponsorsH1bOnly === b.sponsorsH1bOnly
   );
 }

@@ -40,6 +40,10 @@ test("main page has expected chrome: title, nav links, input toggle", async ({
   await expect(labLink).toBeVisible();
   await expect(labLink).toHaveAttribute("href", "/lab");
 
+  const visaLink = page.getByRole("link", { name: /^visa/i });
+  await expect(visaLink).toBeVisible();
+  await expect(visaLink).toHaveAttribute("href", "/visa-review");
+
   await expect(page.getByRole("button", { name: "Smart Input" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Structured Form" })).toBeVisible();
 });

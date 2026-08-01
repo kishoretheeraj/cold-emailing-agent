@@ -115,6 +115,15 @@ export async function mockSupabase(page: Page) {
       rows = rows.filter((c) => c.dartmouth === true);
     }
 
+    // company_intel.sponsors_h1b=eq.true (requires !inner in the select for
+    // PostgREST to actually reduce the parent row set; mocked here as a
+    // straight filter on the fixture's already-embedded company_intel field)
+    if (params.get("company_intel.sponsors_h1b") === "eq.true") {
+      rows = rows.filter(
+        (c) => (c.company_intel as { sponsors_h1b?: boolean } | null)?.sponsors_h1b === true
+      );
+    }
+
     // email=in.(a@x.com,b@y.com) — used by checkDuplicateEmails preflight
     const emailParam = params.get("email");
     if (emailParam) {
@@ -334,6 +343,91 @@ export async function mockSupabase(page: Page) {
       rows = rows.sort((a, b) =>
         String(b.drafted_at ?? "").localeCompare(String(a.drafted_at ?? ""))
       );
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(rows),
+      });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // Intercept GET/PATCH /rest/v1/company_intel
+  let companyIntelRows = JSON.parse(
+    fs.readFileSync(path.join(FIXTURES_DIR, "company_intel.json"), "utf-8")
+  ) as Array<Record<string, unknown>>;
+
+  await page.route(/\/rest\/v1\/company_intel(\?.*)?$/, async (route, request) => {
+    if (request.method() === "GET") {
+      const url = new URL(request.url());
+      const params = url.searchParams;
+      let rows = [...companyIntelRows];
+
+      const statusParam = params.get("match_status");
+      if (statusParam?.startsWith("eq.")) {
+        const status = statusParam.slice(3);
+        rows = rows.filter((r) => r.match_status === status);
+      }
+
+      // Also handle the sponsors_h1b embed filter used by the contacts list
+      // (contacts.json rows already carry an embedded company_intel object,
+      // so this route only serves direct company_intel queries).
+      const idParam = params.get("id");
+      if (idParam?.startsWith("eq.")) {
+        const targetId = idParam.slice(3);
+        rows = rows.filter((r) => String(r.id) === targetId);
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(rows),
+      });
+    } else if (request.method() === "PATCH") {
+      const url = new URL(request.url());
+      const idParam = url.searchParams.get("id");
+      const id = idParam?.replace("eq.", "");
+      const body = JSON.parse(request.postData() ?? "{}") as Record<string, unknown>;
+
+      if (id) {
+        const idx = companyIntelRows.findIndex((r) => String(r.id) === id);
+        if (idx !== -1) {
+          companyIntelRows[idx] = { ...companyIntelRows[idx], ...body };
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify(companyIntelRows[idx]),
+          });
+          return;
+        }
+      }
+      await route.fulfill({ status: 404, body: JSON.stringify({ error: "not found" }) });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // Intercept GET /rest/v1/employer_h1b_stats
+  const allEmployerStats = JSON.parse(
+    fs.readFileSync(path.join(FIXTURES_DIR, "employer_h1b_stats.json"), "utf-8")
+  ) as Array<Record<string, unknown>>;
+
+  await page.route(/\/rest\/v1\/employer_h1b_stats(\?.*)?$/, async (route, request) => {
+    if (request.method() === "GET") {
+      const url = new URL(request.url());
+      const params = url.searchParams;
+      let rows = [...allEmployerStats];
+
+      const idParam = params.get("id");
+      if (idParam) {
+        const m = /in\.\((.+?)\)/.exec(idParam);
+        if (m) {
+          const ids = m[1].split(",");
+          rows = rows.filter((r) => ids.includes(String(r.id)));
+        }
+      }
 
       await route.fulfill({
         status: 200,

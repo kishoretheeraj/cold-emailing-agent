@@ -1,0 +1,73 @@
+name: Visa Intel Ingestion (H-1B)
+
+on:
+  schedule:
+    - cron: '0 10 5 1,4,7,10 *'   # 5th of Jan/Apr/Jul/Oct — a quarter's worth after DOL/USCIS refresh
+  workflow_dispatch:               # manual trigger — used for the first ingest run
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ingest DOL OFLC LCA disclosure data
+        run: python ingest_oflc_lca.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Ingest USCIS H-1B Employer Data Hub
+        if: always()
+        continue-on-error: true
+        run: python ingest_uscis_datahub.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          USCIS_DATAHUB_CSV_URL: ${{ vars.USCIS_DATAHUB_CSV_URL }}
+
+      - name: Re-match all contacts against refreshed employer stats
+        if: always()
+        continue-on-error: true
+        run: python visa_match_new.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Upload log artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visa-intel-ingest-log-${{ github.run_id }}
+          path: |
+            visa_intel_ingest.log
+            visa_match.log
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: python notify_failure.py
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

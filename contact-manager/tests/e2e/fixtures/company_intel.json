@@ -1,0 +1,42 @@
+[
+  {
+    "id": 1,
+    "normalized_name": "acme",
+    "raw_company_names": ["Acme Corp"],
+    "matched_employer_id": 100,
+    "match_confidence": 100,
+    "match_status": "auto",
+    "top_candidates": [{ "employer_id": 100, "normalized_name": "acme", "score": 100 }],
+    "sponsors_h1b": true,
+    "h1b_recent_count": 42,
+    "latest_filing_fy": 2025,
+    "approval_rate": 0.95,
+    "typical_wage_level": null,
+    "cap_exempt_likely": null,
+    "source_vintages": null,
+    "reviewed_by_user_at": null,
+    "created_at": "2026-07-01T00:00:00.000Z",
+    "updated_at": "2026-07-01T00:00:00.000Z"
+  },
+  {
+    "id": 2,
+    "normalized_name": "bolt",
+    "raw_company_names": ["Bolt Inc"],
+    "matched_employer_id": null,
+    "match_confidence": 84,
+    "match_status": "needs_review",
+    "top_candidates": [
+      { "employer_id": 101, "normalized_name": "bolt industries", "score": 84 }
+    ],
+    "sponsors_h1b": null,
+    "h1b_recent_count": null,
+    "latest_filing_fy": null,
+    "approval_rate": null,
+    "typical_wage_level": null,
+    "cap_exempt_likely": null,
+    "source_vintages": null,
+    "reviewed_by_user_at": null,
+    "created_at": "2026-07-01T00:00:00.000Z",
+    "updated_at": "2026-07-01T00:00:00.000Z"
+  }
+]

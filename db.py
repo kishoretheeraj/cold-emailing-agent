@@ -381,3 +381,77 @@ def set_research_cache(cache_key, contact_name, contact_company,
             f"cache write failed: {exc}"
         )
         return False
+
+
+# ── company_intel / employer_h1b_stats helpers ──────────────────────────────────
+
+def get_employer_h1b_stats_corpus():
+    """Fetch every cached employer's id, normalized_name, and denormalizable
+    stats, for entity-resolution matching and company_intel row-building."""
+    result = _retry(lambda: (
+        get_client()
+        .table("employer_h1b_stats")
+        .select("id, normalized_name, lca_recent_2fy, latest_filing_fy, approval_rate")
+        .execute()
+    ))
+    return result.data or []
+
+
+def upsert_employer_h1b_stats(rows):
+    """Batch upsert employer_h1b_stats rows (keyed by normalized_name). Best-effort."""
+    if not rows:
+        return True
+    try:
+        _retry(lambda: (
+            get_client()
+            .table("employer_h1b_stats")
+            .upsert(rows, on_conflict="normalized_name")
+            .execute()
+        ))
+        return True
+    except Exception as exc:
+        log.warning(f"[employer_h1b_stats] upsert failed for {len(rows)} rows: {exc}")
+        return False
+
+
+def get_company_intel_by_normalized_names(normalized_names):
+    """Fetch existing company_intel rows for a list of normalized names."""
+    if not normalized_names:
+        return []
+    result = _retry(lambda: (
+        get_client()
+        .table("company_intel")
+        .select("*")
+        .in_("normalized_name", normalized_names)
+        .execute()
+    ))
+    return result.data or []
+
+
+def upsert_company_intel(rows):
+    """Batch upsert company_intel rows (keyed by normalized_name). Best-effort."""
+    if not rows:
+        return True
+    try:
+        _retry(lambda: (
+            get_client()
+            .table("company_intel")
+            .upsert(rows, on_conflict="normalized_name")
+            .execute()
+        ))
+        return True
+    except Exception as exc:
+        log.warning(f"[company_intel] upsert failed for {len(rows)} rows: {exc}")
+        return False
+
+
+def update_contact_company_intel_id(contact_id, company_intel_id):
+    """Link a contact to its resolved company_intel row. Best-effort."""
+    try:
+        _retry(lambda: get_client().table("contacts").update({
+            "company_intel_id": company_intel_id,
+        }).eq("id", contact_id).execute())
+        return True
+    except Exception as exc:
+        log.warning(f"[company_intel] contact {contact_id} link failed: {exc}")
+        return False

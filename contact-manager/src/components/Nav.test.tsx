@@ -16,6 +16,19 @@ vi.mock("@/components/ui/Tooltip", () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+const { visaReviewCountMock } = vi.hoisted(() => ({
+  visaReviewCountMock: vi.fn(() => Promise.resolve({ data: [] })),
+}));
+vi.mock("@/lib/supabase", () => ({
+  supabase: {
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => visaReviewCountMock()),
+      })),
+    })),
+  },
+}));
+
 import { usePathname } from "next/navigation";
 import { Nav } from "./Nav";
 
@@ -35,6 +48,8 @@ function mockAgentConfig(scope: "none" | "agent" | "all") {
 beforeEach(() => {
   vi.mocked(usePathname).mockReturnValue("/");
   mockAgentConfig("none");
+  visaReviewCountMock.mockReset();
+  visaReviewCountMock.mockResolvedValue({ data: [] });
 });
 
 describe("Nav — static structure", () => {
@@ -52,6 +67,7 @@ describe("Nav — static structure", () => {
     expect(screen.getByRole("link", { name: /^prompts$/i })).toHaveAttribute("href", "/prompts");
     expect(screen.getByRole("link", { name: /activity/i })).toHaveAttribute("href", "/runs");
     expect(screen.getByRole("link", { name: /^lab$/i })).toHaveAttribute("href", "/lab");
+    expect(screen.getByRole("link", { name: /^visa$/i })).toHaveAttribute("href", "/visa-review");
   });
 
   it("highlights the active route link", async () => {
@@ -60,6 +76,21 @@ describe("Nav — static structure", () => {
     await waitFor(() => screen.getByRole("link", { name: /^queue$/i }));
     expect(screen.getByRole("link", { name: /^queue$/i }).className).toMatch(/indigo/);
     expect(screen.getByRole("link", { name: /^overview$/i }).className).not.toMatch(/indigo/);
+  });
+
+  it("shows no pending-count badge on the Visa link when the queue is empty", async () => {
+    visaReviewCountMock.mockResolvedValue({ data: [] });
+    render(<Nav />);
+    await waitFor(() => screen.getByRole("link", { name: /^visa$/i }));
+    expect(screen.getByRole("link", { name: /^visa$/i }).textContent).toBe("Visa");
+  });
+
+  it("shows the pending-count badge on the Visa link when reviews are queued", async () => {
+    visaReviewCountMock.mockResolvedValue({ data: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+    render(<Nav />);
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: /^visa/i }).textContent).toContain("3")
+    );
   });
 });
 

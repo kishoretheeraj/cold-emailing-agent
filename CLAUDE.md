@@ -23,6 +23,11 @@ db.py
 config.py
 constants.py
 notify_failure.py
+entity_resolution.py
+ingest_oflc_lca.py
+ingest_uscis_datahub.py
+visa_matching.py
+visa_match_new.py
 supabase/migrations/
 ```
 
@@ -193,6 +198,31 @@ Follow-up emails must land in the same Gmail thread as the original.
   updated later by the monitor or `_resolve_thread_message_id`).
   `latest_message_id` is updated by the monitor after every sent detection.
 
+## Visa & wage intelligence gate (Stage 1: H-1B sponsorship)
+
+Decision-support signal (never an auto-reject) tagging each target company
+with its H-1B sponsorship history from free DOL/USCIS open data. New modules:
+`entity_resolution.py` (name normalization + rapidfuzz matching, no
+Claude/Gmail dependency), `ingest_oflc_lca.py` / `ingest_uscis_datahub.py`
+(quarterly ingestion, own workflow), `visa_matching.py` (shared
+match-to-company_intel-row logic), `visa_match_new.py` (daily incremental
+matcher, wired as a `continue-on-error: true` step in `daily_agent.yml` —
+deliberately separate from `agent.py::run()`, same reasoning as the
+best-effort labeling rule below). New tables `employer_h1b_stats` and
+`company_intel`; `contacts.company_intel_id` is the join column.
+
+**Governance invariant**: Stage 1 code only ever writes `company_intel.sponsors_h1b`
+as `NULL` or `true`. Setting it `false` requires an explicit human "confirmed"
+decision via the contact-manager's `/visa-review` screen. A missed or
+excluded entity-resolution match must always degrade to "unknown" (`NULL`),
+never present as a false negative. Quarterly re-ingestion re-matches
+distinct `contacts.company` values but skips `confirmed`/`rejected`
+`company_intel` rows (never overwrites a human decision) while still
+refreshing their denormalized stats from the linked employer.
+
+Full schema, entity-resolution calibration notes, and ingestion details:
+see docs/python/db-schema.md.
+
 See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Supabase retry, prompt validation, batch fallback).
 
 ## Supabase patterns
@@ -231,7 +261,7 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
 
 ## GitHub Actions
 
-Two workflows live in `.github/workflows/`:
+Three workflows live in `.github/workflows/`:
 
 - **`daily_agent.yml`** — runs `agent.py` Mon-Fri at 4:37am EST (cron
   `37 9 * * 1-5`). Has a `check-duplicate` preflight job: if a
@@ -240,21 +270,33 @@ Two workflows live in `.github/workflows/`:
   "Run Agent" button (`/api/trigger-agent` route) that fires a
   `workflow_dispatch` — the dedup check prevents the scheduled run from
   duplicating it the same day. Requires `GITHUB_DISPATCH_TOKEN` env var
-  (actions: write on the repo).
+  (actions: write on the repo). Also runs `visa_match_new.py` as a final
+  `continue-on-error: true` step (see Visa & wage intelligence gate above) —
+  that step can never fail the workflow.
 - **`monitor.yml`** — runs `monitor.py` every day (incl. weekends) on two schedules
   (EST = UTC-5): every 20 minutes from 8 AM–11:59 PM EST (crns `*/20 13-23 * * *`
   and `*/20 0-4 * * *`), and hourly at :30 from 12:30 AM–7:30 AM EST
   (cron `30 5-12 * * *`).
+- **`visa_intel_ingest.yml`** — quarterly (`0 10 5 1,4,7,10 *`), runs
+  `ingest_oflc_lca.py` → `ingest_uscis_datahub.py` → `visa_match_new.py`
+  (full re-match pass). `timeout-minutes: 120` (vs. 30 for the daily job) —
+  a fresh ingest processes several fiscal years of DOL data. First run
+  should be triggered manually via `workflow_dispatch`.
 
-Both workflows: upload the relevant `.log` file as an artifact (30-day
+All three workflows: upload the relevant `.log` file as an artifact (30-day
 retention), and run `notify_failure.py` in an `if: failure()` step.
-Both support `workflow_dispatch` for manual triggers.
+All support `workflow_dispatch` for manual triggers.
 Python version: **3.11**. Dependencies installed via `requirements.txt`.
 
-`daily_agent.yml` requires these secrets: `ANTHROPIC_API_KEY`, `GMAIL_ADDRESS`,
-`GMAIL_APP_PASSWORD`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `TAVILY_API_KEY`.
+`daily_agent.yml` and `visa_intel_ingest.yml` pass these secrets:
+`ANTHROPIC_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `SUPABASE_URL`,
+`SUPABASE_ANON_KEY`, plus (`daily_agent.yml` only) `TAVILY_API_KEY`,
+`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
 `monitor.yml` does **not** receive `TAVILY_API_KEY` — monitor never imports
-`research`.
+`research`. Any new script that imports `db.py` needs at minimum
+`SUPABASE_URL`/`SUPABASE_ANON_KEY` plus the other three core secrets, since
+`config.py` reads all five via hard `os.environ[...]` lookups at import time
+regardless of whether the script actually uses Claude/Gmail.
 
 ## Agent run tracking
 
@@ -303,6 +345,12 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_research_brief.py` — `get_research_brief` integration tests (cache TTL, pipeline, never-raises parametrize).
 - `tests/test_emailer_research.py` — research gating (tier/action matrix) and injection behavior in `generate_email`.
 - `tests/test_agent_paused.py` — pause guard: `get_pause_scope` error handling, `agent.run()` early-exit for `scope in ("agent","all")`, `monitor.run()` early-exit for `scope=="all"` only.
+- `tests/test_entity_resolution.py` — `normalize()`/`resolve()`/`classify()`, the single-token auto-band guard, exact-match override, alias consolidation.
+- `tests/test_ingest_oflc_lca.py` — `resolve_columns()` cross-year drift, `CASE_STATUS`/wage-level normalization, `parse_lca_file()` against constructed `.xlsx` fixtures, materiality-filter and row-cap behavior in `build_rows_for_upsert()`.
+- `tests/test_ingest_uscis_datahub.py` — CSV column resolution, approval/denial summing, and the "never targets a name outside the existing employer_h1b_stats corpus" governance test in `build_enrichment_rows()`.
+- `tests/test_visa_intel_db.py` — `db.py`'s `employer_h1b_stats`/`company_intel` accessors, following `test_db_draft_history.py`'s mock pattern.
+- `tests/test_visa_matching.py` — `visa_matching.resolve_company()`, including the confirmed/rejected-row-is-never-reclassified governance tests.
+- `tests/test_visa_match_new.py` — parametrized never-raises sweep for the daily matcher, plus per-company failure isolation.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
 
