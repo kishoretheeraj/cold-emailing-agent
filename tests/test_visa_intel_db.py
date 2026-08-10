@@ -18,7 +18,7 @@ def fake_client(mocker):
 # ── get_employer_h1b_stats_corpus ────────────────────────────────────────────────
 
 def test_get_employer_h1b_stats_corpus_returns_rows(fake_client):
-    fake_client.table.return_value.select.return_value.execute.return_value.data = [
+    fake_client.table.return_value.select.return_value.range.return_value.execute.return_value.data = [
         {"id": 1, "normalized_name": "acme", "lca_recent_2fy": 5, "latest_filing_fy": 2025, "approval_rate": 0.9},
     ]
     result = db.get_employer_h1b_stats_corpus()
@@ -28,7 +28,7 @@ def test_get_employer_h1b_stats_corpus_returns_rows(fake_client):
 
 
 def test_get_employer_h1b_stats_corpus_empty_on_no_data(fake_client):
-    fake_client.table.return_value.select.return_value.execute.return_value.data = None
+    fake_client.table.return_value.select.return_value.range.return_value.execute.return_value.data = None
     assert db.get_employer_h1b_stats_corpus() == []
 
 
@@ -36,6 +36,29 @@ def test_get_employer_h1b_stats_corpus_propagates_on_error(mocker):
     mocker.patch.object(db, "get_client", side_effect=RuntimeError("db down"))
     with pytest.raises(RuntimeError):
         db.get_employer_h1b_stats_corpus()
+
+
+def test_get_employer_h1b_stats_corpus_paginates_past_postgrest_row_cap(mocker):
+    # Regression: PostgREST caps a single request at (commonly) 1000 rows.
+    # A plain .select().execute() silently truncated a 37k-row table to 1000
+    # in production -- this proves every row is fetched via .range() paging.
+    page_size = 1000
+    full_page = [{"id": i, "normalized_name": f"co{i}"} for i in range(page_size)]
+    partial_page = [{"id": page_size, "normalized_name": "last"}]
+
+    client = mocker.MagicMock()
+    mocker.patch.object(db, "get_client", return_value=client)
+    range_mock = client.table.return_value.select.return_value.range
+    range_mock.return_value.execute.side_effect = [
+        mocker.MagicMock(data=full_page),
+        mocker.MagicMock(data=partial_page),
+    ]
+
+    result = db.get_employer_h1b_stats_corpus()
+
+    assert len(result) == page_size + 1
+    range_mock.assert_any_call(0, page_size - 1)
+    range_mock.assert_any_call(page_size, 2 * page_size - 1)
 
 
 # ── upsert_employer_h1b_stats ────────────────────────────────────────────────────

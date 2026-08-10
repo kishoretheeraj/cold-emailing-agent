@@ -371,7 +371,7 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
 
     if not ingested_fys:
         log.warning("[RESEARCH-C] visa_intel | no fiscal years ingested, nothing to upsert")
-        db.record_run("failure", 0, 0, errors, time.time() - start,
+        db.record_run("failure", 0, 0, errors, round(time.time() - start),
                        failure_reason="no LCA fiscal years ingested", source="visa_ingest_lca")
         return
 
@@ -384,7 +384,7 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
     log.info(
         f"[RESEARCH-C] visa_intel | DONE | fys={ingested_fys} | employers={len(rows)} | errors={errors}"
     )
-    db.record_run(status, len(rows), 0, errors, time.time() - start, source="visa_ingest_lca")
+    db.record_run(status, len(rows), 0, errors, round(time.time() - start), source="visa_ingest_lca")
 
 
 if __name__ == "__main__":

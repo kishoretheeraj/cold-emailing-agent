@@ -178,7 +178,7 @@ def run(csv_url=None):
             "[RESEARCH-C] visa_intel | uscis_datahub | no CSV URL configured, "
             "skipping (see DATA_HUB_PAGE_URL for the manual download page)"
         )
-        db.record_run("failure", 0, 0, 1, time.time() - start,
+        db.record_run("failure", 0, 0, 1, round(time.time() - start),
                        failure_reason="no USCIS Data Hub CSV URL configured", source="visa_ingest_uscis")
         return
 
@@ -186,7 +186,7 @@ def run(csv_url=None):
     if not existing_corpus:
         log.warning("[RESEARCH-C] visa_intel | uscis_datahub | employer_h1b_stats is empty, "
                     "run ingest_oflc_lca.py first")
-        db.record_run("failure", 0, 0, 1, time.time() - start,
+        db.record_run("failure", 0, 0, 1, round(time.time() - start),
                        failure_reason="employer_h1b_stats empty, nothing to enrich", source="visa_ingest_uscis")
         return
 
@@ -206,7 +206,7 @@ def run(csv_url=None):
             errors += 1
 
     if not accumulator:
-        db.record_run("failure" if errors else "success", 0, 0, errors, time.time() - start,
+        db.record_run("failure" if errors else "success", 0, 0, errors, round(time.time() - start),
                        source="visa_ingest_uscis")
         return
 
@@ -216,7 +216,7 @@ def run(csv_url=None):
         db.upsert_employer_h1b_stats(rows[i:i + batch_size])
 
     log.info(f"[RESEARCH-C] visa_intel | uscis_datahub | DONE | enriched={len(rows)} | errors={errors}")
-    db.record_run("success", len(rows), 0, errors, time.time() - start, source="visa_ingest_uscis")
+    db.record_run("success", len(rows), 0, errors, round(time.time() - start), source="visa_ingest_uscis")
 
 
 if __name__ == "__main__":

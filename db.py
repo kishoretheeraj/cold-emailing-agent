@@ -387,14 +387,26 @@ def set_research_cache(cache_key, contact_name, contact_company,
 
 def get_employer_h1b_stats_corpus():
     """Fetch every cached employer's id, normalized_name, and denormalizable
-    stats, for entity-resolution matching and company_intel row-building."""
-    result = _retry(lambda: (
-        get_client()
-        .table("employer_h1b_stats")
-        .select("id, normalized_name, lca_recent_2fy, latest_filing_fy, approval_rate")
-        .execute()
-    ))
-    return result.data or []
+    stats, for entity-resolution matching and company_intel row-building.
+    Paginates via .range() -- PostgREST caps a single request's rows
+    (commonly 1000), and this table can hold up to MAX_EMPLOYER_ROWS."""
+    page_size = 1000
+    rows = []
+    offset = 0
+    while True:
+        result = _retry(lambda offset=offset: (
+            get_client()
+            .table("employer_h1b_stats")
+            .select("id, normalized_name, lca_recent_2fy, latest_filing_fy, approval_rate")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        ))
+        page = result.data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return rows
 
 
 def upsert_employer_h1b_stats(rows):

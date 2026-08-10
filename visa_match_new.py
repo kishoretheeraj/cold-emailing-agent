@@ -37,21 +37,21 @@ def run():
         contacts = db.get_all_contacts()
     except Exception as exc:
         log.warning(f"[RESEARCH-C] visa_match | get_all_contacts failed: {exc}")
-        db.record_run("failure", 0, 0, 1, time.time() - start,
+        db.record_run("failure", 0, 0, 1, round(time.time() - start),
                        failure_reason=str(exc), source="visa_match")
         return
 
     by_company = _distinct_unmatched_companies(contacts)
     if not by_company:
         log.info("[RESEARCH-C] visa_match | no unmatched companies, nothing to do")
-        db.record_run("success", 0, 0, 0, time.time() - start, source="visa_match")
+        db.record_run("success", 0, 0, 0, round(time.time() - start), source="visa_match")
         return
 
     try:
         employer_corpus = db.get_employer_h1b_stats_corpus()
     except Exception as exc:
         log.warning(f"[RESEARCH-C] visa_match | employer_h1b_stats read failed: {exc}")
-        db.record_run("failure", 0, 0, 1, time.time() - start,
+        db.record_run("failure", 0, 0, 1, round(time.time() - start),
                        failure_reason=str(exc), source="visa_match")
         return
 
@@ -85,7 +85,7 @@ def run():
 
     log.info(f"[RESEARCH-C] visa_match | DONE | companies_matched={matched} | errors={errors}")
     status = "success" if errors == 0 else "success"  # per-company failures are non-fatal
-    db.record_run(status, matched, 0, errors, time.time() - start, source="visa_match")
+    db.record_run(status, matched, 0, errors, round(time.time() - start), source="visa_match")
 
 
 def _normalize_for_lookup(company):
