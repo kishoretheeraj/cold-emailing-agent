@@ -49,6 +49,13 @@ COLUMN_ALIASES = {
     "worksite_state": ["WORKSITE_STATE", "WORKSITE_STATE_1", "worksite_state"],
     "wage_level": ["PW_WAGE_LEVEL", "PW_WAGE_LEVEL_9089", "WAGE_LEVEL"],
     "case_status": ["CASE_STATUS", "STATUS"],
+    # Since FY2020, DOL's combined "LCA" disclosure file covers H-1B, H-1B1
+    # (Chile/Singapore treaty visa), and E-3 (Australia treaty visa) together
+    # -- confirmed against the live FY2026 file, ~3% of rows are H-1B1/E-3.
+    # This module is H-1B specifically; rows are filtered by this column when
+    # present. Pre-2020 vintages predate the consolidation and have no such
+    # column -- absence degrades to "don't filter," not an error.
+    "visa_class": ["VISA_CLASS"],
 }
 
 REQUIRED_FIELDS = {"employer_name"}
@@ -181,6 +188,11 @@ def parse_lca_file(path, fiscal_year, accumulator):
             if "case_status" in resolved and status not in _COUNTED_STATUSES:
                 continue
 
+            visa_class = _cell("visa_class")
+            if "visa_class" in resolved and visa_class is not None:
+                if str(visa_class).strip().upper() != "H-1B":
+                    continue
+
             fold_row(
                 accumulator,
                 raw_employer_name=employer_name,
@@ -229,12 +241,57 @@ def build_rows_for_upsert(accumulator, ingested_fiscal_years,
     return rows[:max_rows]
 
 
-# ── Link discovery + download (network I/O, not unit-tested) ────────────────────
+# ── Link discovery + download ────────────────────────────────────────────────────
 
-_LINK_RE = re.compile(
-    r'href="([^"]+\.xlsx?)"[^>]*>[^<]*?(FY\s?(20\d\d)|20\d\d)',
+# DOL's naming convention for this file series has changed over time -- the
+# fiscal year lives in the FILENAME, not the surrounding link text (an earlier
+# version of this regex assumed the latter and crashed in production, see
+# git history). Since FY2020, H-1B/H-1B1/E-3 disclosures are published as one
+# combined "LCA_Disclosure_Data" series, quarterly-cumulative
+# (Q4 = full fiscal year). Pre-2020 vintages used a separate "H-1B_Disclosure_Data"
+# / "H-1B_Case_Data" naming scheme with no quarter suffix. Confirmed against
+# the live page on 2026-08-10 -- re-verify here if ingestion coverage looks
+# thin, since DOL publishes no official manifest for either series.
+# DOL's own site has shipped "LCA_Dislclosure_Data" (missing the "c") for at
+# least one live quarter's link -- tolerate the typo, confirmed against the
+# live page on 2026-08-10.
+_LCA_QUARTERLY_RE = re.compile(
+    r'href="([^"]*LCA_Dis(?:l)?closure_Data_FY(\d{4})_Q(\d)\.xlsx)"',
     re.IGNORECASE,
 )
+_LCA_ANNUAL_RE = re.compile(
+    r'href="([^"]*H-1B_(?:Disclosure|Case)_Data_FY(\d{4})[^"]*\.xlsx)"',
+    re.IGNORECASE,
+)
+
+
+def _absolute_url(url):
+    return url if url.startswith("http") else "https://www.dol.gov" + url
+
+
+def parse_lca_links(html):
+    """
+    Pure parser: given the DOL performance-data page HTML, returns
+    {fiscal_year: url} for the best (most-cumulative) LCA disclosure file per
+    FY found in the page. Never raises -- a page-structure change should
+    yield an empty/partial dict, not crash the caller.
+    """
+    best_by_fy = {}  # fy -> (quarter, url), quarter=99 for the annual-only series
+
+    for match in _LCA_QUARTERLY_RE.finditer(html):
+        url, year_str, quarter_str = match.groups()
+        fy, quarter = int(year_str), int(quarter_str)
+        existing = best_by_fy.get(fy)
+        if existing is None or quarter > existing[0]:
+            best_by_fy[fy] = (quarter, _absolute_url(url))
+
+    for match in _LCA_ANNUAL_RE.finditer(html):
+        url, year_str = match.groups()
+        fy = int(year_str)
+        if fy not in best_by_fy:
+            best_by_fy[fy] = (99, _absolute_url(url))
+
+    return {fy: url for fy, (_, url) in best_by_fy.items()}
 
 
 def discover_lca_file_urls():
@@ -249,17 +306,10 @@ def discover_lca_file_urls():
         req = urllib.request.Request(PERFORMANCE_PAGE_URL, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(req, timeout=30) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
+        return parse_lca_links(html)
     except Exception as exc:
         log.warning(f"[RESEARCH-C] visa_intel | discover_lca_file_urls failed: {exc}")
         return {}
-
-    urls_by_fy = {}
-    for match in _LINK_RE.finditer(html):
-        url, _, year = match.groups()
-        if not url.startswith("http"):
-            url = "https://www.dol.gov" + url
-        urls_by_fy[int(year)] = url
-    return urls_by_fy
 
 
 def download_file(url, dest_path):
@@ -280,9 +330,15 @@ def download_file(url, dest_path):
 
 # ── Orchestration ─────────────────────────────────────────────────────────────────
 
+def current_dol_fiscal_year(today=None):
+    # DOL fiscal years run Oct 1 - Sep 30 (FY2026 = Oct 2025 - Sep 2026).
+    today = today or datetime.now(timezone.utc)
+    return today.year + 1 if today.month >= 10 else today.year
+
+
 def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
     start = time.time()
-    current_fy = datetime.now(timezone.utc).year
+    current_fy = current_dol_fiscal_year()
     target_fys = list(range(current_fy - fiscal_years_back + 1, current_fy + 1))
 
     urls_by_fy = discover_lca_file_urls()
