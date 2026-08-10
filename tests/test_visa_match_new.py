@@ -55,6 +55,60 @@ def test_run_matches_new_company_end_to_end(mocker, no_op_record_run):
         assert call.args[1] == 99
 
 
+# ── full re-match mode (--full) ──────────────────────────────────────────────────
+
+def test_full_rematch_reprocesses_already_linked_unknown_contacts(mocker, no_op_record_run):
+    # Regression: a contact previously linked to an "unknown" company_intel
+    # row (e.g. matched against a stale/incomplete corpus) must NOT be
+    # silently skipped by a full re-match just because company_intel_id is
+    # already set -- only the incremental daily mode skips linked contacts.
+    mocker.patch.object(db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Acme Inc.", "company_intel_id": 5},
+    ])
+    mocker.patch.object(db, "get_employer_h1b_stats_corpus", return_value=[
+        {"id": 10, "normalized_name": "acme", "lca_recent_2fy": 5, "latest_filing_fy": 2025, "approval_rate": 0.9},
+    ])
+    mocker.patch.object(db, "get_company_intel_by_normalized_names", side_effect=[
+        [{"id": 5, "normalized_name": "acme", "match_status": "unknown"}],
+        [{"id": 5, "normalized_name": "acme"}],
+    ])
+    upsert_mock = mocker.patch.object(db, "upsert_company_intel", return_value=True)
+
+    vmn.run(full_rematch=True)
+
+    upsert_mock.assert_called_once()
+    row = upsert_mock.call_args.args[0][0]
+    assert row["match_status"] == "auto"
+
+
+def test_full_rematch_still_skips_confirmed_rows(mocker, no_op_record_run):
+    mocker.patch.object(db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Acme Inc.", "company_intel_id": 5},
+    ])
+    mocker.patch.object(db, "get_employer_h1b_stats_corpus", return_value=[
+        {"id": 10, "normalized_name": "acme", "lca_recent_2fy": 5, "latest_filing_fy": 2025, "approval_rate": 0.9},
+    ])
+    mocker.patch.object(db, "get_company_intel_by_normalized_names", return_value=[
+        {"id": 5, "normalized_name": "acme", "match_status": "confirmed", "matched_employer_id": 10},
+    ])
+    upsert_mock = mocker.patch.object(db, "upsert_company_intel", return_value=True)
+
+    vmn.run(full_rematch=True)
+
+    row = upsert_mock.call_args.args[0][0]
+    assert "match_status" not in row  # confirmed row's status is untouched
+
+
+def test_incremental_mode_still_skips_already_linked_contacts(mocker, no_op_record_run):
+    # The daily/default mode's original cheap-skip behavior must be unchanged.
+    mocker.patch.object(db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Acme Inc.", "company_intel_id": 5},
+    ])
+    mock_corpus = mocker.patch.object(db, "get_employer_h1b_stats_corpus")
+    vmn.run(full_rematch=False)
+    mock_corpus.assert_not_called()
+
+
 # ── never-raises sweep ────────────────────────────────────────────────────────────
 
 def test_run_never_raises_when_get_all_contacts_fails(mocker, no_op_record_run):

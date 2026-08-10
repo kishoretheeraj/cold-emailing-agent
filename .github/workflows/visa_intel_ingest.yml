@@ -47,7 +47,7 @@ jobs:
       - name: Re-match all contacts against refreshed employer stats
         if: always()
         continue-on-error: true
-        run: python visa_match_new.py
+        run: python visa_match_new.py --full
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}

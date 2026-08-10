@@ -1,13 +1,22 @@
 """
-Daily incremental visa-intel matcher. Links any contact whose company_intel_id
-is still NULL against the already-materialized employer_h1b_stats corpus.
+Visa-intel matcher. Two modes:
 
-Deliberately separate from agent.py::run() -- see CLAUDE.md. Wired as a
-`continue-on-error: true` step in daily_agent.yml so a bug here can never
-fail the outbound-email workflow. No Claude/Gmail calls, cheap even at
-scale (a handful of new companies per day at most).
+- Incremental (default, daily): links any contact whose company_intel_id is
+  still NULL against the already-materialized employer_h1b_stats corpus.
+  Deliberately separate from agent.py::run() -- see CLAUDE.md. Wired as a
+  `continue-on-error: true` step in daily_agent.yml so a bug here can never
+  fail the outbound-email workflow. No Claude/Gmail calls, cheap even at
+  scale (a handful of new companies per day at most).
+
+- Full re-match (--full, quarterly): re-resolves EVERY distinct contact
+  company against the freshly-refreshed corpus, not just unmatched ones --
+  needed after employer_h1b_stats changes, since a company that resolved to
+  "unknown" against last quarter's corpus may now match. Governance is
+  enforced in visa_matching.resolve_company: confirmed/rejected rows are
+  never reclassified, only their denormalized stats refresh.
 """
 import logging
+import sys
 import time
 
 import db
@@ -28,7 +37,17 @@ def _distinct_unmatched_companies(contacts):
     return by_company
 
 
-def run():
+def _distinct_all_companies(contacts):
+    by_company = {}
+    for c in contacts:
+        company = (c.get("company") or "").strip()
+        if not company:
+            continue
+        by_company.setdefault(company, []).append(c["id"])
+    return by_company
+
+
+def run(full_rematch=False):
     start = time.time()
     matched = 0
     errors = 0
@@ -41,9 +60,9 @@ def run():
                        failure_reason=str(exc), source="visa_match")
         return
 
-    by_company = _distinct_unmatched_companies(contacts)
+    by_company = (_distinct_all_companies if full_rematch else _distinct_unmatched_companies)(contacts)
     if not by_company:
-        log.info("[RESEARCH-C] visa_match | no unmatched companies, nothing to do")
+        log.info("[RESEARCH-C] visa_match | no companies to process, nothing to do")
         db.record_run("success", 0, 0, 0, round(time.time() - start), source="visa_match")
         return
 
@@ -100,4 +119,4 @@ if __name__ == "__main__":
         format="%(asctime)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M",
     )
-    run()
+    run(full_rematch="--full" in sys.argv)

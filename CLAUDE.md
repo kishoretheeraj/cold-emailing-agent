@@ -205,20 +205,33 @@ with its H-1B sponsorship history from free DOL/USCIS open data. New modules:
 `entity_resolution.py` (name normalization + rapidfuzz matching, no
 Claude/Gmail dependency), `ingest_oflc_lca.py` / `ingest_uscis_datahub.py`
 (quarterly ingestion, own workflow), `visa_matching.py` (shared
-match-to-company_intel-row logic), `visa_match_new.py` (daily incremental
-matcher, wired as a `continue-on-error: true` step in `daily_agent.yml` —
-deliberately separate from `agent.py::run()`, same reasoning as the
-best-effort labeling rule below). New tables `employer_h1b_stats` and
-`company_intel`; `contacts.company_intel_id` is the join column.
+match-to-company_intel-row logic), `visa_match_new.py` (matcher with two
+modes — see below — wired as a `continue-on-error: true` step in
+`daily_agent.yml`, deliberately separate from `agent.py::run()`, same
+reasoning as the best-effort labeling rule below). New tables
+`employer_h1b_stats` and `company_intel`; `contacts.company_intel_id` is the
+join column.
 
 **Governance invariant**: Stage 1 code only ever writes `company_intel.sponsors_h1b`
 as `NULL` or `true`. Setting it `false` requires an explicit human "confirmed"
 decision via the contact-manager's `/visa-review` screen. A missed or
 excluded entity-resolution match must always degrade to "unknown" (`NULL`),
-never present as a false negative. Quarterly re-ingestion re-matches
-distinct `contacts.company` values but skips `confirmed`/`rejected`
-`company_intel` rows (never overwrites a human decision) while still
-refreshing their denormalized stats from the linked employer.
+never present as a false negative.
+
+**`visa_match_new.py` has two modes** (`run(full_rematch=...)`, CLI `--full`):
+incremental (default) only processes contacts with `company_intel_id IS NULL`;
+full (`--full`, used by the quarterly workflow) re-resolves every distinct
+contact company, since a company that fell to `unknown` against an earlier
+corpus may match once new employer data lands. Both skip
+`confirmed`/`rejected` `company_intel` rows (never overwrite a human
+decision) while refreshing their denormalized stats. **Never wire the
+quarterly re-match step without `--full`** — incremental mode silently
+no-ops on every contact once it has any `company_intel_id`, `unknown`
+included, which was a real production incident (see docs/python/db-schema.md).
+
+**`db.get_employer_h1b_stats_corpus()` paginates via `.range()`** — PostgREST
+caps a single request's rows (commonly 1000) and this table can hold up to
+150,000. Don't revert to a plain `.select().execute()` here.
 
 Full schema, entity-resolution calibration notes, and ingestion details:
 see docs/python/db-schema.md.
@@ -278,10 +291,11 @@ Three workflows live in `.github/workflows/`:
   and `*/20 0-4 * * *`), and hourly at :30 from 12:30 AM–7:30 AM EST
   (cron `30 5-12 * * *`).
 - **`visa_intel_ingest.yml`** — quarterly (`0 10 5 1,4,7,10 *`), runs
-  `ingest_oflc_lca.py` → `ingest_uscis_datahub.py` → `visa_match_new.py`
-  (full re-match pass). `timeout-minutes: 120` (vs. 30 for the daily job) —
-  a fresh ingest processes several fiscal years of DOL data. First run
-  should be triggered manually via `workflow_dispatch`.
+  `ingest_oflc_lca.py` → `ingest_uscis_datahub.py` → `python visa_match_new.py --full`
+  (the `--full` flag is required — see Visa & wage intelligence gate above).
+  `timeout-minutes: 120` (vs. 30 for the daily job) — a fresh ingest
+  processes several fiscal years of DOL data. First run should be triggered
+  manually via `workflow_dispatch`.
 
 All three workflows: upload the relevant `.log` file as an artifact (30-day
 retention), and run `notify_failure.py` in an `if: failure()` step.

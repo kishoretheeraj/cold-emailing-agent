@@ -129,19 +129,40 @@ years (recency is what the signal needs, not full FY2008+ history). USCIS
 enrichment only updates existing `employer_h1b_stats` rows and only applies
 `auto`-confidence matches — never creates new rows.
 
-**Daily matching** (`visa_match_new.py`): fully separate from `agent.py::run()`
-— wired as a `continue-on-error: true` step in `daily_agent.yml`. Links any
-contact with `company_intel_id IS NULL` against the already-materialized
-`employer_h1b_stats` corpus. Records its own run status via
+**Matching** (`visa_match_new.py`): fully separate from `agent.py::run()` —
+two modes via `run(full_rematch=...)`, CLI flag `--full`:
+- **Incremental (default, daily)**: wired as a `continue-on-error: true` step
+  in `daily_agent.yml`. Only links contacts with `company_intel_id IS NULL`
+  against the already-materialized `employer_h1b_stats` corpus — a company
+  already linked (even with `match_status="unknown"`) is skipped.
+- **Full (`--full`, quarterly)**: re-resolves **every** distinct contact
+  company, not just unmatched ones. Required after `employer_h1b_stats`
+  refreshes, since a company that resolved to `unknown` against an earlier
+  corpus may now match. **Do not run the quarterly workflow's re-match step
+  without `--full`** — the incremental mode silently no-ops on every contact
+  that already has a `company_intel_id`, which is the common case after the
+  first ingest (a real production incident: the first full ingestion linked
+  every contact to `unknown` rows off a truncated 1000-row corpus page — see
+  the pagination note below — and a plain incremental re-match afterward
+  skipped all of them, since they were already "linked").
+
+Both modes enforce the same governance via `visa_matching.resolve_company`:
+`confirmed`/`rejected` `company_intel` rows are never reclassified, only
+their denormalized stats (`h1b_recent_count`, `latest_filing_fy`,
+`approval_rate`) refresh from the linked employer — see
+`visa_matching._refresh_confirmed_row`. Records its own run status via
 `db.record_run(source="visa_match")`.
 
 **Quarterly ingestion workflow**: `.github/workflows/visa_intel_ingest.yml`,
 cron `0 10 5 1,4,7,10 *`. Runs `ingest_oflc_lca.py` → `ingest_uscis_datahub.py`
-→ `visa_match_new.py` (full re-match pass). Re-matching **skips**
-`confirmed`/`rejected` `company_intel` rows (never overwrites a human decision)
-but still refreshes their denormalized stats (`h1b_recent_count`,
-`latest_filing_fy`, `approval_rate`) from the linked employer — see
-`visa_matching._refresh_confirmed_row`.
+→ `python visa_match_new.py --full`.
+
+**`db.get_employer_h1b_stats_corpus()` pagination**: PostgREST caps a single
+request's rows (commonly 1000, confirmed against the live production
+project). This table holds up to `MAX_EMPLOYER_ROWS` (150,000) after a real
+ingest — the accessor paginates via `.range()` until a short page confirms
+the end. A plain `.select().execute()` here will silently truncate and
+starve entity resolution of most of the real corpus; don't revert to it.
 
 ## New db.py functions
 
