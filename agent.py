@@ -334,7 +334,7 @@ def _execute_draft(contact, action, subject, body, thread_message_id,
     label = ACTION_LABEL.get(action)
     if label:
         try:
-            apply_label_to_latest_draft(label, gmail_draft_id=gmail_draft_id)
+            apply_label_to_latest_draft(label, gmail_draft_id=gmail_draft_id, message_id=message_id)
         except Exception as exc:
             log.warning(f"{mode_tag} {name} | {company} | label warning: {exc}")
 

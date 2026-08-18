@@ -106,6 +106,59 @@ def test_raw_content_included_in_curator_prompt(mocker):
     assert "This is the full page text about Jane Doe." in captured["prompt"]
 
 
+def test_all_results_per_query_included_not_just_last(mocker):
+    """Regression: every result in a query's results list must be formatted
+    into the prompt, not just the last one."""
+    captured = {}
+
+    def capture(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "Person:\n- A fact"
+
+    mocker.patch.object(research, "_call_claude", side_effect=capture)
+    raw_results = [
+        {
+            "query": "Jane Doe Acme Corp",
+            "result": {
+                "answer": "brief answer",
+                "results": [
+                    {"title": "First hit", "content": "first content", "url": "https://a.com/1"},
+                    {"title": "Second hit", "content": "second content", "url": "https://b.com/2"},
+                ],
+            },
+        }
+    ]
+    research._curate_brief(_CONTACT, raw_results, {})
+    prompt = captured["prompt"]
+    assert "First hit" in prompt
+    assert "Second hit" in prompt
+
+
+def test_empty_results_for_first_query_does_not_raise(mocker):
+    """Regression: a query with zero results must not raise NameError from
+    referencing an unset variable, and must not leak values from other queries."""
+    captured = {}
+
+    def capture(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "Person:\n- A fact"
+
+    mocker.patch.object(research, "_call_claude", side_effect=capture)
+    raw_results = [
+        {"query": "no hits query", "result": {"answer": "none", "results": []}},
+        {
+            "query": "Jane Doe Acme Corp",
+            "result": {
+                "answer": "brief answer",
+                "results": [{"title": "Real hit", "content": "content", "url": "https://a.com/1"}],
+            },
+        },
+    ]
+    result = research._curate_brief(_CONTACT, raw_results, {})
+    assert result == "Person:\n- A fact"
+    assert "Real hit" in captured["prompt"]
+
+
 def test_prompt_contains_contact_fields_for_disambiguation(mocker):
     captured = {}
 

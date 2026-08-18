@@ -235,11 +235,12 @@ def create_gmail_label_if_not_exists(imap, label_name):
     # it already exists. imaplib does not raise on NO — both outcomes are fine.
 
 
-def apply_label_to_latest_draft(label_name, gmail_draft_id=None):
+def apply_label_to_latest_draft(label_name, gmail_draft_id=None, message_id=None):
     """
     Add label_name to a Gmail draft. When gmail_draft_id is provided and OAuth
     is available, uses the Gmail API (no IMAP COPY duplicate). Falls back to
-    IMAP COPY otherwise.
+    IMAP COPY otherwise, targeting the draft by message_id when given (falls
+    back to the newest draft in the mailbox only if message_id is omitted).
     """
     if gmail_draft_id:
         client = _get_gmail_api_client()
@@ -269,7 +270,10 @@ def apply_label_to_latest_draft(label_name, gmail_draft_id=None):
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         create_gmail_label_if_not_exists(imap, label_name)
         imap.select('"[Gmail]/Drafts"')
-        status, data = imap.search(None, "ALL")
+        if message_id:
+            status, data = imap.search(None, "HEADER", "Message-ID", message_id)
+        else:
+            status, data = imap.search(None, "ALL")
         if status != "OK" or not data[0]:
             return
         nums = data[0].split()

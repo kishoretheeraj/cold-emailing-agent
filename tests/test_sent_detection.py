@@ -30,6 +30,8 @@ def _contact(**overrides):
     ("breakup_drafted",          "breakup_sent",           "followup",    True),
     ("applied_intro_drafted",    "applied_intro_sent",     "first_touch", False),
     ("applied_followup_drafted", "applied_followup_sent",  "followup",    True),
+    ("networking_drafted",       "networking_sent",        "first_touch", False),
+    ("networking_followup_drafted", "networking_followup_sent", "followup", True),
 ])
 def test_stage_flip(mocker, stage, expected_sent, mode, terminal):
     mocker.patch.object(monitor, "get_drafted_contacts",
@@ -193,6 +195,25 @@ def test_subject_fallback_used_when_message_id_not_found(mocker):
     subj_search.assert_called_once()
     update.assert_called_once()
     update_mid.assert_called_once_with(42, fallback_mid)
+
+
+def test_subject_fallback_used_for_networking_first_touch(mocker):
+    """Regression: networking_drafted must be classified as first_touch mode,
+    so the subject fallback still fires when thrid/message-id search miss."""
+    fallback_mid = "<found-by-subject@m>"
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact(stage="networking_drafted",
+                                               original_subject="quick hello")])
+    mocker.patch.object(monitor, "find_sent_for_thread", return_value=None)
+    subj_search = mocker.patch.object(monitor, "find_sent_by_subject", return_value=fallback_mid)
+    update = mocker.patch.object(monitor, "update_contact")
+    mocker.patch.object(monitor, "update_message_id")
+    mocker.patch.object(monitor, "update_latest_message_id")
+
+    monitor.detect_sent_drafts()
+
+    subj_search.assert_called_once()
+    update.assert_called_once()
 
 
 def test_subject_fallback_not_used_for_followup_mode(mocker):
