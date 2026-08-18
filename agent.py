@@ -114,6 +114,8 @@ def _decide_networking(contact, today):
 def _parse_date(value):
     if not value:
         return None
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     try:
@@ -502,8 +504,8 @@ def run():
                 )
                 continue
 
-            raw_body = result.result.message.content[0].text
             try:
+                raw_body = result.result.message.content[0].text
                 subject, body = finalize_email(
                     contact, action, raw_body, original_subject, prompts, **ctx
                 )

@@ -25,7 +25,10 @@ def normalize(raw_name):
 
     name = raw_name.strip().lower()
     name = name.replace("&", " and ")
-    name = _PUNCTUATION_RE.sub("", name)
+    # Replace (not drop) punctuation so adjacent tokens don't fuse together
+    # (e.g. "Amazon.com" must normalize to "amazon com", not "amazoncom" --
+    # the latter never matches the "amazon com services" alias-group entry).
+    name = _PUNCTUATION_RE.sub(" ", name)
     name = _WHITESPACE_RE.sub(" ", name).strip()
 
     tokens = name.split(" ")

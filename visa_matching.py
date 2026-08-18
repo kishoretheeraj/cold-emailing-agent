@@ -25,7 +25,9 @@ def resolve_company(raw_company_name, existing_row, employer_corpus):
     Returns a dict ready for db.upsert_company_intel, or None if there is
     nothing to write.
     """
-    normalized = entity_resolution.normalize(raw_company_name)
+    normalized = entity_resolution.canonicalize_alias_group(
+        entity_resolution.normalize(raw_company_name)
+    )
     if not normalized:
         return None
 

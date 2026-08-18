@@ -7,35 +7,21 @@ import supabase._sync.client as _sc
 log = logging.getLogger(__name__)
 
 # Patch: Supabase updated their key format (sb_publishable_*) but the Python
-# client still validates against JWT regex. Widen the check.
-_orig_init = _sc.SyncClient.__init__
-
-def _patched_init(self, supabase_url, supabase_key, options=None):
-    if not re.match(r"^(https?)://.+", supabase_url):
-        raise _sc.SupabaseException("Invalid URL")
-    if not (re.match(r"^[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*$", supabase_key)
-            or supabase_key.startswith("sb_")):
-        raise _sc.SupabaseException("Invalid API key")
-    # Skip the original __init__ validation by calling the rest directly
-    _orig_init.__wrapped__(self, supabase_url, supabase_key, options)
-
-# Simpler approach: just monkeypatch the regex check
-import supabase._sync.client
-_original_create = supabase._sync.client.create_client
+# client still validates against JWT regex. Widen the check by monkeypatching
+# re.match for the duration of create_client's internal validation call.
+_original_create = _sc.create_client
 
 def _create_patched(supabase_url, supabase_key, options=None):
-    import supabase._sync.client as mod
     orig_re_match = re.match
     def lenient_match(pattern, string, *a, **kw):
         if "A-Za-z0-9-_=" in str(pattern) and string.startswith("sb_"):
             return True
         return orig_re_match(pattern, string, *a, **kw)
-    old = re.match
     re.match = lenient_match
     try:
         return _original_create(supabase_url, supabase_key, options)
     finally:
-        re.match = old
+        re.match = orig_re_match
 
 from supabase import create_client as _orig_create_client
 from config import SUPABASE_URL, SUPABASE_ANON_KEY

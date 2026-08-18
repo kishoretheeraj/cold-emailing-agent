@@ -242,6 +242,23 @@ included, which was a real production incident (see docs/python/db-schema.md).
 caps a single request's rows (commonly 1000) and this table can hold up to
 150,000. Don't revert to a plain `.select().execute()` here.
 
+**Alias-group canonicalization must happen on every code path that produces
+or looks up a `normalized_name`.** `entity_resolution.KNOWN_ALIAS_GROUPS`
+folds known multi-legal-entity families (e.g. Amazon's `amazon com services`
+/ `amazon web services` / `amazon data services`) into one canonical
+`employer_h1b_stats` row at ingestion time via
+`canonicalize_alias_group(normalize(name))` (`ingest_oflc_lca.py`,
+`ingest_uscis_datahub.py`). `visa_matching.resolve_company()` and
+`visa_match_new._normalize_for_lookup()` must call
+`canonicalize_alias_group()` too — on both the match query and the
+existing-row lookup — or an aliased company's contacts silently stop
+resolving against the canonical corpus row, and the existing-row lookup for
+a `confirmed`/`rejected` row misses too, bypassing the never-overwrite
+governance check for that company. `entity_resolution.normalize()` replaces
+(never deletes) punctuation for the same reason — deleting a period would
+fuse `"Amazon.com"` into `"amazoncom"`, permanently unreachable from the
+`"amazon com services"` alias-group member.
+
 Full schema, entity-resolution calibration notes, and ingestion details:
 see docs/python/db-schema.md.
 

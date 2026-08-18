@@ -109,7 +109,7 @@ def run(full_rematch=False):
 
 def _normalize_for_lookup(company):
     import entity_resolution
-    return entity_resolution.normalize(company)
+    return entity_resolution.canonicalize_alias_group(entity_resolution.normalize(company))
 
 
 if __name__ == "__main__":

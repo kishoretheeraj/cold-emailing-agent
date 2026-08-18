@@ -211,6 +211,24 @@ def test_parse_lca_file_filters_out_h1b1_and_e3_visa_classes(tmp_path):
     assert acc["acme"]["lca_total"] == 1
 
 
+def test_parse_lca_file_blank_visa_class_cell_degrades_to_no_filter(tmp_path):
+    # Regression: a present-but-blank VISA_CLASS cell (whitespace-only, which
+    # is how openpyxl round-trips it -- a truly empty cell reads back as
+    # None, already handled) must degrade to "don't filter" like an absent
+    # column does -- not be treated as "confirmed not H-1B" and silently
+    # dropped, which would undercount a real H-1B filer's lca_recent_2fy.
+    path = tmp_path / "fy2026.xlsx"
+    _write_workbook(
+        path,
+        ["EMPLOYER_NAME", "CASE_STATUS", "VISA_CLASS"],
+        [["Acme Inc.", "Certified", " "]],
+    )
+    acc = {}
+    rows_folded = ingest.parse_lca_file(str(path), 2026, acc)
+    assert rows_folded == 1
+    assert acc["acme"]["lca_total"] == 1
+
+
 def test_parse_lca_file_missing_visa_class_column_degrades_to_no_filter(tmp_path):
     # Pre-2020 vintages have no VISA_CLASS column at all (H-1B only then).
     path = tmp_path / "fy2019.xlsx"

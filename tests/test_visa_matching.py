@@ -39,6 +39,21 @@ def test_resolve_company_empty_name_returns_none():
     assert vm.resolve_company("", existing_row=None, employer_corpus=CORPUS) is None
 
 
+def test_resolve_company_canonicalizes_alias_group_on_query_side():
+    """Regression: ingestion folds all KNOWN_ALIAS_GROUPS members into one
+    corpus row keyed by the canonical name (e.g. "amazon"). resolve_company
+    must canonicalize the query the same way, not rely on fuzzy-match
+    subset scoring to incidentally bridge the two -- that only works by
+    accident for alias members that happen to be token supersets of the
+    canonical key."""
+    corpus = [{"id": 5, "normalized_name": "amazon", "lca_recent_2fy": 3869,
+               "latest_filing_fy": 2026, "approval_rate": 0.9}]
+    row = vm.resolve_company("Amazon Web Services", existing_row=None, employer_corpus=corpus)
+    assert row["normalized_name"] == "amazon"
+    assert row["match_status"] == "auto"
+    assert row["matched_employer_id"] == 5
+
+
 def test_resolve_company_accumulates_raw_names_across_calls():
     existing = {"normalized_name": "acme", "match_status": "needs_review", "raw_company_names": ["ACME LLC"]}
     row = vm.resolve_company("Acme Inc.", existing_row=existing, employer_corpus=CORPUS)

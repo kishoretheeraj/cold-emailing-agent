@@ -72,6 +72,15 @@ def test_truncates_formatted_results_to_6000_chars(mocker):
     assert "raw_results" not in prompt or len(prompt) < 15000
 
 
+def test_returns_empty_on_stray_brace_format_error():
+    """Regression: a stray '{}' in a live-edited research_curate_prompt raises
+    IndexError (not KeyError) during .format() -- must still degrade to ""
+    rather than propagate past the intended 'log + return empty' path."""
+    bad_prompts = {"research_curate_prompt": "{name} at {company}: {raw_results} {}"}
+    result = research._curate_brief(_CONTACT, _RAW_RESULTS, bad_prompts)
+    assert result == ""
+
+
 def test_returns_empty_on_call_claude_raise(mocker):
     mocker.patch.object(research, "_call_claude", side_effect=Exception("API error"))
     result = research._curate_brief(_CONTACT, _RAW_RESULTS, {})

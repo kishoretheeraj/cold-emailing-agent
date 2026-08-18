@@ -271,7 +271,9 @@ def apply_label_to_latest_draft(label_name, gmail_draft_id=None, message_id=None
         create_gmail_label_if_not_exists(imap, label_name)
         imap.select('"[Gmail]/Drafts"')
         if message_id:
-            status, data = imap.search(None, "HEADER", "Message-ID", message_id)
+            # message_id contains angle brackets (<abc@gmail.com>) which are IMAP
+            # special chars — must be double-quoted so the server parses them correctly.
+            status, data = imap.search(None, "HEADER", "Message-ID", f'"{message_id}"')
         else:
             status, data = imap.search(None, "ALL")
         if status != "OK" or not data[0]:

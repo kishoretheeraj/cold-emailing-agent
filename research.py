@@ -48,7 +48,7 @@ def _generate_queries(contact, sender_profile, prompts):
             dartmouth=contact.get("dartmouth") if contact.get("dartmouth") is not None else "unknown",
             tier=contact.get("tier") or "unknown",
         )
-    except KeyError as exc:
+    except Exception as exc:
         log.warning(f"[RESEARCH-Q] | {name} | {company} | template format error: {exc}")
         return []
 
@@ -206,7 +206,7 @@ def _curate_brief(contact, raw_results, prompts):
             detail=contact.get("detail") or "unknown",
             raw_results=formatted,
         )
-    except KeyError as exc:
+    except Exception as exc:
         log.warning(f"[RESEARCH-C] | {name} | {company} | template format error: {exc}")
         return ""
 

@@ -99,6 +99,33 @@ def test_full_rematch_still_skips_confirmed_rows(mocker, no_op_record_run):
     assert "match_status" not in row  # confirmed row's status is untouched
 
 
+def test_full_rematch_alias_group_lookup_finds_confirmed_row(mocker, no_op_record_run):
+    """Regression: _normalize_for_lookup must canonicalize alias-group members
+    the same way resolve_company/ingestion do, or the existing-row lookup for
+    e.g. "Amazon Web Services" would query under "amazon web services" while
+    the real corpus row is keyed "amazon" -- silently bypassing the
+    confirmed-row-is-never-reclassified governance check for every aliased
+    company."""
+    mocker.patch.object(db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Amazon Web Services", "company_intel_id": 5},
+    ])
+    mocker.patch.object(db, "get_employer_h1b_stats_corpus", return_value=[
+        {"id": 10, "normalized_name": "amazon", "lca_recent_2fy": 3869,
+         "latest_filing_fy": 2026, "approval_rate": 0.9},
+    ])
+    lookup_mock = mocker.patch.object(db, "get_company_intel_by_normalized_names", return_value=[
+        {"id": 5, "normalized_name": "amazon", "match_status": "confirmed", "matched_employer_id": 10},
+    ])
+    upsert_mock = mocker.patch.object(db, "upsert_company_intel", return_value=True)
+
+    vmn.run(full_rematch=True)
+
+    # The lookup must be keyed by the canonical alias name, not raw normalize().
+    assert lookup_mock.call_args_list[0].args[0] == ["amazon"]
+    row = upsert_mock.call_args.args[0][0]
+    assert "match_status" not in row  # confirmed row's status is untouched
+
+
 def test_incremental_mode_still_skips_already_linked_contacts(mocker, no_op_record_run):
     # The daily/default mode's original cheap-skip behavior must be unchanged.
     mocker.patch.object(db, "get_all_contacts", return_value=[

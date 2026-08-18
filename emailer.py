@@ -496,7 +496,7 @@ def _run_critic(subject, body, contact, sender_profile, critic_prompt_text):
             subject=subject,
             body=body,
         )
-    except KeyError as exc:
+    except Exception as exc:
         log.warning(f"[CRITIC] prompt format error: {exc}")
         return _fallback
 

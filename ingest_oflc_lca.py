@@ -190,7 +190,8 @@ def parse_lca_file(path, fiscal_year, accumulator):
 
             visa_class = _cell("visa_class")
             if "visa_class" in resolved and visa_class is not None:
-                if str(visa_class).strip().upper() != "H-1B":
+                visa_class_str = str(visa_class).strip()
+                if visa_class_str and visa_class_str.upper() != "H-1B":
                     continue
 
             fold_row(

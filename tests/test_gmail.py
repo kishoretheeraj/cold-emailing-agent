@@ -230,7 +230,7 @@ def test_apply_label_targets_message_id_when_given(mocker):
 
     gmail.apply_label_to_latest_draft("Cold Outreach/First Touch", message_id="<abc@gmail.com>")
 
-    fake_imap.search.assert_called_once_with(None, "HEADER", "Message-ID", "<abc@gmail.com>")
+    fake_imap.search.assert_called_once_with(None, "HEADER", "Message-ID", '"<abc@gmail.com>"')
     fake_imap.copy.assert_called_once_with("7", '"Cold Outreach/First Touch"')
 
 
