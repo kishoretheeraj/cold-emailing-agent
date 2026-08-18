@@ -91,7 +91,7 @@ def detect_sent_drafts():
             log.info(f"[SENT-CHECK] | {name} | {company} | skip: no message_id")
             continue
 
-        mode = "first_touch" if stage in {"first_touch_drafted", "applied_intro_drafted"} else "followup"
+        mode = "first_touch" if stage in {"first_touch_drafted", "applied_intro_drafted", "networking_drafted"} else "followup"
 
         since_date = _parse_date(contact.get("last_emailed"))
         if since_date is None:

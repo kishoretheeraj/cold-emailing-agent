@@ -188,8 +188,8 @@ def _curate_brief(contact, raw_results, prompts):
             url = r.get("url", "")
             domain = url.split("/")[2] if "/" in url and url.count("/") >= 2 else url
             raw_content = (r.get("raw_content") or "")[:500]
-        excerpt = f"  Full text excerpt: {raw_content}" if raw_content else ""
-        parts.append(f"- {title}: {content}  (source: {domain}){excerpt}")
+            excerpt = f"  Full text excerpt: {raw_content}" if raw_content else ""
+            parts.append(f"- {title}: {content}  (source: {domain}){excerpt}")
         parts.append("")
 
     formatted = "\n".join(parts)

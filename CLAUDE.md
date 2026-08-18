@@ -154,7 +154,11 @@ Follow-up emails must land in the same Gmail thread as the original.
   new first-touch actions are added. Membership here also gates research
   injection and Tier-1 critic eligibility in `emailer.py` — adding an action
   to this set silently turns both on, so decide that deliberately, not by
-  accident.
+  accident. `monitor.detect_sent_drafts()` keeps its own parallel stage-level
+  set (`{"first_touch_drafted", "applied_intro_drafted", "networking_drafted"}`)
+  to classify detection mode — it must list every first-touch `*_drafted`
+  stage or that track silently loses subject-fallback sent-detection. See
+  docs/python/sent-detection.md.
 - After a first-touch draft is created, `agent.py` calls `save_thread_info()`
   to persist `message_id` and `original_subject` in Supabase.
 - For all follow-up actions, `agent.py` calls `get_thread_info()` first and
@@ -186,10 +190,15 @@ Follow-up emails must land in the same Gmail thread as the original.
   It also includes contacts in `*_drafted` stages (not just `*_sent`), so
   replies that arrive before the next draft has been reviewed and sent are
   captured. The `classifier_status IS NOT NULL` guard prevents double-classification.
-- `apply_label_to_latest_draft(label_name, gmail_draft_id=None)`: when
-  `gmail_draft_id` is provided and OAuth is available, uses the Gmail API
+- `apply_label_to_latest_draft(label_name, gmail_draft_id=None, message_id=None)`:
+  when `gmail_draft_id` is provided and OAuth is available, uses the Gmail API
   `messages.modify` to add the label (no IMAP COPY, no duplicates). Falls back
-  to IMAP COPY otherwise.
+  to IMAP COPY otherwise — targeting the draft via `HEADER Message-ID` search
+  when `message_id` is passed (both current callers, `agent.py` and
+  `reply_drafter.py`, always pass it), instead of blindly labeling whatever
+  draft has the highest UID in `[Gmail]/Drafts` (a race with any other draft
+  being created — manual or concurrent — could mislabel it). Falls back to the
+  highest-UID draft only when `message_id` is omitted.
 - `generate_email()` in `emailer.py` accepts `original_subject=None`. For
   follow-up actions it returns `"Re: " + original_subject` without calling
   Claude — only first-touch actions call `_generate_subject()`.

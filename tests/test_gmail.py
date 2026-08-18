@@ -219,6 +219,21 @@ def test_apply_label_copies_latest_message(mocker):
     fake_imap.logout.assert_called_once()
 
 
+def test_apply_label_targets_message_id_when_given(mocker):
+    """Regression: when message_id is passed, the fallback must search for
+    that specific draft instead of blindly grabbing the newest UID in the
+    mailbox (which can be an unrelated draft under a race)."""
+    fake_imap = MagicMock()
+    fake_imap.search.return_value = ("OK", [b"7"])
+    fake_imap.create.return_value = ("OK", [b"ok"])
+    mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fake_imap)
+
+    gmail.apply_label_to_latest_draft("Cold Outreach/First Touch", message_id="<abc@gmail.com>")
+
+    fake_imap.search.assert_called_once_with(None, "HEADER", "Message-ID", "<abc@gmail.com>")
+    fake_imap.copy.assert_called_once_with("7", '"Cold Outreach/First Touch"')
+
+
 def test_apply_label_no_messages_skips_copy(mocker):
     fake_imap = MagicMock()
     fake_imap.search.return_value = ("OK", [b""])
