@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 agent.log
 monitor.log
+extract_voice.log
 .DS_Store
 .coverage
 htmlcov/
