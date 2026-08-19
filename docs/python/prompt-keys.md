@@ -31,5 +31,6 @@ Instruction-level keys (sort_orders 11–18) use `get_tier_instruction()`,
 | `reply_response_prompt` | 61 | Reply body template for `reply_drafter.py` |
 | `forbidden_phrases` | 62 | Newline-delimited banned substrings for pre-flight check 6 |
 | `guardrail_company_list` | 63 | Newline-delimited company watchwords for pre-flight check 4 |
+| `voice_dna` | 64 | Writing-style block written by `extract_voice.py`. Optional: absent or blank means no voice block is injected. Injected into first-touch prompts only, and mirrored in `assembleUserMessage.ts`. |
 
 **Locked:** `/api/extract` prompt is hardcoded — bound to `ExtractedContact` JSON schema.

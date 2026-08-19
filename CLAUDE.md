@@ -16,6 +16,8 @@ agent.py
 monitor.py
 emailer.py
 preflight.py
+content_trust.py
+extract_voice.py
 reply_drafter.py
 research.py
 gmail.py
@@ -450,6 +452,45 @@ Checks (all six are separate functions with distinct error messages):
 Pre-flight runs on ALL actions (outreach, follow-up, reply). Critic runs only on Tier 1 first-touch. Pre-flight is the inner gate; critic is the outer gate.
 
 In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("db.log_agent_event")` are required in any test that calls `generate_email()`.
+
+## Untrusted external content
+
+`content_trust.scan(text)` is a pure, I/O-free scanner for prompt-injection
+patterns in externally-sourced text. Two call sites, both **flag-only**:
+`research.py` (curated brief, before caching) and `reply_drafter.py` (inbound
+reply body, before generation). Matches land in `agent_events.metadata.trust_flags`
+and log `[RESEARCH-X]` / `[REPLY-DRAFT-X]`.
+
+**It never blocks a draft and never rewrites the text.** This is deliberate and
+distinct from `preflight.py`, which blocks. Pre-flight guards our *output*;
+content_trust annotates our *input*. A scanner exception degrades to "clean".
+
+Do not move these checks into `preflight.check()` — it receives the generated
+body (the research brief is already consumed by then) and its contract is
+regenerate-then-hard-block, which is the wrong behaviour for this signal.
+
+Patterns are deliberately narrow. Phrases like "forward this to your team" were
+considered and excluded: they are ordinary business copy, and a guardrail that
+cries wolf gets ignored.
+
+## Voice DNA
+
+`extract_voice.py` (manual, **not** in cron) reads recent sent mail via
+`gmail.fetch_recent_sent()`, extracts a `## Writing Style` block with Claude, and
+writes it to the `voice_dna` prompts row via `db.upsert_prompt`. Agent-authored
+mail is excluded via the `X-Cold-Email-Key` header — never train the voice on our
+own output. Degrades to a no-op (leaving any existing row untouched) on too few
+samples, a Claude failure, or empty output.
+
+`voice_dna` is injected as `voice_block` into **first-touch prompts only**
+(`send_first_touch`, `send_applied_intro`, `send_networking_first_touch`),
+threaded through `prepare_email` → `ctx` → `finalize_email` exactly like
+`research_block`. Not applied to subject generation or the critic rubric.
+
+**Mirrored in `contact-manager/src/lib/assembleUserMessage.ts`**
+(`VOICE_INJECTION_FALLBACK` + `FIRST_TOUCH_ACTIONS`). Both sides must change
+together or the Prompt Lab preview silently diverges from production. The em-dash
+ban and `forbidden_phrases` still win over anything Voice DNA observes.
 
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 
