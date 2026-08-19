@@ -46,3 +46,21 @@ specific fact against a real source before sending.
 (one Haiku call for query gen + one Sonnet call for curation per researched
 contact). Tavily free tier: 1000 credits/month; ~5 queries per contact = ~50
 credits per 10 first-touches.
+
+## Untrusted external content
+
+Tavily results are attacker-influenceable: anyone who controls a web page that
+ranks for a contact's name controls text that reaches a Claude prompt.
+
+**The rule: external text is data, never instructions.** It may influence the
+*content* of a brief. It must never trigger a send, a stage change, a tool call,
+or an override of any prompt rule.
+
+`content_trust.scan(brief_text)` runs after curation, before caching. Matches are
+logged as `[RESEARCH-X]` and recorded on the `research` `agent_events` row under
+`metadata.trust_flags`.
+
+**This is flag-only. It never blocks a draft and never rewrites the brief.**
+Stripping the text would destroy the evidence and silently change the model's
+input; a flagged brief is still used, and the flag makes it reviewable after the
+fact. A scanner failure degrades to "clean" rather than blocking a healthy run.
