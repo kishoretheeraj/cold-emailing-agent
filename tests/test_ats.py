@@ -61,3 +61,127 @@ def test_strip_html_collapses_whitespace():
 @pytest.mark.parametrize("value", ["", None, 123, {"a": 1}])
 def test_strip_html_returns_empty_for_non_string(value):
     assert ats._strip_html(value) == ""
+
+
+# ── Provider payload parsing ───────────────────────────────────────────────────
+
+_GREENHOUSE_PAYLOAD = {
+    "jobs": [
+        {
+            "title": "Senior Backend Engineer",
+            "location": {"name": "Remote, US"},
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/1",
+            "content": "&lt;p&gt;Build payments infra &amp;amp; APIs.&lt;/p&gt;",
+        },
+        {
+            "title": "Product Designer",
+            "location": {"name": "New York"},
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/2",
+            "content": "&lt;p&gt;Design things.&lt;/p&gt;",
+        },
+    ]
+}
+
+_ASHBY_PAYLOAD = {
+    "jobs": [
+        {
+            "title": "Backend Engineer",
+            "location": "Remote",
+            "jobUrl": "https://jobs.ashbyhq.com/acme/1",
+            "descriptionPlain": "Plain description text.",
+            "descriptionHtml": "<p>HTML description text.</p>",
+        },
+        {
+            "title": "Data Scientist",
+            "location": "SF",
+            "jobUrl": "https://jobs.ashbyhq.com/acme/2",
+            "descriptionHtml": "<p>Only HTML here.</p>",
+        },
+    ]
+}
+
+_LEVER_PAYLOAD = [
+    {
+        "text": "Backend Engineer",
+        "categories": {"location": "Remote", "team": "Platform"},
+        "hostedUrl": "https://jobs.lever.co/acme/1",
+        "descriptionPlain": "Lever plain text.",
+    },
+    {
+        "text": "Recruiter",
+        "categories": {"location": "NYC"},
+        "hostedUrl": "https://jobs.lever.co/acme/2",
+        "description": "<p>Lever html only.</p>",
+    },
+]
+
+
+def test_parse_greenhouse_normalizes_shape():
+    jobs = ats._parse_greenhouse(_GREENHOUSE_PAYLOAD)
+    assert jobs[0] == {
+        "title": "Senior Backend Engineer",
+        "location": "Remote, US",
+        "url": "https://boards.greenhouse.io/acme/jobs/1",
+        "description": "Build payments infra & APIs.",
+        "source": "greenhouse",
+    }
+    assert len(jobs) == 2
+
+
+def test_parse_ashby_prefers_plain_description():
+    jobs = ats._parse_ashby(_ASHBY_PAYLOAD)
+    assert jobs[0]["description"] == "Plain description text."
+    assert jobs[0]["source"] == "ashby"
+    assert jobs[0]["url"] == "https://jobs.ashbyhq.com/acme/1"
+
+
+def test_parse_ashby_falls_back_to_html_description():
+    jobs = ats._parse_ashby(_ASHBY_PAYLOAD)
+    assert jobs[1]["description"] == "Only HTML here."
+
+
+def test_parse_lever_reads_top_level_list():
+    jobs = ats._parse_lever(_LEVER_PAYLOAD)
+    assert jobs[0]["title"] == "Backend Engineer"
+    assert jobs[0]["location"] == "Remote"
+    assert jobs[0]["url"] == "https://jobs.lever.co/acme/1"
+    assert jobs[0]["description"] == "Lever plain text."
+    assert jobs[0]["source"] == "lever"
+
+
+def test_parse_lever_falls_back_to_html_description():
+    assert ats._parse_lever(_LEVER_PAYLOAD)[1]["description"] == "Lever html only."
+
+
+@pytest.mark.parametrize("parser", [
+    ats._parse_greenhouse, ats._parse_ashby, ats._parse_lever,
+])
+@pytest.mark.parametrize("payload", [
+    None, {}, [], "not a payload", 42, {"jobs": None}, {"jobs": "nope"},
+    {"jobs": [None, "string", 7]}, [None, "string"],
+])
+def test_parsers_tolerate_garbage_payloads(parser, payload):
+    assert parser(payload) == []
+
+
+@pytest.mark.parametrize("parser,payload", [
+    (ats._parse_greenhouse, {"jobs": [{"title": "Engineer"}]}),
+    (ats._parse_ashby, {"jobs": [{"title": "Engineer"}]}),
+    (ats._parse_lever, [{"text": "Engineer"}]),
+])
+def test_parsers_tolerate_missing_keys(parser, payload):
+    job = parser(payload)[0]
+    assert job["title"] == "Engineer"
+    assert job["location"] == ""
+    assert job["url"] == ""
+    assert job["description"] == ""
+
+
+def test_parsers_drop_entries_without_a_title():
+    assert ats._parse_greenhouse({"jobs": [{"location": {"name": "NY"}}]}) == []
+
+
+def test_description_is_truncated(mocker):
+    mocker.patch.object(config, "ATS_MAX_DESCRIPTION_CHARS", 10)
+    payload = {"jobs": [{"title": "Engineer", "content": "x" * 500}]}
+    assert ats._parse_greenhouse(payload)[0]["description"] == "x" * 10

@@ -64,3 +64,81 @@ def _strip_html(text):
         return ""
     without_tags = _TAG_RE.sub(" ", html.unescape(text))
     return _WS_RE.sub(" ", html.unescape(without_tags)).strip()
+
+
+# ── Provider payload parsing ───────────────────────────────────────────────────
+
+def _job(title, location, url, description, source):
+    title = title.strip() if isinstance(title, str) else ""
+    if not title:
+        return None
+    return {
+        "title": title,
+        "location": location.strip() if isinstance(location, str) else "",
+        "url": url.strip() if isinstance(url, str) else "",
+        "description": (description or "")[:config.ATS_MAX_DESCRIPTION_CHARS],
+        "source": source,
+    }
+
+
+def _entries(payload, key):
+    if key is None:
+        items = payload
+    else:
+        items = payload.get(key) if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _parse_greenhouse(payload):
+    jobs = []
+    for item in _entries(payload, "jobs"):
+        location = item.get("location")
+        job = _job(
+            item.get("title"),
+            location.get("name") if isinstance(location, dict) else location,
+            item.get("absolute_url"),
+            _strip_html(item.get("content")),
+            "greenhouse",
+        )
+        if job:
+            jobs.append(job)
+    return jobs
+
+
+def _parse_ashby(payload):
+    jobs = []
+    for item in _entries(payload, "jobs"):
+        description = item.get("descriptionPlain")
+        if not isinstance(description, str) or not description.strip():
+            description = _strip_html(item.get("descriptionHtml"))
+        job = _job(
+            item.get("title"),
+            item.get("location"),
+            item.get("jobUrl"),
+            _WS_RE.sub(" ", description).strip() if description else "",
+            "ashby",
+        )
+        if job:
+            jobs.append(job)
+    return jobs
+
+
+def _parse_lever(payload):
+    jobs = []
+    for item in _entries(payload, None):
+        categories = item.get("categories")
+        description = item.get("descriptionPlain")
+        if not isinstance(description, str) or not description.strip():
+            description = _strip_html(item.get("description"))
+        job = _job(
+            item.get("text"),
+            categories.get("location") if isinstance(categories, dict) else None,
+            item.get("hostedUrl"),
+            _WS_RE.sub(" ", description).strip() if description else "",
+            "lever",
+        )
+        if job:
+            jobs.append(job)
+    return jobs
