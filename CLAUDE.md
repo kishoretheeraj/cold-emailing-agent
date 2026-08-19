@@ -28,6 +28,7 @@ notify_failure.py
 entity_resolution.py
 ingest_oflc_lca.py
 ingest_uscis_datahub.py
+ingest_form_d.py
 visa_matching.py
 visa_match_new.py
 supabase/migrations/
@@ -264,6 +265,30 @@ fuse `"Amazon.com"` into `"amazoncom"`, permanently unreachable from the
 Full schema, entity-resolution calibration notes, and ingestion details:
 see docs/python/db-schema.md.
 
+## Form D funding signal (sub-project 4, INERT — not yet wired)
+
+`ingest_form_d.py` turns SEC Form D exempt-offering filings into a
+"recently raised" signal on `company_intel`. Same decision-support posture as the
+H-1B gate: never an auto-reject, never a targeting change.
+
+**Currently inert on purpose.** The migration
+(`20260819050000_add_funding_signal_to_company_intel.sql`) is written but **not
+applied**, and there is **no workflow step**. Order of operations when enabling:
+apply migration → run matcher → add the workflow step. Never the reverse — the
+test suite mocks Supabase, so it cannot catch a missing column.
+
+**Governance invariant (same as the visa gate)**: no Form D match degrades to
+`unknown`/NULL, never to "did not raise". Absence is not-observed, not a negative.
+
+Two things that will silently break it if changed carelessly:
+- **Link discovery matches the FILENAME only.** The SEC path prefix differs
+  between quarters. Hardcoding a prefix is exactly how DOL LCA discovery broke.
+- **Pooled-fund exclusion needs both signals** (`ISPOOLEDINVESTMENTFUNDTYPE` and
+  `INDUSTRYGROUPTYPE`). The boolean alone misses hundreds of fund filings per
+  quarter.
+
+Verified source facts, sample output, and known limitations: docs/python/db-schema.md.
+
 See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Supabase retry, prompt validation, batch fallback).
 
 ## Supabase patterns
@@ -393,6 +418,7 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_visa_intel_db.py` — `db.py`'s `employer_h1b_stats`/`company_intel` accessors, following `test_db_draft_history.py`'s mock pattern.
 - `tests/test_visa_matching.py` — `visa_matching.resolve_company()`, including the confirmed/rejected-row-is-never-reclassified governance tests.
 - `tests/test_visa_match_new.py` — parametrized never-raises sweep for the daily matcher, plus per-company failure isolation.
+- `tests/test_ingest_form_d.py` — Form D date/amount parsing, the `YES`/`NO` primary-issuer flag, both pooled-fund exclusion signals, latest-filing-wins aggregation, link discovery across both observed SEC path prefixes, and a malformed-quarter never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
 

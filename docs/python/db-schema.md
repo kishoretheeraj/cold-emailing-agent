@@ -187,3 +187,40 @@ starve entity resolution of most of the real corpus; don't revert to it.
 - `REPLY_RESPONSE_MODEL = "claude-sonnet-4-6"` — Sonnet for reply body generation
 - `REPLY_CLASSIFICATION_DEFAULT` — fallback classification prompt
 - `REPLY_RESPONSE_DEFAULT` — fallback reply response template
+
+## Form D funding signal (added 2026-08-19, migration NOT yet applied)
+
+`company_intel` gains four nullable columns via
+`20260819050000_add_funding_signal_to_company_intel.sql`:
+`last_funding_date DATE`, `last_funding_amount BIGINT`,
+`last_funding_source TEXT` (currently always `'sec_form_d'`), and
+`last_funding_checked_at TIMESTAMPTZ`. Plus a partial index on
+`last_funding_date DESC WHERE last_funding_date IS NOT NULL`.
+
+**This migration is written but deliberately not applied, and `ingest_form_d.py`
+is not wired into any workflow.** Apply the migration first, then run the
+matcher, then add the workflow step. Shipping the scheduled step first would
+fail against the real schema, and the mocked test suite would not catch it.
+
+**Governance — identical to the H-1B column**: NULL means *not observed*, never
+"did not raise". A company may raise through a route that does not file Form D,
+or file under a legal entity name that differs from `contacts.company`. The UI
+must never render NULL as a negative claim.
+
+**Source facts, verified against the real 2025Q4 dataset** (re-verify if
+ingestion coverage looks thin — SEC publishes no manifest):
+- The index page's ZIP path prefix **drifts between quarters**
+  (`/files/datastandardsinnovation/` for the newest, `/files/structureddata/`
+  for older). `ingest_form_d` matches on the FILENAME only. Never hardcode a
+  prefix — this is the failure mode that broke DOL LCA discovery (`611723b`).
+- Three TSVs join on `ACCESSIONNUMBER`: `FORMDSUBMISSION`, `ISSUERS`, `OFFERING`.
+- `IS_PRIMARYISSUER_FLAG` is `YES`/`NO`, **not** `Y`/`N`.
+- `FILING_DATE` is `DD-MON-YYYY` (`31-DEC-2025`), not ISO.
+- Pooled investment funds are 65% of filings and must be excluded by **two**
+  signals: `ISPOOLEDINVESTMENTFUNDTYPE == "true"` *and*
+  `INDUSTRYGROUPTYPE == "Pooled Investment Fund"`. In 2025Q4, 222 rows set only
+  the latter.
+- **Known limitation**: some VC funds (e.g. "SpringTime Ventures Fund III LP")
+  set neither signal and leak through. Deliberately not over-filtered — tighter
+  heuristics risk excluding real operating companies, and a fund only ever
+  surfaces if a contact actually works there.
