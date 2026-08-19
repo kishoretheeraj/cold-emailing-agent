@@ -421,3 +421,73 @@ def find_sent_for_thread(message_id, since_date, mode):
         return None
     finally:
         imap.logout()
+
+
+# ── Recent sent mail (voice extraction) ────────────────────────────────────────
+
+def fetch_recent_sent(limit=40, since_date=None):
+    """
+    Return up to `limit` recent sent-mail bodies, newest first, excluding
+    drafts this agent authored (identified by the X-Cold-Email-Key header).
+    Best-effort: returns [] on any IMAP failure. Never raises.
+    """
+    import email as email_mod
+
+    criteria = ["ALL"]
+    if since_date is not None:
+        criteria = ["SINCE", since_date.strftime("%d-%b-%Y")]
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL("imap.gmail.com")
+        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        imap.select('"[Gmail]/Sent Mail"', readonly=True)
+        status, data = imap.search(None, *criteria)
+        if status != "OK" or not data or not data[0]:
+            log.info("[VOICE] | fetch_recent_sent | found=0")
+            return []
+
+        nums = data[0].split()
+        bodies = []
+        # IMAP sequence order is oldest-first; walk backwards for newest-first.
+        for num in reversed(nums):
+            if len(bodies) >= limit:
+                break
+            status2, msg_data = imap.fetch(num, "(RFC822)")
+            if status2 != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw = msg_data[0][1]
+            if not isinstance(raw, bytes):
+                continue
+            msg = email_mod.message_from_bytes(raw)
+            if msg.get("X-Cold-Email-Key"):
+                continue  # agent-authored -- never train voice on our own output
+            body = _plain_text_from_message(msg)
+            if body:
+                bodies.append(body)
+
+        log.info(f"[VOICE] | fetch_recent_sent | found={len(bodies)}")
+        return bodies
+    except Exception as exc:
+        log.warning(f"[VOICE] | fetch_recent_sent | IMAP error: {exc}")
+        return []
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
+def _plain_text_from_message(msg):
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    return payload.decode(errors="replace").strip()
+        return ""
+    payload = msg.get_payload(decode=True)
+    if payload:
+        return payload.decode(errors="replace").strip()
+    return ""
