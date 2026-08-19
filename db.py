@@ -157,6 +157,18 @@ def load_prompts():
     result = _retry(lambda: get_client().table("prompts").select("key, value").execute())
     return {r["key"]: r["value"] for r in (result.data or [])}
 
+def upsert_prompt(key, value):
+    """Upsert a single prompts row. Best-effort: logs and returns False on error."""
+    from datetime import datetime, timezone
+    row = {"key": key, "value": value,
+           "updated_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        _retry(lambda: get_client().table("prompts").upsert(row, on_conflict="key").execute())
+        return True
+    except Exception as exc:
+        log.warning(f"upsert_prompt failed | key={key} | {exc}")
+        return False
+
 def get_pause_scope():
     """Return the current pause_scope: 'none', 'agent', or 'all'. Defaults to 'none' on any error."""
     try:
