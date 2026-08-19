@@ -10,8 +10,11 @@ library, so a Supabase or Anthropic outage can never reach this module.
 """
 
 import html
+import json
 import logging
 import re
+import urllib.error
+import urllib.request
 
 import config
 
@@ -142,3 +145,114 @@ def _parse_lever(payload):
         if job:
             jobs.append(job)
     return jobs
+
+
+# ── Provider cascade ───────────────────────────────────────────────────────────
+
+# Order matters and the first non-empty result wins. A company lives on exactly
+# one ATS, so querying the rest after a hit is wasted latency inside a
+# per-contact loop.
+_PROVIDERS = (
+    ("greenhouse",
+     "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true",
+     _parse_greenhouse),
+    ("ashby",
+     "https://api.ashbyhq.com/posting-api/job-board/{slug}",
+     _parse_ashby),
+    ("lever",
+     "https://api.lever.co/v0/postings/{slug}?mode=json",
+     _parse_lever),
+)
+
+
+def _http_get_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=config.ATS_TIMEOUT_SECONDS) as resp:
+        raw = resp.read()
+    return json.loads(raw.decode("utf-8", errors="replace"))
+
+
+def _try_provider(source, template, parser, slug):
+    url = template.format(slug=slug)
+    try:
+        payload = _http_get_json(url)
+    except urllib.error.HTTPError as exc:
+        # 404 is the documented clean miss for all three providers, not an error.
+        if getattr(exc, "code", None) != 404:
+            log.warning(f"[RESEARCH-A] | {slug} | {source} | http error: {exc}")
+        return []
+    except Exception as exc:
+        log.warning(f"[RESEARCH-A] | {slug} | {source} | fetch failed: {exc}")
+        return []
+
+    try:
+        return parser(payload)
+    except Exception as exc:
+        log.warning(f"[RESEARCH-A] | {slug} | {source} | parse failed: {exc}")
+        return []
+
+
+# ── Relevance ranking ──────────────────────────────────────────────────────────
+
+# Seniority and generic title words carry no signal about function, which is the
+# only thing being matched here.
+_TITLE_STOPWORDS = frozenset({
+    "a", "an", "and", "at", "for", "in", "of", "on", "the", "to", "with",
+    "senior", "sr", "junior", "jr", "staff", "lead", "principal", "head",
+    "vp", "svp", "evp", "director", "manager", "chief", "associate", "intern",
+    "i", "ii", "iii", "iv", "level", "remote",
+})
+
+
+def _tokens(text):
+    if not text or not isinstance(text, str):
+        return set()
+    words = re.split(r"[^a-z0-9]+", text.lower())
+    return {w for w in words if w and w not in _TITLE_STOPWORDS}
+
+
+def _rank_jobs(jobs, role):
+    role_tokens = _tokens(role)
+    if not role_tokens:
+        return jobs[:config.ATS_MAX_JOBS]
+    ordered = sorted(
+        enumerate(jobs),
+        key=lambda pair: (-len(role_tokens & _tokens(pair[1].get("title"))), pair[0]),
+    )
+    return [job for _, job in ordered][:config.ATS_MAX_JOBS]
+
+
+# ── Public entry point ─────────────────────────────────────────────────────────
+
+def fetch_jobs(company, role=None):
+    """
+    Return up to ATS_MAX_JOBS active job postings for `company`, ranked by
+    relevance to `role`, from the first public ATS that recognises the company.
+
+    Returns [] when the company is not on a supported ATS, when ATS_ENABLED is
+    off, or on any failure. Never raises -- enrichment must never cost a draft.
+    """
+    try:
+        if not config.ATS_ENABLED:
+            return []
+
+        candidates = _slug_candidates(company)
+        if not candidates:
+            return []
+
+        for source, template, parser in _PROVIDERS:
+            for slug in candidates:
+                jobs = _try_provider(source, template, parser, slug)
+                if jobs:
+                    ranked = _rank_jobs(jobs, role)
+                    log.info(
+                        f"[RESEARCH-A] | {company} | source={source} | "
+                        f"slug={slug} | found={len(jobs)} | kept={len(ranked)}"
+                    )
+                    return ranked
+
+        log.info(f"[RESEARCH-A] | {company} | no_ats_match | candidates={len(candidates)}")
+        return []
+    except Exception as exc:
+        log.warning(f"[RESEARCH-A] | {company} | unexpected error: {exc}")
+        return []
