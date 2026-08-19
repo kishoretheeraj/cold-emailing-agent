@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 
 import config
+import content_trust
 import db
 from emailer import _call_claude
 
@@ -291,6 +292,17 @@ def get_research_brief(contact, sender_profile, prompts):
         brief_text = _curate_brief(contact, raw_results, prompts)
         brief_reliable = bool(brief_text)
 
+        # Untrusted-content guardrail: flag only, never block. See CLAUDE.md.
+        try:
+            trust_flags = content_trust.scan(brief_text)
+        except Exception:
+            trust_flags = []
+        if trust_flags:
+            log.warning(
+                f"[RESEARCH-X] | {name} | {company} | "
+                f"untrusted content flagged: {trust_flags}"
+            )
+
         db.set_research_cache(
             key, name, company,
             brief_text,
@@ -317,6 +329,7 @@ def get_research_brief(contact, sender_profile, prompts):
                 "tavily_results": len(raw_results),
                 "brief_reliable": brief_reliable,
                 "brief_length": len(brief_text),
+                **({"trust_flags": trust_flags} if trust_flags else {}),
             },
         )
 

@@ -13,6 +13,7 @@ from config import (
 from db import log_agent_event, update_contact, insert_email_message, log_drafted_email
 from emailer import _call_claude, _normalize_body
 from gmail import create_draft, apply_label_to_latest_draft
+import content_trust
 import preflight
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,17 @@ def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
     if contact.get("stage") in ("reply_drafted", "reply_sent"):
         log.info(f"[REPLY-DRAFT] | {name} | {company} | skip: already in {contact.get('stage')}")
         return
+
+    # Untrusted-content guardrail: flag only, never block. See CLAUDE.md.
+    try:
+        trust_flags = content_trust.scan(reply_body_text)
+    except Exception:
+        trust_flags = []
+    if trust_flags:
+        log.warning(
+            f"[REPLY-DRAFT-X] | {name} | {company} | "
+            f"untrusted content flagged: {trust_flags}"
+        )
 
     try:
         body = _normalize_body(_generate_reply_body(contact, reply_body_text, prompts))
@@ -151,7 +163,9 @@ def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
 
         update_contact(contact_id, "reply_drafted", clear_followup_date=True)
 
-        log_agent_event("draft_reply", contact_id=contact_id, contact_name=name, status="success")
+        log_agent_event("draft_reply", contact_id=contact_id, contact_name=name,
+                        status="success",
+                        metadata={"trust_flags": trust_flags} if trust_flags else None)
         log.info(f"[REPLY-DRAFT] | {name} | {company} | DRAFTED | classifier_status={classifier_status}")
 
     except Exception as exc:
