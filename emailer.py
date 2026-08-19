@@ -26,6 +26,19 @@ _credit_exhausted = False  # set on first 400 credit error; makes all further ca
 # ── Action → template name mapping ────────────────────────────────────────────
 _FIRST_TOUCH_ACTIONS = {"send_first_touch", "send_applied_intro", "send_networking_first_touch"}
 
+# Voice DNA injection. Mirrored in contact-manager/src/lib/assembleUserMessage.ts
+# (VOICE_INJECTION_FALLBACK) — keep both copies byte-identical or the Prompt Lab
+# preview silently diverges from what the agent actually sends.
+VOICE_INJECTION_DEFAULT = """
+
+VOICE MATCH
+Write in the sender's own voice, described below. Match the rhythm and habits.
+Do not imitate any specific sentence. All other formatting and content rules
+above still apply and take precedence over this section.
+
+{voice_dna}
+"""
+
 ACTION_TO_TEMPLATE = {
     "send_first_touch":            "cold_intro",
     "send_followup1":              "follow_up_1",
@@ -184,6 +197,18 @@ def prepare_email(contact, action, prompts=None):
             )
             research_block = ""
 
+    voice_block = ""
+    voice_dna = (_prompts.get("voice_dna") or "").strip()
+    if is_first_touch and voice_dna:
+        try:
+            voice_block = VOICE_INJECTION_DEFAULT.format(voice_dna=voice_dna)
+        except Exception as exc:
+            log.warning(
+                f"[VOICE] | {contact.get('name')} | {contact.get('company')} | "
+                f"injection template format failed: {exc}"
+            )
+            voice_block = ""
+
     mode_tag = _MODE_TAGS.get(contact.get("mode", "outreach"), "[OUTREACH]")
     log.info(
         f"{mode_tag} | {contact.get('name')} | "
@@ -196,26 +221,30 @@ def prepare_email(contact, action, prompts=None):
     if action in ("send_first_touch", "send_followup1",
                   "send_followup2", "send_breakup"):
         user_prompt = _build_outreach_prompt(contact, action, dart_instr, _prompts,
-                                             research_block=research_block)
+                                             research_block=research_block,
+                                             voice_block=voice_block)
     elif action == "send_applied_intro":
         user_prompt = _build_applied_intro_prompt(contact, dart_instr, _prompts,
-                                                  research_block=research_block)
+                                                  research_block=research_block,
+                                                  voice_block=voice_block)
     elif action == "send_applied_followup":
         user_prompt = _build_applied_followup_prompt(contact, dart_instr, _prompts)
     elif action == "send_networking_first_touch":
         user_prompt = _build_networking_prompt(contact, dart_instr, _prompts,
-                                                research_block=research_block)
+                                                research_block=research_block,
+                                                voice_block=voice_block)
     elif action == "send_networking_followup":
         user_prompt = _build_networking_followup_prompt(contact, dart_instr, _prompts)
     else:
         raise ValueError(f"Unknown action: {action}")
 
-    ctx = {"dart_instr": dart_instr, "research_block": research_block}
+    ctx = {"dart_instr": dart_instr, "research_block": research_block,
+           "voice_block": voice_block}
     return user_prompt, profile, ctx
 
 
 def finalize_email(contact, action, body, original_subject=None, prompts=None,
-                   dart_instr="", research_block=""):
+                   dart_instr="", research_block="", voice_block=""):
     """
     Complete email generation from a pre-computed body.
     Runs pre-flight, generates subject, runs critic for Tier 1 first-touch.
@@ -239,15 +268,18 @@ def finalize_email(contact, action, body, original_subject=None, prompts=None,
                           "send_followup2", "send_breakup"):
                 body = _normalize_body(_generate_outreach(
                     contact, action, dart_instr, _prompts,
-                    extra_instruction=_pf_extra, research_block=research_block))
+                    extra_instruction=_pf_extra, research_block=research_block,
+                                       voice_block=voice_block))
             elif action == "send_applied_intro":
                 body = _normalize_body(_generate_applied_intro(
                     contact, dart_instr, _prompts,
-                    extra_instruction=_pf_extra, research_block=research_block))
+                    extra_instruction=_pf_extra, research_block=research_block,
+                                       voice_block=voice_block))
             elif action == "send_networking_first_touch":
                 body = _normalize_body(_generate_networking(
                     contact, dart_instr, _prompts,
-                    extra_instruction=_pf_extra, research_block=research_block))
+                    extra_instruction=_pf_extra, research_block=research_block,
+                                       voice_block=voice_block))
             elif action == "send_networking_followup":
                 body = _normalize_body(_generate_networking_followup(
                     contact, dart_instr, _prompts, extra_instruction=_pf_extra))
@@ -291,19 +323,22 @@ def finalize_email(contact, action, body, original_subject=None, prompts=None,
                 new_body = _normalize_body(
                     _generate_outreach(contact, action, dart_instr, _prompts,
                                        extra_instruction=feedback,
-                                       research_block=research_block)
+                                       research_block=research_block,
+                                       voice_block=voice_block)
                 )
             elif action == "send_networking_first_touch":
                 new_body = _normalize_body(
                     _generate_networking(contact, dart_instr, _prompts,
                                          extra_instruction=feedback,
-                                         research_block=research_block)
+                                         research_block=research_block,
+                                       voice_block=voice_block)
                 )
             else:
                 new_body = _normalize_body(
                     _generate_applied_intro(contact, dart_instr, _prompts,
                                             extra_instruction=feedback,
-                                            research_block=research_block)
+                                            research_block=research_block,
+                                       voice_block=voice_block)
                 )
             new_subject = _generate_subject(contact, mode, new_body, _prompts)
             return new_subject, new_body
@@ -328,7 +363,7 @@ def generate_email(contact, action, original_subject=None, prompts=None):
     body = _call_claude(user_prompt, system=system)
     return finalize_email(contact, action, body, original_subject, prompts, **ctx)
 
-def _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction=None, research_block=""):
+def _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
     template = ACTION_TO_TEMPLATE[action]
     tier = str(contact.get("tier", 2))
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -347,15 +382,17 @@ def _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instructi
     )
     if research_block:
         prompt += research_block
+    if voice_block:
+        prompt += voice_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return prompt
 
-def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None, research_block=""):
-    prompt = _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction, research_block)
+def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
+    prompt = _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction, research_block, voice_block)
     return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
 
-def _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
+def _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
     applied = contact.get("applied_date") or str(date.today())
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("applied_intro_prompt", APPLIED_INTRO_PROMPT)
@@ -371,12 +408,14 @@ def _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction=
     )
     if research_block:
         prompt += research_block
+    if voice_block:
+        prompt += voice_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return prompt
 
-def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
-    prompt = _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction, research_block)
+def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
+    prompt = _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction, research_block, voice_block)
     return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
 
 def _build_applied_followup_prompt(contact, dart_instr, prompts, extra_instruction=None):
@@ -407,7 +446,7 @@ def _connection_context_instruction(contact):
         "honest, low-pressure reason for reaching out instead."
     )
 
-def _build_networking_prompt(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
+def _build_networking_prompt(contact, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("networking_prompt", NETWORKING_PROMPT)
     prompt = tpl.format(
@@ -419,12 +458,14 @@ def _build_networking_prompt(contact, dart_instr, prompts, extra_instruction=Non
     )
     if research_block:
         prompt += research_block
+    if voice_block:
+        prompt += voice_block
     if extra_instruction is not None:
         prompt += f"\nREVISION INSTRUCTION:\n{extra_instruction}"
     return prompt
 
-def _generate_networking(contact, dart_instr, prompts, extra_instruction=None, research_block=""):
-    prompt = _build_networking_prompt(contact, dart_instr, prompts, extra_instruction, research_block)
+def _generate_networking(contact, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
+    prompt = _build_networking_prompt(contact, dart_instr, prompts, extra_instruction, research_block, voice_block)
     return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
 
 def _build_networking_followup_prompt(contact, dart_instr, prompts, extra_instruction=None):
