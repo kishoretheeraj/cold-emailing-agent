@@ -18,6 +18,11 @@
   from the found sent email (not the stored one — Gmail may rewrite it on send), or
   `None` if not found. Never raises. The `message_id` search arg is double-quoted in
   the IMAP command because angle brackets are IMAP special characters.
+- **Every `HEADER Message-ID` IMAP search must double-quote the value** — this
+  bit `apply_label_to_latest_draft`'s `message_id`-targeted fallback once
+  (shipped unquoted, silently found nothing, and fell through to a no-op
+  instead of labeling the draft). `X-Cold-Email-Key` searches don't need
+  quoting since that value is a plain hex string with no IMAP special chars.
 - **`_fetch_body_text` uses `RFC822` + MIME walk, not `BODY[TEXT]`.** `BODY[TEXT]` on
   multipart/mixed emails (Outlook, Exchange) returns the raw MIME structure rather than
   a decoded tuple, silently producing `b""`. The function fetches the full RFC822 message,

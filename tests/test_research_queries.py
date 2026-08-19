@@ -51,6 +51,15 @@ def test_drops_empty_strings(mocker):
     assert result == ["valid query", "another query"]
 
 
+def test_returns_empty_list_on_stray_brace_format_error(mocker):
+    """Regression: a stray '{}' in a live-edited prompt raises IndexError
+    (not KeyError) during .format() -- must still degrade to [] rather than
+    propagate past the intended 'log + return empty' path."""
+    bad_prompts = {"research_query_prompt": "{name} at {company}: {}"}
+    result = research._generate_queries(_CONTACT, _SENDER, bad_prompts)
+    assert result == []
+
+
 def test_returns_empty_list_on_call_claude_raise(mocker):
     mocker.patch.object(research, "_call_claude", side_effect=Exception("API error"))
     result = research._generate_queries(_CONTACT, _SENDER, {})

@@ -42,6 +42,15 @@ def test_normalize_strips_compound_suffix():
     assert er.normalize("Foo Bar Corp Inc") == "foo bar"
 
 
+def test_normalize_period_does_not_fuse_adjacent_tokens():
+    """Regression: punctuation must be replaced with a space, not deleted --
+    "Amazon.com Services LLC" must normalize to "amazon com services" (with
+    a space) to match the "amazon" KNOWN_ALIAS_GROUPS entry, not fuse into
+    the unreachable "amazoncom services"."""
+    assert er.normalize("Amazon.com Services, LLC") == "amazon com services"
+    assert er.canonicalize_alias_group(er.normalize("Amazon.com Services, LLC")) == "amazon"
+
+
 # ── resolve() / classify() ──────────────────────────────────────────────────────
 
 def test_resolve_empty_query_or_corpus_returns_no_candidates():

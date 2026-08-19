@@ -115,6 +115,20 @@ def test_run_critic_format_error(mocker, caplog):
     assert any("prompt format error" in r.message for r in caplog.records)
 
 
+def test_run_critic_stray_brace_falls_back_not_raises(mocker, caplog):
+    """Regression: a template with a stray '{}' (e.g. pasted JSON example)
+    raises IndexError, not KeyError, during .format() -- must still fall
+    back to PASS rather than propagate and block draft creation."""
+    bad_tpl = "Subject: {subject}\nBody: {body}\nExample: {}"
+    mocker.patch.object(emailer, "_call_claude", return_value='{"verdict":"PASS"}')
+    with caplog.at_level(logging.WARNING):
+        result = emailer._run_critic(
+            "Hey Jordan", "body text", _contact(), "Sender bio", bad_tpl
+        )
+    assert result == _FALLBACK
+    assert any("prompt format error" in r.message for r in caplog.records)
+
+
 def test_run_critic_contact_context_correct(mocker):
     captured = []
 
