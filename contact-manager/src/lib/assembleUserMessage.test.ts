@@ -387,3 +387,40 @@ describe("assembleCriticMessage", () => {
     expect(userMessage).not.toMatch(/\{body\}/);
   });
 });
+
+describe("voice_dna injection", () => {
+  const voicePrompts = { voice_dna: "## Writing Style\nShort sentences." };
+
+  it.each([
+    "send_first_touch",
+    "send_applied_intro",
+    "send_networking_first_touch",
+  ] as const)("appends the voice block for %s", (action) => {
+    const { userMessage } = assembleUserMessage(makeContact(), action, voicePrompts);
+    expect(userMessage).toContain("Short sentences.");
+    expect(userMessage).toContain("VOICE MATCH");
+  });
+
+  it.each([
+    "send_followup1",
+    "send_followup2",
+    "send_breakup",
+    "send_applied_followup",
+    "send_networking_followup",
+  ] as const)("omits the voice block for %s", (action) => {
+    const { userMessage } = assembleUserMessage(makeContact(), action, voicePrompts);
+    expect(userMessage).not.toContain("Short sentences.");
+  });
+
+  it("omits the voice block when voice_dna is absent", () => {
+    const { userMessage } = assembleUserMessage(makeContact(), "send_first_touch", {});
+    expect(userMessage).not.toContain("VOICE MATCH");
+  });
+
+  it("omits the voice block when voice_dna is blank", () => {
+    const { userMessage } = assembleUserMessage(makeContact(), "send_first_touch", {
+      voice_dna: "   ",
+    });
+    expect(userMessage).not.toContain("VOICE MATCH");
+  });
+});

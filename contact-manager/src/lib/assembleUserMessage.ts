@@ -338,6 +338,34 @@ export function deriveAction(contact: Contact): AgentAction {
   return "send_first_touch"; // covers: new, first_touch_drafted, first_touch_sent, and all others
 }
 
+// ── Voice DNA ──────────────────────────────────────────────────────────────────
+
+// Mirrors emailer.VOICE_INJECTION_DEFAULT. Keep byte-identical to the Python
+// copy or this preview diverges from what the agent actually sends.
+const VOICE_INJECTION_FALLBACK = `
+
+VOICE MATCH
+Write in the sender's own voice, described below. Match the rhythm and habits.
+Do not imitate any specific sentence. All other formatting and content rules
+above still apply and take precedence over this section.
+
+{voice_dna}
+`;
+
+// Mirrors emailer._FIRST_TOUCH_ACTIONS.
+const FIRST_TOUCH_ACTIONS = new Set<AgentAction>([
+  "send_first_touch",
+  "send_applied_intro",
+  "send_networking_first_touch",
+]);
+
+function buildVoiceBlock(action: AgentAction, prompts: Record<string, string>): string {
+  if (!FIRST_TOUCH_ACTIONS.has(action)) return "";
+  const voiceDna = (prompts["voice_dna"] ?? "").trim();
+  if (!voiceDna) return "";
+  return pythonFormat(VOICE_INJECTION_FALLBACK, { voice_dna: voiceDna });
+}
+
 // ── assembleUserMessage ────────────────────────────────────────────────────────
 
 // Mirrors emailer._build_outreach_prompt, _build_applied_intro_prompt,
@@ -352,6 +380,7 @@ export function assembleUserMessage(
   const dart = isDartmouth(contact);
   const dartmouth_instruction = getDartmouthInstruction(prompts, dart);
   const systemMessage = profile;
+  const voiceBlock = buildVoiceBlock(action, prompts);
 
   if (action === "send_applied_followup") {
     const tpl = prompts["applied_followup_prompt"] ?? APPLIED_FOLLOWUP_PROMPT_FALLBACK;
@@ -386,7 +415,7 @@ export function assembleUserMessage(
       connection_context_instruction: getConnectionContextInstruction(contact),
       dartmouth_instruction,
     });
-    return { userMessage, systemMessage };
+    return { userMessage: userMessage + voiceBlock, systemMessage };
   }
 
   if (action === "send_applied_intro") {
@@ -402,7 +431,7 @@ export function assembleUserMessage(
       applied_date: contact.applied_date ?? today,
       dartmouth_instruction,
     });
-    return { userMessage, systemMessage };
+    return { userMessage: userMessage + voiceBlock, systemMessage };
   }
 
   // Outreach actions: send_first_touch, send_followup1, send_followup2, send_breakup
@@ -421,7 +450,7 @@ export function assembleUserMessage(
     template_instruction: getTemplateInstruction(prompts, template),
     dartmouth_instruction,
   });
-  return { userMessage, systemMessage };
+  return { userMessage: userMessage + voiceBlock, systemMessage };
 }
 
 // ── assembleCriticMessage ─────────────────────────────────────────────────────
