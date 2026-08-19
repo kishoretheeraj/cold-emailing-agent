@@ -68,15 +68,23 @@ issuer handles both without double-counting.
 ## Architecture
 
 New module `ingest_form_d.py`, shaped like `ingest_oflc_lca.py`: pure parsing and
-aggregation functions plus a thin `run()` orchestrator, so the logic is testable without
-network access.
+aggregation functions, so the logic is testable without network access.
 
 ```
-discover_form_d_urls()      scrape index page -> [(quarter_label, absolute_url)]
+discover_form_d_urls()      scrape index page -> {quarter_label: absolute_url}
 parse_form_d_quarter(dir)   join 3 TSVs -> filtered issuer/amount/date records
 fold_issuer(acc, record)    accumulate latest-raise-per-normalized-issuer
-build_rows_for_upsert(acc)  -> rows for employer-style upsert
-run(quarters_back=N)        orchestrate; best-effort per quarter
+build_rows_for_upsert(acc)  -> rows ready for upsert
+```
+
+**Shipped in this change: the above only.** Deferred to a follow-up, and required
+before any data reaches Supabase:
+
+```
+download_quarter(url, dest)  fetch + unzip a quarter (cf. ingest_oflc_lca.download_file)
+db.upsert_company_funding()  write build_rows_for_upsert output
+match_funding_to_company()   resolve issuer names onto company_intel rows
+run(quarters_back=N)         orchestrate; best-effort per quarter
 ```
 
 **Filtering (all must pass):** `TESTORLIVE == "LIVE"`, `IS_PRIMARYISSUER_FLAG == "YES"`,
@@ -136,6 +144,6 @@ the run.
 
 ## Rollout
 
-Additive and inert until three things happen, in order: the migration is applied, the
-matcher is run, and the workflow step is added. Until then `ingest_form_d.py` is dead code
-that only its tests exercise. Nothing about the daily agent changes.
+Additive and inert. `ingest_form_d.py` is currently exercised only by its tests: there is
+no downloader, no Supabase writer, no matcher, and no `run()`. Build those first, then
+apply the migration, then add the workflow step. Nothing about the daily agent changes.

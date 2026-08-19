@@ -271,11 +271,18 @@ see docs/python/db-schema.md.
 "recently raised" signal on `company_intel`. Same decision-support posture as the
 H-1B gate: never an auto-reject, never a targeting change.
 
-**Currently inert on purpose.** The migration
-(`20260819050000_add_funding_signal_to_company_intel.sql`) is written but **not
-applied**, and there is **no workflow step**. Order of operations when enabling:
-apply migration → run matcher → add the workflow step. Never the reverse — the
-test suite mocks Supabase, so it cannot catch a missing column.
+**This ships the parsing and aggregation layer ONLY.** Three pieces do not exist
+yet and must be built before any data can land: a **downloader/unzipper** (there is
+no `download_file()` equivalent to `ingest_oflc_lca.py`'s), a **Supabase writer**
+(no `db.py` accessor), and a **matcher** resolving issuer names onto `company_intel`
+(no `visa_match_new.py` equivalent). There is also no `run()` orchestrator and no
+`__main__`.
+
+The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) is written
+but **not applied**, and there is **no workflow step**. Applying the migration alone
+gives you empty columns and no path to fill them. Build order: downloader → writer →
+matcher → apply migration → workflow step. Never add the scheduled step before the
+migration — the suite mocks Supabase, so it cannot catch a missing column.
 
 **Governance invariant (same as the visa gate)**: no Form D match degrades to
 `unknown`/NULL, never to "did not raise". Absence is not-observed, not a negative.

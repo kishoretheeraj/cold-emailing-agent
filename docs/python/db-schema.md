@@ -198,9 +198,12 @@ starve entity resolution of most of the real corpus; don't revert to it.
 `last_funding_date DESC WHERE last_funding_date IS NOT NULL`.
 
 **This migration is written but deliberately not applied, and `ingest_form_d.py`
-is not wired into any workflow.** Apply the migration first, then run the
-matcher, then add the workflow step. Shipping the scheduled step first would
-fail against the real schema, and the mocked test suite would not catch it.
+ships only the parsing/aggregation layer.** Still to be built before data can
+land: a downloader/unzipper, a `db.py` upsert accessor, a matcher onto
+`company_intel`, and a `run()` orchestrator. Applying the migration on its own
+yields empty columns with nothing to fill them. Never add a scheduled workflow
+step before the migration is applied — the mocked suite cannot catch a missing
+column.
 
 **Governance — identical to the H-1B column**: NULL means *not observed*, never
 "did not raise". A company may raise through a route that does not file Form D,

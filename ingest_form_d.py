@@ -10,7 +10,14 @@ Governance (mirrors the H-1B gate): a company with no Form D match is
 have raised through a route that does not file Form D, or under a different
 legal entity name. This module only ever reports an observed raise.
 
-Run manually or from the quarterly workflow. Never imported by agent.py.
+Currently parsing/aggregation only: no downloader, no Supabase writer, no
+matcher, no run(). Never imported by agent.py.
+
+NOTE for whoever adds a __main__/CLI entry point here: this module imports
+entity_resolution at module level with no logging.basicConfig above it. Per the
+logging setup order invariant in CLAUDE.md, basicConfig must be called before any
+project import or agent's root handler wins the race and this script's output
+silently lands in agent.log.
 """
 
 import csv
