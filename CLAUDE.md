@@ -20,6 +20,7 @@ content_trust.py
 extract_voice.py
 reply_drafter.py
 research.py
+ats.py
 gmail.py
 db.py
 config.py
@@ -63,7 +64,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -288,7 +289,7 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
   Profile page; changes take effect the next run.
 - **`research_cache` table**: keyed by `"{name_lower}|{company_lower}"`. Stores
   `brief_text` (may be `""` for no-footprint contacts), `brief_json` (raw Tavily
-  payload), and `cached_at`. TTL is 7 days (`RESEARCH_CACHE_TTL_DAYS`). Caching
+  payload plus `ats_jobs`), and `cached_at`. TTL is 7 days (`RESEARCH_CACHE_TTL_DAYS`). Caching
   empty briefs is intentional — prevents re-querying Tavily for contacts with no
   public footprint every run. `db.get_research_cache` / `db.set_research_cache`
   are the only accessors; both use `db._retry`.
@@ -385,6 +386,8 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_research_tavily.py` — `_run_tavily` and `_run_hardcoded_fallback` unit tests.
 - `tests/test_research_curate.py` — `_curate_brief` unit tests (includes disambiguation guard).
 - `tests/test_research_brief.py` — `get_research_brief` integration tests (cache TTL, pipeline, never-raises parametrize).
+- `tests/test_ats.py` — `ats.py` slug derivation, HTML stripping, provider parsers, cascade order, relevance ranking, and a never-raises sweep. All HTTP mocked at `ats._http_get_json`.
+- `tests/test_research_ats.py` — ATS channel wiring in `research.py`: curation input, `ats_trust_flags` flag-not-block, cache-hit skip, never-raises.
 - `tests/test_emailer_research.py` — research gating (tier/action matrix) and injection behavior in `generate_email`.
 - `tests/test_agent_paused.py` — pause guard: `get_pause_scope` error handling, `agent.run()` early-exit for `scope in ("agent","all")`, `monitor.run()` early-exit for `scope=="all"` only.
 - `tests/test_entity_resolution.py` — `normalize()`/`resolve()`/`classify()`, the single-token auto-band guard, exact-match override, alias consolidation.
@@ -452,6 +455,45 @@ Checks (all six are separate functions with distinct error messages):
 Pre-flight runs on ALL actions (outreach, follow-up, reply). Critic runs only on Tier 1 first-touch. Pre-flight is the inner gate; critic is the outer gate.
 
 In tests: `mocker.patch("preflight.check", return_value=[])` and `mocker.patch("db.log_agent_event")` are required in any test that calls `generate_email()`.
+
+## ATS career-page channel
+
+`ats.py` is a second research channel alongside Tavily: it reads a target
+company's own public ATS job board so the writer knows whether they are hiring
+now in the contact's function. Self-contained by design (stdlib `urllib` only,
+no `db`/`gmail`/`emailer` import, no new dependency, no API key, no secret).
+
+- **`fetch_jobs(company, role=None)` never raises.** Every provider call is
+  wrapped, the cascade is wrapped, and `research._run_ats` wraps it again. Any
+  failure returns `[]`. Same posture as the best-effort labeling rule and the
+  visa gate's `continue-on-error` step: enrichment never costs a draft.
+- **Cascade, not fan-out**: Greenhouse → Ashby → Lever, first non-empty result
+  wins and short-circuits. A company lives on one ATS. `404` is the clean-miss
+  signal and is swallowed silently.
+- **Do not reuse `entity_resolution.normalize()` for slugs.** It replaces
+  punctuation with spaces to keep visa alias groups reachable; a URL slug needs
+  the opposite. `ats._slug_candidates` is separate on purpose, and coupling them
+  would mean a slug tweak silently reshapes visa entity matching.
+- **Scan before curation, not after.** Job-description text is externally
+  controlled, so `content_trust.scan` runs on the rendered postings section in
+  `get_research_brief` *before* it enters the curation prompt. Matches log
+  `[RESEARCH-X]` and land on the `research` `agent_events` row under
+  **`ats_trust_flags`** — a key distinct from `trust_flags`, which is the
+  curated brief's. Merging them would destroy the provenance. Flag-only: the
+  postings are still used.
+- **No new table and no `company_intel` column.** An open req is volatile, so
+  persisting it as a company attribute would create the stale-false-claim
+  problem the visa gate's governance invariant exists to prevent. Postings live
+  in the 7-day `research_cache` blob (`brief_json.ats_jobs`) only.
+- **Truncation**: the 6000-char curation cap applies to the Tavily portion only;
+  the ATS section is appended after it. With no ATS hit the curation input is
+  byte-identical to the pre-channel behaviour.
+- `config.ATS_ENABLED` is the off-switch for this channel alone. `TAVILY_API_KEY`
+  still gates the whole research feature, ATS included.
+
+Tests: `tests/test_ats.py` (module, all HTTP mocked at `ats._http_get_json`),
+`tests/test_research_ats.py` (wiring, flag-not-block, cache, never-raises).
+Details: docs/python/research-pipeline.md.
 
 ## Untrusted external content
 
