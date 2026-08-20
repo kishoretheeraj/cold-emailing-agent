@@ -37,6 +37,16 @@ RESEARCH_QUERY_MODEL = "claude-haiku-4-5-20251001"
 RESEARCH_CURATE_MODEL = "claude-sonnet-4-6"
 RESEARCH_CURATE_MAX_TOKENS = 600
 
+# ── ATS career-page enrichment ─────────────────────────────────────────────────
+
+ATS_ENABLED = True
+ATS_MAX_JOBS = 3
+ATS_MAX_DESCRIPTION_CHARS = 1500
+# Short on purpose. This runs inside a per-contact loop in a cron job, so a hung
+# careers API must never stall a run.
+ATS_TIMEOUT_SECONDS = 8
+ATS_MAX_SLUG_CANDIDATES = 2
+
 # These are fallback defaults. Live prompts (including sender_profile) are stored
 # in the Supabase prompts table and override these at runtime.
 

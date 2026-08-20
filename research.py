@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import ats
 import config
 import content_trust
 import db
@@ -166,17 +167,50 @@ def _run_hardcoded_fallback(contact):
     return results
 
 
-# ── Brief curation ─────────────────────────────────────────────────────────────
+# ── ATS career-page channel ────────────────────────────────────────────────────
 
-def _curate_brief(contact, raw_results, prompts):
+def _run_ats(contact):
     name = contact.get("name") or ""
     company = contact.get("company") or ""
 
-    if not raw_results:
+    if not company:
+        return []
+
+    try:
+        jobs = ats.fetch_jobs(company, role=contact.get("role"))
+    except Exception as exc:
+        log.warning(f"[RESEARCH-A] | {name} | {company} | fetch_jobs error: {exc}")
+        return []
+
+    log.info(f"[RESEARCH-A] | {name} | {company} | jobs={len(jobs)}")
+    return jobs
+
+
+def _format_ats_section(jobs):
+    if not jobs:
         return ""
 
+    parts = ["ACTIVE JOB POSTINGS (from the company's own public careers API):"]
+    for job in jobs:
+        parts.append(
+            f"- {job.get('title') or ''} | {job.get('location') or ''} "
+            f"(source: {job.get('source') or ''})"
+        )
+        description = job.get("description") or ""
+        if description:
+            parts.append(f"  Description: {description}")
+    parts.append("")
+    return "\n".join(parts)
+
+
+# ── Brief curation ─────────────────────────────────────────────────────────────
+
+# The 6000-char cap applies to the Tavily portion only and the ATS section is
+# appended after it. Folding both into one cap would let a long Tavily haul
+# silently delete the hiring signal.
+def _curate_input(raw_results, ats_jobs):
     parts = []
-    for item in raw_results:
+    for item in raw_results or []:
         q = item.get("query", "")
         resp = item.get("result", {})
         answer = resp.get("answer") or "none"
@@ -196,6 +230,21 @@ def _curate_brief(contact, raw_results, prompts):
     formatted = "\n".join(parts)
     if len(formatted) > 6000:
         formatted = formatted[:6000]
+
+    ats_section = _format_ats_section(ats_jobs)
+    if not ats_section:
+        return formatted
+    return f"{formatted}\n{ats_section}" if formatted else ats_section
+
+
+def _curate_brief(contact, raw_results, prompts, ats_jobs=None):
+    name = contact.get("name") or ""
+    company = contact.get("company") or ""
+
+    if not raw_results and not ats_jobs:
+        return ""
+
+    formatted = _curate_input(raw_results, ats_jobs)
 
     tpl = prompts.get("research_curate_prompt", config.RESEARCH_CURATE_DEFAULT)
 
@@ -249,6 +298,7 @@ def get_research_brief(contact, sender_profile, prompts):
     company = contact.get("company") or ""
     queries = []
     raw_results = []
+    ats_jobs = []
 
     try:
         if not config.TAVILY_API_KEY:
@@ -289,7 +339,24 @@ def get_research_brief(contact, sender_profile, prompts):
         if not raw_results:
             raw_results = _run_hardcoded_fallback(contact)
 
-        brief_text = _curate_brief(contact, raw_results, prompts)
+        ats_jobs = _run_ats(contact)
+
+        # Job-description text is written by whoever holds req-editing rights at
+        # the target company, so it is scanned before it reaches the curation
+        # prompt, not after. Flag-only, same as the brief scan below.
+        ats_trust_flags = []
+        if ats_jobs:
+            try:
+                ats_trust_flags = content_trust.scan(_format_ats_section(ats_jobs))
+            except Exception:
+                ats_trust_flags = []
+            if ats_trust_flags:
+                log.warning(
+                    f"[RESEARCH-X] | {name} | {company} | "
+                    f"untrusted ATS content flagged: {ats_trust_flags}"
+                )
+
+        brief_text = _curate_brief(contact, raw_results, prompts, ats_jobs=ats_jobs)
         brief_reliable = bool(brief_text)
 
         # Untrusted-content guardrail: flag only, never block. See CLAUDE.md.
@@ -306,7 +373,7 @@ def get_research_brief(contact, sender_profile, prompts):
         db.set_research_cache(
             key, name, company,
             brief_text,
-            {"raw_results": raw_results, "queries": queries},
+            {"raw_results": raw_results, "queries": queries, "ats_jobs": ats_jobs},
             queries_generated=len(queries),
             brief_reliable=brief_reliable,
         )
@@ -315,7 +382,7 @@ def get_research_brief(contact, sender_profile, prompts):
             f"[RESEARCH] | {name} | {company} | "
             f"path=fresh | "
             f"queries={len(queries)} | results={len(raw_results)} | "
-            f"brief_len={len(brief_text)}"
+            f"ats_jobs={len(ats_jobs)} | brief_len={len(brief_text)}"
         )
 
         db.log_agent_event(
@@ -327,9 +394,11 @@ def get_research_brief(contact, sender_profile, prompts):
                 "cache_hit": False,
                 "queries_generated": len(queries),
                 "tavily_results": len(raw_results),
+                "ats_jobs": len(ats_jobs),
                 "brief_reliable": brief_reliable,
                 "brief_length": len(brief_text),
                 **({"trust_flags": trust_flags} if trust_flags else {}),
+                **({"ats_trust_flags": ats_trust_flags} if ats_trust_flags else {}),
             },
         )
 
