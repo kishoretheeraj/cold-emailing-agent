@@ -189,7 +189,7 @@ starve entity resolution of most of the real corpus; don't revert to it.
 - `REPLY_CLASSIFICATION_DEFAULT` — fallback classification prompt
 - `REPLY_RESPONSE_DEFAULT` — fallback reply response template
 
-## Form D funding signal (added 2026-08-19, migration applied 2026-08-23)
+## Form D funding signal (added 2026-08-19, LIVE since 2026-08-23)
 
 `company_intel` gains four nullable columns via
 `20260819050000_add_funding_signal_to_company_intel.sql`:
@@ -233,7 +233,11 @@ an UPDATE on a pre-existing row, never an INSERT.
 **Live-verified 2026-08-23**, same pattern as Stage 1 ("live-verified, 4 bugs found on
 first real run"): link discovery, `download_quarter`, and `parse_form_d_quarter` all ran
 clean against real SEC data on the first try; the fuzzy-matching false positive above was
-the one real bug found, fixed before any write reached prod.
+the one real bug found, fixed before any write reached prod. The actual verified prod run:
+36 contact companies checked, 1 real match (Shield AI, `$591,806,870` on `2026-05-01`),
+0 errors, `sponsors_h1b`/`match_status` on the matched row confirmed untouched afterward.
+Now wired as the last step of `visa_intel_ingest.yml` (`continue-on-error: true`, after
+the H-1B full re-match) — see GitHub Actions section of CLAUDE.md.
 
 **Governance — identical to the H-1B column**: NULL means *not observed*, never
 "did not raise". A company may raise through a route that does not file Form D,

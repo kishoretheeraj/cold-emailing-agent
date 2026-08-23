@@ -5,6 +5,8 @@ __pycache__/
 agent.log
 monitor.log
 extract_voice.log
+visa_intel_ingest.log
+visa_match.log
 .DS_Store
 .coverage
 htmlcov/

@@ -265,7 +265,7 @@ fuse `"Amazon.com"` into `"amazoncom"`, permanently unreachable from the
 Full schema, entity-resolution calibration notes, and ingestion details:
 see docs/python/db-schema.md.
 
-## Form D funding signal (sub-project 4 — code-complete, pending live verification)
+## Form D funding signal (sub-project 4 — LIVE, wired into visa_intel_ingest.yml)
 
 `ingest_form_d.py` turns SEC Form D exempt-offering filings into a
 "recently raised" signal on `company_intel`. Same decision-support posture as the
@@ -312,13 +312,15 @@ The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) **is ap
 (pushed 2026-08-23 via `supabase db push`, ahead of the writer/matcher since it's purely
 additive — nullable columns, `IF NOT EXISTS`, no backfill, no risk to existing rows).
 
-**Not yet done: a live-verified manual run and the workflow step.** The test suite mocks
-Supabase and the SEC endpoints, so a green suite proves the logic, not that a real
-`python ingest_form_d.py` run against prod lands real rows — Stage 1's H-1B gate found 4
-bugs on its first live run despite a fully green suite (DOL filename parsing, pagination,
-etc. — see docs/python/db-schema.md). Run it manually and eyeball `company_intel` rows
-with `last_funding_date IS NOT NULL` before adding the `visa_intel_ingest.yml` step —
-don't schedule it on faith.
+**Live-verified 2026-08-23** (same "run it manually before scheduling it" pattern as
+Stage 1, which found 4 bugs on its first live run despite a green suite). Link discovery,
+`download_quarter`, and `parse_form_d_quarter` all ran clean against real 2025Q3–2026Q2
+SEC data on the first try. One real bug did surface — see the exact-match-only note
+above — fixed before the run that actually wrote to prod. That verified run: 36 contact
+companies checked, 1 real match (Shield AI, `$591,806,870` on `2026-05-01`), 0 errors;
+`sponsors_h1b`/`match_status` on the matched row were confirmed untouched. Now wired as
+the last step in `visa_intel_ingest.yml`, `continue-on-error: true`, after the H-1B full
+re-match (see GitHub Actions below).
 
 **Governance invariant (same as the visa gate)**: no Form D match degrades to
 `unknown`/NULL, never to "did not raise". Absence is not-observed, not a negative.
@@ -386,12 +388,15 @@ Three workflows live in `.github/workflows/`:
   (EST = UTC-5): every 20 minutes from 8 AM–11:59 PM EST (crns `*/20 13-23 * * *`
   and `*/20 0-4 * * *`), and hourly at :30 from 12:30 AM–7:30 AM EST
   (cron `30 5-12 * * *`).
-- **`visa_intel_ingest.yml`** — quarterly (`0 10 5 1,4,7,10 *`), runs
-  `ingest_oflc_lca.py` → `ingest_uscis_datahub.py` → `python visa_match_new.py --full`
-  (the `--full` flag is required — see Visa & wage intelligence gate above).
-  `timeout-minutes: 120` (vs. 30 for the daily job) — a fresh ingest
-  processes several fiscal years of DOL data. First run should be triggered
-  manually via `workflow_dispatch`.
+- **`visa_intel_ingest.yml`** (named "Visa & Funding Intel Ingestion") — quarterly
+  (`0 10 5 1,4,7,10 *`), runs `ingest_oflc_lca.py` → `ingest_uscis_datahub.py` →
+  `python visa_match_new.py --full` (the `--full` flag is required — see Visa & wage
+  intelligence gate above) → `ingest_form_d.py` (Form D funding signal — runs last,
+  after the H-1B full re-match, since it only writes onto `company_intel` rows that
+  already exist and a fresh quarter's re-match may have just created some). All three
+  steps after the first LCA ingest are `continue-on-error: true`. `timeout-minutes: 120`
+  (vs. 30 for the daily job) — a fresh ingest processes several fiscal years of DOL
+  data. First run should be triggered manually via `workflow_dispatch`.
 
 All three workflows: upload the relevant `.log` file as an artifact (30-day
 retention), and run `notify_failure.py` in an `if: failure()` step.
