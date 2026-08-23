@@ -180,6 +180,7 @@ starve entity resolution of most of the real corpus; don't revert to it.
 - `get_company_intel_by_normalized_names(names)` — raises on failure (used to check confirmed/rejected status before a re-match, so a silent failure would risk overwriting a human decision).
 - `upsert_company_intel(rows)` — best-effort batch upsert on `normalized_name`; never raises.
 - `update_contact_company_intel_id(contact_id, company_intel_id)` — best-effort; never raises.
+- `upsert_company_funding(rows)` — best-effort batch upsert on `normalized_name`, same shape as `upsert_company_intel`; only overwrites the funding columns present in the payload (PostgREST upsert semantics), so it can never touch `sponsors_h1b`/`match_status`. Generic writer — does not resolve issuer names itself, not yet called from anywhere pending the Form D matcher.
 
 ## New config.py constants
 
@@ -199,15 +200,18 @@ starve entity resolution of most of the real corpus; don't revert to it.
 
 **The migration is applied on the remote DB** (pushed via `supabase db push` ahead
 of the writer/matcher — it's purely additive, `IF NOT EXISTS`, no backfill, no risk
-to existing rows). The columns exist but nothing writes to them yet:
-`ingest_form_d.py` ships only the parsing/aggregation/download layer.
+to existing rows). The columns exist but nothing writes to them yet.
+`ingest_form_d.py` ships the parsing/aggregation/download layer:
 `download_quarter(url, dest_dir)` fetches and extracts one quarterly ZIP (cf.
 `ingest_oflc_lca.download_file`), matching archive members by basename so the
-extraction doesn't depend on SEC's internal path layout. Still to be built before
-data can land: a `db.py` upsert accessor, a matcher onto `company_intel`, and a
-`run()` orchestrator. Never add a scheduled workflow step until the writer and
-matcher exist — a step with nothing to run is dead CI time, not a safety issue,
-but also not worth scheduling yet.
+extraction doesn't depend on SEC's internal path layout. `db.upsert_company_funding(rows)`
+is the writer — a generic best-effort upsert accessor, not yet called from anywhere.
+Still to be built before data can land: a matcher resolving Form D issuer names onto
+`company_intel` rows (would produce the rows `upsert_company_funding` expects from
+`ingest_form_d.build_rows_for_upsert()`'s issuer-keyed output), and a `run()`
+orchestrator. Never add a scheduled workflow step until the matcher and `run()`
+exist — a step with nothing to run is dead CI time, not a safety issue, but also
+not worth scheduling yet.
 
 **Governance — identical to the H-1B column**: NULL means *not observed*, never
 "did not raise". A company may raise through a route that does not file Form D,

@@ -271,23 +271,30 @@ see docs/python/db-schema.md.
 "recently raised" signal on `company_intel`. Same decision-support posture as the
 H-1B gate: never an auto-reject, never a targeting change.
 
-**This ships the parsing, aggregation, and download layer ONLY.** `ingest_form_d.download_quarter(url, dest_dir)`
-fetches one quarterly ZIP and extracts its three tables into `dest_dir`, matching each
-archive member on basename only (never `extractall()`, since SEC's internal path prefix
-drifts between quarters the same way the index page's does) — this is the
-`ingest_oflc_lca.py`-`download_file()` equivalent. Two pieces still do not exist and must
-be built before any data can land: a **Supabase writer** (no `db.py` accessor) and a
-**matcher** resolving issuer names onto `company_intel` (no `visa_match_new.py`
-equivalent). There is also no `run()` orchestrator and no `__main__`.
+**This ships the parsing, aggregation, download, and writer layers.**
+`ingest_form_d.download_quarter(url, dest_dir)` fetches one quarterly ZIP and extracts
+its three tables into `dest_dir`, matching each archive member on basename only (never
+`extractall()`, since SEC's internal path prefix drifts between quarters the same way the
+index page's does) — this is the `ingest_oflc_lca.py`-`download_file()` equivalent.
+`db.upsert_company_funding(rows)` batch-upserts `company_intel` on `normalized_name`,
+same shape as `upsert_company_intel`, and only ever writes the four funding columns it's
+handed — PostgREST's upsert only overwrites payload columns, so it can never touch
+`sponsors_h1b`/`match_status`. It's a generic writer: it does not resolve Form D issuer
+names onto `company_intel` rows itself, so it is not yet called from anywhere.
+
+Still missing: a **matcher** resolving issuer names onto `company_intel` (no
+`visa_match_new.py` equivalent — this is what would actually produce
+`upsert_company_funding`-shaped rows from `ingest_form_d.build_rows_for_upsert()`'s
+issuer-keyed output) and a `run()` orchestrator. There is also no `__main__`.
 
 The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) **is applied**
 (pushed 2026-08-23 via `supabase db push`, ahead of the writer/matcher since it's purely
 additive — nullable columns, `IF NOT EXISTS`, no backfill, no risk to existing rows). The
-four `company_intel` columns exist on the remote DB now but nothing writes to them yet.
-There is still **no workflow step** — don't add one until the writer and matcher exist,
-since a scheduled step with nothing to run is just dead CI time, not a safety issue.
-Remaining build order: ~~downloader~~ → ~~apply migration~~ → writer → matcher →
-workflow step.
+four `company_intel` columns exist on the remote DB now but nothing writes to them yet —
+the matcher is what would give the writer real rows to call it with. There is still **no
+workflow step** — don't add one until the matcher and `run()` exist, since a scheduled
+step with nothing to run is just dead CI time, not a safety issue. Remaining build order:
+~~downloader~~ → ~~apply migration~~ → ~~writer~~ → matcher → `run()` → workflow step.
 
 **Governance invariant (same as the visa gate)**: no Form D match degrades to
 `unknown`/NULL, never to "did not raise". Absence is not-observed, not a negative.
