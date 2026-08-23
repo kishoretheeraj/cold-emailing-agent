@@ -124,6 +124,34 @@ def test_upsert_company_intel_never_raises_on_error(mocker):
     assert db.upsert_company_intel([{"normalized_name": "acme"}]) is False
 
 
+# ── upsert_company_funding ────────────────────────────────────────────────────────
+
+def test_upsert_company_funding_calls_upsert_with_payload(fake_client):
+    rows = [{"normalized_name": "databricks inc", "last_funding_date": "2025-12-31",
+             "last_funding_amount": 4082050250, "last_funding_source": "sec_form_d"}]
+    assert db.upsert_company_funding(rows) is True
+    fake_client.table.assert_called_with("company_intel")
+    fake_client.table.return_value.upsert.assert_called_with(rows, on_conflict="normalized_name")
+
+
+def test_upsert_company_funding_empty_rows_is_noop(fake_client):
+    assert db.upsert_company_funding([]) is True
+    fake_client.table.assert_not_called()
+
+
+def test_upsert_company_funding_never_raises_on_error(mocker):
+    mocker.patch.object(db, "get_client", side_effect=RuntimeError("db down"))
+    assert db.upsert_company_funding([{"normalized_name": "acme"}]) is False
+
+
+def test_upsert_company_funding_logs_warning_on_error(mocker, caplog):
+    import logging
+    mocker.patch.object(db, "get_client", side_effect=RuntimeError("db down"))
+    with caplog.at_level(logging.WARNING):
+        db.upsert_company_funding([{"normalized_name": "acme"}])
+    assert any("company_intel" in r.message and "funding" in r.message for r in caplog.records)
+
+
 # ── update_contact_company_intel_id ──────────────────────────────────────────────
 
 def test_update_contact_company_intel_id_calls_update(fake_client):

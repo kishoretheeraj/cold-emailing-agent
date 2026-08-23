@@ -180,6 +180,7 @@ starve entity resolution of most of the real corpus; don't revert to it.
 - `get_company_intel_by_normalized_names(names)` — raises on failure (used to check confirmed/rejected status before a re-match, so a silent failure would risk overwriting a human decision).
 - `upsert_company_intel(rows)` — best-effort batch upsert on `normalized_name`; never raises.
 - `update_contact_company_intel_id(contact_id, company_intel_id)` — best-effort; never raises.
+- `upsert_company_funding(rows)` — best-effort batch upsert on `normalized_name`, same shape as `upsert_company_intel`; only overwrites the funding columns present in the payload (PostgREST upsert semantics), so it can never touch `sponsors_h1b`/`match_status`. Generic writer — does not resolve issuer names itself, not yet called from anywhere pending the Form D matcher.
 
 ## New config.py constants
 
@@ -188,7 +189,7 @@ starve entity resolution of most of the real corpus; don't revert to it.
 - `REPLY_CLASSIFICATION_DEFAULT` — fallback classification prompt
 - `REPLY_RESPONSE_DEFAULT` — fallback reply response template
 
-## Form D funding signal (added 2026-08-19, migration NOT yet applied)
+## Form D funding signal (added 2026-08-19, LIVE since 2026-08-23)
 
 `company_intel` gains four nullable columns via
 `20260819050000_add_funding_signal_to_company_intel.sql`:
@@ -197,13 +198,46 @@ starve entity resolution of most of the real corpus; don't revert to it.
 `last_funding_checked_at TIMESTAMPTZ`. Plus a partial index on
 `last_funding_date DESC WHERE last_funding_date IS NOT NULL`.
 
-**This migration is written but deliberately not applied, and `ingest_form_d.py`
-ships only the parsing/aggregation layer.** Still to be built before data can
-land: a downloader/unzipper, a `db.py` upsert accessor, a matcher onto
-`company_intel`, and a `run()` orchestrator. Applying the migration on its own
-yields empty columns with nothing to fill them. Never add a scheduled workflow
-step before the migration is applied — the mocked suite cannot catch a missing
-column.
+**The migration is applied on the remote DB** (pushed via `supabase db push` ahead
+of the writer/matcher — it's purely additive, `IF NOT EXISTS`, no backfill, no risk
+to existing rows). `ingest_form_d.py` now ships the full pipeline: parsing,
+aggregation, `download_quarter(url, dest_dir)` (fetch + extract one quarterly ZIP,
+matching archive members by basename, cf. `ingest_oflc_lca.download_file`),
+`match_funding_to_company(normalized_company_name, funding_corpus)` (exact
+normalized-name match ONLY, deliberately no fuzzy fallback — see below),
+`db.upsert_company_funding(rows)` (best-effort upsert, only touches payload
+columns), and `run(quarters_back=N)` + `__main__`.
+
+**Matching is exact-match-only, not the H-1B gate's fuzzy `resolve()`/`classify()`.**
+Found live-verifying against real 2025Q3–2026Q2 SEC data before shipping: `"scale ai"`
+fuzzy-auto-matched a corpus entry `"scale social ai"` at score 100 — an unrelated company
+— because `token_set_ratio` scores a token-subset match near 100 regardless of the
+corpus name's extra tokens (a risk `entity_resolution.classify()`'s docstring already
+names). The H-1B gate tolerates that risk because `/visa-review` lets a human reject a
+bad match; funding claims have no review UI, so a bad auto-write there is permanent and
+unreviewable. Exact match (still through `normalize()` + `canonicalize_alias_group()`)
+trades missed variant-name matches — governance-safe, degrades to unknown — for zero
+false positives. `fold_issuer()` now canonicalizes through `canonicalize_alias_group()`
+too, not just `normalize()`: this is load-bearing for exact matching, since an aliased
+issuer name that only normalized would never equal its `company_intel` row's canonical
+key. `last_funding_amount` is `TOTALAMOUNTSOLD` for one Form D offering, not lifetime
+funding raised — don't render it as "total raised."
+
+`run()` only writes onto `company_intel` rows that **already exist** — it fetches
+existing rows via `get_company_intel_by_normalized_names` for every distinct contact
+company and never creates one itself (row creation stays `visa_match_new.py`'s job
+exclusively). `last_funding_checked_at` is written on every existing row it evaluates,
+matched or not, per the migration's own column comment — safe here because it's always
+an UPDATE on a pre-existing row, never an INSERT.
+
+**Live-verified 2026-08-23**, same pattern as Stage 1 ("live-verified, 4 bugs found on
+first real run"): link discovery, `download_quarter`, and `parse_form_d_quarter` all ran
+clean against real SEC data on the first try; the fuzzy-matching false positive above was
+the one real bug found, fixed before any write reached prod. The actual verified prod run:
+36 contact companies checked, 1 real match (Shield AI, `$591,806,870` on `2026-05-01`),
+0 errors, `sponsors_h1b`/`match_status` on the matched row confirmed untouched afterward.
+Now wired as the last step of `visa_intel_ingest.yml` (`continue-on-error: true`, after
+the H-1B full re-match) — see GitHub Actions section of CLAUDE.md.
 
 **Governance — identical to the H-1B column**: NULL means *not observed*, never
 "did not raise". A company may raise through a route that does not file Form D,

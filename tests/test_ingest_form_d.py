@@ -5,6 +5,9 @@ Fixtures reproduce the real 2025Q4 DERA layout (three tab-separated tables
 joined on ACCESSIONNUMBER). No network access.
 """
 
+import io
+import zipfile
+
 import pytest
 
 import ingest_form_d
@@ -200,6 +203,29 @@ def test_upsert_rows_carry_source_and_normalized_name():
     assert row["normalized_name"] == ingest_form_d.entity_resolution.normalize("Acme, Inc.")
 
 
+def test_fold_issuer_canonicalizes_alias_group():
+    """
+    Regression for CLAUDE.md's alias-group invariant: canonicalize_alias_group
+    must run on every code path that produces a normalized_name, or an
+    aliased issuer's raise silently can't be found by match_funding_to_company
+    (which now does exact-match-only lookups against company_intel's
+    canonical "amazon" key -- fold_issuer previously keyed the accumulator
+    with bare normalize(), missing this).
+    """
+    acc = {}
+    ingest_form_d.fold_issuer(acc, {"issuer_name": "Amazon.com Services LLC",
+                                    "filing_date": "2025-12-31", "amount": 100})
+    funding_corpus = ingest_form_d.build_rows_for_upsert(acc)
+    assert funding_corpus[0]["normalized_name"] == "amazon"
+
+    row = ingest_form_d.match_funding_to_company(
+        ingest_form_d.entity_resolution.canonicalize_alias_group(
+            ingest_form_d.entity_resolution.normalize("Amazon")),
+        funding_corpus)
+    assert row is not None
+    assert row["last_funding_amount"] == 100
+
+
 # ── Link discovery ─────────────────────────────────────────────────────────────
 
 _INDEX_HTML = """
@@ -236,6 +262,279 @@ def test_link_discovery_ignores_unrelated_zips():
 def test_link_discovery_never_raises_on_garbage():
     assert ingest_form_d.parse_form_d_links("<html>nothing here</html>") == {}
     assert ingest_form_d.parse_form_d_links("") == {}
+
+
+# ── Download + extract ────────────────────────────────────────────────────────
+
+def _tsv_text(columns, rows):
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append("\t".join(str(row.get(c, "")) for c in columns))
+    return "\n".join(lines) + "\n"
+
+
+def _quarter_zip_bytes(prefix=""):
+    submission, issuer, offering = _filing("a1", "Databricks, Inc.", "31-DEC-2025", "4082050250")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(prefix + "FORMDSUBMISSION.tsv", _tsv_text(_SUBMISSION_COLS, [submission]))
+        zf.writestr(prefix + "ISSUERS.tsv", _tsv_text(_ISSUER_COLS, [issuer]))
+        zf.writestr(prefix + "OFFERING.tsv", _tsv_text(_OFFERING_COLS, [offering]))
+    return buf.getvalue()
+
+
+def _mock_urlopen(mocker, payload):
+    mock_resp = mocker.MagicMock()
+    mock_resp.read.return_value = payload
+    mock_urlopen = mocker.patch("urllib.request.urlopen")
+    mock_urlopen.return_value.__enter__.return_value = mock_resp
+    return mock_urlopen
+
+
+def test_download_quarter_extracts_nested_members_and_round_trips(tmp_path, mocker):
+    """SEC's own archive layout is opaque offline -- the real contract is with
+    parse_form_d_quarter, which reads exact filenames from dest_dir. Prove the
+    round trip, not just that files exist."""
+    _mock_urlopen(mocker, _quarter_zip_bytes(prefix="2025q4_d/"))
+    dest = tmp_path / "2025q4"
+
+    ingest_form_d.download_quarter(
+        "https://www.sec.gov/files/structureddata/data/form-d-data-sets/2025q4_d.zip", dest)
+
+    records = ingest_form_d.parse_form_d_quarter(dest)
+    assert len(records) == 1
+    assert records[0]["issuer_name"] == "Databricks, Inc."
+    assert records[0]["amount"] == 4082050250
+
+
+def test_download_quarter_extracts_flat_members(tmp_path, mocker):
+    _mock_urlopen(mocker, _quarter_zip_bytes(prefix=""))
+    dest = tmp_path / "2025q4"
+
+    ingest_form_d.download_quarter(
+        "https://www.sec.gov/files/datastandardsinnovation/data/form-d-data-sets/2025q4_d.zip", dest)
+
+    records = ingest_form_d.parse_form_d_quarter(dest)
+    assert len(records) == 1
+    assert records[0]["issuer_name"] == "Databricks, Inc."
+
+
+def test_download_quarter_raises_when_a_table_is_missing(tmp_path, mocker):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("FORMDSUBMISSION.tsv", "ACCESSIONNUMBER\n")
+        zf.writestr("ISSUERS.tsv", "ACCESSIONNUMBER\n")
+        # OFFERING.tsv omitted
+    _mock_urlopen(mocker, buf.getvalue())
+
+    with pytest.raises(ValueError, match="OFFERING.tsv"):
+        ingest_form_d.download_quarter("https://www.sec.gov/x/2025q4_d.zip", tmp_path / "2025q4")
+
+
+# ── Matching ───────────────────────────────────────────────────────────────────
+
+_FUNDING_CORPUS = [
+    {"normalized_name": "databricks", "issuer_name": "Databricks, Inc.",
+     "last_funding_date": "2025-12-31", "last_funding_amount": 4082050250,
+     "last_funding_source": "sec_form_d", "cik": "0001"},
+]
+
+
+def test_match_funding_exact_normalized_name_match():
+    row = ingest_form_d.match_funding_to_company("databricks", _FUNDING_CORPUS)
+    assert row == {
+        "normalized_name": "databricks",
+        "last_funding_date": "2025-12-31",
+        "last_funding_amount": 4082050250,
+        "last_funding_source": "sec_form_d",
+    }
+
+
+def test_match_funding_is_exact_only_not_fuzzy():
+    # No fuzzy fallback: a near-miss variant name must not match, even one
+    # entity_resolution's fuzzy tier would classify as "auto".
+    row = ingest_form_d.match_funding_to_company("databricks technologies", _FUNDING_CORPUS)
+    assert row is None
+
+
+def test_match_funding_rejects_token_subset_false_positive():
+    """
+    Regression for a real false positive found live-verifying against
+    2025Q3-2026Q2 SEC data: querying "scale ai" against a corpus containing
+    "scale social ai" auto-classified at score 100 under the fuzzy tier
+    (token_set_ratio scores token-subset matches near 100 regardless of the
+    corpus name's extra tokens -- exactly the risk entity_resolution.classify
+    already documents). There is no human-review UI for funding claims the
+    way there is for sponsors_h1b, so match_funding_to_company must not use
+    the fuzzy tier at all -- this proves the real "Scale AI" query gets no
+    match against the unrelated "Scale Social AI, Inc." filing.
+    """
+    corpus = [
+        {"normalized_name": "scale social ai", "issuer_name": "Scale Social AI, Inc.",
+         "last_funding_date": "2026-01-01", "last_funding_amount": 5000000,
+         "last_funding_source": "sec_form_d", "cik": "0009"},
+    ]
+    assert ingest_form_d.match_funding_to_company("scale ai", corpus) is None
+
+
+def test_match_funding_needs_review_tier_returns_none():
+    # Unrelated single-token query has no exact match -- guards against
+    # writing a low-confidence funding claim.
+    row = ingest_form_d.match_funding_to_company("datastax", _FUNDING_CORPUS)
+    assert row is None
+
+
+def test_match_funding_no_corpus_returns_none():
+    assert ingest_form_d.match_funding_to_company("databricks", []) is None
+
+
+def test_match_funding_empty_query_returns_none():
+    assert ingest_form_d.match_funding_to_company("", _FUNDING_CORPUS) is None
+
+
+# ── run() orchestration ─────────────────────────────────────────────────────────
+
+@pytest.fixture
+def no_op_record_run(mocker):
+    return mocker.patch.object(ingest_form_d.db, "record_run")
+
+
+def test_run_no_quarters_discovered_records_failure(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls", return_value={})
+    ingest_form_d.run()
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "failure"
+
+
+def test_run_no_quarters_ingested_records_failure(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter", side_effect=RuntimeError("network down"))
+    ingest_form_d.run()
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "failure"
+
+
+def test_run_matches_company_end_to_end(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names",
+                         return_value=[{"id": 5, "normalized_name": "databricks"}])
+    upsert_mock = mocker.patch.object(ingest_form_d.db, "upsert_company_funding", return_value=True)
+
+    ingest_form_d.run()
+
+    upsert_mock.assert_called_once()
+    row = upsert_mock.call_args.args[0][0]
+    assert row["normalized_name"] == "databricks"
+    assert row["last_funding_amount"] == 4082050250
+    assert "last_funding_checked_at" in row
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "success"
+    assert args[1] == 1  # matched count
+
+
+def test_run_skips_companies_without_existing_company_intel_row(mocker, no_op_record_run):
+    """Governance: the matcher must never create a company_intel row -- only
+    visa_match_new.py does that. A company with no existing row is skipped
+    entirely, matched or not."""
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names", return_value=[])
+    upsert_mock = mocker.patch.object(ingest_form_d.db, "upsert_company_funding", return_value=True)
+
+    ingest_form_d.run()
+
+    upsert_mock.assert_not_called()
+
+
+def test_run_writes_checked_at_even_when_no_match(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Some Other Co", "filing_date": "2025-12-31",
+         "amount": 9000, "cik": "0002"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names",
+                         return_value=[{"id": 5, "normalized_name": "databricks"}])
+    upsert_mock = mocker.patch.object(ingest_form_d.db, "upsert_company_funding", return_value=True)
+
+    ingest_form_d.run()
+
+    row = upsert_mock.call_args.args[0][0]
+    assert row == {"normalized_name": "databricks", "last_funding_checked_at": row["last_funding_checked_at"]}
+    assert "last_funding_date" not in row
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[1] == 0  # matched count
+
+
+def test_run_isolates_per_company_failure(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+        {"id": 2, "company": "Acme Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names", return_value=[
+        {"id": 5, "normalized_name": "databricks"},
+        {"id": 6, "normalized_name": "acme"},
+    ])
+
+    def _upsert(rows):
+        if rows[0]["normalized_name"] == "acme":
+            raise RuntimeError("db exploded")
+        return True
+
+    mocker.patch.object(ingest_form_d.db, "upsert_company_funding", side_effect=_upsert)
+
+    ingest_form_d.run()  # must not raise despite "acme" failing
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "success"  # per-company failures are non-fatal
+    assert args[3] == 1  # errors count reflects the one isolated failure
+
+
+def test_run_never_raises_when_get_all_contacts_fails(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", side_effect=RuntimeError("db down"))
+
+    ingest_form_d.run()  # must not raise
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "failure"
 
 
 # ── Never-raises sweep ─────────────────────────────────────────────────────────

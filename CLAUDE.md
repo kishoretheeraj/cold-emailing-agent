@@ -266,24 +266,62 @@ fuse `"Amazon.com"` into `"amazoncom"`, permanently unreachable from the
 Full schema, entity-resolution calibration notes, and ingestion details:
 see docs/python/db-schema.md.
 
-## Form D funding signal (sub-project 4, INERT — not yet wired)
+## Form D funding signal (sub-project 4 — LIVE, wired into visa_intel_ingest.yml)
 
 `ingest_form_d.py` turns SEC Form D exempt-offering filings into a
 "recently raised" signal on `company_intel`. Same decision-support posture as the
 H-1B gate: never an auto-reject, never a targeting change.
 
-**This ships the parsing and aggregation layer ONLY.** Three pieces do not exist
-yet and must be built before any data can land: a **downloader/unzipper** (there is
-no `download_file()` equivalent to `ingest_oflc_lca.py`'s), a **Supabase writer**
-(no `db.py` accessor), and a **matcher** resolving issuer names onto `company_intel`
-(no `visa_match_new.py` equivalent). There is also no `run()` orchestrator and no
-`__main__`.
+**Full pipeline now exists in `ingest_form_d.py`: discover → download → parse →
+aggregate → match → write → `run()` → `__main__`.**
+`download_quarter(url, dest_dir)` fetches one quarterly ZIP and extracts its three
+tables into `dest_dir`, matching each archive member on basename only (never
+`extractall()`, since SEC's internal path prefix drifts between quarters the same way
+the index page's does) — the `ingest_oflc_lca.py`-`download_file()` equivalent.
+`match_funding_to_company(normalized_company_name, funding_corpus)` matches by exact
+normalized name only — `entity_resolution.normalize()` + `canonicalize_alias_group()`,
+same pipeline as everywhere else, but **deliberately does NOT fall back to
+`entity_resolution.resolve()`/`classify()`'s fuzzy tier.** Live-verified against real
+2025Q3–2026Q2 data before this was caught: querying `"scale ai"` fuzzy-auto-classified
+against a corpus entry `"scale social ai"` at score 100 — `token_set_ratio` scores a
+token-subset match near 100 regardless of the corpus name's extra tokens, a risk
+`entity_resolution.classify()`'s own docstring already flags. For the H-1B gate that's
+tolerable because a human can reject a bad match via `/visa-review`; there is no
+equivalent review UI for funding claims, so exact-match-only trades missed variant-name
+matches (governance-safe — degrades to unknown) for zero false positives.
+`db.upsert_company_funding(rows)` batch-upserts `company_intel` on `normalized_name`,
+same shape as `upsert_company_intel`; it only ever writes the columns it's handed
+(PostgREST upsert semantics), so it can never touch `sponsors_h1b`/`match_status`.
+`fold_issuer()` canonicalizes through `canonicalize_alias_group()` too (not just
+`normalize()`) — required by the alias-group invariant above, and load-bearing now that
+matching is exact-only: an aliased issuer name that only normalized (not canonicalized)
+would silently never match its company_intel row's canonical key.
 
-The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) is written
-but **not applied**, and there is **no workflow step**. Applying the migration alone
-gives you empty columns and no path to fill them. Build order: downloader → writer →
-matcher → apply migration → workflow step. Never add the scheduled step before the
-migration — the suite mocks Supabase, so it cannot catch a missing column.
+`last_funding_amount` is `TOTALAMOUNTSOLD` from a single Form D offering, not lifetime
+funding raised — don't render it as "total raised" in any UI.
+
+**`run()` only ever writes onto `company_intel` rows that already exist** (fetched via
+`db.get_company_intel_by_normalized_names` for every distinct contact company). It never
+creates a row itself — that's `visa_match_new.py`'s job exclusively; letting the Form D
+matcher create rows would manufacture `company_intel` rows the H-1B matcher never
+authored. `last_funding_checked_at` is written for every existing row `run()` evaluates,
+matched or not (per the migration's own column comment — "whether or not a raise was
+found") — this is safe specifically because the row already exists, so it's always an
+UPDATE, never an INSERT.
+
+The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) **is applied**
+(pushed 2026-08-23 via `supabase db push`, ahead of the writer/matcher since it's purely
+additive — nullable columns, `IF NOT EXISTS`, no backfill, no risk to existing rows).
+
+**Live-verified 2026-08-23** (same "run it manually before scheduling it" pattern as
+Stage 1, which found 4 bugs on its first live run despite a green suite). Link discovery,
+`download_quarter`, and `parse_form_d_quarter` all ran clean against real 2025Q3–2026Q2
+SEC data on the first try. One real bug did surface — see the exact-match-only note
+above — fixed before the run that actually wrote to prod. That verified run: 36 contact
+companies checked, 1 real match (Shield AI, `$591,806,870` on `2026-05-01`), 0 errors;
+`sponsors_h1b`/`match_status` on the matched row were confirmed untouched. Now wired as
+the last step in `visa_intel_ingest.yml`, `continue-on-error: true`, after the H-1B full
+re-match (see GitHub Actions below).
 
 **Governance invariant (same as the visa gate)**: no Form D match degrades to
 `unknown`/NULL, never to "did not raise". Absence is not-observed, not a negative.
@@ -351,12 +389,15 @@ Three workflows live in `.github/workflows/`:
   (EST = UTC-5): every 20 minutes from 8 AM–11:59 PM EST (crns `*/20 13-23 * * *`
   and `*/20 0-4 * * *`), and hourly at :30 from 12:30 AM–7:30 AM EST
   (cron `30 5-12 * * *`).
-- **`visa_intel_ingest.yml`** — quarterly (`0 10 5 1,4,7,10 *`), runs
-  `ingest_oflc_lca.py` → `ingest_uscis_datahub.py` → `python visa_match_new.py --full`
-  (the `--full` flag is required — see Visa & wage intelligence gate above).
-  `timeout-minutes: 120` (vs. 30 for the daily job) — a fresh ingest
-  processes several fiscal years of DOL data. First run should be triggered
-  manually via `workflow_dispatch`.
+- **`visa_intel_ingest.yml`** (named "Visa & Funding Intel Ingestion") — quarterly
+  (`0 10 5 1,4,7,10 *`), runs `ingest_oflc_lca.py` → `ingest_uscis_datahub.py` →
+  `python visa_match_new.py --full` (the `--full` flag is required — see Visa & wage
+  intelligence gate above) → `ingest_form_d.py` (Form D funding signal — runs last,
+  after the H-1B full re-match, since it only writes onto `company_intel` rows that
+  already exist and a fresh quarter's re-match may have just created some). All three
+  steps after the first LCA ingest are `continue-on-error: true`. `timeout-minutes: 120`
+  (vs. 30 for the daily job) — a fresh ingest processes several fiscal years of DOL
+  data. First run should be triggered manually via `workflow_dispatch`.
 
 All three workflows: upload the relevant `.log` file as an artifact (30-day
 retention), and run `notify_failure.py` in an `if: failure()` step.
@@ -428,7 +469,7 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_visa_intel_db.py` — `db.py`'s `employer_h1b_stats`/`company_intel` accessors, following `test_db_draft_history.py`'s mock pattern.
 - `tests/test_visa_matching.py` — `visa_matching.resolve_company()`, including the confirmed/rejected-row-is-never-reclassified governance tests.
 - `tests/test_visa_match_new.py` — parametrized never-raises sweep for the daily matcher, plus per-company failure isolation.
-- `tests/test_ingest_form_d.py` — Form D date/amount parsing, the `YES`/`NO` primary-issuer flag, both pooled-fund exclusion signals, latest-filing-wins aggregation, link discovery across both observed SEC path prefixes, and a malformed-quarter never-raises sweep.
+- `tests/test_ingest_form_d.py` — Form D date/amount parsing, the `YES`/`NO` primary-issuer flag, both pooled-fund exclusion signals, latest-filing-wins aggregation, link discovery across both observed SEC path prefixes, download-and-extract round trips (nested/flat zip layouts, missing-table raises), `match_funding_to_company`'s exact-match-only gating (including the live-discovered token-subset false-positive regression), `fold_issuer`'s alias-group canonicalization, `run()`'s never-creates-a-company_intel-row governance test, per-company error isolation, and a malformed-quarter never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
 

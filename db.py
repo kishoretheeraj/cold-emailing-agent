@@ -455,6 +455,29 @@ def upsert_company_intel(rows):
         return False
 
 
+def upsert_company_funding(rows):
+    """
+    Batch upsert Form D funding fields (last_funding_date/amount/source/
+    checked_at) onto company_intel, keyed by normalized_name. Best-effort,
+    same as upsert_company_intel. Callers must pass only the funding columns
+    plus normalized_name -- PostgREST's upsert only overwrites columns present
+    in the payload, so this never touches sponsors_h1b/match_status.
+    """
+    if not rows:
+        return True
+    try:
+        _retry(lambda: (
+            get_client()
+            .table("company_intel")
+            .upsert(rows, on_conflict="normalized_name")
+            .execute()
+        ))
+        return True
+    except Exception as exc:
+        log.warning(f"[company_intel] funding upsert failed for {len(rows)} rows: {exc}")
+        return False
+
+
 def update_contact_company_intel_id(contact_id, company_intel_id):
     """Link a contact to its resolved company_intel row. Best-effort."""
     try:

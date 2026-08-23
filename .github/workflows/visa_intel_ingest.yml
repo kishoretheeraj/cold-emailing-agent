@@ -1,4 +1,4 @@
-name: Visa Intel Ingestion (H-1B)
+name: Visa & Funding Intel Ingestion
 
 on:
   schedule:
@@ -48,6 +48,17 @@ jobs:
         if: always()
         continue-on-error: true
         run: python visa_match_new.py --full
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Ingest SEC Form D funding signal
+        if: always()
+        continue-on-error: true
+        run: python ingest_form_d.py
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
