@@ -200,18 +200,27 @@ starve entity resolution of most of the real corpus; don't revert to it.
 
 **The migration is applied on the remote DB** (pushed via `supabase db push` ahead
 of the writer/matcher — it's purely additive, `IF NOT EXISTS`, no backfill, no risk
-to existing rows). The columns exist but nothing writes to them yet.
-`ingest_form_d.py` ships the parsing/aggregation/download layer:
-`download_quarter(url, dest_dir)` fetches and extracts one quarterly ZIP (cf.
-`ingest_oflc_lca.download_file`), matching archive members by basename so the
-extraction doesn't depend on SEC's internal path layout. `db.upsert_company_funding(rows)`
-is the writer — a generic best-effort upsert accessor, not yet called from anywhere.
-Still to be built before data can land: a matcher resolving Form D issuer names onto
-`company_intel` rows (would produce the rows `upsert_company_funding` expects from
-`ingest_form_d.build_rows_for_upsert()`'s issuer-keyed output), and a `run()`
-orchestrator. Never add a scheduled workflow step until the matcher and `run()`
-exist — a step with nothing to run is dead CI time, not a safety issue, but also
-not worth scheduling yet.
+to existing rows). `ingest_form_d.py` now ships the full pipeline: parsing,
+aggregation, `download_quarter(url, dest_dir)` (fetch + extract one quarterly ZIP,
+matching archive members by basename, cf. `ingest_oflc_lca.download_file`),
+`match_funding_to_company(normalized_company_name, funding_corpus)` (reuses
+`entity_resolution.resolve()`/`classify()`, writes only `"auto"`-tier matches —
+`needs_review`/`unknown` returns `None` since there's no human-review UI for this
+signal), `db.upsert_company_funding(rows)` (best-effort upsert, only touches payload
+columns), and `run(quarters_back=N)` + `__main__`.
+
+`run()` only writes onto `company_intel` rows that **already exist** — it fetches
+existing rows via `get_company_intel_by_normalized_names` for every distinct contact
+company and never creates one itself (row creation stays `visa_match_new.py`'s job
+exclusively). `last_funding_checked_at` is written on every existing row it evaluates,
+matched or not, per the migration's own column comment — safe here because it's always
+an UPDATE on a pre-existing row, never an INSERT.
+
+**Not yet done: a live-verified prod run and the workflow step.** The suite mocks
+Supabase and network calls, so green tests don't prove real rows land correctly (the
+H-1B gate found 4 bugs on its first live run despite a green suite — see Visa Intel
+Stage 1 below). Run `python ingest_form_d.py` manually and check `company_intel` for
+non-null `last_funding_date` rows before adding a step to `visa_intel_ingest.yml`.
 
 **Governance — identical to the H-1B column**: NULL means *not observed*, never
 "did not raise". A company may raise through a route that does not file Form D,

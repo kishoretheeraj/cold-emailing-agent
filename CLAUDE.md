@@ -265,36 +265,47 @@ fuse `"Amazon.com"` into `"amazoncom"`, permanently unreachable from the
 Full schema, entity-resolution calibration notes, and ingestion details:
 see docs/python/db-schema.md.
 
-## Form D funding signal (sub-project 4, INERT — not yet wired)
+## Form D funding signal (sub-project 4 — code-complete, pending live verification)
 
 `ingest_form_d.py` turns SEC Form D exempt-offering filings into a
 "recently raised" signal on `company_intel`. Same decision-support posture as the
 H-1B gate: never an auto-reject, never a targeting change.
 
-**This ships the parsing, aggregation, download, and writer layers.**
-`ingest_form_d.download_quarter(url, dest_dir)` fetches one quarterly ZIP and extracts
-its three tables into `dest_dir`, matching each archive member on basename only (never
-`extractall()`, since SEC's internal path prefix drifts between quarters the same way the
-index page's does) — this is the `ingest_oflc_lca.py`-`download_file()` equivalent.
+**Full pipeline now exists in `ingest_form_d.py`: discover → download → parse →
+aggregate → match → write → `run()` → `__main__`.**
+`download_quarter(url, dest_dir)` fetches one quarterly ZIP and extracts its three
+tables into `dest_dir`, matching each archive member on basename only (never
+`extractall()`, since SEC's internal path prefix drifts between quarters the same way
+the index page's does) — the `ingest_oflc_lca.py`-`download_file()` equivalent.
+`match_funding_to_company(normalized_company_name, funding_corpus)` reuses
+`entity_resolution.resolve()`/`classify()` (the H-1B gate's calibrated machinery, no
+second matcher) and **only ever writes an `"auto"`-tier match** — `needs_review`/`unknown`
+returns `None`, since there's no human-review UI for this signal the way there is for
+`sponsors_h1b`, so a bad auto-write can't be caught downstream.
 `db.upsert_company_funding(rows)` batch-upserts `company_intel` on `normalized_name`,
-same shape as `upsert_company_intel`, and only ever writes the four funding columns it's
-handed — PostgREST's upsert only overwrites payload columns, so it can never touch
-`sponsors_h1b`/`match_status`. It's a generic writer: it does not resolve Form D issuer
-names onto `company_intel` rows itself, so it is not yet called from anywhere.
+same shape as `upsert_company_intel`; it only ever writes the columns it's handed
+(PostgREST upsert semantics), so it can never touch `sponsors_h1b`/`match_status`.
 
-Still missing: a **matcher** resolving issuer names onto `company_intel` (no
-`visa_match_new.py` equivalent — this is what would actually produce
-`upsert_company_funding`-shaped rows from `ingest_form_d.build_rows_for_upsert()`'s
-issuer-keyed output) and a `run()` orchestrator. There is also no `__main__`.
+**`run()` only ever writes onto `company_intel` rows that already exist** (fetched via
+`db.get_company_intel_by_normalized_names` for every distinct contact company). It never
+creates a row itself — that's `visa_match_new.py`'s job exclusively; letting the Form D
+matcher create rows would manufacture `company_intel` rows the H-1B matcher never
+authored. `last_funding_checked_at` is written for every existing row `run()` evaluates,
+matched or not (per the migration's own column comment — "whether or not a raise was
+found") — this is safe specifically because the row already exists, so it's always an
+UPDATE, never an INSERT.
 
 The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) **is applied**
 (pushed 2026-08-23 via `supabase db push`, ahead of the writer/matcher since it's purely
-additive — nullable columns, `IF NOT EXISTS`, no backfill, no risk to existing rows). The
-four `company_intel` columns exist on the remote DB now but nothing writes to them yet —
-the matcher is what would give the writer real rows to call it with. There is still **no
-workflow step** — don't add one until the matcher and `run()` exist, since a scheduled
-step with nothing to run is just dead CI time, not a safety issue. Remaining build order:
-~~downloader~~ → ~~apply migration~~ → ~~writer~~ → matcher → `run()` → workflow step.
+additive — nullable columns, `IF NOT EXISTS`, no backfill, no risk to existing rows).
+
+**Not yet done: a live-verified manual run and the workflow step.** The test suite mocks
+Supabase and the SEC endpoints, so a green suite proves the logic, not that a real
+`python ingest_form_d.py` run against prod lands real rows — Stage 1's H-1B gate found 4
+bugs on its first live run despite a fully green suite (DOL filename parsing, pagination,
+etc. — see docs/python/db-schema.md). Run it manually and eyeball `company_intel` rows
+with `last_funding_date IS NOT NULL` before adding the `visa_intel_ingest.yml` step —
+don't schedule it on faith.
 
 **Governance invariant (same as the visa gate)**: no Form D match degrades to
 `unknown`/NULL, never to "did not raise". Absence is not-observed, not a negative.
@@ -437,7 +448,7 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_visa_intel_db.py` — `db.py`'s `employer_h1b_stats`/`company_intel` accessors, following `test_db_draft_history.py`'s mock pattern.
 - `tests/test_visa_matching.py` — `visa_matching.resolve_company()`, including the confirmed/rejected-row-is-never-reclassified governance tests.
 - `tests/test_visa_match_new.py` — parametrized never-raises sweep for the daily matcher, plus per-company failure isolation.
-- `tests/test_ingest_form_d.py` — Form D date/amount parsing, the `YES`/`NO` primary-issuer flag, both pooled-fund exclusion signals, latest-filing-wins aggregation, link discovery across both observed SEC path prefixes, and a malformed-quarter never-raises sweep.
+- `tests/test_ingest_form_d.py` — Form D date/amount parsing, the `YES`/`NO` primary-issuer flag, both pooled-fund exclusion signals, latest-filing-wins aggregation, link discovery across both observed SEC path prefixes, download-and-extract round trips (nested/flat zip layouts, missing-table raises), `match_funding_to_company`'s auto-tier-only gating, `run()`'s never-creates-a-company_intel-row governance test, per-company error isolation, and a malformed-quarter never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
 

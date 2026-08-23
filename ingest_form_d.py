@@ -10,14 +10,9 @@ Governance (mirrors the H-1B gate): a company with no Form D match is
 have raised through a route that does not file Form D, or under a different
 legal entity name. This module only ever reports an observed raise.
 
-Currently parsing/aggregation and download only: no Supabase writer, no
-matcher, no run(). Never imported by agent.py.
-
-NOTE for whoever adds a __main__/CLI entry point here: this module imports
-entity_resolution at module level with no logging.basicConfig above it. Per the
-logging setup order invariant in CLAUDE.md, basicConfig must be called before any
-project import or agent's root handler wins the race and this script's output
-silently lands in agent.log.
+Deliberately separate from agent.py::run(), same reasoning as visa_match_new.py --
+this is wired as its own quarterly workflow step, never in the daily email path.
+Never imported by agent.py.
 """
 
 import csv
@@ -25,9 +20,13 @@ import io
 import logging
 import os
 import re
+import tempfile
+import time
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 
+import db
 import entity_resolution
 
 log = logging.getLogger(__name__)
@@ -301,3 +300,157 @@ def download_quarter(url, dest_dir):
         for base, member in members_by_basename.items():
             with zf.open(member) as src, open(os.path.join(dest_dir, base), "wb") as out:
                 out.write(src.read())
+
+
+# ── Matching ───────────────────────────────────────────────────────────────────
+
+def match_funding_to_company(normalized_company_name, funding_corpus):
+    """
+    Resolves an existing company_intel normalized_name against this run's
+    Form D funding_corpus (build_rows_for_upsert() output, keyed by each
+    issuer's own normalized name). Reuses entity_resolution.resolve()/
+    classify() -- the same calibrated machinery the H-1B gate uses -- rather
+    than a second matching algorithm.
+
+    Only ever returns a row for an "auto"-tier match: a needs_review/unknown
+    classification returns None rather than write a possibly-wrong raise onto
+    the wrong company_intel row (there is no human-review UI for this signal
+    the way there is for sponsors_h1b, so a bad auto-write can't be caught
+    downstream). Returns a dict of just the matched funding fields, ready to
+    merge into a db.upsert_company_funding row -- never raises.
+    """
+    if not normalized_company_name or not funding_corpus:
+        return None
+
+    by_normalized = {r["normalized_name"]: r for r in funding_corpus}
+    top = by_normalized.get(normalized_company_name)
+
+    if top is None:
+        candidates = entity_resolution.resolve(normalized_company_name, list(by_normalized.keys()))
+        status, candidate = entity_resolution.classify(normalized_company_name, candidates)
+        if status != "auto" or candidate is None:
+            return None
+        top = by_normalized.get(candidate.normalized_name)
+        if top is None:
+            return None
+
+    return {
+        "normalized_name": normalized_company_name,
+        "last_funding_date": top["last_funding_date"],
+        "last_funding_amount": top["last_funding_amount"],
+        "last_funding_source": top["last_funding_source"],
+    }
+
+
+# ── Orchestration ────────────────────────────────────────────────────────────────
+
+def run(quarters_back=DEFAULT_QUARTERS_BACK):
+    """
+    Best-effort per quarter and per company. Only ever writes funding data
+    onto company_intel rows that already exist (fetched via
+    db.get_company_intel_by_normalized_names) -- it never creates a
+    company_intel row itself. Creating rows is visa_match_new.py's job;
+    mixing the two would let a Form D run manufacture rows the H-1B matcher
+    never authored. last_funding_checked_at is written for every existing
+    row this run evaluates, matched or not, per the migration's own column
+    comment ("whether or not a raise was found") -- distinguishing "checked,
+    no raise" from "never checked" is safe here specifically because the row
+    already exists, so this is always an UPDATE, never an INSERT.
+    """
+    start = time.time()
+    urls_by_quarter = discover_form_d_urls()
+    if not urls_by_quarter:
+        log.warning("[FORMD] | no quarters discovered, aborting")
+        db.record_run("failure", 0, 0, 1, round(time.time() - start),
+                       failure_reason="no Form D quarters discovered", source="form_d_ingest")
+        return
+
+    target_quarters = sorted(urls_by_quarter)[-quarters_back:]
+    accumulator = {}
+    ingested_quarters = []
+    errors = 0
+
+    for quarter in target_quarters:
+        url = urls_by_quarter[quarter]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, quarter)
+            try:
+                download_quarter(url, dest)
+                records = parse_form_d_quarter(dest)
+                for record in records:
+                    fold_issuer(accumulator, record)
+                ingested_quarters.append(quarter)
+                log.info(f"[FORMD] | {quarter} | records_folded={len(records)}")
+            except Exception as exc:
+                log.warning(f"[FORMD] | {quarter} | ingest failed: {exc}")
+                errors += 1
+
+    if not ingested_quarters:
+        log.warning("[FORMD] | no quarters ingested, nothing to match")
+        db.record_run("failure", 0, 0, errors, round(time.time() - start),
+                       failure_reason="no Form D quarters ingested", source="form_d_ingest")
+        return
+
+    funding_corpus = build_rows_for_upsert(accumulator)
+
+    try:
+        contacts = db.get_all_contacts()
+    except Exception as exc:
+        log.warning(f"[FORMD] | get_all_contacts failed: {exc}")
+        db.record_run("failure", 0, 0, errors + 1, round(time.time() - start),
+                       failure_reason=str(exc), source="form_d_ingest")
+        return
+
+    normalized_names = sorted({
+        entity_resolution.canonicalize_alias_group(entity_resolution.normalize(c.get("company") or ""))
+        for c in contacts
+    } - {""})
+
+    if not normalized_names:
+        log.info("[FORMD] | no contact companies to check, nothing to match")
+        db.record_run("success", 0, 0, errors, round(time.time() - start), source="form_d_ingest")
+        return
+
+    try:
+        existing_rows = db.get_company_intel_by_normalized_names(normalized_names)
+    except Exception as exc:
+        log.warning(f"[FORMD] | company_intel read failed: {exc}")
+        db.record_run("failure", 0, 0, errors + 1, round(time.time() - start),
+                       failure_reason=str(exc), source="form_d_ingest")
+        return
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    matched = 0
+    checked = 0
+
+    for existing in existing_rows:
+        normalized = existing["normalized_name"]
+        try:
+            row = match_funding_to_company(normalized, funding_corpus) or {"normalized_name": normalized}
+            row["last_funding_checked_at"] = checked_at
+            if not db.upsert_company_funding([row]):
+                errors += 1
+                continue
+            checked += 1
+            if "last_funding_date" in row:
+                matched += 1
+        except Exception as exc:
+            log.warning(f"[FORMD] | {normalized} | match failed: {exc}")
+            errors += 1
+
+    status = "success" if errors == 0 else "success"  # per-quarter/company failures are non-fatal
+    log.info(
+        f"[FORMD] | DONE | quarters={ingested_quarters} | companies_checked={checked} "
+        f"| matched={matched} | errors={errors}"
+    )
+    db.record_run(status, matched, 0, errors, round(time.time() - start), source="form_d_ingest")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        filename="visa_intel_ingest.log",
+        level=logging.INFO,
+        format="%(asctime)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M",
+    )
+    run()

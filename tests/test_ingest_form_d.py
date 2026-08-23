@@ -308,6 +308,194 @@ def test_download_quarter_raises_when_a_table_is_missing(tmp_path, mocker):
         ingest_form_d.download_quarter("https://www.sec.gov/x/2025q4_d.zip", tmp_path / "2025q4")
 
 
+# ── Matching ───────────────────────────────────────────────────────────────────
+
+_FUNDING_CORPUS = [
+    {"normalized_name": "databricks", "issuer_name": "Databricks, Inc.",
+     "last_funding_date": "2025-12-31", "last_funding_amount": 4082050250,
+     "last_funding_source": "sec_form_d", "cik": "0001"},
+]
+
+
+def test_match_funding_exact_normalized_name_match():
+    row = ingest_form_d.match_funding_to_company("databricks", _FUNDING_CORPUS)
+    assert row == {
+        "normalized_name": "databricks",
+        "last_funding_date": "2025-12-31",
+        "last_funding_amount": 4082050250,
+        "last_funding_source": "sec_form_d",
+    }
+
+
+def test_match_funding_fuzzy_auto_tier_match():
+    # "databricks technologies" vs corpus "databricks" -- token subset match,
+    # multi-token query, scores above AUTO_THRESHOLD via token_set_ratio.
+    row = ingest_form_d.match_funding_to_company("databricks technologies", _FUNDING_CORPUS)
+    assert row is not None
+    assert row["normalized_name"] == "databricks technologies"
+    assert row["last_funding_amount"] == 4082050250
+
+
+def test_match_funding_needs_review_tier_returns_none():
+    # Unrelated single-token query never classifies above review floor cleanly
+    # into auto -- guards against writing a low-confidence funding claim.
+    row = ingest_form_d.match_funding_to_company("datastax", _FUNDING_CORPUS)
+    assert row is None
+
+
+def test_match_funding_no_corpus_returns_none():
+    assert ingest_form_d.match_funding_to_company("databricks", []) is None
+
+
+def test_match_funding_empty_query_returns_none():
+    assert ingest_form_d.match_funding_to_company("", _FUNDING_CORPUS) is None
+
+
+# ── run() orchestration ─────────────────────────────────────────────────────────
+
+@pytest.fixture
+def no_op_record_run(mocker):
+    return mocker.patch.object(ingest_form_d.db, "record_run")
+
+
+def test_run_no_quarters_discovered_records_failure(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls", return_value={})
+    ingest_form_d.run()
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "failure"
+
+
+def test_run_no_quarters_ingested_records_failure(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter", side_effect=RuntimeError("network down"))
+    ingest_form_d.run()
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "failure"
+
+
+def test_run_matches_company_end_to_end(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names",
+                         return_value=[{"id": 5, "normalized_name": "databricks"}])
+    upsert_mock = mocker.patch.object(ingest_form_d.db, "upsert_company_funding", return_value=True)
+
+    ingest_form_d.run()
+
+    upsert_mock.assert_called_once()
+    row = upsert_mock.call_args.args[0][0]
+    assert row["normalized_name"] == "databricks"
+    assert row["last_funding_amount"] == 4082050250
+    assert "last_funding_checked_at" in row
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "success"
+    assert args[1] == 1  # matched count
+
+
+def test_run_skips_companies_without_existing_company_intel_row(mocker, no_op_record_run):
+    """Governance: the matcher must never create a company_intel row -- only
+    visa_match_new.py does that. A company with no existing row is skipped
+    entirely, matched or not."""
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names", return_value=[])
+    upsert_mock = mocker.patch.object(ingest_form_d.db, "upsert_company_funding", return_value=True)
+
+    ingest_form_d.run()
+
+    upsert_mock.assert_not_called()
+
+
+def test_run_writes_checked_at_even_when_no_match(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Some Other Co", "filing_date": "2025-12-31",
+         "amount": 9000, "cik": "0002"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names",
+                         return_value=[{"id": 5, "normalized_name": "databricks"}])
+    upsert_mock = mocker.patch.object(ingest_form_d.db, "upsert_company_funding", return_value=True)
+
+    ingest_form_d.run()
+
+    row = upsert_mock.call_args.args[0][0]
+    assert row == {"normalized_name": "databricks", "last_funding_checked_at": row["last_funding_checked_at"]}
+    assert "last_funding_date" not in row
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[1] == 0  # matched count
+
+
+def test_run_isolates_per_company_failure(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", return_value=[
+        {"id": 1, "company": "Databricks, Inc."},
+        {"id": 2, "company": "Acme Inc."},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_company_intel_by_normalized_names", return_value=[
+        {"id": 5, "normalized_name": "databricks"},
+        {"id": 6, "normalized_name": "acme"},
+    ])
+
+    def _upsert(rows):
+        if rows[0]["normalized_name"] == "acme":
+            raise RuntimeError("db exploded")
+        return True
+
+    mocker.patch.object(ingest_form_d.db, "upsert_company_funding", side_effect=_upsert)
+
+    ingest_form_d.run()  # must not raise despite "acme" failing
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "success"  # per-company failures are non-fatal
+    assert args[3] == 1  # errors count reflects the one isolated failure
+
+
+def test_run_never_raises_when_get_all_contacts_fails(mocker, no_op_record_run):
+    mocker.patch.object(ingest_form_d, "discover_form_d_urls",
+                         return_value={"2025q4": "https://www.sec.gov/x/2025q4_d.zip"})
+    mocker.patch.object(ingest_form_d, "download_quarter")
+    mocker.patch.object(ingest_form_d, "parse_form_d_quarter", return_value=[
+        {"issuer_name": "Databricks, Inc.", "filing_date": "2025-12-31",
+         "amount": 4082050250, "cik": "0001"},
+    ])
+    mocker.patch.object(ingest_form_d.db, "get_all_contacts", side_effect=RuntimeError("db down"))
+
+    ingest_form_d.run()  # must not raise
+
+    args, kwargs = no_op_record_run.call_args
+    assert args[0] == "failure"
+
+
 # ── Never-raises sweep ─────────────────────────────────────────────────────────
 
 def test_missing_tables_degrade_to_no_signal(tmp_path):
