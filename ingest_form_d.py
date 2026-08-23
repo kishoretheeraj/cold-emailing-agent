@@ -10,7 +10,7 @@ Governance (mirrors the H-1B gate): a company with no Form D match is
 have raised through a route that does not file Form D, or under a different
 legal entity name. This module only ever reports an observed raise.
 
-Currently parsing/aggregation only: no downloader, no Supabase writer, no
+Currently parsing/aggregation and download only: no Supabase writer, no
 matcher, no run(). Never imported by agent.py.
 
 NOTE for whoever adds a __main__/CLI entry point here: this module imports
@@ -21,9 +21,12 @@ silently lands in agent.log.
 """
 
 import csv
+import io
 import logging
 import os
 import re
+import urllib.request
+import zipfile
 
 import entity_resolution
 
@@ -251,7 +254,6 @@ def parse_form_d_links(html):
 def discover_form_d_urls():
     """Best-effort scrape of the SEC index page. Returns {} on any failure."""
     try:
-        import urllib.request
         request = urllib.request.Request(
             INDEX_URL, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -263,3 +265,39 @@ def discover_form_d_urls():
     links = parse_form_d_links(html)
     log.info(f"[FORMD] | link discovery | quarters_found={len(links)}")
     return links
+
+
+# ── Download ───────────────────────────────────────────────────────────────────
+
+_QUARTER_FILES = (SUBMISSION_FILE, ISSUERS_FILE, OFFERING_FILE)
+
+
+def download_quarter(url, dest_dir):
+    """
+    Fetch one Form D quarterly ZIP and extract its three tables into dest_dir
+    (cf. ingest_oflc_lca.download_file). SEC's internal archive path prefix
+    drifts between quarters, so extraction matches each member's basename
+    only and writes it flat into dest_dir -- never extractall(), which would
+    otherwise reproduce whatever nesting the archive happens to use and break
+    parse_form_d_quarter's exact-path lookup. Raises ValueError naming any of
+    the three tables that isn't found in the archive.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        data = response.read()
+
+    os.makedirs(dest_dir, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        members_by_basename = {}
+        for name in zf.namelist():
+            base = os.path.basename(name)
+            if base in _QUARTER_FILES:
+                members_by_basename[base] = name
+
+        missing = [f for f in _QUARTER_FILES if f not in members_by_basename]
+        if missing:
+            raise ValueError(f"Form D zip missing table(s) {missing}: {url}")
+
+        for base, member in members_by_basename.items():
+            with zf.open(member) as src, open(os.path.join(dest_dir, base), "wb") as out:
+                out.write(src.read())

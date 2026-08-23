@@ -5,6 +5,9 @@ Fixtures reproduce the real 2025Q4 DERA layout (three tab-separated tables
 joined on ACCESSIONNUMBER). No network access.
 """
 
+import io
+import zipfile
+
 import pytest
 
 import ingest_form_d
@@ -236,6 +239,73 @@ def test_link_discovery_ignores_unrelated_zips():
 def test_link_discovery_never_raises_on_garbage():
     assert ingest_form_d.parse_form_d_links("<html>nothing here</html>") == {}
     assert ingest_form_d.parse_form_d_links("") == {}
+
+
+# ── Download + extract ────────────────────────────────────────────────────────
+
+def _tsv_text(columns, rows):
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append("\t".join(str(row.get(c, "")) for c in columns))
+    return "\n".join(lines) + "\n"
+
+
+def _quarter_zip_bytes(prefix=""):
+    submission, issuer, offering = _filing("a1", "Databricks, Inc.", "31-DEC-2025", "4082050250")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(prefix + "FORMDSUBMISSION.tsv", _tsv_text(_SUBMISSION_COLS, [submission]))
+        zf.writestr(prefix + "ISSUERS.tsv", _tsv_text(_ISSUER_COLS, [issuer]))
+        zf.writestr(prefix + "OFFERING.tsv", _tsv_text(_OFFERING_COLS, [offering]))
+    return buf.getvalue()
+
+
+def _mock_urlopen(mocker, payload):
+    mock_resp = mocker.MagicMock()
+    mock_resp.read.return_value = payload
+    mock_urlopen = mocker.patch("urllib.request.urlopen")
+    mock_urlopen.return_value.__enter__.return_value = mock_resp
+    return mock_urlopen
+
+
+def test_download_quarter_extracts_nested_members_and_round_trips(tmp_path, mocker):
+    """SEC's own archive layout is opaque offline -- the real contract is with
+    parse_form_d_quarter, which reads exact filenames from dest_dir. Prove the
+    round trip, not just that files exist."""
+    _mock_urlopen(mocker, _quarter_zip_bytes(prefix="2025q4_d/"))
+    dest = tmp_path / "2025q4"
+
+    ingest_form_d.download_quarter(
+        "https://www.sec.gov/files/structureddata/data/form-d-data-sets/2025q4_d.zip", dest)
+
+    records = ingest_form_d.parse_form_d_quarter(dest)
+    assert len(records) == 1
+    assert records[0]["issuer_name"] == "Databricks, Inc."
+    assert records[0]["amount"] == 4082050250
+
+
+def test_download_quarter_extracts_flat_members(tmp_path, mocker):
+    _mock_urlopen(mocker, _quarter_zip_bytes(prefix=""))
+    dest = tmp_path / "2025q4"
+
+    ingest_form_d.download_quarter(
+        "https://www.sec.gov/files/datastandardsinnovation/data/form-d-data-sets/2025q4_d.zip", dest)
+
+    records = ingest_form_d.parse_form_d_quarter(dest)
+    assert len(records) == 1
+    assert records[0]["issuer_name"] == "Databricks, Inc."
+
+
+def test_download_quarter_raises_when_a_table_is_missing(tmp_path, mocker):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("FORMDSUBMISSION.tsv", "ACCESSIONNUMBER\n")
+        zf.writestr("ISSUERS.tsv", "ACCESSIONNUMBER\n")
+        # OFFERING.tsv omitted
+    _mock_urlopen(mocker, buf.getvalue())
+
+    with pytest.raises(ValueError, match="OFFERING.tsv"):
+        ingest_form_d.download_quarter("https://www.sec.gov/x/2025q4_d.zip", tmp_path / "2025q4")
 
 
 # ── Never-raises sweep ─────────────────────────────────────────────────────────

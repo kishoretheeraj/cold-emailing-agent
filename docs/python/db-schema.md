@@ -188,7 +188,7 @@ starve entity resolution of most of the real corpus; don't revert to it.
 - `REPLY_CLASSIFICATION_DEFAULT` — fallback classification prompt
 - `REPLY_RESPONSE_DEFAULT` — fallback reply response template
 
-## Form D funding signal (added 2026-08-19, migration NOT yet applied)
+## Form D funding signal (added 2026-08-19, migration applied 2026-08-23)
 
 `company_intel` gains four nullable columns via
 `20260819050000_add_funding_signal_to_company_intel.sql`:
@@ -197,13 +197,17 @@ starve entity resolution of most of the real corpus; don't revert to it.
 `last_funding_checked_at TIMESTAMPTZ`. Plus a partial index on
 `last_funding_date DESC WHERE last_funding_date IS NOT NULL`.
 
-**This migration is written but deliberately not applied, and `ingest_form_d.py`
-ships only the parsing/aggregation layer.** Still to be built before data can
-land: a downloader/unzipper, a `db.py` upsert accessor, a matcher onto
-`company_intel`, and a `run()` orchestrator. Applying the migration on its own
-yields empty columns with nothing to fill them. Never add a scheduled workflow
-step before the migration is applied — the mocked suite cannot catch a missing
-column.
+**The migration is applied on the remote DB** (pushed via `supabase db push` ahead
+of the writer/matcher — it's purely additive, `IF NOT EXISTS`, no backfill, no risk
+to existing rows). The columns exist but nothing writes to them yet:
+`ingest_form_d.py` ships only the parsing/aggregation/download layer.
+`download_quarter(url, dest_dir)` fetches and extracts one quarterly ZIP (cf.
+`ingest_oflc_lca.download_file`), matching archive members by basename so the
+extraction doesn't depend on SEC's internal path layout. Still to be built before
+data can land: a `db.py` upsert accessor, a matcher onto `company_intel`, and a
+`run()` orchestrator. Never add a scheduled workflow step until the writer and
+matcher exist — a step with nothing to run is dead CI time, not a safety issue,
+but also not worth scheduling yet.
 
 **Governance — identical to the H-1B column**: NULL means *not observed*, never
 "did not raise". A company may raise through a route that does not file Form D,

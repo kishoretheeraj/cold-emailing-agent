@@ -271,18 +271,23 @@ see docs/python/db-schema.md.
 "recently raised" signal on `company_intel`. Same decision-support posture as the
 H-1B gate: never an auto-reject, never a targeting change.
 
-**This ships the parsing and aggregation layer ONLY.** Three pieces do not exist
-yet and must be built before any data can land: a **downloader/unzipper** (there is
-no `download_file()` equivalent to `ingest_oflc_lca.py`'s), a **Supabase writer**
-(no `db.py` accessor), and a **matcher** resolving issuer names onto `company_intel`
-(no `visa_match_new.py` equivalent). There is also no `run()` orchestrator and no
-`__main__`.
+**This ships the parsing, aggregation, and download layer ONLY.** `ingest_form_d.download_quarter(url, dest_dir)`
+fetches one quarterly ZIP and extracts its three tables into `dest_dir`, matching each
+archive member on basename only (never `extractall()`, since SEC's internal path prefix
+drifts between quarters the same way the index page's does) — this is the
+`ingest_oflc_lca.py`-`download_file()` equivalent. Two pieces still do not exist and must
+be built before any data can land: a **Supabase writer** (no `db.py` accessor) and a
+**matcher** resolving issuer names onto `company_intel` (no `visa_match_new.py`
+equivalent). There is also no `run()` orchestrator and no `__main__`.
 
-The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) is written
-but **not applied**, and there is **no workflow step**. Applying the migration alone
-gives you empty columns and no path to fill them. Build order: downloader → writer →
-matcher → apply migration → workflow step. Never add the scheduled step before the
-migration — the suite mocks Supabase, so it cannot catch a missing column.
+The migration (`20260819050000_add_funding_signal_to_company_intel.sql`) **is applied**
+(pushed 2026-08-23 via `supabase db push`, ahead of the writer/matcher since it's purely
+additive — nullable columns, `IF NOT EXISTS`, no backfill, no risk to existing rows). The
+four `company_intel` columns exist on the remote DB now but nothing writes to them yet.
+There is still **no workflow step** — don't add one until the writer and matcher exist,
+since a scheduled step with nothing to run is just dead CI time, not a safety issue.
+Remaining build order: ~~downloader~~ → ~~apply migration~~ → writer → matcher →
+workflow step.
 
 **Governance invariant (same as the visa gate)**: no Form D match degrades to
 `unknown`/NULL, never to "did not raise". Absence is not-observed, not a negative.
