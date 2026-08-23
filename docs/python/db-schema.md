@@ -203,11 +203,25 @@ of the writer/matcher — it's purely additive, `IF NOT EXISTS`, no backfill, no
 to existing rows). `ingest_form_d.py` now ships the full pipeline: parsing,
 aggregation, `download_quarter(url, dest_dir)` (fetch + extract one quarterly ZIP,
 matching archive members by basename, cf. `ingest_oflc_lca.download_file`),
-`match_funding_to_company(normalized_company_name, funding_corpus)` (reuses
-`entity_resolution.resolve()`/`classify()`, writes only `"auto"`-tier matches —
-`needs_review`/`unknown` returns `None` since there's no human-review UI for this
-signal), `db.upsert_company_funding(rows)` (best-effort upsert, only touches payload
+`match_funding_to_company(normalized_company_name, funding_corpus)` (exact
+normalized-name match ONLY, deliberately no fuzzy fallback — see below),
+`db.upsert_company_funding(rows)` (best-effort upsert, only touches payload
 columns), and `run(quarters_back=N)` + `__main__`.
+
+**Matching is exact-match-only, not the H-1B gate's fuzzy `resolve()`/`classify()`.**
+Found live-verifying against real 2025Q3–2026Q2 SEC data before shipping: `"scale ai"`
+fuzzy-auto-matched a corpus entry `"scale social ai"` at score 100 — an unrelated company
+— because `token_set_ratio` scores a token-subset match near 100 regardless of the
+corpus name's extra tokens (a risk `entity_resolution.classify()`'s docstring already
+names). The H-1B gate tolerates that risk because `/visa-review` lets a human reject a
+bad match; funding claims have no review UI, so a bad auto-write there is permanent and
+unreviewable. Exact match (still through `normalize()` + `canonicalize_alias_group()`)
+trades missed variant-name matches — governance-safe, degrades to unknown — for zero
+false positives. `fold_issuer()` now canonicalizes through `canonicalize_alias_group()`
+too, not just `normalize()`: this is load-bearing for exact matching, since an aliased
+issuer name that only normalized would never equal its `company_intel` row's canonical
+key. `last_funding_amount` is `TOTALAMOUNTSOLD` for one Form D offering, not lifetime
+funding raised — don't render it as "total raised."
 
 `run()` only writes onto `company_intel` rows that **already exist** — it fetches
 existing rows via `get_company_intel_by_normalized_names` for every distinct contact
@@ -216,11 +230,10 @@ exclusively). `last_funding_checked_at` is written on every existing row it eval
 matched or not, per the migration's own column comment — safe here because it's always
 an UPDATE on a pre-existing row, never an INSERT.
 
-**Not yet done: a live-verified prod run and the workflow step.** The suite mocks
-Supabase and network calls, so green tests don't prove real rows land correctly (the
-H-1B gate found 4 bugs on its first live run despite a green suite — see Visa Intel
-Stage 1 below). Run `python ingest_form_d.py` manually and check `company_intel` for
-non-null `last_funding_date` rows before adding a step to `visa_intel_ingest.yml`.
+**Live-verified 2026-08-23**, same pattern as Stage 1 ("live-verified, 4 bugs found on
+first real run"): link discovery, `download_quarter`, and `parse_form_d_quarter` all ran
+clean against real SEC data on the first try; the fuzzy-matching false positive above was
+the one real bug found, fixed before any write reached prod.
 
 **Governance — identical to the H-1B column**: NULL means *not observed*, never
 "did not raise". A company may raise through a route that does not file Form D,

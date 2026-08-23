@@ -203,6 +203,29 @@ def test_upsert_rows_carry_source_and_normalized_name():
     assert row["normalized_name"] == ingest_form_d.entity_resolution.normalize("Acme, Inc.")
 
 
+def test_fold_issuer_canonicalizes_alias_group():
+    """
+    Regression for CLAUDE.md's alias-group invariant: canonicalize_alias_group
+    must run on every code path that produces a normalized_name, or an
+    aliased issuer's raise silently can't be found by match_funding_to_company
+    (which now does exact-match-only lookups against company_intel's
+    canonical "amazon" key -- fold_issuer previously keyed the accumulator
+    with bare normalize(), missing this).
+    """
+    acc = {}
+    ingest_form_d.fold_issuer(acc, {"issuer_name": "Amazon.com Services LLC",
+                                    "filing_date": "2025-12-31", "amount": 100})
+    funding_corpus = ingest_form_d.build_rows_for_upsert(acc)
+    assert funding_corpus[0]["normalized_name"] == "amazon"
+
+    row = ingest_form_d.match_funding_to_company(
+        ingest_form_d.entity_resolution.canonicalize_alias_group(
+            ingest_form_d.entity_resolution.normalize("Amazon")),
+        funding_corpus)
+    assert row is not None
+    assert row["last_funding_amount"] == 100
+
+
 # ── Link discovery ─────────────────────────────────────────────────────────────
 
 _INDEX_HTML = """
@@ -327,18 +350,36 @@ def test_match_funding_exact_normalized_name_match():
     }
 
 
-def test_match_funding_fuzzy_auto_tier_match():
-    # "databricks technologies" vs corpus "databricks" -- token subset match,
-    # multi-token query, scores above AUTO_THRESHOLD via token_set_ratio.
+def test_match_funding_is_exact_only_not_fuzzy():
+    # No fuzzy fallback: a near-miss variant name must not match, even one
+    # entity_resolution's fuzzy tier would classify as "auto".
     row = ingest_form_d.match_funding_to_company("databricks technologies", _FUNDING_CORPUS)
-    assert row is not None
-    assert row["normalized_name"] == "databricks technologies"
-    assert row["last_funding_amount"] == 4082050250
+    assert row is None
+
+
+def test_match_funding_rejects_token_subset_false_positive():
+    """
+    Regression for a real false positive found live-verifying against
+    2025Q3-2026Q2 SEC data: querying "scale ai" against a corpus containing
+    "scale social ai" auto-classified at score 100 under the fuzzy tier
+    (token_set_ratio scores token-subset matches near 100 regardless of the
+    corpus name's extra tokens -- exactly the risk entity_resolution.classify
+    already documents). There is no human-review UI for funding claims the
+    way there is for sponsors_h1b, so match_funding_to_company must not use
+    the fuzzy tier at all -- this proves the real "Scale AI" query gets no
+    match against the unrelated "Scale Social AI, Inc." filing.
+    """
+    corpus = [
+        {"normalized_name": "scale social ai", "issuer_name": "Scale Social AI, Inc.",
+         "last_funding_date": "2026-01-01", "last_funding_amount": 5000000,
+         "last_funding_source": "sec_form_d", "cik": "0009"},
+    ]
+    assert ingest_form_d.match_funding_to_company("scale ai", corpus) is None
 
 
 def test_match_funding_needs_review_tier_returns_none():
-    # Unrelated single-token query never classifies above review floor cleanly
-    # into auto -- guards against writing a low-confidence funding claim.
+    # Unrelated single-token query has no exact match -- guards against
+    # writing a low-confidence funding claim.
     row = ingest_form_d.match_funding_to_company("datastax", _FUNDING_CORPUS)
     assert row is None
 

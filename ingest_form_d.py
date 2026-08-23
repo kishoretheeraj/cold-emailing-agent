@@ -186,7 +186,7 @@ def fold_issuer(accumulator, record):
     """
     try:
         name = record.get("issuer_name") or ""
-        key = entity_resolution.normalize(name)
+        key = entity_resolution.canonicalize_alias_group(entity_resolution.normalize(name))
         if not key:
             return
         current = accumulator.get(key)
@@ -308,31 +308,32 @@ def match_funding_to_company(normalized_company_name, funding_corpus):
     """
     Resolves an existing company_intel normalized_name against this run's
     Form D funding_corpus (build_rows_for_upsert() output, keyed by each
-    issuer's own normalized name). Reuses entity_resolution.resolve()/
-    classify() -- the same calibrated machinery the H-1B gate uses -- rather
-    than a second matching algorithm.
+    issuer's own normalized name via the same entity_resolution.normalize()
+    + canonicalize_alias_group() pipeline used everywhere else -- no second
+    normalization scheme).
 
-    Only ever returns a row for an "auto"-tier match: a needs_review/unknown
-    classification returns None rather than write a possibly-wrong raise onto
-    the wrong company_intel row (there is no human-review UI for this signal
-    the way there is for sponsors_h1b, so a bad auto-write can't be caught
-    downstream). Returns a dict of just the matched funding fields, ready to
-    merge into a db.upsert_company_funding row -- never raises.
+    Exact normalized-name match only -- deliberately does NOT fall back to
+    entity_resolution.resolve()/classify()'s fuzzy tier. Live-verified against
+    real 2025Q3-2026Q2 data: querying "scale ai" auto-classified against
+    corpus entry "scale social ai" at score 100 (token_set_ratio scores a
+    token-subset match near 100 regardless of the corpus name's extra
+    tokens -- entity_resolution.classify's own docstring already flags this
+    as a known false-positive risk for multi-token queries). For the H-1B
+    gate that risk is tolerable because a human can reject a bad match via
+    the /visa-review screen; there is no equivalent review UI for funding
+    claims, so an unreviewed false positive here would silently misattribute
+    one company's raise to another. Exact match trades missed variant-name
+    matches (degrades to unknown, governance-safe) for zero false positives.
+    Returns a dict of just the matched funding fields, ready to merge into a
+    db.upsert_company_funding row -- never raises.
     """
     if not normalized_company_name or not funding_corpus:
         return None
 
     by_normalized = {r["normalized_name"]: r for r in funding_corpus}
     top = by_normalized.get(normalized_company_name)
-
     if top is None:
-        candidates = entity_resolution.resolve(normalized_company_name, list(by_normalized.keys()))
-        status, candidate = entity_resolution.classify(normalized_company_name, candidates)
-        if status != "auto" or candidate is None:
-            return None
-        top = by_normalized.get(candidate.normalized_name)
-        if top is None:
-            return None
+        return None
 
     return {
         "normalized_name": normalized_company_name,

@@ -277,14 +277,27 @@ aggregate → match → write → `run()` → `__main__`.**
 tables into `dest_dir`, matching each archive member on basename only (never
 `extractall()`, since SEC's internal path prefix drifts between quarters the same way
 the index page's does) — the `ingest_oflc_lca.py`-`download_file()` equivalent.
-`match_funding_to_company(normalized_company_name, funding_corpus)` reuses
-`entity_resolution.resolve()`/`classify()` (the H-1B gate's calibrated machinery, no
-second matcher) and **only ever writes an `"auto"`-tier match** — `needs_review`/`unknown`
-returns `None`, since there's no human-review UI for this signal the way there is for
-`sponsors_h1b`, so a bad auto-write can't be caught downstream.
+`match_funding_to_company(normalized_company_name, funding_corpus)` matches by exact
+normalized name only — `entity_resolution.normalize()` + `canonicalize_alias_group()`,
+same pipeline as everywhere else, but **deliberately does NOT fall back to
+`entity_resolution.resolve()`/`classify()`'s fuzzy tier.** Live-verified against real
+2025Q3–2026Q2 data before this was caught: querying `"scale ai"` fuzzy-auto-classified
+against a corpus entry `"scale social ai"` at score 100 — `token_set_ratio` scores a
+token-subset match near 100 regardless of the corpus name's extra tokens, a risk
+`entity_resolution.classify()`'s own docstring already flags. For the H-1B gate that's
+tolerable because a human can reject a bad match via `/visa-review`; there is no
+equivalent review UI for funding claims, so exact-match-only trades missed variant-name
+matches (governance-safe — degrades to unknown) for zero false positives.
 `db.upsert_company_funding(rows)` batch-upserts `company_intel` on `normalized_name`,
 same shape as `upsert_company_intel`; it only ever writes the columns it's handed
 (PostgREST upsert semantics), so it can never touch `sponsors_h1b`/`match_status`.
+`fold_issuer()` canonicalizes through `canonicalize_alias_group()` too (not just
+`normalize()`) — required by the alias-group invariant above, and load-bearing now that
+matching is exact-only: an aliased issuer name that only normalized (not canonicalized)
+would silently never match its company_intel row's canonical key.
+
+`last_funding_amount` is `TOTALAMOUNTSOLD` from a single Form D offering, not lifetime
+funding raised — don't render it as "total raised" in any UI.
 
 **`run()` only ever writes onto `company_intel` rows that already exist** (fetched via
 `db.get_company_intel_by_normalized_names` for every distinct contact company). It never
