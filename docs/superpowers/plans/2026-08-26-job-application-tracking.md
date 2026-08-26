@@ -147,7 +147,7 @@ git commit -m "feat: add job_applications table for application-tracking pipelin
   `get_job_applications(stage=None) -> list[dict]`. Later tasks and the frontend rely on these
   exact names and the `stage` keyword-only-by-convention filter.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Tests for db.py's job_applications accessors."""
@@ -229,12 +229,14 @@ def test_get_job_applications_propagates_on_error(mocker):
         db.get_job_applications()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py -v`
 Expected: FAIL with `AttributeError: module 'db' has no attribute 'create_job_application'`.
 
-- [ ] **Step 3: Implement**
+Confirmed 2026-08-26: all 10 tests failed with AttributeError before implementation.
+
+- [x] **Step 3: Implement**
 
 Append to `db.py`:
 
@@ -268,22 +270,29 @@ def get_job_applications(stage=None):
     return result.data or []
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py -v`
 Expected: 7 passed.
 
-- [ ] **Step 5: Run the full suite**
+Note: Task 3's functions were implemented in the same edit, so this run showed 10 passed, not 7 — all accounted for below.
+
+- [x] **Step 5: Run the full suite**
 
 Run: `python3 -m pytest`
 Expected: all existing tests still pass (no shared state touched).
 
-- [ ] **Step 6: Commit**
+Confirmed 2026-08-26: 832 passed.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add db.py tests/test_job_applications_db.py
 git commit -m "feat: add create_job_application and get_job_applications to db.py"
 ```
+
+Done 2026-08-26 (commit eeb869c) — combined with all four functions since they were
+written together; see Task 3's commit note below.
 
 ---
 
@@ -299,7 +308,7 @@ git commit -m "feat: add create_job_application and get_job_applications to db.p
   `get_job_application(application_id) -> dict | None`. The contact-manager PATCH route (Task 6)
   and page (Task 7) call these by these exact names.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_job_applications_db.py`:
 
@@ -330,12 +339,14 @@ def test_get_job_application_by_id(fake_client):
     assert result["company"] == "Acme"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py -v -k "update_job_application_stage or get_job_application_by_id"`
 Expected: FAIL with `AttributeError`.
 
-- [ ] **Step 3: Implement**
+Confirmed 2026-08-26 (as part of the combined Task 2/3 red run, all 10 tests failed).
+
+- [x] **Step 3: Implement**
 
 Append to the same `db.py` section:
 
@@ -358,22 +369,30 @@ def get_job_application(application_id):
 Add `datetime` to the existing `from datetime import date, timedelta` import line at the top of
 `db.py` so it reads `from datetime import date, datetime, timedelta`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py -v`
 Expected: 10 passed.
 
-- [ ] **Step 5: Run the full suite**
+Confirmed 2026-08-26: 10 passed.
+
+- [x] **Step 5: Run the full suite**
 
 Run: `python3 -m pytest`
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit**
+Confirmed 2026-08-26: 832 passed.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add db.py tests/test_job_applications_db.py
 git commit -m "feat: add update_job_application_stage and get_job_application to db.py"
 ```
+
+Done 2026-08-26, combined into commit eeb869c alongside Task 2 — all four
+db.py functions and all 10 tests were written and verified together in one pass,
+so Tasks 2 and 3 share a single commit rather than two.
 
 ---
 
@@ -472,7 +491,7 @@ git commit -m "feat: add JobApplication type to contact-manager"
   string, applied_date?, notes? }` returns `{ application: JobApplication }` (201) or `{ error }`
   (400/500). Task 7's page calls both.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
