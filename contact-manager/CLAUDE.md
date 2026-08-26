@@ -44,6 +44,9 @@ src/
 │   ├── api/update-draft/route.ts
 │   ├── api/trash-message/route.ts
 │   ├── api/preview-draft/route.ts
+│   ├── api/applications/route.ts
+│   ├── api/applications/[id]/route.ts
+│   ├── applications/page.tsx
 │   ├── import/page.tsx
 │   ├── lab/page.tsx
 │   ├── overview/page.tsx
@@ -84,6 +87,7 @@ src/
 │   ├── LabContactPicker.tsx
 │   ├── LabPromptEditor.tsx
 │   ├── LabPreviewPanel.tsx
+│   ├── ApplicationsPage.tsx
 │   └── Field.tsx
 └── lib/
     ├── supabase.ts
@@ -155,6 +159,26 @@ Scope semantics (mirrors `db.get_pause_scope()` in Python):
 
 `Nav.tsx` fetches this on mount and shows a Pause/Resume button and an amber/red banner
 when paused. "Run Agent" is disabled while `scope !== "none"`.
+
+### `/api/applications` and `/api/applications/[id]` — job application tracking
+
+**GET `/api/applications`** — optional `?stage=<stage>` query param. Returns
+`{ applications: JobApplication[] }`, newest first.
+
+**POST `/api/applications`** — body: `{ company: string, role: string, job_url?, source?,
+contact_id?: string, applied_date?, notes? }`. `company`/`role` required (400 if missing).
+Returns `{ application: JobApplication }` (201) or `{ error }` (400/500).
+
+**PATCH `/api/applications/[id]`** — body: `{ stage?: JobApplicationStage, notes?: string }`.
+Validates `stage` against `JOB_APPLICATION_STAGES` (400 if invalid or if no valid field is
+given). Returns `{ application: JobApplication }` or `{ error }` (400/500). This is the
+app's first dynamic (`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js
+16's route handler convention.
+
+`ApplicationsPage.tsx` (rendered at `/applications`) fetches the list on mount, adds new
+applications via a form, and changes `stage` inline via a `Select` with optimistic update
+(reverts and toasts on failure) — same pattern as the contacts side sheet's stage/tier
+changes.
 
 ### Gmail API routes (Phase 0 — bulk-send infrastructure)
 

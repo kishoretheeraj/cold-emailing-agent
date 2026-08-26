@@ -680,6 +680,22 @@ un-sent. The reply signal it would approximate already exists via
 `classifier_status` + `draft_history.edit_detected`. See
 docs/superpowers/specs/2026-08-25-engagement-outcome-tracking-design.md.
 
+## Job application tracking (full-fledged buildout, Phase 1)
+
+`job_applications` is a new table tracking the *application* pipeline
+(`saved → applied → phone_screen → onsite → offer/rejected/withdrawn/accepted`),
+deliberately independent of `contacts.stage` (which tracks the outreach
+relationship only, and is never touched by this feature). `contact_id` is
+nullable — an application can exist with no known contact — and `INTEGER` to
+match `contacts.id`'s actual type. Backend accessors live in `db.py`
+(`create_job_application`, `get_job_applications`, `update_job_application_stage`,
+`get_job_application`); the contact-manager exposes it via a `/applications`
+page and `/api/applications` + `/api/applications/[id]` routes. This is Phase 1
+of a larger 5-phase buildout (job/company discovery, resume intelligence,
+interview/offer tracking, email verification) — see
+docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md for the
+full plan and docs/python/db-schema.md for the table schema.
+
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 
 See docs/python/db-schema.md for table schemas, new columns, reply stages, new db.py functions, and new config.py constants.

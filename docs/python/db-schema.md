@@ -264,3 +264,46 @@ ingestion coverage looks thin — SEC publishes no manifest):
   set neither signal and leak through. Deliberately not over-filtered — tighter
   heuristics risk excluding real operating companies, and a fund only ever
   surfaces if a contact actually works there.
+
+## job_applications (full-fledged buildout, Phase 1)
+
+Application-tracking pipeline, independent of `contacts.stage`. Full design
+rationale: docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md.
+
+```sql
+CREATE TABLE job_applications (
+  id BIGSERIAL PRIMARY KEY,
+  contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+  company TEXT NOT NULL,
+  role TEXT NOT NULL,
+  job_url TEXT,
+  source TEXT,
+  stage TEXT NOT NULL DEFAULT 'saved'
+    CHECK (stage IN ('saved','applied','phone_screen','onsite','offer','rejected','withdrawn','accepted')),
+  applied_date DATE,
+  notes TEXT,
+  posting_snapshot JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+- `contact_id` is **nullable** — an application can exist with no known
+  contact (e.g. applied cold via a job board before any outreach contact
+  exists for that company) — and is `INTEGER`, matching `contacts.id`'s
+  actual Postgres type (not UUID).
+- `stage` is a full pipeline distinct from `contacts.stage`. It never touches
+  the four mirrored first-touch stage/action sets documented earlier in this
+  file's parent CLAUDE.md (`agent.py`, `emailer.py`,
+  `monitor.detect_sent_drafts`, `engagement_report._FIRST_TOUCH_DRAFTED_STAGES`).
+- `posting_snapshot` is JSONB (not typed columns) so future scraped fields
+  (salary, location, description excerpt, source-specific ids) can be added
+  without another migration — same reasoning as `draft_history.decision_context`.
+- `source` is free text (`"manual"`, `"ats_scan"`, `"jobright"`, etc.) — no
+  CHECK constraint, since new sources are expected as Phase 2 (job/company
+  discovery) lands.
+- Accessors in `db.py`: `create_job_application`, `get_job_applications`
+  (optional `stage` filter), `update_job_application_stage`,
+  `get_job_application`. Tests: `tests/test_job_applications_db.py`.
+- Frontend: `/applications` page and `/api/applications` +
+  `/api/applications/[id]` routes in `contact-manager/`.

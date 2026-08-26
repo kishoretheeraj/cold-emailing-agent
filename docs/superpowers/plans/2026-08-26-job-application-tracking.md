@@ -1259,7 +1259,7 @@ git commit -m "feat: add Applications nav link and e2e coverage"
 - Create: memory file under
   `/Users/kishoretheeraj/.claude/projects/-Users-kishoretheeraj-Documents-cold-email-agent/memory/`
 
-- [ ] **Step 1: Update the root CLAUDE.md**
+- [x] **Step 1: Update the root CLAUDE.md**
 
 Add a short new section after "Decision-context tagging" (before "See docs/python/reply-pipeline.md
 for..."), pointing at the spec and describing the table in one paragraph — mirror the compactness of
@@ -1267,20 +1267,20 @@ the existing "Form D Funding Signal" section's opening paragraph, not its full l
 pointer line: `Schema: see docs/python/db-schema.md.` if that file doesn't already get referenced
 for it.
 
-- [ ] **Step 2: Update `docs/python/db-schema.md`**
+- [x] **Step 2: Update `docs/python/db-schema.md`**
 
 Add a `## job_applications` section documenting the table's columns (copy from the migration's
 `CREATE TABLE`), the stage enum, and the governance note that `contact_id` is nullable and this
 table is independent of `contacts.stage`.
 
-- [ ] **Step 3: Update `contact-manager/CLAUDE.md`**
+- [x] **Step 3: Update `contact-manager/CLAUDE.md`**
 
 Add `api/applications/route.ts`, `api/applications/[id]/route.ts`, and `applications/page.tsx` to
 the module layout tree, and `ApplicationsPage.tsx` to the components list. Add a short
 `### /api/applications` subsection under "API route conventions" documenting the GET/POST/PATCH
 contract (mirror the existing `/api/agent-config` subsection's format and length).
 
-- [ ] **Step 4: Write the memory file**
+- [x] **Step 4: Write the memory file**
 
 Create
 `/Users/kishoretheeraj/.claude/projects/-Users-kishoretheeraj-Documents-cold-email-agent/memory/project-job-application-tracking.md`:
@@ -1310,13 +1310,13 @@ Also create a short `project-full-fledged-buildout.md` memory (type `project`) i
 yet, summarizing the overall 5-phase initiative and linking to the spec path, and add both to
 `MEMORY.md`'s index.
 
-- [ ] **Step 5: Final full-suite check across both halves of the repo**
+- [x] **Step 5: Final full-suite check across both halves of the repo**
 
 Run: `python3 -m pytest` (from repo root) and `npm test && npm run test:e2e` (from
 `contact-manager/`).
 Expected: everything green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add CLAUDE.md contact-manager/CLAUDE.md docs/python/db-schema.md
