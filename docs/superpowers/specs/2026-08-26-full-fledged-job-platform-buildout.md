@@ -162,3 +162,5 @@ next, and this spec's phase list is the map of which plan file is current. This 
 **Failure mode:** same as the three existing workflows — uploads its log as an artifact, runs
 `notify_failure.py` on `if: failure()`. A failed run does not advance the plan; the next hourly
 fire retries the same unchecked task.
+
+**2026-08-26 (build-continue.yml):** Phase 1 complete; Phase 2's plan needs to be written in an interactive session.
