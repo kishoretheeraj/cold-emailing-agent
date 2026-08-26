@@ -327,6 +327,25 @@ def log_drafted_email(contact_id, stage, subject, body,
         log.warning(f"[draft_history] insert failed for contact {contact_id}: {exc}")
 
 
+def get_draft_history_by_stages(stages):
+    """
+    Fetch draft_history rows whose stage is in `stages`, newest first.
+    Raises on failure -- an empty report and a failed read must not look alike.
+    """
+    # No .range() paging: the first-touch slice is in the low hundreds. If it
+    # ever crosses PostgREST's ~1000-row cap, page it like
+    # get_employer_h1b_stats_corpus().
+    result = _retry(lambda: (
+        get_client()
+        .table("draft_history")
+        .select("contact_id, stage, decision_context, drafted_at")
+        .in_("stage", list(stages))
+        .order("drafted_at", desc=True)
+        .execute()
+    ))
+    return result.data or []
+
+
 # ── research_cache helpers ─────────────────────────────────────────────────────
 
 def get_research_cache(cache_key):
@@ -381,6 +400,22 @@ def set_research_cache(cache_key, contact_name, contact_company,
             f"cache write failed: {exc}"
         )
         return False
+
+
+def get_research_reliability_map():
+    """
+    Return {cache_key: brief_reliable} for every research_cache row.
+    Read once for reporting; get_research_cache() is per-key and does not
+    select brief_reliable. Raises on failure.
+    """
+    result = _retry(lambda: (
+        get_client()
+        .table("research_cache")
+        .select("cache_key, brief_reliable")
+        .execute()
+    ))
+    return {r["cache_key"]: r.get("brief_reliable")
+            for r in (result.data or []) if r.get("cache_key")}
 
 
 # ── company_intel / employer_h1b_stats helpers ──────────────────────────────────
