@@ -870,7 +870,7 @@ git commit -m "feat: add PATCH /api/applications/[id]"
   `@/components/ui/Select`; `Badge` from `@/components/ui/Badge`; `toast` from `sonner`.
 - Produces: default export `ApplicationsPage` client component, rendered by `page.tsx`.
 
-- [ ] **Step 1: Write the server page wrapper**
+- [x] **Step 1: Write the server page wrapper**
 
 ```tsx
 import { ApplicationsPage } from "@/components/ApplicationsPage";
@@ -880,7 +880,7 @@ export default function Page() {
 }
 ```
 
-- [ ] **Step 2: Write the failing component test**
+- [x] **Step 2: Write the failing component test**
 
 ```tsx
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -943,12 +943,12 @@ describe("ApplicationsPage", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `npm test -- ApplicationsPage` (from `contact-manager/`)
 Expected: FAIL — `./ApplicationsPage` doesn't exist.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 ```tsx
 "use client";
@@ -1122,17 +1122,17 @@ export function ApplicationsPage() {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `npm test -- ApplicationsPage` (from `contact-manager/`)
 Expected: both tests pass.
 
-- [ ] **Step 6: Full unit suite + typecheck**
+- [x] **Step 6: Full unit suite + typecheck**
 
 Run: `npm test && npm run build` (from `contact-manager/`)
 Expected: 0 failures, build succeeds.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/app/applications/page.tsx src/components/ApplicationsPage.tsx src/components/ApplicationsPage.test.tsx
