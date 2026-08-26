@@ -11,7 +11,7 @@ from config import (
     REPLY_RESPONSE_DEFAULT,
 )
 from db import log_agent_event, update_contact, insert_email_message, log_drafted_email
-from emailer import _call_claude, _normalize_body
+from emailer import _call_claude, _normalize_body, hash_prompt_set
 from gmail import create_draft, apply_label_to_latest_draft
 import content_trust
 import preflight
@@ -150,9 +150,19 @@ def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
             stage_at_send="reply_drafted",
         )
 
+        # Decision-context tagging. Wrapped: an unwrapped raise here lands in
+        # the outer except AFTER the Gmail draft already exists, which would
+        # log a real draft as failed.
+        try:
+            decision_context = {"prompt_hash": hash_prompt_set(prompts)}
+        except Exception as exc:
+            decision_context = None
+            log.warning(f"[REPLY-DRAFT] | {name} | {company} | decision_context skipped: {exc}")
+
         log_drafted_email(
             contact_id, "reply_drafted", subject, body,
             message_id=message_id, gmail_draft_id=gmail_draft_id,
+            decision_context=decision_context,
         )
 
         # Gmail label (best-effort)

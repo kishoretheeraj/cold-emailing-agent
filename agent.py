@@ -24,7 +24,7 @@ import anthropic
 from config import ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL, EMAIL_MODEL, FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
 from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id
-from emailer import generate_email, prepare_email, finalize_email
+from emailer import generate_email, prepare_email, finalize_email, hash_prompt_set
 from gmail import create_draft, apply_label_to_latest_draft, find_sent_by_thread_id, find_sent_by_subject
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -328,9 +328,18 @@ def _execute_draft(contact, action, subject, body, thread_message_id,
         stage_at_send=current_stage,
     )
 
+    # Decision-context tagging: which live prompt set produced this draft.
+    # Wrapped because a fingerprint bug must never cost a draft_history row.
+    try:
+        decision_context = {"prompt_hash": hash_prompt_set(prompts)}
+    except Exception as exc:
+        decision_context = None
+        log.warning(f"{mode_tag} {name} | {company} | decision_context skipped: {exc}")
+
     log_drafted_email(
         contact["id"], current_stage, subject, body,
         message_id=message_id, gmail_draft_id=gmail_draft_id,
+        decision_context=decision_context,
     )
 
     label = ACTION_LABEL.get(action)

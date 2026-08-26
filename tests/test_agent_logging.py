@@ -1,11 +1,13 @@
 """Tests for agent._execute_draft and reply_drafter logging to draft_history."""
 
+import re
 from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
 import agent
+import emailer
 import reply_drafter
 from gmail import DraftResult
 
@@ -70,7 +72,8 @@ def _mock_batch_pipeline(mocker, contact, action, subject, body,
 # ── _execute_draft calls log_drafted_email ────────────────────────────────────
 
 def test_execute_draft_calls_log_drafted_email(mocker):
-    """agent._execute_draft must call log_drafted_email with message_id and gmail_draft_id."""
+    """agent._execute_draft must call log_drafted_email with message_id,
+    gmail_draft_id, and a decision_context prompt fingerprint."""
     contact = _build_contact()
     mocker.patch("agent.get_all_contacts", return_value=[contact])
     _mock_batch_pipeline(mocker, contact, "send_first_touch", "subj", "body")
@@ -89,6 +92,8 @@ def test_execute_draft_calls_log_drafted_email(mocker):
     _, kwargs = mock_log_draft.call_args
     assert kwargs["message_id"] == "<mid@gmail.com>"
     assert kwargs["gmail_draft_id"] == "r-draft99"
+    prompt_hash = kwargs["decision_context"]["prompt_hash"]
+    assert re.match(r"^[0-9a-f]{16}$", prompt_hash)
 
 
 def test_execute_draft_passes_x_gm_thrid_to_save_thread_info(mocker):
@@ -165,6 +170,7 @@ def test_reply_drafter_calls_log_drafted_email(mocker):
     _, kwargs = mock_log_draft.call_args
     assert kwargs["message_id"] == "<reply@gmail.com>"
     assert kwargs["gmail_draft_id"] == "r-reply77"
+    assert kwargs["decision_context"]["prompt_hash"] == emailer.hash_prompt_set({})
 
 
 def test_reply_drafter_skips_log_when_duplicate(mocker):
