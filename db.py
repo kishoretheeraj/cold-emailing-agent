@@ -303,7 +303,7 @@ def get_email_messages(contact_id):
 # ── draft_history helpers ──────────────────────────────────────────────────────
 
 def log_drafted_email(contact_id, stage, subject, body,
-                      message_id=None, gmail_draft_id=None):
+                      message_id=None, gmail_draft_id=None, decision_context=None):
     """Insert a row into draft_history when a Gmail draft is created. Best-effort."""
     from datetime import datetime, timezone
     row = {
@@ -319,6 +319,8 @@ def log_drafted_email(contact_id, stage, subject, body,
         row["message_id"] = message_id
     if gmail_draft_id is not None:
         row["gmail_draft_id"] = gmail_draft_id
+    if decision_context is not None:
+        row["decision_context"] = decision_context
     try:
         _retry(lambda: get_client().table("draft_history").insert(row).execute())
     except Exception as exc:

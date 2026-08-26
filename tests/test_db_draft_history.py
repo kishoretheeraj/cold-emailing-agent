@@ -57,6 +57,31 @@ def test_log_drafted_email_minimal(fake_client):
     assert "body" not in payload
 
 
+def test_log_drafted_email_with_decision_context(fake_client):
+    """decision_context passed → stored verbatim in the insert payload."""
+    db.log_drafted_email(
+        contact_id=7,
+        stage="first_touch_drafted",
+        subject="Hello there",
+        body="Body text",
+        message_id="<abc@gmail.com>",
+        gmail_draft_id="r123",
+        decision_context={"prompt_hash": "3f9a1c2b7e0d4f6a"},
+    )
+
+    payload = fake_client.table.return_value.insert.call_args.args[0]
+    assert payload["decision_context"] == {"prompt_hash": "3f9a1c2b7e0d4f6a"}
+
+
+def test_log_drafted_email_without_decision_context(fake_client):
+    """Backward compat: omitted → not in payload (stores NULL = not instrumented)."""
+    db.log_drafted_email(7, "first_touch_drafted", "subj", "body",
+                         message_id="<abc@gmail.com>")
+
+    payload = fake_client.table.return_value.insert.call_args.args[0]
+    assert "decision_context" not in payload
+
+
 def test_log_drafted_email_never_raises_on_supabase_error(mocker):
     """Supabase failure is swallowed — function must not raise."""
     mocker.patch.object(db, "get_client", side_effect=RuntimeError("db down"))
