@@ -18,6 +18,7 @@ emailer.py
 preflight.py
 content_trust.py
 extract_voice.py
+engagement_report.py
 reply_drafter.py
 research.py
 ats.py
@@ -162,7 +163,11 @@ Follow-up emails must land in the same Gmail thread as the original.
   set (`{"first_touch_drafted", "applied_intro_drafted", "networking_drafted"}`)
   to classify detection mode — it must list every first-touch `*_drafted`
   stage or that track silently loses subject-fallback sent-detection. See
-  docs/python/sent-detection.md.
+  docs/python/sent-detection.md. `engagement_report.py` keeps a **fourth**
+  copy, `_FIRST_TOUCH_DRAFTED_STAGES` — the same stage-level triple as
+  monitor's. It only affects which rows the report counts, never what gets
+  drafted, but a drifted copy makes the report silently undercount a whole
+  track.
 - After a first-touch draft is created, `agent.py` calls `save_thread_info()`
   to persist `message_id` and `original_subject` in Supabase.
 - For all follow-up actions, `agent.py` calls `get_thread_info()` first and
@@ -470,6 +475,8 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_visa_matching.py` — `visa_matching.resolve_company()`, including the confirmed/rejected-row-is-never-reclassified governance tests.
 - `tests/test_visa_match_new.py` — parametrized never-raises sweep for the daily matcher, plus per-company failure isolation.
 - `tests/test_ingest_form_d.py` — Form D date/amount parsing, the `YES`/`NO` primary-issuer flag, both pooled-fund exclusion signals, latest-filing-wins aggregation, link discovery across both observed SEC path prefixes, download-and-extract round trips (nested/flat zip layouts, missing-table raises), `match_funding_to_company`'s exact-match-only gating (including the live-discovered token-subset false-positive regression), `fold_issuer`'s alias-group canonicalization, `run()`'s never-creates-a-company_intel-row governance test, per-company error isolation, and a malformed-quarter never-raises sweep.
+- `tests/test_decision_context.py` — `emailer.hash_prompt_set` determinism, key-order independence, `{}`/`None` handling, unserializable values.
+- `tests/test_engagement_report.py` — the report's `db.py` accessors (following `test_db_draft_history.py`'s mock pattern), the contact join, distinct-contact grouping, NULL-renders-as-"unknown", small-`n` rate suppression, and a malformed-row never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
 
@@ -607,6 +614,54 @@ threaded through `prepare_email` → `ctx` → `finalize_email` exactly like
 (`VOICE_INJECTION_FALLBACK` + `FIRST_TOUCH_ACTIONS`). Both sides must change
 together or the Prompt Lab preview silently diverges from production. The em-dash
 ban and `forbidden_phrases` still win over anything Voice DNA observes.
+
+## Decision-context tagging
+
+`draft_history.decision_context JSONB` records **which live prompt configuration
+produced a draft**, so a prompt rewrite can later be correlated with reply rates.
+`prompts` rows are edited live via the contact-manager and have no version column,
+so nothing else ties a draft back to the prompt values in effect when it was
+generated.
+
+`emailer.hash_prompt_set(prompts)` is the fingerprint: SHA-256 of
+`json.dumps(prompts, sort_keys=True, default=str)`, first 16 hex chars — the same
+truncation `gmail.create_draft` uses for `X-Cold-Email-Key`. Pure, no I/O. It is a
+**whole-snapshot** hash, not per-template: the question is "which prompt
+configuration was live," and `prompts` has no version column to derive anything
+finer from.
+
+Two call sites, both of which already receive the live `prompts` dict:
+`agent._execute_draft` and `reply_drafter.draft_reply`. Each computes
+`{"prompt_hash": hash_prompt_set(prompts)}` and passes it to `log_drafted_email`.
+Both wrap the hash computation in a `try/except` — a fingerprint bug must never
+cost a `draft_history` row or block a draft (in `reply_drafter.draft_reply`
+especially: an unwrapped raise there would land in the outer `except` *after* the
+Gmail draft already exists, logging a real draft as failed).
+
+**No prompt-assembly change** — `prepare_email`/`finalize_email`/`generate_email`
+signatures are untouched, so unlike Voice DNA there is **no
+`assembleUserMessage.ts` mirror**: nothing about what gets built changed, only
+what gets recorded about it afterwards.
+
+**Governance invariant (same posture as the visa gate and Form D):** a NULL
+`decision_context` means *not instrumented*, never "no context" and never zero.
+Existing rows stay NULL permanently — the prompt snapshot behind a historical
+draft was never captured, so no backfill is possible. Any reader must render NULL
+as "unknown".
+
+`engagement_report.py` (manual, **not** in cron, read-only) prints the join:
+first-touch `draft_history` rows → contact `name`/`company`/`classifier_status` →
+`research_cache.brief_reliable`. It is **a raw join, not a stats engine** — the
+per-contact table always prints, but a per-`prompt_hash` reply rate prints only at
+`n >= 5` (distinct contacts, not draft rows); below that it prints the count with
+"n too small for a rate" rather than a misleading percentage.
+
+**Part A of that spec (tracer links / open-and-click tracking) is rejected, not
+deferred.** Do not add a tracking pixel or a redirect domain: it would be the only
+feature here that changes the wire format of an outgoing email, and it cannot be
+un-sent. The reply signal it would approximate already exists via
+`classifier_status` + `draft_history.edit_detected`. See
+docs/superpowers/specs/2026-08-25-engagement-outcome-tracking-design.md.
 
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 

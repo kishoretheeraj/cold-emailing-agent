@@ -11,6 +11,7 @@
 - `drafted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `sent_subject TEXT, sent_body TEXT, sent_at TIMESTAMPTZ` — populated by `/api/send-draft`
 - `edit_detected BOOLEAN` — true when user edited the draft in Gmail before sending
+- `decision_context JSONB` — prompt-set fingerprint in effect at generation time: `{"prompt_hash": "<16 hex>"}` from `emailer.hash_prompt_set()`. **NULL means not instrumented, never "no context" and never zero.** Additive migration, no backfill (the historical prompt snapshot was never captured). JSONB rather than a typed column so a future signal can be added without another migration — the `agent_events.metadata` precedent. No index: the report reads the small first-touch slice and groups in Python. Added 2026-08-25, migration `supabase/migrations/20260825000000_add_decision_context_to_draft_history.sql`.
 - RLS disabled. Written by `db.log_drafted_email()` (called from `agent._execute_draft` and `reply_drafter.draft_reply`).
 - Migration: `supabase/migrations/20260520000001_create_draft_history.sql`
 
@@ -174,7 +175,9 @@ starve entity resolution of most of the real corpus; don't revert to it.
 - `update_message_id(contact_id, message_id)` — updates only `message_id`; called by `detect_sent_drafts` when Gmail rewrites the ID on send (threading fix)
 - `record_run(status, drafted, skipped, errors, elapsed, failure_reason, source)` — `source` defaults to `'agent'`; pass `source='monitor'` from monitor.py
 - `set_research_cache(..., queries_generated, brief_reliable)` — two new optional params populate the analytics columns
-- `log_drafted_email(contact_id, stage, subject, body, message_id=None, gmail_draft_id=None)` — best-effort insert to draft_history; never raises. Called from `agent._execute_draft` and `reply_drafter.draft_reply` after IMAP APPEND.
+- `log_drafted_email(contact_id, stage, subject, body, message_id=None, gmail_draft_id=None, decision_context=None)` — best-effort insert to draft_history; never raises. Called from `agent._execute_draft` and `reply_drafter.draft_reply` after IMAP APPEND. `decision_context` is written only when not None, so an omitted value stores NULL ("not instrumented").
+- `get_draft_history_by_stages(stages)` — selects `contact_id, stage, decision_context, drafted_at` for the given stages, `drafted_at DESC`; **raises** on failure (an empty report and a failed read must not look alike). Read by `engagement_report.py`. No `.range()` paging — the first-touch slice is in the low hundreds; page it like `get_employer_h1b_stats_corpus()` if it ever crosses PostgREST's ~1000-row cap.
+- `get_research_reliability_map()` — `{cache_key: brief_reliable}` for every `research_cache` row, read once for reporting; raises on failure. Separate from `get_research_cache(cache_key)`, which is per-key and does not select `brief_reliable`.
 - `get_employer_h1b_stats_corpus()` — fetches id/normalized_name/lca_recent_2fy/latest_filing_fy/approval_rate for every cached employer; raises on failure (caller must have a fresh corpus to match against).
 - `upsert_employer_h1b_stats(rows)` — best-effort batch upsert on `normalized_name`; never raises.
 - `get_company_intel_by_normalized_names(names)` — raises on failure (used to check confirmed/rejected status before a re-match, so a silent failure would risk overwriting a human decision).
