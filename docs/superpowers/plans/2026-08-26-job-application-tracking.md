@@ -3,10 +3,10 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **For the hourly auto-continue workflow:** find the first `- [ ]` below (top to bottom across
-> all tasks) and execute only that task's remaining steps, then stop. Do not skip ahead. When every
-> box in this file is checked, report back to
-> `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md` and start Phase 2's
-> plan using the `writing-plans` skill against that spec's Phase 2 stub.
+> all tasks) and execute only that task's remaining steps, then stop. Do not skip ahead. Every box
+> in this file is now checked — Phase 1 is complete. Do NOT author Phase 2's plan yourself; commit
+> a note to the spec and stop. A human writes Phase 2's detailed plan in an interactive session
+> (where the `writing-plans` skill actually loads), then this workflow resumes executing it.
 
 **Goal:** Give the agent a job-application pipeline (`saved → applied → phone_screen → onsite →
 offer/rejected/withdrawn/accepted`) that is independent of `contacts.stage`, with a Supabase table,

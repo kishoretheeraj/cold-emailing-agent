@@ -415,7 +415,12 @@ Four workflows live in `.github/workflows/`:
   run, commits, and pushes straight to `main`. When a step needs a capability the
   runner doesn't have (e.g. `supabase db push` with no CI-side Supabase auth), it
   leaves that box unchecked with a `<!-- blocked: ... -->` note instead of skipping
-  it silently. Disables itself (`gh workflow disable`) once every phase's plan is
+  it silently. **Never authors the next phase's plan itself** — plugin skills
+  (`superpowers:writing-plans`) aren't loadable in this action without inputs it
+  doesn't set, so plan-writing stays a human, interactive-session task; the workflow
+  commits a note and stops at a phase boundary instead. Installs Python deps via
+  `requirements-dev.txt` (not `requirements.txt`) since pytest/pytest-mock live there.
+  Disables itself (`gh workflow disable`) once every phase's plan is
   fully checked. `concurrency: { group: build-continue, cancel-in-progress: false }`
   so hourly fires queue instead of racing if one run overlaps the next. Needs
   `contents: write` + `actions: write` (self-disable) + `id-token: write` (the

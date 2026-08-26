@@ -133,15 +133,21 @@ window — same pattern this repo already trusts three times over.
 1. Checks out `main`.
 2. Reads the current phase's plan file under `docs/superpowers/plans/` for the first unchecked
    `- [ ]` task.
-3. If every task in the current phase's plan is checked, and the spec above lists a next phase:
-   invokes Claude Code headless to *write* that phase's detailed plan (using the `writing-plans`
-   skill's structure) before starting it. This is why Phases 2-5 are stubs now, not full plans —
-   the stub is exactly the brief a cold session needs to write the real plan when its turn comes.
-4. Otherwise, invokes Claude Code headless (`claude -p "..."`, non-interactive) with a prompt that
-   points at the next unchecked task and instructs it to follow
-   `superpowers:executing-plans` conventions: implement the task, run its tests, and only commit
-   when green — the repo's Definition of Done (tests pass, CLAUDE.md updated, memory updated)
-   applies to every commit this workflow makes, exactly as it would to a commit made interactively.
+3. **If every task in the current phase's plan is checked and the next phase's plan doesn't exist
+   yet, it does NOT author that plan itself.** It commits a one-line note to this spec and stops.
+   Reasoning (corrected after the initial design — see the advisor review that caught this before
+   the workflow ever ran): the `writing-plans` skill this design originally assumed the workflow
+   would invoke is a `superpowers` **plugin** skill, not available in a plain
+   `anthropics/claude-code-action` environment without `plugin_marketplaces`/`plugins` inputs this
+   workflow doesn't set — and even if it were installed, `--allowedTools` here omits `Skill`.
+   Phase plans are written by a human in an interactive session where the skill actually loads;
+   this workflow only ever *executes* an already-written plan.
+4. Otherwise, invokes Claude Code headless (`claude -p "..."`, non-interactive) with a
+   self-contained prompt (no skill references) that points at the next unchecked task, implements
+   it, runs its tests, and only commits when green — the repo's Definition of Done (tests pass,
+   CLAUDE.md updated) applies to every commit this workflow makes. The prompt explicitly skips any
+   plan step that asks it to write a memory file under `~/.claude/projects/` — that path doesn't
+   exist in the CI environment.
 5. Commits with `Co-Authored-By: Claude <noreply@anthropic.com>` and pushes to `main` directly (no
    PR review loop — this is the same trust level the user already grants interactive sessions per
    their global CLAUDE.md: "run tests, commit, and push without being asked").
