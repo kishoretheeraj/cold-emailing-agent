@@ -378,7 +378,7 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
 
 ## GitHub Actions
 
-Three workflows live in `.github/workflows/`:
+Four workflows live in `.github/workflows/`:
 
 - **`daily_agent.yml`** — runs `agent.py` Mon-Fri at 4:37am EST (cron
   `37 9 * * 1-5`). Has a `check-duplicate` preflight job: if a
@@ -403,9 +403,26 @@ Three workflows live in `.github/workflows/`:
   steps after the first LCA ingest are `continue-on-error: true`. `timeout-minutes: 120`
   (vs. 30 for the daily job) — a fresh ingest processes several fiscal years of DOL
   data. First run should be triggered manually via `workflow_dispatch`.
+- **`build-continue.yml`** — hourly (`0 * * * *`), a self-driving continuation of the
+  full-fledged job-platform buildout (see
+  `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`). Runs
+  `anthropics/claude-code-action@v1` with `ANTHROPIC_API_KEY` — **never** a
+  `CLAUDE_CODE_OAUTH_TOKEN`, deliberately, because that would bill against the same
+  rolling 5-hour subscription window this workflow exists to work around, defeating
+  the entire point. Reads the current phase's plan file under
+  `docs/superpowers/plans/` (the plan's own `- [ ]`/`- [x]` checkboxes ARE the
+  progress state — no separate tracking file exists), executes exactly one task per
+  run, commits, and pushes straight to `main`. When a step needs a capability the
+  runner doesn't have (e.g. `supabase db push` with no CI-side Supabase auth), it
+  leaves that box unchecked with a `<!-- blocked: ... -->` note instead of skipping
+  it silently. Disables itself (`gh workflow disable`) once every phase's plan is
+  fully checked. `concurrency: { group: build-continue, cancel-in-progress: false }`
+  so hourly fires queue instead of racing if one run overlaps the next. Needs
+  `contents: write` + `actions: write` (self-disable) + `id-token: write` (the
+  action's own auth) in addition to the standard secrets below.
 
-All three workflows: upload the relevant `.log` file as an artifact (30-day
-retention), and run `notify_failure.py` in an `if: failure()` step.
+All four workflows: upload the relevant `.log` file as an artifact (30-day
+retention) where one exists, and run `notify_failure.py` in an `if: failure()` step.
 All support `workflow_dispatch` for manual triggers.
 Python version: **3.11**. Dependencies installed via `requirements.txt`.
 

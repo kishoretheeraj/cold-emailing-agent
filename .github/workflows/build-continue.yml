@@ -1,0 +1,136 @@
+name: Build Continue
+
+# Autonomous continuation of the full-fledged job-platform buildout
+# (docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md).
+#
+# Exists specifically so the multi-phase build doesn't stall on the
+# interactive session's 5-hour subscription usage window: this workflow
+# authenticates with ANTHROPIC_API_KEY (API-credit billed, independent of
+# that window — same as daily_agent.yml / monitor.yml / visa_intel_ingest.yml),
+# never with a Claude subscription OAuth token, on purpose.
+#
+# The progress doc IS the plan file under docs/superpowers/plans/ — its
+# `- [ ]` / `- [x]` checkboxes are the only state this workflow reads or
+# writes. See the spec above for the full design rationale.
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # hourly
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-continue
+  cancel-in-progress: false   # queue, never run two continuations in parallel
+
+jobs:
+  continue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50   # leave headroom before the next hourly fire
+    permissions:
+      contents: write
+      actions: write   # needed for `gh workflow disable` once every phase is done
+      id-token: write  # required by anthropics/claude-code-action's default auth
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true   # required so `git push` works from inside the Claude step
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: contact-manager/package-lock.json
+
+      - name: Install contact-manager dependencies
+        working-directory: contact-manager
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: contact-manager
+        run: npx playwright install --with-deps chromium
+
+      - name: Configure git identity
+        run: |
+          git config user.name "cold-email-agent-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Continue the build
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are continuing an autonomous multi-phase build in this repository. Read
+            docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md for the
+            overall plan, then:
+
+            1. Find the current phase's plan file under docs/superpowers/plans/ (the spec's
+               phase list names it; today that's
+               docs/superpowers/plans/2026-08-26-job-application-tracking.md for Phase 1). If
+               every checkbox in that plan is checked, and the spec lists a next phase: use the
+               superpowers:writing-plans skill to write that next phase's detailed plan into
+               docs/superpowers/plans/ from its stub in the spec, commit it, and stop for this
+               run — a later run will start executing it.
+
+            2. Otherwise, find the first unchecked `- [ ]` step (top to bottom) in the current
+               phase's plan file. Execute ONLY that one task's remaining steps (a "task" is a
+               top-level `## Task N` section) end-to-end, following superpowers:executing-plans
+               conventions: write the test, run it, implement, run it again, run the full
+               relevant test suite, then commit. Check off every completed step's box with
+               `- [x]` in the plan file itself as you go, and commit that update in the same
+               commit as the code it belongs to.
+
+            3. Follow this repo's Definition of Done (root CLAUDE.md): tests must pass before
+               any commit. On the LAST task of a plan, also update the relevant CLAUDE.md
+               file(s) and write/update the memory file(s) that task's own steps specify.
+
+            4. If a step needs a capability this environment doesn't actually have (for example
+               `supabase db push` with no working Supabase CLI authentication, or any other CLI
+               that isn't installed/authenticated here), do NOT skip it silently and do NOT mark
+               it checked. Leave the checkbox unchecked, add a one-line HTML comment
+               (`<!-- blocked: ... -->`) right after it explaining exactly what's blocked and
+               why, commit that note by itself, and stop — do not proceed to later tasks in this
+               plan.
+
+            5. Never force-push. Never rewrite git history. Never modify anything under
+               .github/workflows/ and never touch repository secrets. Never run
+               `git push --force` or `git reset --hard`. If you hit a failure you can't resolve
+               within this run, leave the plan file in its last-known-good checked state (don't
+               half-check a task), commit whatever passing work you have, and stop.
+
+            6. When you finish this run — whether you completed a task, wrote a new phase's
+               plan, or hit a blocker — commit and push directly to main with `git push`. Use
+               commit messages in this repo's normal style (check `git log` for examples).
+
+            7. If, after step 1's check, EVERY phase listed in the spec has a fully-checked plan
+               file, run `gh workflow disable build-continue.yml` so this workflow stops firing,
+               and commit a final note in the spec file marking it complete.
+
+            Work within a single focused task per run — do not try to rush through multiple
+            tasks in one invocation. It is fine, and expected, for this to take many hourly runs
+            to finish one phase.
+          claude_args: |
+            --model claude-sonnet-5
+            --max-turns 60
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep"
+
+      - name: Notify on failure
+        if: failure()
+        run: python notify_failure.py
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
