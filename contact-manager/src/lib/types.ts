@@ -226,3 +226,50 @@ export function filtersEqual(
     a.sponsorsH1bOnly === b.sponsorsH1bOnly
   );
 }
+
+export type JobApplicationStage =
+  | "saved"
+  | "applied"
+  | "phone_screen"
+  | "onsite"
+  | "offer"
+  | "rejected"
+  | "withdrawn"
+  | "accepted";
+
+export const JOB_APPLICATION_STAGES: JobApplicationStage[] = [
+  "saved",
+  "applied",
+  "phone_screen",
+  "onsite",
+  "offer",
+  "rejected",
+  "withdrawn",
+  "accepted",
+];
+
+export const JOB_APPLICATION_STAGE_LABELS: Record<JobApplicationStage, string> = {
+  saved: "Saved",
+  applied: "Applied",
+  phone_screen: "Phone screen",
+  onsite: "Onsite",
+  offer: "Offer",
+  rejected: "Rejected",
+  withdrawn: "Withdrawn",
+  accepted: "Accepted",
+};
+
+export type JobApplication = {
+  id: string;
+  contact_id: string | null;
+  company: string;
+  role: string;
+  job_url: string | null;
+  source: string | null;
+  stage: JobApplicationStage;
+  applied_date: string | null;
+  notes: string | null;
+  posting_snapshot: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+};

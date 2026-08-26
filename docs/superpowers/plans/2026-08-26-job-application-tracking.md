@@ -406,7 +406,7 @@ so Tasks 2 and 3 share a single commit rather than two.
   `JOB_APPLICATION_STAGE_LABELS` map, `JobApplication` type. Tasks 5-7 import all four from
   `@/lib/types`.
 
-- [ ] **Step 1: Add the type and constants**
+- [x] **Step 1: Add the type and constants**
 
 Append to `contact-manager/src/lib/types.ts`:
 
@@ -464,12 +464,14 @@ export type JobApplication = {
 the root CLAUDE.md's "contact_id Type Fix" note. Every API route below returns/accepts them as
 strings and does the `Number(...)` conversion only at the Supabase-query boundary.
 
-- [ ] **Step 2: Typecheck**
+- [x] **Step 2: Typecheck**
 
 Run: `npm run build`
 Expected: no new TypeScript errors (this step only adds exported types, nothing consumes them yet).
 
-- [ ] **Step 3: Commit**
+Confirmed 2026-08-26: build succeeded.
+
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/lib/types.ts
