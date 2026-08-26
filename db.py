@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import logging
 import re
 import time
@@ -525,3 +525,47 @@ def update_contact_company_intel_id(contact_id, company_intel_id):
     except Exception as exc:
         log.warning(f"[company_intel] contact {contact_id} link failed: {exc}")
         return False
+
+
+# ── Job application tracking (Phase 1 of full-fledged buildout) ─────────────────
+
+def create_job_application(company, role, job_url=None, source=None, contact_id=None,
+                            applied_date=None, notes=None, posting_snapshot=None):
+    """Create a new job application row, starting at stage 'saved'."""
+    payload = {
+        "company": company,
+        "role": role,
+        "job_url": job_url,
+        "source": source,
+        "contact_id": contact_id,
+        "applied_date": applied_date,
+        "notes": notes,
+        "posting_snapshot": posting_snapshot,
+        "stage": "saved",
+    }
+    result = _retry(lambda: get_client().table("job_applications").insert(payload).execute())
+    return result.data[0] if result.data else None
+
+
+def get_job_applications(stage=None):
+    """Fetch job applications, optionally filtered by stage, newest first."""
+    query = get_client().table("job_applications").select("*")
+    if stage is not None:
+        query = query.eq("stage", stage)
+    result = _retry(lambda: query.order("created_at", desc=True).execute())
+    return result.data or []
+
+
+def update_job_application_stage(application_id, stage):
+    """Update a job application's stage."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"stage": stage, "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
+def get_job_application(application_id):
+    """Fetch a single job application by id."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .select("*").eq("id", application_id).single().execute())
+    return result.data
