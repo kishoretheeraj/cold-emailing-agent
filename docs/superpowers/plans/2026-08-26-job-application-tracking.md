@@ -693,7 +693,7 @@ git commit -m "feat: add GET/POST /api/applications"
   `{ application: JobApplication }` or `{ error }` (400/500). Task 7's page calls this on stage
   change.
 
-- [ ] **Step 1: Check Next.js 16 dynamic-route param convention before writing anything**
+- [x] **Step 1: Check Next.js 16 dynamic-route param convention before writing anything**
 
 This repo has no existing `[id]`-style route yet — this is the first one. Per
 `contact-manager/AGENTS.md`, read the relevant guide under `node_modules/next/dist/docs/` (grep for
@@ -701,7 +701,7 @@ This repo has no existing `[id]`-style route yet — this is the first one. Per
 `Promise` in this installed Next.js version before writing Step 3. Do not assume based on prior Next
 versions.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -766,12 +766,12 @@ describe("PATCH /api/applications/[id]", () => {
 });
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `npm test -- "applications/\[id\]"` (from `contact-manager/`)
 Expected: FAIL — file doesn't exist.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 Write `route.ts` using whatever `params` shape Step 1 confirmed (the test above assumes
 `Promise<{ id: string }>`, matching the rest of this Next.js version's async-params convention — if
@@ -843,12 +843,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `npm test -- "applications/\[id\]"` (from `contact-manager/`)
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add "src/app/api/applications/[id]/route.ts" "src/app/api/applications/[id]/route.test.ts"
