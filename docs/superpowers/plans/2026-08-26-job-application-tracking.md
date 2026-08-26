@@ -591,12 +591,12 @@ describe("POST /api/applications", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- route.test.ts` (from `contact-manager/`)
 Expected: FAIL — `./route` has no exported `GET`/`POST` (file doesn't exist yet).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 export const runtime = "nodejs";
@@ -667,12 +667,12 @@ export async function POST(req: Request) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm test -- route.test.ts` (from `contact-manager/`)
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/api/applications/route.ts src/app/api/applications/route.test.ts
