@@ -64,7 +64,7 @@ section).
   applied_date DATE NULL, notes TEXT NULL, posting_snapshot JSONB NULL, created_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ)`.
 
-- [ ] **Step 1: Write the migration**
+- [x] **Step 1: Write the migration**
 
 ```sql
 -- job_applications: application-tracking layer, separate from contacts.stage.
@@ -110,17 +110,23 @@ COMMENT ON TABLE job_applications IS
   'Application-tracking pipeline (saved -> applied -> ... -> offer/rejected), independent of contacts.stage which tracks outreach only.';
 ```
 
-- [ ] **Step 2: Push the migration**
+- [x] **Step 2: Push the migration**
 
 Run: `supabase db push`
 Expected: migration applies cleanly with no errors (additive-only, so no data at risk).
 
-- [ ] **Step 3: Verify the table exists**
+Done 2026-08-26 (interactive session, not CI — the CI runner has no Supabase CLI
+authentication; see the auto-continue workflow's blocked-step handling for what to do
+if a future migration task hits this same gap and no human is available to push it
+manually).
 
-Run: `supabase db execute --sql "select column_name, data_type from information_schema.columns where table_name = 'job_applications' order by ordinal_position;"`
-Expected: 11 rows matching the columns above.
+- [x] **Step 3: Verify the table exists**
 
-- [ ] **Step 4: Commit**
+Run: `supabase db query --linked "select column_name, data_type from information_schema.columns where table_name = 'job_applications' order by ordinal_position;"`
+(note: `supabase db execute` is not a real subcommand — `db query --linked` is correct)
+Expected: 11 rows matching the columns above. Confirmed 2026-08-26.
+
+- [x] **Step 4: Commit**
 
 ```bash
 git add supabase/migrations/20260826000000_create_job_applications.sql
