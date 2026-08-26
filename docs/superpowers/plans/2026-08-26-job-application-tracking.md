@@ -1151,7 +1151,7 @@ git commit -m "feat: add /applications page"
 **Interfaces:**
 - Consumes: `/applications` route from Task 7.
 
-- [ ] **Step 1: Add the nav link**
+- [x] **Step 1: Add the nav link**
 
 In `contact-manager/src/components/Nav.tsx`, add one entry to the `NAV_LINKS` array (placed after
 `"Contacts"` since applications relate most closely to the contacts list):
@@ -1171,7 +1171,7 @@ const NAV_LINKS = [
 ] as const;
 ```
 
-- [ ] **Step 2: Update the shell regression test**
+- [x] **Step 2: Update the shell regression test**
 
 In `contact-manager/tests/e2e/00-shell.spec.ts`, in the `"main page has expected chrome..."` test
 (starts at line 8), add a new locator line in the same style as the existing ones (e.g. line 27's
@@ -1186,7 +1186,7 @@ Contacts in the nav:
 (Match the exact `await expect(...).toBeVisible()` line that follows each of the existing
 `const xLink = page.getByRole(...)` declarations at lines 15-47 — copy that two-line shape.)
 
-- [ ] **Step 3: Write the new page's e2e smoke test**
+- [x] **Step 3: Write the new page's e2e smoke test**
 
 Read `contact-manager/tests/e2e/helpers.ts` for `mockSupabase(page)` usage first, then mirror an
 existing simple page spec (e.g. the `/overview` or `/runs` spec) for structure:
@@ -1227,7 +1227,7 @@ test.describe("Applications page", () => {
 });
 ```
 
-- [ ] **Step 4: Run the full e2e suite**
+- [x] **Step 4: Run the full e2e suite**
 
 Run: `npm run test:e2e` (from `contact-manager/`)
 Expected: all pass, including the new spec. Read the captured screenshot
@@ -1235,13 +1235,13 @@ Expected: all pass, including the new spec. Read the captured screenshot
 and the new nav link before treating this step as done — per this repo's rule, a passing assertion
 is not itself proof of correct visual output.
 
-- [ ] **Step 5: Update the e2e test count**
+- [x] **Step 5: Update the e2e test count**
 
 In `contact-manager/CLAUDE.md`, update `**Current test count: 76**` to the new total (76 + however
 many new `test(...)` blocks Step 3 added) and update the `(vitest: ... passed, playwright: ...
 passed)` line to match the new totals from Task 7's and this task's runs.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/components/Nav.tsx tests/e2e/00-shell.spec.ts tests/e2e/18-applications.spec.ts CLAUDE.md
