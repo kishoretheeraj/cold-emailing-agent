@@ -16,6 +16,10 @@ test("main page has expected chrome: title, nav links, input toggle", async ({
   await expect(overviewLink).toBeVisible();
   await expect(overviewLink).toHaveAttribute("href", "/overview");
 
+  const contactsLink = page.getByRole("link", { name: /^contacts$/i });
+  await expect(contactsLink).toBeVisible();
+  await expect(contactsLink).toHaveAttribute("href", "/");
+
   const promptsLink = page.getByRole("link", { name: /^prompts$/i });
   await expect(promptsLink).toBeVisible();
   await expect(promptsLink).toHaveAttribute("href", "/prompts");

@@ -14,6 +14,7 @@ type SelectedScope = "agent" | "all";
 
 const NAV_LINKS = [
   { href: "/overview", label: "Overview" },
+  { href: "/", label: "Contacts" },
   { href: "/queue", label: "Queue" },
   { href: "/replies", label: "Replies" },
   { href: "/import", label: "Import" },

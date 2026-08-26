@@ -62,6 +62,7 @@ describe("Nav — static structure", () => {
   it("renders all nav links", async () => {
     render(<Nav />);
     await waitFor(() => screen.getByRole("link", { name: /^overview$/i }));
+    expect(screen.getByRole("link", { name: /^contacts$/i })).toHaveAttribute("href", "/");
     expect(screen.getByRole("link", { name: /^queue$/i })).toHaveAttribute("href", "/queue");
     expect(screen.getByRole("link", { name: /^replies$/i })).toHaveAttribute("href", "/replies");
     expect(screen.getByRole("link", { name: /^prompts$/i })).toHaveAttribute("href", "/prompts");
