@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from datetime import date
@@ -56,6 +57,22 @@ _MODE_TAGS = {
     "applied":    "[APPLIED]",
     "networking": "[NETWORKING]",
 }
+
+# ── Decision-context fingerprint ───────────────────────────────────────────────
+
+def hash_prompt_set(prompts):
+    """
+    Fingerprint the live prompts dict that produced a draft: SHA-256 of its
+    sorted JSON serialization, first 16 hex chars (same truncation gmail.py
+    uses for X-Cold-Email-Key). Pure, no I/O.
+
+    Whole-snapshot, not per-template: the question this answers is "which prompt
+    configuration was live," and the prompts table has no version column to
+    derive anything finer from.
+    """
+    payload = json.dumps(prompts or {}, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
 
 def _is_dartmouth(contact):
     if contact.get("dartmouth"):
