@@ -704,6 +704,7 @@ git commit -m "feat: add jobright_pull.yml scheduled workflow"
 values are never pasted into any chat or file.**
 
 - [ ] **Step 1: Set the secrets**
+<!-- blocked: this step is explicitly human-only per the plan's own note above ("never by an agent"); build-continue.yml has no gh auth scoped for repo-secret writes and must not acquire one. -->
 
 In a terminal you control (not this conversation):
 
@@ -716,6 +717,7 @@ Each prompts interactively for the value without echoing it. (If you rotated the
 the earlier exposure in this session, as recommended, use the new password here.)
 
 - [ ] **Step 2: Verify (name only, never the value)**
+<!-- blocked: depends on Step 1's secrets existing; also human-only for the same reason. -->
 
 ```bash
 gh secret list --repo kishoretheeraj/cold-emailing-agent | grep JOBRIGHT
@@ -724,6 +726,7 @@ gh secret list --repo kishoretheeraj/cold-emailing-agent | grep JOBRIGHT
 Expected: both `JOBRIGHT_EMAIL` and `JOBRIGHT_PASSWORD` listed with an "Updated" timestamp.
 
 - [ ] **Step 3: Manually trigger the workflow once to confirm it works end-to-end**
+<!-- blocked: depends on Step 1/2; triggering a workflow that spends the real JobRight credentials is also outside what an unattended build agent should initiate. -->
 
 ```bash
 gh workflow run jobright_pull.yml --repo kishoretheeraj/cold-emailing-agent
