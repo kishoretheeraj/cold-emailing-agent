@@ -47,6 +47,7 @@ jobs:
           name: jobright-pull-log-${{ github.run_id }}
           path: jobright.log
           retention-days: 30
+          if-no-files-found: ignore
 
       - name: Notify on failure
         if: failure()
