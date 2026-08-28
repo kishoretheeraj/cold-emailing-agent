@@ -51,6 +51,20 @@ ATS_MAX_SLUG_CANDIDATES = 2
 # than ATS_MAX_JOBS (which sizes a research-brief snippet, not a discovery scan).
 ATS_DISCOVERY_MAX_JOBS = 25
 
+# ── JobRight puller (Phase 2, full-fledged buildout) ────────────────────────────
+
+# Optional. Absent means jobright.py no-ops (fetch_recommended_jobs returns []) -- never a
+# hard-required config.py import-time lookup like the five core secrets above, since every
+# other script (agent.py, monitor.py, the whole test suite) must keep working without these set.
+JOBRIGHT_EMAIL = os.environ.get("JOBRIGHT_EMAIL")
+JOBRIGHT_PASSWORD = os.environ.get("JOBRIGHT_PASSWORD")
+JOBRIGHT_TIMEOUT_SECONDS = 15
+JOBRIGHT_MAX_ATTEMPTS = 3
+JOBRIGHT_RETRY_BACKOFF_SECONDS = 2
+JOBRIGHT_PAGE_SIZE = 20
+JOBRIGHT_MAX_JOBS = 60
+JOBRIGHT_PAGE_DELAY_SECONDS = 2
+
 # These are fallback defaults. Live prompts (including sender_profile) are stored
 # in the Supabase prompts table and override these at runtime.
 
