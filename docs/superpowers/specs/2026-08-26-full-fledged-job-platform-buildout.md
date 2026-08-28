@@ -121,6 +121,28 @@ a replacement. Same trust level as the auto-apply override above: an informed ca
 own account, not re-litigated here. The reference-implementation etiquette (inter-page delay, retry
 backoff — see below) matters more, not less, once this runs unattended.
 
+**Correction (2026-08-27, live reconnaissance):** the `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD` design
+above assumed a JobRight-native password login. Live network capture during reconnaissance
+(logging out and back in while reading network traffic, with the user's participation) showed the
+user's account actually authenticates via **Google Sign-In**: the browser POSTs a Google-minted
+OIDC `idToken` (a JWT, not persisted anywhere in this repo or its docs) to
+`POST /swan/auth/login/sso` as `{"email": ..., "idToken": "<google-oidc-jwt>", "from": "homepage"}`.
+There is no password in this flow. An unattended scheduled job cannot mint a fresh Google `idToken`
+without automating Google Sign-In itself — a materially different and larger risk than the
+JobRight-only risk shown when the scheduling override above was made, since it would put the
+user's Google account (not just JobRight) in the blast radius. **The scheduling override above is
+therefore not currently buildable as designed.** Two open questions determine whether a workable
+path exists (native-password fallback, or a long-lived-cookie fallback) — see
+`docs/superpowers/plans/2026-08-27-jobright-puller.md` once written, or the session that resolves
+this note, for the outcome. Confirmed real (from the same capture): the job-listing endpoint
+`GET /swan/recommend/list/jobs?refresh=<bool>&sortCondition=<int>&position=<int>&count=<int>&syncRerank=<bool>`
+returns `{success, errorCode, errorMsg, result: {jobList: [{jobResult: {jobId, jobTitle,
+jobLocation, workModel, originalUrl, applyLink, isCompanySiteLink, source, salaryDesc, minSalary,
+maxSalary, ...}, companyResult: {companyName, companyURL, h1bAnnualJobCount, ...}}]}}`, and the
+session-check endpoint `GET /swan/auth/newinfo` returns `{result: {logined: true/false, ...}}` —
+both cookie-authenticated (no bearer token in `localStorage`, consistent with an httpOnly session
+cookie).
+
 ## Phase 2.5 — Auto-apply agent (future, stub — NOT part of Phase 2's plan)
 
 Deliberately excluded from Phase 2's plan file: this needs its own spec once Phase 2 has produced
