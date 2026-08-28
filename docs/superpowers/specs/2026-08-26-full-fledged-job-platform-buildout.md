@@ -1,7 +1,7 @@
 # Full-Fledged Job Platform Buildout — Spec
 
-**Status:** Phase 1 in detail, Phases 2-5 stubbed (design them when their turn comes — Phase 1's
-schema decisions will change what Phase 2+ needs).
+**Status:** Phases 1-2 in detail (Phase 2 designed 2026-08-27, against what Phase 1 actually
+shipped), Phases 2.5-5 stubbed (design them when their turn comes).
 
 **Origin:** OSS landscape scan (2026-08-26) of ~50 cold-email/AI-SDR and job-search/tracking repos,
 mapped against this repo's current capabilities. Full findings: the "Pipeline Gaps" artifact from
@@ -30,11 +30,23 @@ Every new signal here — job fit score, application stage, JobRight-sourced pos
 "unknown"/absent, never to a false negative. Same rule as the H-1B gate, Form D funding signal, and
 decision-context tagging: absence of data is not-observed, not "no."
 
-**Human-gated everything.** Multiple OSS projects independently converged on "agent drafts,
-human submits" for job applications (JobCtrl's "approval-gated applications," AutoApply,
-dear-hiring-manager) — the same rule this repo already enforces for email
-(`Don't add an SMTP/send path` in the root CLAUDE.md). Any future auto-apply work inherits that
-rule without exception: draft the application, never submit it.
+**Human-gated by default, with an explicit auto-apply override (recorded 2026-08-27).** Multiple
+OSS projects independently converged on "agent drafts, human submits" for job applications
+(JobCtrl's "approval-gated applications," AutoApply, dear-hiring-manager) — the same rule this
+repo already enforces for email (`Don't add an SMTP/send path` in the root CLAUDE.md). This spec
+originally inherited that rule without exception for job applications too.
+
+The user has since explicitly overridden it for the future auto-apply agent (Phase 2.5, stubbed
+below): a default **review queue** (generated resume/application shown to the user, editable,
+approve-to-submit) with a separate **toggle** to submit without review, per-application or
+globally. This is an informed, deliberate call about the user's own accounts and own applications
+— not one this spec re-litigates — but it does NOT change the email send-path rule (`Don't add an
+SMTP/send path` in the root CLAUDE.md), which stays absolute and untouched. Job-application
+submission and email sending are governed separately from here on.
+
+Phase 2 itself (this document's next section) stays entirely read-only/discovery — it writes
+`job_applications` rows at `stage='saved'` and never submits anything. The auto-apply override
+only becomes live code in Phase 2.5.
 
 ---
 
@@ -50,15 +62,85 @@ known contact) and `INTEGER` to match `contacts.id`'s actual Postgres type. Back
 accessors + tests. Frontend: a new `/applications` page in contact-manager with a table view and
 inline stage control, following existing page/API-route/test conventions exactly.
 
-## Phase 2 — Job & company discovery (stub)
+## Phase 2 — Job & company discovery (detailed)
 
-`ats.py` today only answers "is this company hiring in this function" as a boolean; it never stores
-individual postings. Extend it (or add a sibling module) to persist postings into `job_applications`
-at `stage='saved'` — either via deeper Greenhouse/Ashby/Lever parsing (structured data already
-available from those APIs) or a JobSpy-style aggregator pull (LinkedIn/Indeed/Glassdoor). Design this
-phase's schema needs against whatever Phase 1 actually shipped, not against this stub.
+**Plan:** `docs/superpowers/plans/2026-08-27-job-discovery.md`
 
-**JobRight puller (see below) feeds this phase** as one additional, manual-only source.
+Read-only/discovery only — writes `job_applications` rows at `stage='saved'` and never submits
+anything. Two new manual (not-in-cron by default; see JobRight scheduling below) scripts, following
+`extract_voice.py`'s "manual, not in cron" posture as the default and only deviating from it where
+explicitly decided:
+
+- **`job_discovery.py`** — builds the company universe as the union of distinct `contacts.company`
+  values and every `company_intel.raw_company_names` entry (both scanned; `company_intel` is
+  currently 38 rows, small enough that no bounded-selection rule is needed — revisit if that corpus
+  grows by an order of magnitude). Uses `raw_company_names` (the original, unnormalized display
+  strings), not `normalized_name` — `ats._slug_candidates` needs a real company name to derive a
+  URL slug from, not the alias-canonicalized form used for visa-gate matching. For each company,
+  calls `ats.fetch_jobs(company, max_jobs=...)` — see the `ats.py` change below — reusing the
+  existing Greenhouse/Ashby/Lever cascade instead of writing a new scraper. Filters results against
+  the new `target_roles` prompts key, dedupes, and persists via
+  `db.create_job_application(..., source='ats_scan')`.
+- **`jobright.py`** — session-cookie login using `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD`, hits
+  JobRight's internal `/swan/...` endpoints (see the JobRight puller section below for the full
+  decision record), normalizes to the same posting shape, feeds the same persistence path tagged
+  `source='jobright'`.
+
+**`ats.py` change**: `fetch_jobs(company, role=None)` currently hardcodes its cap to
+`config.ATS_MAX_JOBS` (3) inside `_rank_jobs`, sized for "the single best match for one known
+contact's role" in the research pipeline — wrong for discovery, which wants everything currently
+open. Add an optional `max_jobs` parameter to both `fetch_jobs` and `_rank_jobs` (falling back to
+`config.ATS_MAX_JOBS` when omitted, so `research.py`'s existing call site is byte-identical in
+behavior); `job_discovery.py` passes a new `config.ATS_DISCOVERY_MAX_JOBS` constant instead.
+
+**Target role**: every `role` in `config.py`/`prompts` today means the *contact's* role, not the
+user's. Add a `target_roles` row to the `prompts` table (newline-delimited, same convention as
+`guardrail_company_list`/`forbidden_phrases`), editable live via the contact-manager's Prompts page.
+`job_discovery.py` reads it via `db.load_prompts()` and filters postings whose title tokens overlap
+any target role — this is a filter, not `ats.py`'s existing single-best-match ranking, since
+discovery wants every reasonably-matching posting, not the top one.
+
+**Dedup**: add a partial unique index on `job_applications.job_url` (`WHERE job_url IS NOT NULL`),
+plus an accessor-level check-before-insert in `db.py` (same shape as `create_draft`'s idempotency
+check) so repeated scans don't create duplicate `'saved'` rows.
+
+**JobRight puller (see below) feeds this phase** as an additional source, tagged `source='jobright'`.
+
+## JobRight scheduling (decided 2026-08-27 — overrides the original manual-only rule)
+
+The JobRight puller section below originally specified "manual only, never in cron" as a hard rule
+to bound ToS/account-flag risk. The user explicitly chose to override this and run it unattended:
+a new scheduled workflow (`jobright_pull.yml`, proposed daily cadence — postings don't change
+fast enough to need more, and a lower frequency reduces account-flag risk relative to hourly/etc.)
+with `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD` added as GitHub Actions secrets, scoped to that workflow
+only. `jobright.py` itself keeps working as a manual/local script too — scheduling is additive, not
+a replacement. Same trust level as the auto-apply override above: an informed call about the user's
+own account, not re-litigated here. The reference-implementation etiquette (inter-page delay, retry
+backoff — see below) matters more, not less, once this runs unattended.
+
+## Phase 2.5 — Auto-apply agent (future, stub — NOT part of Phase 2's plan)
+
+Deliberately excluded from Phase 2's plan file: this needs its own spec once Phase 2 has produced
+real `job_applications` inventory at `stage='saved'` to apply to, and because it introduces a
+genuinely higher-consequence action (irreversible real-world submissions) that a design pass this
+short doesn't fully specify. Recorded here so a cold session has the intended shape:
+
+- **Resume generation**: given a `job_applications` row, generate a tailored resume (ties into
+  Phase 3's resume intelligence — likely needs Phase 3 designed first, or folded into this phase).
+- **Review queue (default)**: generated resume + application shown to the user in the
+  contact-manager, editable, with explicit approve-to-submit. Matches the JobCtrl/AutoApply/
+  dear-hiring-manager pattern already cited above.
+- **Auto-apply toggle**: a separate, explicit opt-in (per-application or global) to skip the review
+  queue and submit without a human click. This is the part that overrides the original
+  human-gated-everything rule; the review queue remains the default.
+- **CI-safety constraint for whichever agent builds this**: `build-continue.yml` runs unattended
+  hourly, pushes straight to `main` with no PR review, and its prompt tells it to implement whatever
+  task it finds next. The actual submit call must be gated behind a local-only env var (e.g.
+  `JOBRIGHT_AUTOAPPLY_ARMED`) that is **never** a GitHub Actions secret — same pattern as
+  `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD` being local-only today. This lets `build-continue.yml` build
+  and test the full dry-run path autonomously while making it structurally impossible for that
+  unattended agent to ever fire a real submission, even if its tests exercise the code path. Decide
+  the exact mechanism as part of that phase's own design pass, not by inheriting this note verbatim.
 
 ## Phase 3 — Resume intelligence (stub)
 
@@ -80,7 +162,7 @@ existing checks or a new pre-draft gate. Small, can be done any time after Phase
 
 ---
 
-## JobRight puller (manual only — not in cron)
+## JobRight puller (manual + scheduled — see "JobRight scheduling" above)
 
 **Decision record:** JobRight.ai has no public API (confirmed via SaaSWorthy: "Does Jobright provide
 API? No") and its `robots.txt` disallows `/api/*`. The only working integration path is an
@@ -91,12 +173,14 @@ paid account — an informed call about their own account, not one this spec re-
 
 **What keeps this from becoming a production incident:**
 
-- **Manual only, never in cron.** Same shape as `extract_voice.py` ("manual, not in cron"). No
-  workflow file references it, no GitHub Actions secret is added for it. It is a script the user
-  runs locally when they want a fresh pull.
+- **Manual by default, also scheduled (decided 2026-08-27 — see "JobRight scheduling" above).**
+  Originally "manual only, never in cron" like `extract_voice.py`; the user explicitly chose to
+  also run it via a dedicated `jobright_pull.yml` workflow at a conservative (daily) cadence,
+  scoped secrets, with the manual/local path still working unchanged.
 - **Credentials never touch disk in code.** `JOBRIGHT_EMAIL` / `JOBRIGHT_PASSWORD` read from
   `os.environ` only, exactly like `GMAIL_APP_PASSWORD`. Never written to a file, never logged,
-  never passed to `db.py` or any table.
+  never passed to `db.py` or any table. When scheduled, they're GitHub Actions secrets scoped to
+  `jobright_pull.yml` only — not exposed to `build-continue.yml` or any other workflow.
 - **Best-effort, never raises.** Same posture as `ats.py`: a JobRight failure (login failure, schema
   drift, rate limit) returns `[]` and logs a warning. It must never block or fail anything else.
   Nothing in the daily agent or monitor path calls it.
@@ -151,8 +235,8 @@ window — same pattern this repo already trusts three times over.
 5. Commits with `Co-Authored-By: Claude <noreply@anthropic.com>` and pushes to `main` directly (no
    PR review loop — this is the same trust level the user already grants interactive sessions per
    their global CLAUDE.md: "run tests, commit, and push without being asked").
-6. If a run finds all five phases' plans fully checked off, it disables itself
-   (`gh workflow disable`) and stops firing.
+6. If a run finds every phase listed in this spec (currently: 1, 2, 2.5, 3, 4, 5) fully checked
+   off, it disables itself (`gh workflow disable`) and stops firing.
 
 **The plan files are the progress doc.** No separate tracking file — each plan's `- [ ]` /
 `- [x]` checkboxes are the machine-readable state a cold session reads to know exactly what's
