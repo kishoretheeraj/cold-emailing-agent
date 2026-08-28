@@ -34,6 +34,7 @@ ingest_form_d.py
 visa_matching.py
 visa_match_new.py
 job_discovery.py
+jobright.py
 supabase/migrations/
 ```
 
@@ -723,6 +724,31 @@ ATS failure or one posting's insert failure never stops the rest of the scan, sa
 
 The JobRight puller (a second Phase 2 source, tagged `source='jobright'`) is a separate module and
 plan — see `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`.
+
+## JobRight puller (full-fledged buildout, Phase 2 — JobRight source)
+
+`jobright.py` (manual by default; also scheduled daily via `jobright_pull.yml` per an explicit
+user override of the original manual-only rule) logs into JobRight.ai's unofficial internal API
+using a real session-cookie login (`POST /swan/auth/login/pwd`, verified via
+`GET /swan/auth/newinfo`), paginates `GET /swan/recommend/list/jobs`, and persists matches into
+`job_applications` at `stage='saved'`, `source='jobright'` — the same dedup-by-`job_url` path
+`job_discovery.py` uses.
+
+`JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD` are **soft-optional** in `config.py`
+(`os.environ.get`, not `os.environ[...]`) — unlike the five core secrets, they must not become a
+hard-required import-time lookup, since every other script must keep working without them set.
+`fetch_recommended_jobs()` no-ops (returns `[]`) when they're absent, and never raises past its own
+boundary on any other failure (login failure, session check failure, HTTP failure, malformed
+response) — same "enrichment must never cost a draft" posture as `ats.py`. Log marker `[JOBRIGHT]`,
+own log file (`jobright.log`).
+
+**Never log, print, persist, or commit the credential values, session cookies, or any response
+field containing them.** See
+`docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md` for the full decision
+record, including the live-reconnaissance findings that grounded the real endpoint shapes used
+here (not guessed) — the account authenticates via a native email+password login
+(`/swan/auth/login/pwd`), a separate path from the Google Sign-In flow discovered first during
+reconnaissance.
 
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 

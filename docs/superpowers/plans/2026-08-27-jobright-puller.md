@@ -83,7 +83,7 @@ reconnaissance findings.
   `config.JOBRIGHT_RETRY_BACKOFF_SECONDS`, `config.JOBRIGHT_PAGE_SIZE`, `config.JOBRIGHT_MAX_JOBS`,
   `config.JOBRIGHT_PAGE_DELAY_SECONDS`. Consumed by Task 2's `jobright.py`.
 
-- [ ] **Step 1: Add the constants**
+- [x] **Step 1: Add the constants**
 
 At the end of `config.py`, add a new section:
 
@@ -103,7 +103,7 @@ JOBRIGHT_MAX_JOBS = 60
 JOBRIGHT_PAGE_DELAY_SECONDS = 2
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add config.py
@@ -127,7 +127,7 @@ git commit -m "feat: add JobRight puller config constants"
   `{title, location, url, description, company, source}`, `source` always `"jobright"`), `run()`
   (the script's sole entry point, called from `__main__`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_jobright.py`:
 
@@ -379,12 +379,12 @@ def test_run_with_no_jobs_records_success_and_does_nothing(mocker):
     assert args[0] == "success"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_jobright.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'jobright'` (file doesn't exist yet).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `jobright.py`:
 
@@ -576,12 +576,12 @@ if __name__ == "__main__":
     run()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_jobright.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Manual smoke test with real credentials (interactive session only, skip in CI)**
+- [x] **Step 5: Manual smoke test with real credentials (interactive session only, skip in CI)**
 
 With `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD` exported in your own shell (never pasted into chat):
 
@@ -600,12 +600,12 @@ Expected: a real, non-empty job list (or a clean `[]` with a `[JOBRIGHT] | login
 end-to-end against production before this gets wired into a scheduled workflow. Do not commit
 anything from this step; it's verification only.
 
-- [ ] **Step 6: Run the full test suite**
+- [x] **Step 6: Run the full test suite**
 
 Run: `python3 -m pytest`
 Expected: all green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add jobright.py tests/test_jobright.py
@@ -621,7 +621,7 @@ git commit -m "feat: add jobright.py to pull JobRight recommendations into job_a
 
 **Interfaces:** none — GitHub Actions workflow only.
 
-- [ ] **Step 1: Write the workflow**
+- [x] **Step 1: Write the workflow**
 
 ```yaml
 name: JobRight Pull
@@ -687,7 +687,7 @@ jobs:
 every script, per the root CLAUDE.md's GitHub Actions section, even though `jobright.py` itself
 only uses `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD`.)
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add .github/workflows/jobright_pull.yml
@@ -744,11 +744,11 @@ flow changed, or the secrets were set incorrectly).
 
 **Interfaces:** none — documentation only.
 
-- [ ] **Step 1: Update the root `CLAUDE.md` module layout list**
+- [x] **Step 1: Update the root `CLAUDE.md` module layout list**
 
 Add `jobright.py` to the module-layout code block, right after `job_discovery.py`.
 
-- [ ] **Step 2: Add a `jobright.py` section to root `CLAUDE.md`**
+- [x] **Step 2: Add a `jobright.py` section to root `CLAUDE.md`**
 
 Add a new `##` section, right after the "Job discovery" section:
 
@@ -777,13 +777,13 @@ record, including the live-reconnaissance findings that grounded the real endpoi
 here (not guessed).
 ```
 
-- [ ] **Step 3: Update the spec's Phase 2 plan pointer**
+- [x] **Step 3: Update the spec's Phase 2 plan pointer**
 
 In `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, update the line
 pointing at `docs/superpowers/plans/2026-08-27-jobright-puller.md` (currently says "not yet
 written") to say "shipped 2026-08-27."
 
-- [ ] **Step 4: Add a memory entry**
+- [x] **Step 4: Add a memory entry**
 
 Write `~/.claude/projects/-Users-kishoretheeraj-Documents-cold-email-agent/memory/project-jobright-puller.md`
 following the existing memory file format, summarizing: `jobright.py` shipped (date), the real
@@ -794,12 +794,12 @@ it resolved, the password-exposure incident and that the user was told to rotate
 (Skip this step if running under `build-continue.yml` — the memory path doesn't exist in that
 environment.)
 
-- [ ] **Step 5: Run the full test suite one last time**
+- [x] **Step 5: Run the full test suite one last time**
 
 Run: `python3 -m pytest`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add CLAUDE.md docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md

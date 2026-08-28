@@ -65,9 +65,9 @@ inline stage control, following existing page/API-route/test conventions exactly
 ## Phase 2 — Job & company discovery (detailed)
 
 **Plans:** `docs/superpowers/plans/2026-08-27-job-discovery.md` (ATS scan — this section, shipped
-2026-08-27) and `docs/superpowers/plans/2026-08-27-jobright-puller.md` (JobRight puller — not yet
-written; needs interactive reconnaissance of JobRight's actual endpoints before a TDD plan can be
-written against real request/response shapes instead of guessed ones).
+2026-08-27) and `docs/superpowers/plans/2026-08-27-jobright-puller.md` (JobRight puller — shipped
+2026-08-27, grounded in live reconnaissance of JobRight's actual endpoints rather than guessed
+ones).
 
 Read-only/discovery only — writes `job_applications` rows at `stage='saved'` and never submits
 anything. Two new manual (not-in-cron by default; see JobRight scheduling below) scripts, following
