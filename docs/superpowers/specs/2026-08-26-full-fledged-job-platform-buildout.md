@@ -248,3 +248,8 @@ next, and this spec's phase list is the map of which plan file is current. This 
 fire retries the same unchecked task.
 
 **2026-08-26 (build-continue.yml):** Phase 1 complete; Phase 2's plan needs to be written in an interactive session.
+
+**2026-08-28 (build-continue.yml):** Checked again — Phase 2 is now fully designed above (as of
+2026-08-27), but its plan file (`docs/superpowers/plans/2026-08-27-job-discovery.md`) still doesn't
+exist. Still waiting on a human interactive session to author it via `writing-plans`; this workflow
+took no other action this run.
