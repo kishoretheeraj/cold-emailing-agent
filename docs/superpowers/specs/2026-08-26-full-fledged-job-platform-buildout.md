@@ -130,11 +130,15 @@ OIDC `idToken` (a JWT, not persisted anywhere in this repo or its docs) to
 There is no password in this flow. An unattended scheduled job cannot mint a fresh Google `idToken`
 without automating Google Sign-In itself — a materially different and larger risk than the
 JobRight-only risk shown when the scheduling override above was made, since it would put the
-user's Google account (not just JobRight) in the blast radius. **The scheduling override above is
-therefore not currently buildable as designed.** Two open questions determine whether a workable
-path exists (native-password fallback, or a long-lived-cookie fallback) — see
-`docs/superpowers/plans/2026-08-27-jobright-puller.md` once written, or the session that resolves
-this note, for the outcome. Confirmed real (from the same capture): the job-listing endpoint
+user's Google account (not just JobRight) in the blast radius. **The scheduling override above therefore
+needed re-verification against a native password login instead of Google Sign-In.** Re-verified
+2026-08-27, same session, with the user's participation: the account also has a native
+email+password login (set via Login & Security → Reset password), which POSTs
+`{"email": ..., "password": ..., "from": "homepage"}` (values never persisted) to
+`POST /swan/auth/login/pwd` — a different, simpler endpoint than the Google path, matching the
+original `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD` design almost exactly. **The scheduling override is
+restored as buildable**, using the native password login rather than Google Sign-In. Confirmed
+real (from the same capture): the job-listing endpoint
 `GET /swan/recommend/list/jobs?refresh=<bool>&sortCondition=<int>&position=<int>&count=<int>&syncRerank=<bool>`
 returns `{success, errorCode, errorMsg, result: {jobList: [{jobResult: {jobId, jobTitle,
 jobLocation, workModel, originalUrl, applyLink, isCompanySiteLink, source, salaryDesc, minSalary,
