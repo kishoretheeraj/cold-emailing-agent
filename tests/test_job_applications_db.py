@@ -29,6 +29,7 @@ def test_create_job_application_inserts_with_default_stage(fake_client):
 
 
 def test_create_job_application_passes_optional_fields(fake_client):
+    fake_client.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
     fake_client.table.return_value.insert.return_value.execute.return_value.data = [{"id": 2}]
     db.create_job_application(
         company="Acme", role="PM", job_url="https://x", source="manual",
@@ -47,6 +48,22 @@ def test_create_job_application_passes_optional_fields(fake_client):
 def test_create_job_application_returns_none_on_empty_data(fake_client):
     fake_client.table.return_value.insert.return_value.execute.return_value.data = []
     assert db.create_job_application(company="Acme", role="PM") is None
+
+
+def test_create_job_application_skips_when_job_url_already_exists(fake_client):
+    fake_client.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+        {"id": 9}
+    ]
+    result = db.create_job_application(company="Acme", role="PM", job_url="https://x")
+    assert result is None
+    fake_client.table.return_value.insert.assert_not_called()
+
+
+def test_create_job_application_skips_dedup_check_when_no_job_url(fake_client):
+    fake_client.table.return_value.insert.return_value.execute.return_value.data = [{"id": 3}]
+    result = db.create_job_application(company="Acme", role="PM")
+    fake_client.table.return_value.select.assert_not_called()
+    assert result["id"] == 3
 
 
 def test_get_job_applications_returns_all_rows(fake_client):

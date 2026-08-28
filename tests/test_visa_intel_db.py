@@ -164,3 +164,20 @@ def test_update_contact_company_intel_id_calls_update(fake_client):
 def test_update_contact_company_intel_id_never_raises_on_error(mocker):
     mocker.patch.object(db, "get_client", side_effect=RuntimeError("db down"))
     assert db.update_contact_company_intel_id(7, 42) is False
+
+
+# ── get_all_company_intel_names ──────────────────────────────────────────────────
+
+def test_get_all_company_intel_names_flattens_raw_company_names(fake_client):
+    fake_client.table.return_value.select.return_value.execute.return_value.data = [
+        {"raw_company_names": ["Acme Inc", "Acme"]},
+        {"raw_company_names": ["Globex"]},
+        {"raw_company_names": None},
+    ]
+    result = db.get_all_company_intel_names()
+    assert result == ["Acme Inc", "Acme", "Globex"]
+
+
+def test_get_all_company_intel_names_returns_empty_list_on_no_rows(fake_client):
+    fake_client.table.return_value.select.return_value.execute.return_value.data = []
+    assert db.get_all_company_intel_names() == []

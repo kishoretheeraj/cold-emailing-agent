@@ -527,11 +527,26 @@ def update_contact_company_intel_id(contact_id, company_intel_id):
         return False
 
 
+def get_all_company_intel_names():
+    """Flatten raw_company_names across every company_intel row into one list."""
+    result = _retry(lambda: get_client().table("company_intel").select("raw_company_names").execute())
+    names = []
+    for row in (result.data or []):
+        names.extend(row.get("raw_company_names") or [])
+    return names
+
+
 # ── Job application tracking (Phase 1 of full-fledged buildout) ─────────────────
 
 def create_job_application(company, role, job_url=None, source=None, contact_id=None,
                             applied_date=None, notes=None, posting_snapshot=None):
-    """Create a new job application row, starting at stage 'saved'."""
+    """Create a new job application row at stage 'saved'. Returns None if job_url is
+    already present on another row (dedup) or if the insert returns no row."""
+    if job_url:
+        existing = _retry(lambda: get_client().table("job_applications")
+                           .select("id").eq("job_url", job_url).execute())
+        if existing.data:
+            return None
     payload = {
         "company": company,
         "role": role,
