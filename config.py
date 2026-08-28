@@ -46,6 +46,10 @@ ATS_MAX_DESCRIPTION_CHARS = 1500
 # careers API must never stall a run.
 ATS_TIMEOUT_SECONDS = 8
 ATS_MAX_SLUG_CANDIDATES = 2
+# Discovery (job_discovery.py) wants every currently-open posting for a company, not
+# just the single best match for one contact's role — this cap is deliberately higher
+# than ATS_MAX_JOBS (which sizes a research-brief snippet, not a discovery scan).
+ATS_DISCOVERY_MAX_JOBS = 25
 
 # These are fallback defaults. Live prompts (including sender_profile) are stored
 # in the Supabase prompts table and override these at runtime.
