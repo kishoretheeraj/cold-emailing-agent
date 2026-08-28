@@ -1,0 +1,56 @@
+name: JobRight Pull
+
+# Manual-by-default JobRight puller (jobright.py), also run on a daily schedule per
+# the user's explicit override of the original manual-only rule -- see
+# docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md,
+# "JobRight scheduling". Daily cadence: postings don't change fast enough to need
+# more, and a lower frequency reduces JobRight account-flag risk relative to hourly.
+
+on:
+  schedule:
+    - cron: '17 11 * * *'   # once daily, off the hour to avoid GHA's top-of-hour pile-up
+  workflow_dispatch: {}
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull JobRight recommendations
+        run: python jobright.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          JOBRIGHT_EMAIL: ${{ secrets.JOBRIGHT_EMAIL }}
+          JOBRIGHT_PASSWORD: ${{ secrets.JOBRIGHT_PASSWORD }}
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jobright-pull-log-${{ github.run_id }}
+          path: jobright.log
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: python notify_failure.py
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
