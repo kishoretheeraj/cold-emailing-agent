@@ -1,4 +1,4 @@
-# Prompt keys (Supabase prompts table — 24 rows)
+# Prompt keys (Supabase prompts table — 25 rows)
 
 Loaded at startup by `db.load_prompts()` → `{key: value}`. Absent keys fall back to
 `config.py` constants; `emailer.py` logs `[WARN] prompt key X not in DB — using fallback`.
@@ -32,5 +32,6 @@ Instruction-level keys (sort_orders 11–18) use `get_tier_instruction()`,
 | `forbidden_phrases` | 62 | Newline-delimited banned substrings for pre-flight check 6 |
 | `guardrail_company_list` | 63 | Newline-delimited company watchwords for pre-flight check 4 |
 | `voice_dna` | 64 | Writing-style block written by `extract_voice.py`. Optional: absent or blank means no voice block is injected. Injected into first-touch prompts only, and mirrored in `assembleUserMessage.ts`. |
+| `target_roles` | 65 | Newline-delimited role titles `job_discovery.py` filters ATS postings against; empty means match everything |
 
 **Locked:** `/api/extract` prompt is hardcoded — bound to `ExtractedContact` JSON schema.
