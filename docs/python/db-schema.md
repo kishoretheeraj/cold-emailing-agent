@@ -307,3 +307,9 @@ CREATE TABLE job_applications (
   `get_job_application`. Tests: `tests/test_job_applications_db.py`.
 - Frontend: `/applications` page and `/api/applications` +
   `/api/applications/[id]` routes in `contact-manager/`.
+- `create_job_application` is dedup-aware as of Phase 2: it skips (returns `None`) when `job_url`
+  is already present on another row, backed by a partial unique index
+  (`idx_job_applications_job_url_unique`, `WHERE job_url IS NOT NULL`).
+- `get_all_company_intel_names()` (defined alongside the other `company_intel` accessors) flattens
+  every row's `raw_company_names` array into one list — used by `job_discovery.py` to build its
+  company-scan universe alongside `contacts.company`.

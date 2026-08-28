@@ -63,7 +63,7 @@ this one).
 - Produces: a partial unique index so two rows can never share a non-null `job_url`. Task 5's
   `db.py` dedup check relies on this as the DB-level backstop behind its own select-before-insert.
 
-- [ ] **Step 1: Write the migration**
+- [x] **Step 1: Write the migration**
 
 ```sql
 -- job_applications.job_url dedup backstop.
@@ -81,12 +81,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_job_applications_job_url_unique
   WHERE job_url IS NOT NULL;
 ```
 
-- [ ] **Step 2: Push the migration**
+- [x] **Step 2: Push the migration**
 
 Run: `supabase db push`
 Expected: migration applies cleanly with no errors (additive-only index, no data at risk).
 
-- [ ] **Step 3: Verify the index exists**
+- [x] **Step 3: Verify the index exists**
 
 Run: `supabase db query --linked "select indexname from pg_indexes where tablename = 'job_applications';"`
 (note: `supabase db execute` is not a real subcommand — `db query --linked` is correct, per the
@@ -94,7 +94,7 @@ Phase 1 plan's Task 1.)
 Expected: includes `idx_job_applications_job_url_unique` alongside the existing stage/contact_id
 indexes.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add supabase/migrations/20260827000000_add_job_applications_job_url_unique_index.sql
@@ -113,7 +113,7 @@ git commit -m "feat: add unique index on job_applications.job_url for discovery 
 - Produces: a `prompts` row with `key='target_roles'`, newline-delimited role strings. Task 6's
   `job_discovery.py` reads it via `db.load_prompts()["target_roles"]`.
 
-- [ ] **Step 1: Write the migration**
+- [x] **Step 1: Write the migration**
 
 ```sql
 -- target_roles prompts row — full-fledged buildout, Phase 2 (job & company discovery).
@@ -139,13 +139,13 @@ VALUES
 ON CONFLICT (key) DO NOTHING;
 ```
 
-- [ ] **Step 2: Push the migration**
+- [x] **Step 2: Push the migration**
 
 Run: `supabase db push`
 Expected: migration applies cleanly; `select key, sort_order from prompts where key = 'target_roles';`
 returns one row.
 
-- [ ] **Step 3: Update `docs/python/prompt-keys.md`**
+- [x] **Step 3: Update `docs/python/prompt-keys.md`**
 
 Change the header line `# Prompt keys (Supabase prompts table — 24 rows)` to `— 25 rows)` and add
 a row to the table, immediately after the `voice_dna` row:
@@ -154,7 +154,7 @@ a row to the table, immediately after the `voice_dna` row:
 | `target_roles` | 65 | Newline-delimited role titles `job_discovery.py` filters ATS postings against; empty means match everything |
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add supabase/migrations/20260827000001_add_target_roles_prompt.sql docs/python/prompt-keys.md
@@ -171,7 +171,7 @@ git commit -m "feat: add target_roles prompt for job discovery filtering"
 **Interfaces:**
 - Produces: `config.ATS_DISCOVERY_MAX_JOBS` (int). Consumed by Task 6's `job_discovery.py`.
 
-- [ ] **Step 1: Add the constant**
+- [x] **Step 1: Add the constant**
 
 In `config.py`, in the `# ── ATS career-page enrichment ──` section, right after `ATS_MAX_SLUG_CANDIDATES = 2`:
 
@@ -182,7 +182,7 @@ In `config.py`, in the `# ── ATS career-page enrichment ──` section, rig
 ATS_DISCOVERY_MAX_JOBS = 25
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add config.py
@@ -209,7 +209,7 @@ them in Task 4.)
   with **no** `role` argument (passing one would engage relevance sorting discovery doesn't want —
   discovery wants every posting in source order, then filters by target role itself).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_ats.py`:
 
@@ -225,7 +225,7 @@ def test_max_jobs_none_falls_back_to_config_default(mocker):
     assert len(ats.fetch_jobs("Acme")) == 1
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_ats.py::test_max_jobs_param_overrides_config_default tests/test_ats.py::test_max_jobs_none_falls_back_to_config_default -v`
 Expected: `test_max_jobs_param_overrides_config_default` FAILS with `TypeError: fetch_jobs() got an
@@ -233,7 +233,7 @@ unexpected keyword argument 'max_jobs'`. `test_max_jobs_none_falls_back_to_confi
 already (it's exercising unchanged behavior) — that's fine, it's here to lock in the fallback once
 Step 3 lands.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `ats.py`, replace `_rank_jobs` and `fetch_jobs`:
 
@@ -291,12 +291,12 @@ def fetch_jobs(company, role=None, max_jobs=None):
 (Only the signature and the two call sites of `_rank_jobs`/cap changed — everything else in the
 function body is unchanged from today.)
 
-- [ ] **Step 4: Run the full ATS test suite**
+- [x] **Step 4: Run the full ATS test suite**
 
 Run: `python3 -m pytest tests/test_ats.py tests/test_research_ats.py -v`
 Expected: all tests PASS, including the two new ones and every existing test unmodified.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ats.py tests/test_ats.py
@@ -322,7 +322,7 @@ git commit -m "feat: add max_jobs param to ats.fetch_jobs for discovery scans"
   array into one list, duplicates and casing preserved (Task 6's `_company_universe` does its own
   dedup across this and `contacts.company`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `tests/test_job_applications_db.py`, first fix the existing test that will break once the dedup
 check lands (it passes a `job_url` but never mocks the new `select` call the dedup check makes) —
@@ -383,7 +383,7 @@ def test_get_all_company_intel_names_returns_empty_list_on_no_rows(fake_client):
     assert db.get_all_company_intel_names() == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py tests/test_visa_intel_db.py -v`
 Expected: the two new `create_job_application` tests FAIL (no dedup check exists yet); the two new
@@ -391,7 +391,7 @@ Expected: the two new `create_job_application` tests FAIL (no dedup check exists
 'get_all_company_intel_names'`. The rewritten `test_create_job_application_passes_optional_fields`
 PASSES already (it's not exercising new behavior yet, just new mock setup) — that's fine.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `db.py`, replace `create_job_application`:
 
@@ -433,18 +433,18 @@ def get_all_company_intel_names():
     return names
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py tests/test_visa_intel_db.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `python3 -m pytest`
 Expected: all green — this touches a shared function (`create_job_application`), so confirm
 nothing else in the suite calls it with assumptions the dedup check breaks.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add db.py tests/test_job_applications_db.py tests/test_visa_intel_db.py
@@ -466,7 +466,7 @@ git commit -m "feat: dedup create_job_application by job_url, add get_all_compan
 - Produces: `run()` — the script's sole public entry point, called from `__main__`. No return
   value; effects are `job_applications` rows and one `agent_runs` row via `db.record_run`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_job_discovery.py`:
 
@@ -618,13 +618,13 @@ def test_run_survives_company_universe_failure(mocker):
     assert args[0] == "failure"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_job_discovery.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'job_discovery'` (file doesn't exist
 yet).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `job_discovery.py`:
 
@@ -761,17 +761,17 @@ if __name__ == "__main__":
     run()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_job_discovery.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `python3 -m pytest`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add job_discovery.py tests/test_job_discovery.py
@@ -789,12 +789,12 @@ git commit -m "feat: add job_discovery.py to persist ATS postings into job_appli
 
 **Interfaces:** none — documentation only.
 
-- [ ] **Step 1: Update the root `CLAUDE.md` module layout list**
+- [x] **Step 1: Update the root `CLAUDE.md` module layout list**
 
 Add `job_discovery.py` to the module-layout code block (## Module layout), right before
 `supabase/migrations/`.
 
-- [ ] **Step 2: Add a `job_discovery.py` section to root `CLAUDE.md`**
+- [x] **Step 2: Add a `job_discovery.py` section to root `CLAUDE.md`**
 
 Add a new `##` section (placed after the "Job application tracking" section) with this content:
 
@@ -822,7 +822,7 @@ The JobRight puller (a second Phase 2 source, tagged `source='jobright'`) is a s
 plan — see `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`.
 ```
 
-- [ ] **Step 3: Update `docs/python/db-schema.md`**
+- [x] **Step 3: Update `docs/python/db-schema.md`**
 
 In the `job_applications` section, after the existing "Accessors in `db.py`" bullet, add:
 
@@ -835,7 +835,7 @@ In the `job_applications` section, after the existing "Accessors in `db.py`" bul
   company-scan universe alongside `contacts.company`.
 ```
 
-- [ ] **Step 4: Update the spec's Phase 2 section to point at both plan files**
+- [x] **Step 4: Update the spec's Phase 2 section to point at both plan files**
 
 In `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, change the line
 
@@ -852,7 +852,7 @@ interactive reconnaissance of JobRight's actual endpoints before a TDD plan can 
 real request/response shapes instead of guessed ones).
 ```
 
-- [ ] **Step 5: Add a memory entry**
+- [x] **Step 5: Add a memory entry**
 
 Write `~/.claude/projects/-Users-kishoretheeraj-Documents-cold-email-agent/memory/project-job-discovery-phase2.md`
 following the existing memory file format (frontmatter with `name`, `description`,
@@ -865,12 +865,12 @@ reconnaissance. Add one line to `MEMORY.md`'s index.
 that environment. Note in the commit message instead that memory needs updating in an interactive
 session.)
 
-- [ ] **Step 6: Run the full test suite one last time**
+- [x] **Step 6: Run the full test suite one last time**
 
 Run: `python3 -m pytest`
 Expected: all green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add CLAUDE.md docs/python/db-schema.md docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md

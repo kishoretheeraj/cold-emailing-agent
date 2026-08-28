@@ -33,6 +33,7 @@ ingest_uscis_datahub.py
 ingest_form_d.py
 visa_matching.py
 visa_match_new.py
+job_discovery.py
 supabase/migrations/
 ```
 
@@ -701,8 +702,30 @@ interview/offer tracking, email verification) — see
 docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md for the
 full plan and docs/python/db-schema.md for the table schema.
 
+## Job discovery (full-fledged buildout, Phase 2 — ATS path)
+
+`job_discovery.py` (manual, **not** in cron) scans the public ATS boards of every company already
+known via `contacts` or `company_intel` (`db.get_all_company_intel_names()` flattens
+`company_intel.raw_company_names`) using `ats.fetch_jobs(company, max_jobs=config.ATS_DISCOVERY_MAX_JOBS)`
+— no `role` argument, since discovery wants every open posting in source order, not `ats.py`'s
+single-best-match ranking. Results are filtered against the `target_roles` prompts key (any word
+overlap with any target-role line counts as a match; an empty/missing key matches everything) and
+persisted via `db.create_job_application(..., source='ats_scan')` at `stage='saved'`.
+
+`db.create_job_application` is dedup-aware: it skips (returns `None`, callers must not treat that
+as an error) any `job_url` that already exists on another row, backed by a partial unique index
+(`idx_job_applications_job_url_unique`, `WHERE job_url IS NOT NULL`) as the database-level
+race-condition backstop.
+
+Every per-company and per-posting operation is independently `try/except`-wrapped — one company's
+ATS failure or one posting's insert failure never stops the rest of the scan, same posture as
+`visa_match_new.py`/`ingest_form_d.py`. Log marker `[DISCOVERY]`, own log file (`job_discovery.log`).
+
+The JobRight puller (a second Phase 2 source, tagged `source='jobright'`) is a separate module and
+plan — see `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`.
+
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 
 See docs/python/db-schema.md for table schemas, new columns, reply stages, new db.py functions, and new config.py constants.
 
-See docs/python/prompt-keys.md for the full Supabase prompts table (21 rows, sort_orders 10–63).
+See docs/python/prompt-keys.md for the full Supabase prompts table (25 rows, sort_orders 10–65).
