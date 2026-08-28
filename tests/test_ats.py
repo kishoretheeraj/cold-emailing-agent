@@ -316,3 +316,14 @@ def test_role_of_only_stopwords_falls_back_to_source_order(mocker):
 def test_single_word_function_role_still_ranks(mocker):
     _routed_http(mocker, {"greenhouse": _GREENHOUSE_PAYLOAD})
     assert ats.fetch_jobs("Acme", role="Designer")[0]["title"] == "Product Designer"
+
+
+def test_max_jobs_param_overrides_config_default(mocker):
+    _routed_http(mocker, {"greenhouse": _GREENHOUSE_PAYLOAD})
+    assert len(ats.fetch_jobs("Acme", max_jobs=1)) == 1
+
+
+def test_max_jobs_none_falls_back_to_config_default(mocker):
+    mocker.patch.object(config, "ATS_MAX_JOBS", 1)
+    _routed_http(mocker, {"greenhouse": _GREENHOUSE_PAYLOAD})
+    assert len(ats.fetch_jobs("Acme")) == 1

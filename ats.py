@@ -211,23 +211,24 @@ def _tokens(text):
     return {w for w in words if w and w not in _TITLE_STOPWORDS}
 
 
-def _rank_jobs(jobs, role):
+def _rank_jobs(jobs, role, max_jobs):
     role_tokens = _tokens(role)
     if not role_tokens:
-        return jobs[:config.ATS_MAX_JOBS]
+        return jobs[:max_jobs]
     ordered = sorted(
         enumerate(jobs),
         key=lambda pair: (-len(role_tokens & _tokens(pair[1].get("title"))), pair[0]),
     )
-    return [job for _, job in ordered][:config.ATS_MAX_JOBS]
+    return [job for _, job in ordered][:max_jobs]
 
 
 # ── Public entry point ─────────────────────────────────────────────────────────
 
-def fetch_jobs(company, role=None):
+def fetch_jobs(company, role=None, max_jobs=None):
     """
-    Return up to ATS_MAX_JOBS active job postings for `company`, ranked by
-    relevance to `role`, from the first public ATS that recognises the company.
+    Return up to `max_jobs` (default config.ATS_MAX_JOBS) active job postings for
+    `company`, ranked by relevance to `role` when given, from the first public ATS
+    that recognises the company.
 
     Returns [] when the company is not on a supported ATS, when ATS_ENABLED is
     off, or on any failure. Never raises -- enrichment must never cost a draft.
@@ -235,6 +236,8 @@ def fetch_jobs(company, role=None):
     try:
         if not config.ATS_ENABLED:
             return []
+
+        cap = max_jobs if max_jobs is not None else config.ATS_MAX_JOBS
 
         candidates = _slug_candidates(company)
         if not candidates:
@@ -244,7 +247,7 @@ def fetch_jobs(company, role=None):
             for slug in candidates:
                 jobs = _try_provider(source, template, parser, slug)
                 if jobs:
-                    ranked = _rank_jobs(jobs, role)
+                    ranked = _rank_jobs(jobs, role, cap)
                     log.info(
                         f"[RESEARCH-A] | {company} | source={source} | "
                         f"slug={slug} | found={len(jobs)} | kept={len(ranked)}"
