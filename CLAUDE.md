@@ -742,6 +742,19 @@ boundary on any other failure (login failure, session check failure, HTTP failur
 response) — same "enrichment must never cost a draft" posture as `ats.py`. Log marker `[JOBRIGHT]`,
 own log file (`jobright.log`).
 
+`_job_from_result()` captures `responsibilities`/`qualifications`/`benefits` (from
+`jobResult.coreResponsibilities`/`skillSummaries`/`benefitsSummaries`) alongside the existing
+`description` (`jobSummary`) — found via live network reconnaissance 2026-08-29: the same
+`recommend/list/jobs` response already carries the full job-detail content shown on JobRight's own
+`/jobs/info/<id>` page, so no extra per-posting request is needed. All four land in
+`job_applications.posting_snapshot` (JSONB, schemaless by design — see docs/python/db-schema.md).
+**Deliberately not captured**: JobRight's own H1B/funding/leadership tags (would contaminate the
+governance-careful Stage-1 H-1B and Form D signals documented above, which are sourced from
+official DOL/USCIS/SEC data with strict never-auto-reject rules) and the "Insider Connections" panel
+(surfaces real named third-party people from the user's LinkedIn/school network — a materially
+different privacy category than job-posting data, not something to persist without a deliberate
+separate decision).
+
 **Never log, print, persist, or commit the credential values, session cookies, or any response
 field containing them.** See
 `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md` for the full decision

@@ -39,6 +39,9 @@ def test_job_from_result_builds_expected_shape():
             "originalUrl": "https://example.com/job/1",
             "applyLink": "https://example.com/apply/1",
             "jobSummary": "Own the roadmap.",
+            "coreResponsibilities": ["Lead the roadmap.", "Own prioritization."],
+            "skillSummaries": ["5+ years PM experience."],
+            "benefitsSummaries": ["Health coverage."],
         },
         "companyResult": {"companyName": "Acme"},
     }
@@ -48,6 +51,9 @@ def test_job_from_result_builds_expected_shape():
         "location": "Remote",
         "url": "https://example.com/job/1",
         "description": "Own the roadmap.",
+        "responsibilities": ["Lead the roadmap.", "Own prioritization."],
+        "qualifications": ["5+ years PM experience."],
+        "benefits": ["Health coverage."],
         "company": "Acme",
         "source": "jobright",
     }
@@ -61,6 +67,17 @@ def test_job_from_result_falls_back_to_apply_link_when_no_original_url():
     job = jobright._job_from_result(entry)
     assert job["url"] == "https://example.com/apply/2"
     assert job["company"] == ""
+
+
+def test_job_from_result_defaults_jd_fields_to_empty_lists_when_absent():
+    entry = {
+        "jobResult": {"jobTitle": "PM", "originalUrl": "https://example.com/job/3"},
+        "companyResult": {},
+    }
+    job = jobright._job_from_result(entry)
+    assert job["responsibilities"] == []
+    assert job["qualifications"] == []
+    assert job["benefits"] == []
 
 
 def test_job_from_result_returns_none_when_title_missing():

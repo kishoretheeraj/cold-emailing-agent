@@ -97,6 +97,9 @@ def _job_from_result(job_entry):
         "location": job_result.get("jobLocation") or "",
         "url": job_result.get("originalUrl") or job_result.get("applyLink") or "",
         "description": job_result.get("jobSummary") or "",
+        "responsibilities": job_result.get("coreResponsibilities") or [],
+        "qualifications": job_result.get("skillSummaries") or [],
+        "benefits": job_result.get("benefitsSummaries") or [],
         "company": company_result.get("companyName") or "",
         "source": "jobright",
     }
