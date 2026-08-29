@@ -310,7 +310,8 @@ def _classify_reply(body_text, contact, prompts):
     tpl = prompts.get("reply_classification_prompt") or REPLY_CLASSIFICATION_DEFAULT
     try:
         prompt = tpl.format(reply_body=body_text[:1500])
-        raw = _call_claude(prompt, model=REPLY_CLASSIFICATION_MODEL, max_tokens=100)
+        raw = _call_claude(prompt, model=REPLY_CLASSIFICATION_MODEL, max_tokens=100,
+                            module="monitor", action="reply_classification", contact_id=contact.get("id"))
         text = raw.strip()
         if text.startswith("```"):
             text = text.split("```", 2)[1].lstrip("json").strip()

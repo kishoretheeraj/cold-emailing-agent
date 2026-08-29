@@ -225,3 +225,28 @@ def test_get_client_caches_instance(monkeypatch):
 
     assert a is b
     assert calls["n"] == 1
+
+
+def test_log_api_usage_inserts_row(fake_client):
+    fake_client.table.return_value.insert.return_value.execute.return_value.data = [
+        {"id": 1, "module": "emailer", "cost_usd": 0.005}
+    ]
+    result = db.log_api_usage(
+        module="emailer", action="first_touch", model="claude-sonnet-4-6",
+        input_tokens=100, output_tokens=200, cost_usd=0.0033, contact_id=5,
+    )
+    fake_client.table.assert_called_with("api_usage_log")
+    inserted = fake_client.table.return_value.insert.call_args[0][0]
+    assert inserted["module"] == "emailer"
+    assert inserted["contact_id"] == 5
+    assert inserted["job_application_id"] is None
+    assert result["id"] == 1
+
+
+def test_log_api_usage_raises_on_failure(fake_client):
+    fake_client.table.return_value.insert.side_effect = RuntimeError("db down")
+    with pytest.raises(RuntimeError):
+        db.log_api_usage(
+            module="emailer", action=None, model="claude-sonnet-4-6",
+            input_tokens=1, output_tokens=1, cost_usd=0.0001,
+        )

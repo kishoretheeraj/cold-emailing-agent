@@ -56,7 +56,8 @@ def _generate_queries(contact, sender_profile, prompts):
 
     try:
         raw = _call_claude(formatted, model=config.RESEARCH_QUERY_MODEL, max_tokens=300,
-                           system=sender_profile)
+                           system=sender_profile,
+                           module="research", action="query_generation", contact_id=contact.get("id"))
     except Exception as exc:
         log.warning(f"[RESEARCH-Q] | {name} | {company} | _call_claude error: {exc}")
         return []
@@ -262,7 +263,8 @@ def _curate_brief(contact, raw_results, prompts, ats_jobs=None):
 
     try:
         raw = _call_claude(formatted_prompt, model=config.RESEARCH_CURATE_MODEL,
-                           max_tokens=config.RESEARCH_CURATE_MAX_TOKENS)
+                           max_tokens=config.RESEARCH_CURATE_MAX_TOKENS,
+                           module="research", action="curate", contact_id=contact.get("id"))
     except Exception as exc:
         log.warning(f"[RESEARCH-C] | {name} | {company} | _call_claude error: {exc}")
         return ""

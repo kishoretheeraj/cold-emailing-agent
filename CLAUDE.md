@@ -40,6 +40,7 @@ resume_lint.py
 resume_build.py
 resume_scrub.py
 resume/
+usage_tracking.py
 supabase/migrations/
 ```
 
@@ -877,6 +878,38 @@ third-party tool was fetched or integrated for that purpose.
 
 No auto-submit exists in this phase -- that is Phase 2.5 (auto-apply agent), a separate future
 design gated behind its own explicit opt-in.
+
+## System-wide Claude API cost tracking
+
+`api_usage_log` is an append-only ledger covering **every** Claude call in the codebase, not just
+resume_agent.py's per-application accumulator columns on `job_applications`. `usage_tracking.py`
+(`calculate_cost(model, input_tokens, output_tokens)`, pure, raises `KeyError` for a model with no
+entry in `config.MODEL_PRICING`; `log_usage(module, action, model, usage, contact_id=None,
+job_application_id=None)`, best-effort, never raises) is the single shared entry point. Every real
+number is a fact, not an estimate: `usage` always comes from the real Anthropic API response's
+`.usage.input_tokens`/`.output_tokens`, and `config.MODEL_PRICING` prices (currently
+`claude-sonnet-4-6` and `claude-haiku-4-5-20251001` -- the only two model strings any config
+constant resolves to) were verified against platform.claude.com/docs/en/about-claude/pricing, not
+guessed.
+
+`emailer._call_claude` -- the shared function `agent.py`, `monitor.py`, `reply_drafter.py`,
+`research.py`, `extract_voice.py`, and `reclassify_unrelated.py` all call -- gained optional
+`module`/`action`/`contact_id` kwargs. Passing them logs a row after the real API call completes;
+omitting them (any pre-existing call site that isn't updated) just skips logging for that call, it
+never changes `_call_claude`'s return value or raises. Every real call site in this repo now
+passes them: `emailer.py`'s own outreach/applied/networking/subject/critic calls (`module=
+"emailer"`, `action=<the email action or "critic"/"subject">`, `contact_id` from the contact dict),
+`monitor.py`'s reply classification, `reply_drafter.py`'s reply generation (+ its preflight
+retry), `research.py`'s query generation and curation, `extract_voice.py`'s voice extraction
+(no `contact_id` -- it summarizes a batch of sent mail, not one contact),
+`reclassify_unrelated.py`'s retrospective reclassification. `resume_agent.py` keeps its own
+independent Anthropic client (manual, never-cron posture) but its `_track_usage` now writes to
+**both** `db.record_resume_usage` (the existing per-application running total) and
+`usage_tracking.log_usage` (this central ledger, `action="propose"` or `"cover_letter"`).
+
+`contact_id` and `job_application_id` are both nullable on `api_usage_log` and mutually exclusive
+in practice -- a call is either about a contact-based flow or a job_applications resume flow,
+never both.
 
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 

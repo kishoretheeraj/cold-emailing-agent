@@ -636,3 +636,17 @@ def record_resume_usage(application_id, tokens_input, tokens_output, cost_usd):
                               "updated_at": datetime.utcnow().isoformat()})
                      .eq("id", application_id).execute())
     return result.data[0] if result.data else None
+
+
+def log_api_usage(module, action, model, input_tokens, output_tokens, cost_usd,
+                   contact_id=None, job_application_id=None):
+    """Insert one row into the system-wide api_usage_log ledger. Raises on failure -- callers
+    (usage_tracking.log_usage) are responsible for the best-effort wrapping, since this accessor
+    follows the rest of db.py's pattern of surfacing real failures rather than swallowing them."""
+    payload = {
+        "module": module, "action": action, "model": model,
+        "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost_usd,
+        "contact_id": contact_id, "job_application_id": job_application_id,
+    }
+    result = _retry(lambda: get_client().table("api_usage_log").insert(payload).execute())
+    return result.data[0] if result.data else None

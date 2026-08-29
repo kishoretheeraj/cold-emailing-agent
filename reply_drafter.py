@@ -33,7 +33,8 @@ def _generate_reply_body(contact, reply_body_text, prompts):
         role=contact.get("role", ""),
         reply_body=reply_body_text,
     )
-    return _call_claude(prompt, model=REPLY_RESPONSE_MODEL, system=profile)
+    return _call_claude(prompt, model=REPLY_RESPONSE_MODEL, system=profile,
+                         module="reply_drafter", action="reply_response", contact_id=contact.get("id"))
 
 
 # ── Public interface ───────────────────────────────────────────────────────────
@@ -91,7 +92,10 @@ def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
                 reply_body=reply_body_text,
             ) + f"\nREVISION INSTRUCTION:\n{'; '.join(failures)}"
             try:
-                body = _normalize_body(_call_claude(retry_full, model=REPLY_RESPONSE_MODEL, system=profile))
+                body = _normalize_body(_call_claude(
+                    retry_full, model=REPLY_RESPONSE_MODEL, system=profile,
+                    module="reply_drafter", action="reply_response_retry", contact_id=contact_id,
+                ))
                 failures = preflight.check(body, contact, prompts)
             except Exception as exc:
                 log.warning(

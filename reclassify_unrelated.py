@@ -73,10 +73,11 @@ def _get_latest_incoming_body(contact_id):
     return (rows[0].get("body") or "").strip() if rows else ""
 
 
-def _classify(body_text, prompt_template):
+def _classify(body_text, prompt_template, contact_id=None):
     try:
         prompt = prompt_template.format(reply_body=body_text[:1500])
-        raw = _call_claude(prompt, model=REPLY_CLASSIFICATION_MODEL, max_tokens=100)
+        raw = _call_claude(prompt, model=REPLY_CLASSIFICATION_MODEL, max_tokens=100,
+                            module="reclassify_unrelated", action="reply_classification", contact_id=contact_id)
         text = raw.strip()
         if text.startswith("```"):
             text = text.split("```", 2)[1].lstrip("json").strip()
@@ -108,7 +109,7 @@ def pass2_reclassify_unrelated():
         if not body:
             log.warning(f"  SKIP | {name} | {company} | no stored reply body")
             continue
-        new_status = _classify(body, tpl)
+        new_status = _classify(body, tpl, contact_id=cid)
         if new_status is None:
             log.warning(f"  SKIP | {name} | {company} | classification failed")
             continue

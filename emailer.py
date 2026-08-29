@@ -7,6 +7,7 @@ import anthropic
 
 import time
 
+import usage_tracking
 from config import (
     ANTHROPIC_API_KEY, EMAIL_MODEL, SENDER_PROFILE,
     DARTMOUTH_KEYWORDS, DARTMOUTH_INSTRUCTION,
@@ -111,7 +112,12 @@ def get_dartmouth_instruction(prompts_dict, dart):
     log.warning("[WARN] prompt key dartmouth_instruction not in DB — using fallback")
     return DARTMOUTH_INSTRUCTION
 
-def _call_claude(prompt, model=None, max_tokens=1000, system=None):
+def _call_claude(prompt, model=None, max_tokens=1000, system=None, module=None, action=None, contact_id=None):
+    """module/action/contact_id are optional labels for usage_tracking.log_usage's
+    api_usage_log row -- pass them from every real call site so system-wide cost tracking covers
+    every Claude call, not just resume_agent.py's independent client. Omitting them just means
+    no row gets logged for that call (usage_tracking degrades safely); it never affects the
+    return value."""
     global _credit_exhausted
     if _credit_exhausted:
         raise RuntimeError("Anthropic credit balance exhausted — aborting remaining calls this run")
@@ -139,6 +145,12 @@ def _call_claude(prompt, model=None, max_tokens=1000, system=None):
         log.info(
             f"[CACHE] model={_model} | "
             f"cache_read={cache_read} | cache_created={cache_created}"
+        )
+    if module:
+        usage_tracking.log_usage(
+            module, action, _model,
+            {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens},
+            contact_id=contact_id,
         )
     text = resp.content[0].text.strip()
     if not text:
@@ -377,7 +389,7 @@ def generate_email(contact, action, original_subject=None, prompts=None):
     If prompts dict is provided, its values override the config.py defaults.
     """
     user_prompt, system, ctx = prepare_email(contact, action, prompts)
-    body = _call_claude(user_prompt, system=system)
+    body = _call_claude(user_prompt, system=system, module="emailer", action=action, contact_id=contact.get("id"))
     return finalize_email(contact, action, body, original_subject, prompts, **ctx)
 
 def _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
@@ -407,7 +419,8 @@ def _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instructi
 
 def _generate_outreach(contact, action, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
     prompt = _build_outreach_prompt(contact, action, dart_instr, prompts, extra_instruction, research_block, voice_block)
-    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE),
+                         module="emailer", action=action, contact_id=contact.get("id"))
 
 def _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
     applied = contact.get("applied_date") or str(date.today())
@@ -433,7 +446,8 @@ def _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction=
 
 def _generate_applied_intro(contact, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
     prompt = _build_applied_intro_prompt(contact, dart_instr, prompts, extra_instruction, research_block, voice_block)
-    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE),
+                         module="emailer", action="send_applied_intro", contact_id=contact.get("id"))
 
 def _build_applied_followup_prompt(contact, dart_instr, prompts, extra_instruction=None):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -452,7 +466,8 @@ def _build_applied_followup_prompt(contact, dart_instr, prompts, extra_instructi
 
 def _generate_applied_followup(contact, dart_instr, prompts, extra_instruction=None):
     prompt = _build_applied_followup_prompt(contact, dart_instr, prompts, extra_instruction)
-    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE),
+                         module="emailer", action="send_applied_followup", contact_id=contact.get("id"))
 
 def _connection_context_instruction(contact):
     value = (contact.get("connection_context") or "").strip()
@@ -483,7 +498,8 @@ def _build_networking_prompt(contact, dart_instr, prompts, extra_instruction=Non
 
 def _generate_networking(contact, dart_instr, prompts, extra_instruction=None, research_block="", voice_block=""):
     prompt = _build_networking_prompt(contact, dart_instr, prompts, extra_instruction, research_block, voice_block)
-    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE),
+                         module="emailer", action="send_networking_first_touch", contact_id=contact.get("id"))
 
 def _build_networking_followup_prompt(contact, dart_instr, prompts, extra_instruction=None):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -500,7 +516,8 @@ def _build_networking_followup_prompt(contact, dart_instr, prompts, extra_instru
 
 def _generate_networking_followup(contact, dart_instr, prompts, extra_instruction=None):
     prompt = _build_networking_followup_prompt(contact, dart_instr, prompts, extra_instruction)
-    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE))
+    return _call_claude(prompt, system=prompts.get("sender_profile", SENDER_PROFILE),
+                         module="emailer", action="send_networking_followup", contact_id=contact.get("id"))
 
 def _generate_subject(contact, mode, body, prompts):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
@@ -520,7 +537,7 @@ def _generate_subject(contact, mode, body, prompts):
             job_title=contact.get("job_title", ""),
             body=body[:500],
         )
-    subject = _call_claude(prompt, system=profile)
+    subject = _call_claude(prompt, system=profile, module="emailer", action="subject", contact_id=contact.get("id"))
     return subject.strip().strip('"').strip("'")
 
 # ── Critic loop ────────────────────────────────────────────────────────────────
@@ -559,7 +576,8 @@ def _run_critic(subject, body, contact, sender_profile, critic_prompt_text):
         return _fallback
 
     try:
-        raw = _call_claude(formatted, system=sender_profile)
+        raw = _call_claude(formatted, system=sender_profile,
+                            module="emailer", action="critic", contact_id=contact.get("id"))
     except Exception as exc:
         log.warning(f"[CRITIC] _call_claude error: {exc}")
         return _fallback

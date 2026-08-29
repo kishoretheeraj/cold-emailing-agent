@@ -327,3 +327,44 @@ CREATE TABLE job_applications (
   that row. `db.record_resume_usage(application_id, tokens_input, tokens_output, cost_usd)` reads
   the current totals and adds to them (not atomic -- acceptable for this manual, single-user CLI).
   Written by `resume_agent._track_usage()` after every `_call_claude()` call.
+
+## api_usage_log (system-wide cost tracking, added 2026-08-29)
+
+Append-only ledger covering every Claude API call anywhere in the codebase, not just
+`job_applications`'s per-application resume columns above.
+
+```sql
+CREATE TABLE api_usage_log (
+  id BIGSERIAL PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  module TEXT NOT NULL,
+  action TEXT,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cost_usd NUMERIC(10,6) NOT NULL,
+  contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+  job_application_id INTEGER REFERENCES job_applications(id) ON DELETE SET NULL
+);
+```
+
+- `db.log_api_usage(module, action, model, input_tokens, output_tokens, cost_usd, contact_id=None,
+  job_application_id=None)` inserts one row. Raises on failure, matching most of this file's
+  write-path accessors -- `usage_tracking.log_usage()` is the layer that makes logging
+  best-effort, not this accessor.
+- `usage_tracking.calculate_cost(model, input_tokens, output_tokens)` is pure and raises `KeyError`
+  for a model missing from `config.MODEL_PRICING` (currently `claude-sonnet-4-6` and
+  `claude-haiku-4-5-20251001`, verified against platform.claude.com/docs/en/about-claude/pricing,
+  not estimated). `usage_tracking.log_usage(module, action, model, usage, contact_id=None,
+  job_application_id=None)` computes the cost and calls `db.log_api_usage`, catching every
+  exception -- a pricing gap or a logging failure must never block or fail the caller's actual
+  work (email generation, reply drafting, research, resume building).
+- `emailer._call_claude(prompt, model=None, max_tokens=1000, system=None, module=None,
+  action=None, contact_id=None)` -- the shared function `agent.py` (via `emailer.generate_email`),
+  `monitor.py`, `reply_drafter.py`, `research.py`, `extract_voice.py`, and
+  `reclassify_unrelated.py` all call -- logs via `usage_tracking.log_usage` whenever `module` is
+  passed. Every real call site in the repo now passes it; the three kwargs are optional purely so
+  a future call site that forgets them degrades to "not logged," never to a broken call.
+  `resume_agent.py` keeps its own independent Anthropic client but calls
+  `usage_tracking.log_usage` too (`action="propose"` / `"cover_letter"`), so this table captures
+  Phase 3's calls alongside every other module's.

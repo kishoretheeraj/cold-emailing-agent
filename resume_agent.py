@@ -23,6 +23,7 @@ import db
 import resume_build
 import resume_lint
 import resume_scrub
+import usage_tracking
 
 log = logging.getLogger(__name__)
 
@@ -66,9 +67,15 @@ def _calculate_cost(usage):
             + usage["output_tokens"] / 1_000_000 * config.RESUME_MODEL_COST_PER_MTOK_OUTPUT)
 
 
-def _track_usage(application_id, usage):
+def _track_usage(application_id, usage, action):
+    """Writes to both job_applications' per-application running total (db.record_resume_usage,
+    used by the propose/build CLI output) and the system-wide api_usage_log ledger
+    (usage_tracking.log_usage, best-effort -- used by cross-cutting cost analytics)."""
     cost = _calculate_cost(usage)
     db.record_resume_usage(application_id, usage["input_tokens"], usage["output_tokens"], cost)
+    usage_tracking.log_usage(
+        "resume_agent", action, config.RESUME_MODEL, usage, job_application_id=application_id,
+    )
     return cost
 
 
@@ -154,7 +161,7 @@ def propose(application_id):
     except json.JSONDecodeError as exc:
         raise ValueError(f"could not parse strategy from Claude's response: {exc}") from exc
 
-    cost = _track_usage(application_id, usage)
+    cost = _track_usage(application_id, usage, "propose")
     db.set_resume_strategy(application_id, strategy)
     log.info(
         f"[RESUME] | {application_id} | {job.get('company')} | strategy proposed | "
@@ -316,7 +323,7 @@ def build(application_id):
     cl_text = None
     for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
         cl_text, usage = _call_claude(cl_prompt)
-        _track_usage(application_id, usage)
+        _track_usage(application_id, usage, "cover_letter")
         violations = _lint_cover_letter(cl_text, resume_text)
         if not violations:
             break

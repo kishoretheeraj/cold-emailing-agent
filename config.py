@@ -510,6 +510,18 @@ RESUME_MAX_BUILD_RETRIES = 1
 # Update these if RESUME_MODEL changes or Anthropic's pricing changes.
 RESUME_MODEL_COST_PER_MTOK_INPUT = 3.0
 RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0
+
+# ── Model pricing (system-wide cost tracking) ───────────────────────────────────
+# Real per-million-token USD prices, verified against platform.claude.com/docs/en/about-claude/
+# pricing 2026-08-29 -- not estimated. {model: (input_price_per_mtok, output_price_per_mtok)}.
+# Covers every real model string used anywhere in this repo (EMAIL_MODEL, REPLY_CLASSIFICATION_
+# MODEL, REPLY_RESPONSE_MODEL, RESEARCH_QUERY_MODEL, RESEARCH_CURATE_MODEL, RESUME_MODEL all
+# resolve to one of these two strings). usage_tracking.calculate_cost raises KeyError for any
+# other model -- add its verified price here rather than guessing before using a new model.
+MODEL_PRICING = {
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
+}
 # Font extracted from the user's own real resume corpus (77 .docx files, checked 2026-08-29):
 # Calibri is the dominant choice (~76/77 files); Garamond appeared in exactly one recent
 # consulting-track variant. Default to the proven majority pattern, single line to override.

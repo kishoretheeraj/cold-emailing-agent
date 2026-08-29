@@ -59,6 +59,7 @@ def test_propose_writes_strategy_to_db(mocker):
     ))
     set_strategy = mocker.patch.object(db, "set_resume_strategy", return_value={"id": 1})
     track_usage = mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    log_api_usage = mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
     result = resume_agent.propose(1)
     assert result["section_order"] == ["Experience", "Projects"]
     set_strategy.assert_called_once()
@@ -66,6 +67,11 @@ def test_propose_writes_strategy_to_db(mocker):
     assert args[0] == 1
     assert args[1]["cover_letter_angle"] == "test angle"
     track_usage.assert_called_once_with(1, 100, 50, pytest.approx(0.001050))
+    log_api_usage.assert_called_once_with(
+        module="resume_agent", action="propose", model=config.RESUME_MODEL,
+        input_tokens=100, output_tokens=50, cost_usd=pytest.approx(0.001050),
+        contact_id=None, job_application_id=1,
+    )
 
 
 def test_propose_raises_on_malformed_claude_response(mocker):
@@ -90,6 +96,7 @@ def test_propose_strips_markdown_json_fence_before_parsing(mocker):
     ))
     mocker.patch.object(db, "set_resume_strategy", return_value={"id": 1})
     mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
     result = resume_agent.propose(1)
     assert result["section_order"] == ["Experience"]
 
@@ -218,6 +225,7 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     _mock_clean_data(mocker)
     mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
     mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
     mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
     mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
@@ -246,6 +254,7 @@ def test_build_raises_on_cover_letter_lint_violation_after_one_retry(mocker):
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
     mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
     # Cover letter always contains an em dash -- lint keeps failing across the one retry.
     mocker.patch.object(resume_agent, "_call_claude", return_value=("Bad letter — with an em dash.", _USAGE))
     with pytest.raises(resume_agent.LintFailedError):
@@ -257,6 +266,7 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     _mock_clean_data(mocker)
     mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
     track_usage = mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    log_api_usage = mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
     mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
     mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
@@ -272,6 +282,11 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     resume_agent.build(1)
 
     track_usage.assert_called_once_with(1, 100, 50, pytest.approx(0.001050))
+    log_api_usage.assert_called_once_with(
+        module="resume_agent", action="cover_letter", model=config.RESUME_MODEL,
+        input_tokens=100, output_tokens=50, cost_usd=pytest.approx(0.001050),
+        contact_id=None, job_application_id=1,
+    )
 
 
 def test_build_raises_lint_failed_error_when_resume_pdf_metadata_still_has_fingerprints(mocker):

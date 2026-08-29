@@ -112,3 +112,22 @@ def test_call_claude_no_cache_log_when_zero(mocker, caplog):
     with caplog.at_level(logging.INFO, logger="emailer"):
         _call_claude("Say hi")
     assert not any("[CACHE]" in r.message for r in caplog.records)
+
+
+def test_call_claude_logs_usage_when_module_passed(mocker):
+    mocker.patch("emailer._claude.messages.create", return_value=_make_response("hi"))
+    log_usage = mocker.patch("emailer.usage_tracking.log_usage")
+    from emailer import _call_claude
+    _call_claude("Say hi", model="claude-sonnet-4-6", module="emailer", action="first_touch", contact_id=7)
+    log_usage.assert_called_once_with(
+        "emailer", "first_touch", "claude-sonnet-4-6",
+        {"input_tokens": 100, "output_tokens": 20}, contact_id=7,
+    )
+
+
+def test_call_claude_does_not_log_usage_when_module_omitted(mocker):
+    mocker.patch("emailer._claude.messages.create", return_value=_make_response("hi"))
+    log_usage = mocker.patch("emailer.usage_tracking.log_usage")
+    from emailer import _call_claude
+    _call_claude("Say hi")
+    log_usage.assert_not_called()

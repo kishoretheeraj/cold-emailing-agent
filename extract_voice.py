@@ -74,7 +74,7 @@ def run(limit=40, min_samples=5):
         count=len(bodies), samples=_format_samples(bodies))
 
     try:
-        raw = _call_claude(prompt)
+        raw = _call_claude(prompt, module="extract_voice", action="voice_extraction")
     except Exception as exc:
         log.warning(f"[VOICE] | extraction failed | _call_claude error: {exc}")
         return False
