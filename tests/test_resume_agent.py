@@ -44,30 +44,53 @@ def test_propose_raises_when_deadline_has_passed(mocker):
         resume_agent.propose(1)
 
 
+_USAGE = {"input_tokens": 100, "output_tokens": 50}
+
+
 def test_propose_writes_strategy_to_db(mocker):
     mocker.patch.object(db, "get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "Product Manager", "posting_snapshot": {},
     })
     mocker.patch.object(resume_agent, "_call_claude", return_value=(
         '{"section_order": ["Experience", "Projects"], "projects_included": ["Hiya"], '
-        '"cover_letter_angle": "test angle", "named_gaps": ["no fintech background"]}'
+        '"cover_letter_angle": "test angle", "named_gaps": ["no fintech background"]}',
+        _USAGE,
     ))
     set_strategy = mocker.patch.object(db, "set_resume_strategy", return_value={"id": 1})
+    track_usage = mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
     result = resume_agent.propose(1)
     assert result["section_order"] == ["Experience", "Projects"]
     set_strategy.assert_called_once()
     args, kwargs = set_strategy.call_args
     assert args[0] == 1
     assert args[1]["cover_letter_angle"] == "test angle"
+    track_usage.assert_called_once_with(1, 100, 50, pytest.approx(0.001050))
 
 
 def test_propose_raises_on_malformed_claude_response(mocker):
     mocker.patch.object(db, "get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {},
     })
-    mocker.patch.object(resume_agent, "_call_claude", return_value="not json")
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("not json", _USAGE))
     with pytest.raises(ValueError, match="could not parse strategy"):
         resume_agent.propose(1)
+
+
+def test_propose_strips_markdown_json_fence_before_parsing(mocker):
+    # Regression test: live run against job 41 (2026-08-29) showed Claude wraps the response
+    # in a ```json fence despite the prompt saying "ONLY a JSON object, no other text".
+    mocker.patch.object(db, "get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {},
+    })
+    mocker.patch.object(resume_agent, "_call_claude", return_value=(
+        '```json\n{"section_order": ["Experience"], "projects_included": [], '
+        '"cover_letter_angle": "angle", "named_gaps": []}\n```',
+        _USAGE,
+    ))
+    mocker.patch.object(db, "set_resume_strategy", return_value={"id": 1})
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    result = resume_agent.propose(1)
+    assert result["section_order"] == ["Experience"]
 
 
 # ── _resolve_master ────────────────────────────────────────────────────────────
@@ -137,7 +160,8 @@ def test_build_raises_lint_failed_error_on_unresolved_metric_conflict(mocker):
 def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
     _mock_clean_data(mocker)
-    mocker.patch.object(resume_agent, "_call_claude", return_value="A clean cover letter body.")
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
     mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
     mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
@@ -165,10 +189,33 @@ def test_build_raises_on_cover_letter_lint_violation_after_one_retry(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
     # Cover letter always contains an em dash -- lint keeps failing across the one retry.
-    mocker.patch.object(resume_agent, "_call_claude", return_value="Bad letter — with an em dash.")
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("Bad letter — with an em dash.", _USAGE))
     with pytest.raises(resume_agent.LintFailedError):
         resume_agent.build(1)
+
+
+def test_build_tracks_usage_for_the_cover_letter_call(mocker):
+    mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
+    _mock_clean_data(mocker)
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
+    track_usage = mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
+    mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
+    mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
+    mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
+    mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    mocker.patch("resume_agent.Document")
+    mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
+    mocker.patch.object(db, "upload_resume_file", side_effect=[
+        "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
+    ])
+    mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
+
+    resume_agent.build(1)
+
+    track_usage.assert_called_once_with(1, 100, 50, pytest.approx(0.001050))
 
 
 def test_build_raises_lint_failed_error_when_resume_pdf_metadata_still_has_fingerprints(mocker):

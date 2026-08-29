@@ -47,6 +47,8 @@ class LintFailedError(Exception):
 # ── Claude client ────────────────────────────────────────────────────────────────
 
 def _call_claude(prompt, system=None):
+    """Returns (text, usage) -- usage is {"input_tokens": int, "output_tokens": int} from the
+    real API response, consumed by _track_usage to accumulate cost onto job_applications."""
     kwargs = dict(
         model=config.RESUME_MODEL,
         max_tokens=2000,
@@ -55,7 +57,19 @@ def _call_claude(prompt, system=None):
     if system:
         kwargs["system"] = system
     resp = _claude.messages.create(**kwargs)
-    return resp.content[0].text
+    usage = {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
+    return resp.content[0].text, usage
+
+
+def _calculate_cost(usage):
+    return (usage["input_tokens"] / 1_000_000 * config.RESUME_MODEL_COST_PER_MTOK_INPUT
+            + usage["output_tokens"] / 1_000_000 * config.RESUME_MODEL_COST_PER_MTOK_OUTPUT)
+
+
+def _track_usage(application_id, usage):
+    cost = _calculate_cost(usage)
+    db.record_resume_usage(application_id, usage["input_tokens"], usage["output_tokens"], cost)
+    return cost
 
 
 # ── Deadline gate (corpus spec Part 11: Cott/McKinsey lesson) ──────────────────
@@ -66,6 +80,18 @@ def _check_deadline(job):
         return True
     deadline = datetime.date.fromisoformat(deadline_str[:10])
     return deadline >= datetime.date.today()
+
+
+def _strip_json_fence(text):
+    """Claude sometimes wraps a JSON response in a markdown code fence despite being told not
+    to. Same pattern as research.py's _generate_queries -- strip it before parsing."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    return text
 
 
 # ── Stage 0-4: propose ──────────────────────────────────────────────────────────
@@ -102,14 +128,18 @@ def propose(application_id):
         company=job.get("company"), role=job.get("role"),
         posting_snapshot=json.dumps(job.get("posting_snapshot") or {}),
     )
-    raw = _call_claude(prompt)
+    raw, usage = _call_claude(prompt)
     try:
-        strategy = json.loads(raw)
+        strategy = json.loads(_strip_json_fence(raw))
     except json.JSONDecodeError as exc:
         raise ValueError(f"could not parse strategy from Claude's response: {exc}") from exc
 
+    cost = _track_usage(application_id, usage)
     db.set_resume_strategy(application_id, strategy)
-    log.info(f"[RESUME] | {application_id} | {job.get('company')} | strategy proposed")
+    log.info(
+        f"[RESUME] | {application_id} | {job.get('company')} | strategy proposed | "
+        f"tokens={usage['input_tokens']}in/{usage['output_tokens']}out | cost=${cost:.4f}"
+    )
     return strategy
 
 
@@ -216,7 +246,8 @@ def build(application_id):
 
     cl_text = None
     for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
-        cl_text = _call_claude(cl_prompt)
+        cl_text, usage = _call_claude(cl_prompt)
+        _track_usage(application_id, usage)
         violations = _lint_cover_letter(cl_text, resume_text)
         if not violations:
             break
