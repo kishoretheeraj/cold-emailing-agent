@@ -4,6 +4,8 @@ tests check shape and the metric-conflict invariant rather than business logic."
 import json
 from pathlib import Path
 
+import resume_lint
+
 _DATA_DIR = Path(__file__).resolve().parent.parent / "resume" / "data"
 
 
@@ -26,16 +28,15 @@ def test_metrics_have_required_fields():
         assert isinstance(m["conflicting_values"], list)
 
 
-def test_exactly_three_known_metric_conflicts_are_marked_unresolved():
+def test_no_unresolved_metric_conflicts_remain():
+    # The three metrics flagged resolved: null at seed time (2026-08-29) --
+    # protium_vendor_cost_eliminated, protium_build_vs_buy_horizon,
+    # product_analyst_ux_business_loss_prevented -- were resolved by the user the same day
+    # ($20K/year, 3-year, $10K/month respectively). This test documents that resolution and
+    # guards against a future edit silently reintroducing an unresolved conflict.
     metrics = _load("metrics.json")
     unresolved = [m for m in metrics if m["resolved"] is None]
-    assert len(unresolved) == 3
-    ids = {m["id"] for m in unresolved}
-    assert ids == {
-        "protium_vendor_cost_eliminated",
-        "product_analyst_ux_business_loss_prevented",
-        "protium_build_vs_buy_horizon",
-    }
+    assert unresolved == []
 
 
 def test_jargon_is_a_flat_banned_to_allowed_mapping():
@@ -66,3 +67,15 @@ def test_skills_has_spine_pool_and_banned():
     skills = _load("skills.json")
     assert set(skills.keys()) == {"spine", "swap_pool", "banned", "flagged_unbacked"}
     assert "Tableau" in skills["banned"]
+
+
+def test_no_metric_text_contains_known_jargon():
+    # Regression test: a live --build run (job 41, 2026-08-29) discovered that
+    # product_analyst_ux_emi_success's raw bullet text contained "NACH"/"e-mandate" verbatim
+    # from the corpus spec, tripping resume_lint.check_jargon on every build that includes it.
+    # This check would have caught it before the live run.
+    metrics = _load("metrics.json")
+    jargon = _load("jargon.json")
+    for m in metrics:
+        violations = resume_lint.check_jargon(m["text"], jargon)
+        assert violations == [], f"{m['id']}: {violations}"
