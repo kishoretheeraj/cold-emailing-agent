@@ -810,6 +810,20 @@ content decisions, not formatting. The fitting ladder starts at `build_docx`'s o
 margin preset, not the looser `"comfortable"` preset at index 0 of `_MARGIN_LADDER` -- it only ever
 tightens from the normal baseline.
 
+**Claude sometimes wraps a JSON response in a ` ```json ` markdown fence** despite the strategy
+prompt saying "ONLY a JSON object, no other text" -- caught on the first real `--propose` run
+against production data. `_strip_json_fence()` handles it before `json.loads`, the same pattern
+already used in `research.py`'s `_generate_queries`.
+
+**Token/cost tracking**: `_call_claude()` returns `(text, usage)` where `usage` is the real API
+response's `{"input_tokens", "output_tokens"}`. Every call site passes `usage` to `_track_usage()`,
+which computes cost from `config.RESUME_MODEL_COST_PER_MTOK_INPUT`/`_OUTPUT` (Claude Sonnet 4.6
+pricing, checked 2026-08-29 -- update if `RESUME_MODEL` or Anthropic's pricing changes) and calls
+`db.record_resume_usage()` to accumulate onto `job_applications.resume_tokens_input` /
+`resume_tokens_output` / `resume_cost_usd`. These are running totals across every call for that
+row (the strategy call in `--propose`, the cover-letter call in `--build`, and any lint-failure
+retry) -- read-then-write, not atomic, which is fine for this manual single-user CLI.
+
 **AI-content-detection evasion was explicitly declined** -- see
 docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md's "Rejected, not deferred"
 section. The humanizer lint pass (em dashes, jargon) and the PDF metadata scrub (tool-fingerprint

@@ -164,3 +164,27 @@ def test_upload_resume_file_raises_on_failure(fake_client):
     fake_client.storage.from_.return_value.upload.side_effect = RuntimeError("storage down")
     with pytest.raises(RuntimeError):
         db.upload_resume_file("resumes/1/resume.pdf", b"x", "application/pdf")
+
+
+def test_record_resume_usage_accumulates_onto_existing_totals(fake_client):
+    fake_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = {
+        "id": 1, "resume_tokens_input": 100, "resume_tokens_output": 50, "resume_cost_usd": 0.001050,
+    }
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.record_resume_usage(1, tokens_input=200, tokens_output=100, cost_usd=0.002100)
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["resume_tokens_input"] == 300
+    assert updated["resume_tokens_output"] == 150
+    assert updated["resume_cost_usd"] == pytest.approx(0.003150)
+
+
+def test_record_resume_usage_starts_from_zero_when_no_prior_usage(fake_client):
+    fake_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = {
+        "id": 1, "resume_tokens_input": None, "resume_tokens_output": None, "resume_cost_usd": None,
+    }
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.record_resume_usage(1, tokens_input=200, tokens_output=100, cost_usd=0.002100)
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["resume_tokens_input"] == 200
+    assert updated["resume_tokens_output"] == 100
+    assert updated["resume_cost_usd"] == pytest.approx(0.002100)

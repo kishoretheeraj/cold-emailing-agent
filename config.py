@@ -506,3 +506,7 @@ RESUME_SOFFICE_TIMEOUT_SECONDS = 30
 RESUME_COVER_LETTER_MAX_WORDS = 300
 # preflight.py's own pattern: one automatic regeneration on a lint failure, then give up loudly.
 RESUME_MAX_BUILD_RETRIES = 1
+# Claude Sonnet 4.6 pricing per platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-29.
+# Update these if RESUME_MODEL changes or Anthropic's pricing changes.
+RESUME_MODEL_COST_PER_MTOK_INPUT = 3.0
+RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0

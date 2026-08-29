@@ -322,3 +322,8 @@ CREATE TABLE job_applications (
   Storage bucket) are the Phase 3 accessors in `db.py`. `upload_resume_file` is **not**
   best-effort -- it raises on failure, unlike most of this file's other accessors, since a silent
   failure here would mean `job_applications` pointing at a file that doesn't exist in Storage.
+- Added 2026-08-29: `resume_tokens_input` / `resume_tokens_output` (INTEGER) and `resume_cost_usd`
+  (NUMERIC(10,6)) -- cumulative Claude token/cost usage across every `resume_agent.py` call for
+  that row. `db.record_resume_usage(application_id, tokens_input, tokens_output, cost_usd)` reads
+  the current totals and adds to them (not atomic -- acceptable for this manual, single-user CLI).
+  Written by `resume_agent._track_usage()` after every `_call_claude()` call.

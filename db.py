@@ -616,3 +616,23 @@ def upload_resume_file(storage_path, file_bytes, content_type):
         storage_path, file_bytes, {"content-type": content_type, "upsert": "true"},
     )
     return storage_path
+
+
+def record_resume_usage(application_id, tokens_input, tokens_output, cost_usd):
+    """Accumulate Claude token/cost usage onto a job_applications row's running totals across
+    every resume_agent.py call for that row (propose's strategy call, build's cover-letter call
+    and any retry). Read-then-write, not atomic -- acceptable for this manual, single-user CLI."""
+    current = _retry(lambda: get_client().table("job_applications")
+                      .select("resume_tokens_input,resume_tokens_output,resume_cost_usd")
+                      .eq("id", application_id).single().execute())
+    row = current.data or {}
+    new_tokens_input = (row.get("resume_tokens_input") or 0) + tokens_input
+    new_tokens_output = (row.get("resume_tokens_output") or 0) + tokens_output
+    new_cost = round((row.get("resume_cost_usd") or 0) + cost_usd, 6)
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"resume_tokens_input": new_tokens_input,
+                              "resume_tokens_output": new_tokens_output,
+                              "resume_cost_usd": new_cost,
+                              "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
