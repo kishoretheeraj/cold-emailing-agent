@@ -6,9 +6,15 @@ exceptions, since this is a manual, interactive tool. See
 docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md.
 """
 
+import os
+import subprocess
+
 from docx import Document
 from docx.shared import Pt, Twips
 from docx.enum.text import WD_LINE_SPACING
+from pypdf import PdfReader
+
+import config
 
 # ── Typography and spacing presets (corpus spec Part 12) ───────────────────────
 
@@ -111,3 +117,55 @@ def build_docx(strategy, master, output_path, margin_preset="standard"):
 
     doc.save(output_path)
     return output_path
+
+
+# ── PDF conversion ──────────────────────────────────────────────────────────────
+
+class StillOverflowError(Exception):
+    """Raised when the deterministic fitting-ladder rungs can't get a resume to one page.
+    Caller (resume_agent.py) catches this and triggers a content-editing regeneration."""
+
+
+def convert_to_pdf(docx_path, output_dir):
+    """Convert docx_path to PDF via LibreOffice headless. Returns the output PDF path. Raises on
+    any failure (missing soffice binary, conversion error, timeout) -- never swallowed."""
+    subprocess.run(
+        ["soffice", "--headless", "--convert-to", "pdf", "--outdir", output_dir, docx_path],
+        check=True, capture_output=True, timeout=config.RESUME_SOFFICE_TIMEOUT_SECONDS,
+    )
+    base = os.path.splitext(os.path.basename(docx_path))[0]
+    return os.path.join(output_dir, base + ".pdf")
+
+
+def page_count(pdf_path):
+    return len(PdfReader(pdf_path).pages)
+
+
+# ── Fitting ladder (corpus spec Part 13, formatting rungs only -- see Task 9's docstring note) ──
+
+_FORMATTING_RUNGS = ["line_spacing", "bullet_spacing", "header_spacing", "margins", "font_floor"]
+
+
+def fit_to_one_page(strategy, master, output_path, output_dir):
+    """
+    Build, convert, and check page count, walking the deterministic formatting rungs of the
+    corpus spec's Part 13 ladder in order (line spacing -> bullet spacing -> header spacing ->
+    margins -> font floor) until the PDF is one page. Returns (pdf_path, margin_preset_used).
+    Raises StillOverflowError if still >1 page after every rung -- the caller should treat that
+    as a signal to shorten content, not retry formatting again.
+    """
+    # Start at "standard" (build_docx's own default), not "comfortable" (ladder index 0) --
+    # the ladder only ever tightens from the normal baseline, never loosens past it.
+    preset_index = _MARGIN_LADDER.index("standard")
+    for rung_index, rung in enumerate(_FORMATTING_RUNGS):
+        preset_name = _MARGIN_LADDER[preset_index]
+        docx_path = build_docx(strategy, master, output_path, margin_preset=preset_name)
+        pdf_path = convert_to_pdf(docx_path, output_dir)
+        if page_count(pdf_path) <= 1:
+            return pdf_path, preset_name
+        if rung == "margins" and preset_index < len(_MARGIN_LADDER) - 1:
+            preset_index += 1
+    raise StillOverflowError(
+        f"still overflows one page after every formatting rung (final preset: "
+        f"{_MARGIN_LADDER[preset_index]})"
+    )
