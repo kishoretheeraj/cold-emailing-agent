@@ -1,0 +1,42 @@
+{
+  "roles": [
+    {
+      "title": "Associate Product Manager",
+      "company": "Protium Finance",
+      "period": "Apr 2025 - Aug 2025",
+      "bullet_ids": ["protium_vendor_cost_eliminated", "protium_audit_hours_saved", "protium_stakeholder_interviews", "protium_b2b_api_revenue"]
+    },
+    {
+      "title": "Senior Product Analyst",
+      "company": "Protium Finance",
+      "period": "Apr 2024 - Apr 2025",
+      "bullet_ids": ["spa_loan_processing_time", "spa_ai_ingestion_adoption", "spa_document_cost_reduction", "spa_interest_income", "spa_loan_portfolio_influenced"]
+    },
+    {
+      "title": "Product Analyst, UX",
+      "company": "Protium Finance",
+      "period": "Sep 2022 - Mar 2024",
+      "bullet_ids": ["product_analyst_ux_business_loss_prevented", "product_analyst_ux_approval_rate", "product_analyst_ux_dashboards", "product_analyst_ux_compliance_reduction", "product_analyst_ux_emi_success"]
+    },
+    {
+      "title": "Product Intern",
+      "company": "Protium Finance",
+      "period": "Apr 2022 - Sep 2022",
+      "bullet_ids": ["intern_reporting_hours_saved", "intern_pin_codes_mapped", "intern_bug_escalation_reduction", "intern_identity_verification_speedup"]
+    }
+  ],
+  "education": {
+    "institution": "Dartmouth College",
+    "program": "Master's, Engineering Management (Tuck/Thayer)",
+    "graduation": "Nov 2026 (off-cycle)"
+  },
+  "projects": {
+    "Viant": {"bullet_ids": ["viant_vendor_narrowing", "viant_savings"]},
+    "Hiya": {"bullet_ids": ["hiya_users_protected", "hiya_labeling_agreement"]},
+    "ISO New England": {"bullet_ids": ["iso_ne_forecast"]},
+    "Universal Rental Car": {"bullet_ids": ["universal_rental_car_profit"]},
+    "TikTok Audience Fit": {"bullet_ids": ["personal_tiktok_audience_fit"]},
+    "Pinnacle": {"bullet_ids": ["personal_pinnacle_app"]},
+    "Cold Outreach Agent": {"bullet_ids": [], "naming_note": "never 'cold email agent' or 'job search agent'; approved names: 'AI Email Workflow Agent', 'AI Workflow Assistant', 'Cold Outreach Agent'"}
+  }
+}

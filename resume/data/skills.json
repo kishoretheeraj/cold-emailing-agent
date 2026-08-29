@@ -1,0 +1,6 @@
+{
+  "spine": ["Product Roadmap", "PRDs", "Agile/Scrum", "SQL", "Figma", "Jira"],
+  "swap_pool": ["Metabase", "Power BI", "Python", "Excel (advanced)", "Confluence", "Miro", "Claude", "Cursor", "Claude Code", "Lovable"],
+  "banned": ["Tableau", "v0", "Replit"],
+  "flagged_unbacked": ["GTM"]
+}

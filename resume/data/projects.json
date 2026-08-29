@@ -1,0 +1,11 @@
+{
+  "ai_automation_ml": {"lead": "Cold Outreach Agent or Hiya", "second": "TikTok Audience Fit", "third": "Viant", "drop": ["ISO New England", "Pinnacle"]},
+  "pricing_strategy": {"lead": "Universal Rental Car", "second": "Viant", "third": null, "drop": ["Hiya", "ISO New England", "TikTok Audience Fit"]},
+  "operations_manufacturing_cpg": {"lead": "Viant (2-bullet version)", "second": "ISO New England", "third": null, "drop": ["Hiya", "TikTok Audience Fit", "Cold Outreach Agent"]},
+  "pure_data_analytics": {"lead": "ISO New England", "second": "Hiya", "third": "Viant", "drop": ["TikTok Audience Fit", "Pinnacle"]},
+  "finance_investment_adjacent": {"lead": "Personal portfolio", "second": "Viant financial model", "third": "ISO New England", "drop": ["Cold Outreach Agent", "Pinnacle"]},
+  "hardware_semiconductor_ip": {"lead": "Viant (vendor eval)", "second": "Hiya (production ML)", "third": "TikTok Audience Fit", "drop": ["Pinnacle", "ISO New England"]},
+  "product_management_generalist": {"lead": "Hiya", "second": "TikTok Audience Fit", "third": "Viant", "drop": []},
+  "consulting": {"lead": "Universal Rental Car", "second": "Viant", "third": null, "drop": ["all AI projects"]},
+  "no_jd_generalist": {"lead": "Hiya", "second": "Viant", "third": "ISO New England", "drop": [], "note": "pick for spread, not depth"}
+}

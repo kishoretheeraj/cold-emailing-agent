@@ -1,0 +1,10 @@
+[
+  {"moment": "Row 4 of a labeling rubric, two labelers disagreed", "insight": "Most labeler error is rubric debt, not labeler error. More labels is almost never the fix", "used_for": "Centific"},
+  {"moment": "The outreach agent sent a draft with the wrong company name", "insight": "The fix wasn't more regex, it was specifying upstream what an acceptable draft looks like", "used_for": "Photon"},
+  {"moment": "Blind-listen review found confidently wrong classifier outputs", "insight": "Confidence and correctness are independent axes", "used_for": "Pindrop"},
+  {"moment": "Three months on aggregate pricing models before noticing weekday and weekend were two different markets", "insight": "Most pricing work succeeds or quietly fails at the segment definition step", "used_for": "Cott"},
+  {"moment": "A 5-minute digital loan flow next to a 4-hour assisted flow", "insight": "Not a backend problem, a handshake problem between three surfaces", "used_for": "ASSA ABLOY"},
+  {"moment": "An hourly sync and an audit checkpoint living in someone's inbox", "insight": "Friction lives at the seams, not in missing features", "used_for": "Dedalus"},
+  {"moment": "Demand-curve tails and where data centers sit on them", "insight": "Load forecasting failure modes are in the tail, not the mean", "used_for": "Fluence"},
+  {"moment": "The 90-office audit, operator pain", "insight": "Self-serve is a diagnosis problem before it is a tooling problem", "used_for": "Glean (planned, never written)"}
+]
