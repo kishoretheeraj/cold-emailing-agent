@@ -24,6 +24,7 @@ def _create_patched(supabase_url, supabase_key, options=None):
         re.match = orig_re_match
 
 from supabase import create_client as _orig_create_client
+import config
 from config import SUPABASE_URL, SUPABASE_ANON_KEY
 
 _client = None
@@ -584,3 +585,34 @@ def get_job_application(application_id):
     result = _retry(lambda: get_client().table("job_applications")
                      .select("*").eq("id", application_id).single().execute())
     return result.data
+
+
+def set_resume_strategy(application_id, strategy):
+    """Write stage-4 strategy output onto a job_applications row. Builds nothing."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"resume_strategy": strategy, "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
+def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref=None, resume_variant=None):
+    """Write built-file references onto a job_applications row after a successful build."""
+    payload = {"updated_at": datetime.utcnow().isoformat()}
+    if resume_file_ref is not None:
+        payload["resume_file_ref"] = resume_file_ref
+    if cover_letter_file_ref is not None:
+        payload["cover_letter_file_ref"] = cover_letter_file_ref
+    if resume_variant is not None:
+        payload["resume_variant"] = resume_variant
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update(payload).eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
+def upload_resume_file(storage_path, file_bytes, content_type):
+    """Upload a built file to the resumes Storage bucket. Returns storage_path. Raises on failure --
+    unlike the rest of this module's best-effort accessors, a failed upload must not look like success."""
+    get_client().storage.from_(config.RESUME_STORAGE_BUCKET).upload(
+        storage_path, file_bytes, {"content-type": content_type, "upsert": "true"},
+    )
+    return storage_path

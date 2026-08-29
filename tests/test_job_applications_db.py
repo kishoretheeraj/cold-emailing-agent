@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import config
 import db
 
 
@@ -118,3 +119,48 @@ def test_get_job_application_by_id(fake_client):
     result = db.get_job_application(1)
     fake_client.table.return_value.select.return_value.eq.assert_called_with("id", 1)
     assert result["company"] == "Acme"
+
+
+def test_set_resume_strategy_updates_the_row(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+        {"id": 1, "resume_strategy": {"angle": "projects-first"}}
+    ]
+    result = db.set_resume_strategy(1, {"angle": "projects-first"})
+    fake_client.table.assert_called_with("job_applications")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["resume_strategy"] == {"angle": "projects-first"}
+    assert result["id"] == 1
+
+
+def test_set_resume_files_only_sets_provided_fields(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.set_resume_files(1, resume_file_ref="resumes/1/resume.pdf")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["resume_file_ref"] == "resumes/1/resume.pdf"
+    assert "cover_letter_file_ref" not in updated
+    assert "resume_variant" not in updated
+
+
+def test_set_resume_files_sets_all_fields_when_provided(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.set_resume_files(1, resume_file_ref="r.pdf", cover_letter_file_ref="cl.pdf", resume_variant="v1")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["resume_file_ref"] == "r.pdf"
+    assert updated["cover_letter_file_ref"] == "cl.pdf"
+    assert updated["resume_variant"] == "v1"
+
+
+def test_upload_resume_file_calls_storage_and_returns_path(fake_client):
+    result = db.upload_resume_file("resumes/1/resume.pdf", b"filebytes", "application/pdf")
+    fake_client.storage.from_.assert_called_with(config.RESUME_STORAGE_BUCKET)
+    fake_client.storage.from_.return_value.upload.assert_called_once()
+    args, kwargs = fake_client.storage.from_.return_value.upload.call_args
+    assert args[0] == "resumes/1/resume.pdf"
+    assert args[1] == b"filebytes"
+    assert result == "resumes/1/resume.pdf"
+
+
+def test_upload_resume_file_raises_on_failure(fake_client):
+    fake_client.storage.from_.return_value.upload.side_effect = RuntimeError("storage down")
+    with pytest.raises(RuntimeError):
+        db.upload_resume_file("resumes/1/resume.pdf", b"x", "application/pdf")
