@@ -291,3 +291,13 @@ exist). Phase 3 now has an approved design
 under `docs/superpowers/plans/`; Phase 2.5 remains an unplanned stub. Waiting on a human interactive
 session to author the next plan file (`writing-plans`) before this workflow can proceed; this
 workflow took no other action this run.
+
+**2026-08-29 (build-continue.yml, later run):** Phase 3 is now fully complete —
+`docs/superpowers/plans/2026-08-29-phase3-resume-intelligence.md` is fully checked off, verified
+against the actual repo state (`resume_agent.py`, `resume_lint.py`, `resume_build.py`,
+`resume_scrub.py`, `resume/data/*.json` all exist, root CLAUDE.md's Resume intelligence section is
+current). Phase 2.5 (auto-apply agent) remains an unplanned stub in this spec — no plan file exists
+under `docs/superpowers/plans/` for it, and per its own stub section above it needs its own design
+pass before a plan can be written. Phases 4 and 5 remain stubs too. Waiting on a human interactive
+session to author Phase 2.5's plan (via `writing-plans`) before this workflow can proceed; this
+workflow took no other action this run.
