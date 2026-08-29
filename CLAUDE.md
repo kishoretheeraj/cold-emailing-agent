@@ -755,6 +755,17 @@ official DOL/USCIS/SEC data with strict never-auto-reject rules) and the "Inside
 different privacy category than job-posting data, not something to persist without a deliberate
 separate decision).
 
+`config.JOBRIGHT_SORT_CONDITION` (default `0`) controls the `sortCondition` query param on
+`recommend/list/jobs` — confirmed via live reconnaissance 2026-08-29 to have exactly three modes:
+`0` Recommended (JobRight's blended default), `1` Most Recent, `2` Top Matched; any other value
+silently falls back to `0` server-side. **Location/title/seniority/date-range/H1B-only filtering is
+NOT a request param on this endpoint** — it's read implicitly from the account's saved filter object
+(`POST /swan/filter/get/filter`, e.g. `daysAgo`, `isH1BOnly`, `jobTypes`, `seniority`, `locations`),
+so `jobright.py` always pulls whatever filter is currently configured in the JobRight web UI itself.
+Changing that filter from code would mean writing to the account's saved settings (a real account
+mutation, not read-only recon) and was deliberately not built without the user explicitly asking for
+it.
+
 **Never log, print, persist, or commit the credential values, session cookies, or any response
 field containing them.** See
 `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md` for the full decision

@@ -108,7 +108,8 @@ def _job_from_result(job_entry):
 def _fetch_page(opener, position, count):
     body = _request(
         opener, "GET",
-        f"/swan/recommend/list/jobs?refresh=true&sortCondition=0&position={position}&count={count}&syncRerank=false",
+        f"/swan/recommend/list/jobs?refresh=true&sortCondition={config.JOBRIGHT_SORT_CONDITION}"
+        f"&position={position}&count={count}&syncRerank=false",
     )
     entries = ((body.get("result") or {}).get("jobList")) or []
     jobs = [j for j in (_job_from_result(e) for e in entries) if j]

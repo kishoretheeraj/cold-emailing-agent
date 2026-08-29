@@ -65,6 +65,13 @@ JOBRIGHT_PAGE_SIZE = 20
 JOBRIGHT_MAX_JOBS = 60
 JOBRIGHT_PAGE_DELAY_SECONDS = 2
 
+# recommend/list/jobs sortCondition -- confirmed via live reconnaissance 2026-08-29:
+# 0 = Recommended (JobRight's blended default, matches account's saved filter weighting),
+# 1 = Most Recent (posting date), 2 = Top Matched (match score). Any other value silently
+# falls back to 0 server-side. Recommended stays the default -- it's what the account's own
+# UI defaults to and reflects the saved filter's full weighting, not just recency or score.
+JOBRIGHT_SORT_CONDITION = 0
+
 # These are fallback defaults. Live prompts (including sender_profile) are stored
 # in the Supabase prompts table and override these at runtime.
 

@@ -85,6 +85,23 @@ def test_job_from_result_returns_none_when_title_missing():
     assert jobright._job_from_result({}) is None
 
 
+# ── _fetch_page ────────────────────────────────────────────────────────────────
+
+def test_fetch_page_uses_configured_sort_condition(mocker):
+    mocker.patch.object(config, "JOBRIGHT_SORT_CONDITION", 2)
+    request = mocker.patch.object(jobright, "_request", return_value={"result": {"jobList": []}})
+    jobright._fetch_page(MagicMock(), 0, 20)
+    path = request.call_args[0][2]
+    assert "sortCondition=2" in path
+
+
+def test_fetch_page_defaults_to_recommended_sort(mocker):
+    request = mocker.patch.object(jobright, "_request", return_value={"result": {"jobList": []}})
+    jobright._fetch_page(MagicMock(), 0, 20)
+    path = request.call_args[0][2]
+    assert "sortCondition=0" in path
+
+
 # ── _request retry/backoff ────────────────────────────────────────────────────
 
 def test_request_retries_on_5xx_then_succeeds(mocker):
