@@ -5,6 +5,7 @@ import datetime
 
 import pytest
 
+import config
 import db
 import resume_agent
 
@@ -96,19 +97,28 @@ def test_propose_strips_markdown_json_fence_before_parsing(mocker):
 # ── _resolve_master ────────────────────────────────────────────────────────────
 
 _CLEAN_MASTER = {
-    "roles": [{"title": "Associate Product Manager", "company": "Acme", "period": "2025",
-               "bullet_ids": ["m1"]}],
-    "education": {"institution": "Dartmouth", "program": "MEM", "graduation": "2026"},
-    "projects": {"Hiya": {"bullet_ids": ["m2"]}, "Viant": {"bullet_ids": ["m3"]}},
+    "name": "Test Person",
+    "contact": {"location": "Hanover, NH", "phone": "555-0100", "email": "test@example.com", "linkedin": None},
+    "roles": [{"title": "Associate Product Manager", "company": "Acme", "descriptor": "Fintech",
+               "location": "Bangalore, India", "period": "2025", "bullet_ids": ["m1"]}],
+    "education": [{"institution": "Dartmouth", "location": "Hanover, NH", "program": "MEM",
+                    "graduation": "2026", "coursework": None}],
+    "projects": {
+        "Hiya": {"descriptor": None, "period": None, "bullet_ids": ["m2"]},
+        "Viant": {"descriptor": None, "period": None, "bullet_ids": ["m3"]},
+    },
+    "leadership": {"bullet_ids": ["m4"]},
 }
 _CLEAN_METRICS = [
     {"id": "m1", "role": "APM", "text": "Shipped a roadmap.", "resolved": True, "conflicting_values": []},
     {"id": "m2", "role": "Project", "text": "Protected 500M+ users.", "resolved": True, "conflicting_values": []},
     {"id": "m3", "role": "Project", "text": "Narrowed 7 vendors to 2.", "resolved": True, "conflicting_values": []},
+    {"id": "m4", "role": "Personal", "text": "Mentored 500+ students.", "resolved": True, "conflicting_values": []},
 ]
 _CONFLICTED_METRICS = [
     {"id": "m1", "role": "APM", "text": "$20K/year saved.", "resolved": None, "conflicting_values": ["$120K/year"]},
 ]
+_CLEAN_SKILLS = {"spine": ["SQL"], "swap_pool": ["Python", "Metabase"], "banned": ["Tableau"], "flagged_unbacked": []}
 
 
 def test_resolve_master_converts_bullet_ids_to_text_for_roles_and_filters_projects():
@@ -116,6 +126,50 @@ def test_resolve_master_converts_bullet_ids_to_text_for_roles_and_filters_projec
     resolved = resume_agent._resolve_master(_CLEAN_MASTER, _CLEAN_METRICS, strategy)
     assert resolved["roles"][0]["bullets"] == ["Shipped a roadmap."]
     assert resolved["projects"]["Hiya"]["bullets"] == ["Protected 500M+ users."]
+    assert resolved["leadership_bullets"] == ["Mentored 500+ students."]
+    assert resolved["name"] == "Test Person"
+    assert resolved["education"] == _CLEAN_MASTER["education"]
+
+
+def test_resolve_master_caps_bullets_per_role_to_configured_max():
+    # Regression test: a live --build run (job 41, 2026-08-29) with 4 Protium roles at their real
+    # 4-5 bullet_ids each never fit one page even at the tightest fitting-ladder rung -- real
+    # historical resumes show 2-3 bullets per role, not every metric a role has bullet_ids for.
+    many_bullet_metrics = [
+        {"id": f"m{i}", "role": "APM", "text": f"Bullet {i}.", "resolved": True, "conflicting_values": []}
+        for i in range(6)
+    ]
+    master = dict(_CLEAN_MASTER, roles=[dict(_CLEAN_MASTER["roles"][0], bullet_ids=[f"m{i}" for i in range(6)])])
+    resolved = resume_agent._resolve_master(master, many_bullet_metrics, {"projects_included": []})
+    assert len(resolved["roles"][0]["bullets"]) == config.RESUME_MAX_BULLETS_PER_ENTRY
+
+
+def test_resolve_master_raises_on_fabricated_project_name():
+    # Regression test: a live --propose run (job 41, 2026-08-29) had the LLM invent entirely
+    # fictional project names/descriptions instead of choosing from master.json's real projects.
+    # _resolve_master previously silently skipped unknown names -- now it raises.
+    strategy = {"projects_included": ["A Project That Does Not Exist"]}
+    with pytest.raises(ValueError, match="unknown project"):
+        resume_agent._resolve_master(_CLEAN_MASTER, _CLEAN_METRICS, strategy)
+
+
+# ── _check_skills_governance ───────────────────────────────────────────────────
+
+def test_check_skills_governance_passes_valid_skills():
+    strategy = {"skills_groups": [{"label": "Data & Tools", "skills": ["SQL", "Python"]}]}
+    assert resume_agent._check_skills_governance(_CLEAN_SKILLS, strategy) == []
+
+
+def test_check_skills_governance_flags_banned_skill():
+    strategy = {"skills_groups": [{"label": "Data & Tools", "skills": ["Tableau"]}]}
+    violations = resume_agent._check_skills_governance(_CLEAN_SKILLS, strategy)
+    assert any("banned" in v for v in violations)
+
+
+def test_check_skills_governance_flags_unbacked_skill():
+    strategy = {"skills_groups": [{"label": "Data & Tools", "skills": ["Rust"]}]}
+    violations = resume_agent._check_skills_governance(_CLEAN_SKILLS, strategy)
+    assert any("governed skills pool" in v for v in violations)
 
 
 # ── build ──────────────────────────────────────────────────────────────────────
@@ -124,6 +178,7 @@ _JOB_WITH_STRATEGY = {
     "id": 1, "company": "Acme", "role": "Product Manager", "posting_snapshot": {},
     "resume_strategy": {
         "section_order": ["Experience"], "projects_included": [],
+        "skills_groups": [{"label": "Data & Tools", "skills": ["SQL"]}],
         "cover_letter_angle": "test angle", "named_gaps": [],
     },
 }
@@ -132,6 +187,7 @@ _JOB_WITH_STRATEGY = {
 def _mock_clean_data(mocker):
     mocker.patch.object(resume_agent, "_load_data", side_effect=lambda name: {
         "master.json": _CLEAN_MASTER, "metrics.json": _CLEAN_METRICS, "jargon.json": {},
+        "skills.json": _CLEAN_SKILLS,
     }[name])
 
 
@@ -150,8 +206,8 @@ def test_build_raises_lint_failed_error_on_unresolved_metric_conflict(mocker):
     mocker.patch.object(db, "get_job_application", return_value=job)
     mocker.patch.object(resume_agent, "_load_data", side_effect=lambda name: {
         "master.json": {"roles": [{"title": "APM", "company": "Acme", "period": "2025",
-                                    "bullet_ids": ["m1"]}], "education": None, "projects": {}},
-        "metrics.json": _CONFLICTED_METRICS, "jargon.json": {},
+                                    "bullet_ids": ["m1"]}], "education": [], "projects": {}},
+        "metrics.json": _CONFLICTED_METRICS, "jargon.json": {}, "skills.json": _CLEAN_SKILLS,
     }[name])
     with pytest.raises(resume_agent.LintFailedError, match="unresolved metric conflict"):
         resume_agent.build(1)

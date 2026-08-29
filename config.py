@@ -510,3 +510,19 @@ RESUME_MAX_BUILD_RETRIES = 1
 # Update these if RESUME_MODEL changes or Anthropic's pricing changes.
 RESUME_MODEL_COST_PER_MTOK_INPUT = 3.0
 RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0
+# Font extracted from the user's own real resume corpus (77 .docx files, checked 2026-08-29):
+# Calibri is the dominant choice (~76/77 files); Garamond appeared in exactly one recent
+# consulting-track variant. Default to the proven majority pattern, single line to override.
+RESUME_FONT_NAME = "Calibri"
+# The strategy step (resume_agent.py --propose) may only choose from this exact set of section
+# names -- an unconstrained LLM invented labels like "Selected Projects"/"Core Competencies" that
+# resume_build.py's section_order lookup silently dropped (found on the first live --build run).
+# "Summary" is deliberately excluded: master.json has no summary text to render, and the most
+# recent real template omits it.
+RESUME_ALLOWED_SECTIONS = ("Education", "Experience", "Projects", "Skills", "Leadership")
+# Real historical resumes show 2-3 bullets per role/project, not every metric.json entry a role
+# has bullet_ids for -- found live: rendering all 4-5 bullets per Protium role (18+ bullets total
+# across 4 roles) never fits one page even at the tightest fitting-ladder rung. Caps to the first
+# N bullet_ids per entry (already curated in master.json's own order) -- deterministic, no new LLM
+# selection freedom, matching the real corpus's actual density.
+RESUME_MAX_BULLETS_PER_ENTRY = 3

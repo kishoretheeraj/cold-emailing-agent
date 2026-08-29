@@ -802,13 +802,58 @@ numbers until the user resolves them by hand.
 posture (built for unattended background runs), this pipeline is manual and interactive, so a
 failure should surface immediately.
 
-`resume_build.py`'s fitting ladder only implements the deterministic formatting rungs (spacing,
-margins, font floor) from the corpus spec's Part 13; the content-editing rungs (orphan-word trims,
-section folding, bullet drops) are handled by `resume_agent.py --build`'s one-retry regeneration
-loop instead (same pattern as `preflight.py`'s regenerate-with-error-list retry), since those are
-content decisions, not formatting. The fitting ladder starts at `build_docx`'s own `"standard"`
-margin preset, not the looser `"comfortable"` preset at index 0 of `_MARGIN_LADDER` -- it only ever
-tightens from the normal baseline.
+`resume_build.py`'s fitting ladder (`_FIT_RUNGS`) cumulatively tightens header/bullet/entry-line
+spacing, margins, and body font size (10pt down to 9pt) across 5 rungs; the content-editing rungs
+(orphan-word trims, section folding, bullet drops) are handled by `resume_agent.py --build`'s
+one-retry regeneration loop instead (same pattern as `preflight.py`'s regenerate-with-error-list
+retry), since those are content decisions, not formatting. The fitting ladder starts at
+`build_docx`'s own `"standard"` margin preset, not the looser `"comfortable"` preset at index 0 of
+`_MARGIN_LADDER` -- it only ever tightens from the normal baseline. Every paragraph is built via
+`_new_paragraph()`, which zeroes python-docx's default template spacing (1.15x line height + 10pt
+`space_after` on every paragraph unless overridden) to an explicit single-spaced baseline -- found
+live: left at the default, that alone was enough extra height across ~20 paragraphs to push a
+one-page resume onto a second page even at the tightest rung. `config.RESUME_MAX_BULLETS_PER_ENTRY`
+(3) caps bullets per role/project/leadership entry to the first N of `bullet_ids`' own curated
+order -- real historical resumes show 2-3 bullets per role, not every metric a role has bullet_ids
+for; rendering all of them for a multi-role tenure never fit one page even at the floor rung.
+
+**Format extracted from the user's own real resume corpus** (77 `.docx` files under
+`~/Downloads/Career/Resumes/`, analyzed programmatically 2026-08-29 after the user found the
+generated output "looks like a normal document," not a resume): name centered/bold/13pt, contact
+line centered below it, section headers ALL CAPS/bold with a bottom-border rule
+(`_add_bottom_border` -- present in every file checked, both the dominant ALL-CAPS/Calibri
+pattern and a single more-recent Title-Case/Garamond variant; Calibri was picked as
+`config.RESUME_FONT_NAME` since it's ~76/77 files vs. Garamond's one), right-tab-stopped
+dates/locations at the content-width edge (`_add_right_tab_stop`), bold company/institution +
+plain descriptor on one line and bold+italic title/program + italic date on the next
+(`_add_two_line_entry`; projects use a one-line variant, `_add_one_line_entry`), real Word bulleted
+lists (`"List Bullet"` style, not manual "•" characters), and Skills/Leadership as bold
+`"Label: "` + inline comma-joined text, not bulleted. Consecutive roles at the same company
+(`_add_experience_section`'s `last_company_key` tracking) share one company header line instead of
+repeating it per promotion -- otherwise a 4-role tenure reads as 4 separate jobs.
+
+**Two governance bugs found on the first live `--build` run, both silent-drop failure modes**:
+(1) `strategy["section_order"]` was unconstrained, so the LLM invented section labels
+("Selected Projects", "Core Competencies") that `build_docx`'s lookup silently dropped -- whole
+sections vanished from the built resume with no error. (2) `strategy["projects_included"]` was
+similarly unconstrained, so the LLM invented entirely fictional project names/descriptions instead
+of choosing from `master.json`'s real projects -- `_resolve_master` silently produced an empty
+Projects section rather than raising. Both are now fixed at two layers: the `_STRATEGY_PROMPT`
+lists the real allowed set (`config.RESUME_ALLOWED_SECTIONS`) and the real project names
+(`master.json`'s own keys) so the LLM is constrained upstream, and `build_docx`/`_resolve_master`
+now raise `ValueError` on any name outside those sets as an enforcement backstop -- matching this
+module's "raise on failure, never silently skip" Global Constraint, which the original code
+violated in exactly the two places that mattered most. The same governance pattern
+(`_check_skills_governance`, mirroring `resume_lint.check_metrics_whitelist`) validates
+`strategy["skills_groups"]` against `skills.json`'s spine/swap_pool, raising `LintFailedError` on a
+banned or fabricated skill.
+
+`master.json` gained `name`, `contact` (location/phone/email/linkedin), per-role/per-project
+`descriptor`/`location`/`period`, `education` as a list (was a single object -- the user has two
+degrees), and a `leadership` bucket resolving four previously-orphaned personal metrics
+(`personal_portfolio_return`, `personal_pinnacle_app`, `personal_madras_defense_lms`,
+`personal_unschool_mentoring`) that no section builder had ever referenced. All values are the
+user's own real facts, extracted from their real `.docx` files, not fabricated.
 
 **Claude sometimes wraps a JSON response in a ` ```json ` markdown fence** despite the strategy
 prompt saying "ONLY a JSON object, no other text" -- caught on the first real `--propose` run

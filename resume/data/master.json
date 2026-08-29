@@ -1,42 +1,71 @@
 {
+  "name": "Kishore Theeraj Vasudevan Jaya",
+  "contact": {
+    "location": "Hanover, NH",
+    "phone": "+1 603-322-0535",
+    "email": "kishore.theeraj.vasudevan.jaya.th@dartmouth.edu",
+    "linkedin": "linkedin.com/in/kishoretheeraj"
+  },
   "roles": [
     {
       "title": "Associate Product Manager",
-      "company": "Protium Finance",
+      "company": "Protium Finance Limited",
+      "descriptor": "Digital lending company ($130M revenue, 2,800+ employees)",
+      "location": "Bangalore, India",
       "period": "Apr 2025 - Aug 2025",
       "bullet_ids": ["protium_vendor_cost_eliminated", "protium_audit_hours_saved", "protium_stakeholder_interviews", "protium_b2b_api_revenue"]
     },
     {
       "title": "Senior Product Analyst",
-      "company": "Protium Finance",
+      "company": "Protium Finance Limited",
+      "descriptor": "Digital lending company ($130M revenue, 2,800+ employees)",
+      "location": "Bangalore, India",
       "period": "Apr 2024 - Apr 2025",
       "bullet_ids": ["spa_loan_processing_time", "spa_ai_ingestion_adoption", "spa_document_cost_reduction", "spa_interest_income", "spa_loan_portfolio_influenced"]
     },
     {
       "title": "Product Analyst, UX",
-      "company": "Protium Finance",
+      "company": "Protium Finance Limited",
+      "descriptor": "Digital lending company ($130M revenue, 2,800+ employees)",
+      "location": "Bangalore, India",
       "period": "Sep 2022 - Mar 2024",
       "bullet_ids": ["product_analyst_ux_business_loss_prevented", "product_analyst_ux_approval_rate", "product_analyst_ux_dashboards", "product_analyst_ux_compliance_reduction", "product_analyst_ux_emi_success"]
     },
     {
       "title": "Product Intern",
-      "company": "Protium Finance",
+      "company": "Protium Finance Limited",
+      "descriptor": "Digital lending company ($130M revenue, 2,800+ employees)",
+      "location": "Bangalore, India",
       "period": "Apr 2022 - Sep 2022",
       "bullet_ids": ["intern_reporting_hours_saved", "intern_pin_codes_mapped", "intern_bug_escalation_reduction", "intern_identity_verification_speedup"]
     }
   ],
-  "education": {
-    "institution": "Dartmouth College",
-    "program": "Master's, Engineering Management (Tuck/Thayer)",
-    "graduation": "Nov 2026 (off-cycle)"
-  },
+  "education": [
+    {
+      "institution": "Dartmouth College",
+      "location": "Hanover, NH",
+      "program": "Master of Engineering Management (MEM) | Joint program by Thayer School of Engineering and Tuck School of Business",
+      "graduation": "Expected Nov 2026",
+      "coursework": "Coursework: Strategy, Pricing Strategy, Data Analytics, Finance, Accounting, Operations Management, Marketing, Organizational Behavior"
+    },
+    {
+      "institution": "Anna University",
+      "location": "Chennai, India",
+      "program": "Bachelor of Engineering, Computer Science and Engineering",
+      "graduation": "Apr 2022",
+      "coursework": null
+    }
+  ],
   "projects": {
-    "Viant": {"bullet_ids": ["viant_vendor_narrowing", "viant_savings"]},
-    "Hiya": {"bullet_ids": ["hiya_users_protected", "hiya_labeling_agreement"]},
-    "ISO New England": {"bullet_ids": ["iso_ne_forecast"]},
-    "Universal Rental Car": {"bullet_ids": ["universal_rental_car_profit"]},
-    "TikTok Audience Fit": {"bullet_ids": ["personal_tiktok_audience_fit"]},
-    "Pinnacle": {"bullet_ids": ["personal_pinnacle_app"]},
-    "Cold Outreach Agent": {"bullet_ids": [], "naming_note": "never 'cold email agent' or 'job search agent'; approved names: 'AI Email Workflow Agent', 'AI Workflow Assistant', 'Cold Outreach Agent'"}
+    "Viant": {"descriptor": null, "location": null, "period": null, "bullet_ids": ["viant_vendor_narrowing", "viant_savings"]},
+    "Hiya": {"descriptor": "Dartmouth Data Analytics Project Lab Course", "location": null, "period": "Mar 2025 - Present", "bullet_ids": ["hiya_users_protected", "hiya_labeling_agreement"]},
+    "ISO New England": {"descriptor": null, "location": null, "period": null, "bullet_ids": ["iso_ne_forecast"]},
+    "Universal Rental Car": {"descriptor": "Tuck School of Business, Dartmouth -- Pricing Strategy Capstone", "location": null, "period": null, "bullet_ids": ["universal_rental_car_profit"]},
+    "TikTok Audience Fit": {"descriptor": "AI Web App (Lovable, Cursor, Claude Vision API, Vercel) | Live: tiktok-audience-fit.lovable.app", "location": null, "period": "2026", "bullet_ids": ["personal_tiktok_audience_fit"]},
+    "Pinnacle": {"descriptor": null, "location": null, "period": null, "bullet_ids": ["personal_pinnacle_app"]},
+    "Cold Outreach Agent": {"descriptor": "Personal Project (Python, Next.js, Supabase, Claude Code, Cursor, GitHub Actions)", "location": null, "period": "2026", "bullet_ids": [], "naming_note": "never 'cold email agent' or 'job search agent'; approved names: 'AI Email Workflow Agent', 'AI Workflow Assistant', 'Cold Outreach Agent'"}
+  },
+  "leadership": {
+    "bullet_ids": ["personal_portfolio_return", "personal_pinnacle_app", "personal_madras_defense_lms", "personal_unschool_mentoring"]
   }
 }

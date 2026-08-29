@@ -101,14 +101,27 @@ Company: {company}
 Role: {role}
 Posting details: {posting_snapshot}
 
+Available projects (choose only from this real list -- NEVER invent a project name or description):
+{project_names}
+
+Available skills pool (spine -- always include; swap_pool -- choose relevant ones; NEVER use banned):
+Spine: {skills_spine}
+Swap pool: {skills_swap_pool}
+Banned (never use): {skills_banned}
+
 Follow this process:
 1. Diagnose the role type and the 8-12 capabilities the posting screens for.
 2. Identify the top 3 matches and 2 honest gaps against a Product Manager background.
-3. Propose a strategy: section order, which projects to include (max 3), a one-line
+3. Propose a strategy: section order (choose only from {allowed_sections}, in the order they
+   should appear on the page), which projects to include (max 3, exact names only from the
+   list above), how to group skills into 2-4 labeled categories (skills must come only from
+   the spine/swap_pool above -- never invent a skill and never use a banned one), a one-line
    cover letter angle, and the honest gaps to name rather than hide.
 
 Respond with ONLY a JSON object, no other text:
-{{"section_order": [...], "projects_included": [...], "cover_letter_angle": "...", "named_gaps": [...]}}"""
+{{"section_order": [...], "projects_included": [...],
+  "skills_groups": [{{"label": "...", "skills": [...]}}],
+  "cover_letter_angle": "...", "named_gaps": [...]}}"""
 
 
 def propose(application_id):
@@ -124,9 +137,16 @@ def propose(application_id):
             f"job_applications row {application_id}'s deadline has passed -- refusing to build"
         )
 
+    skills = _load_data("skills.json")
+    master = _load_data("master.json")
     prompt = _STRATEGY_PROMPT.format(
         company=job.get("company"), role=job.get("role"),
         posting_snapshot=json.dumps(job.get("posting_snapshot") or {}),
+        project_names=", ".join(master.get("projects", {}).keys()),
+        skills_spine=", ".join(skills.get("spine", [])),
+        skills_swap_pool=", ".join(skills.get("swap_pool", [])),
+        skills_banned=", ".join(skills.get("banned", [])),
+        allowed_sections=", ".join(config.RESUME_ALLOWED_SECTIONS),
     )
     raw, usage = _call_claude(prompt)
     try:
@@ -161,31 +181,75 @@ generic statement. Around 250-290 words. No em dashes. End with one concrete,
 scoped 90-day item."""
 
 
+def _resolve_bullets(bullet_ids, metrics_by_id):
+    resolved = [metrics_by_id[bid] for bid in bullet_ids if bid in metrics_by_id]
+    return resolved[:config.RESUME_MAX_BULLETS_PER_ENTRY]
+
+
 def _resolve_master(master, metrics, strategy):
     """Resolve master.json's bullet_ids (referencing metrics.json entries) into literal bullet
-    text, which is the shape resume_build.build_docx expects. All roles are included
-    unconditionally; projects are filtered to strategy["projects_included"]."""
+    text, which is the shape resume_build.build_docx expects. All roles and leadership bullets
+    are included, capped at config.RESUME_MAX_BULLETS_PER_ENTRY each (real historical resumes show
+    2-3 bullets per role, not every metric a role has -- rendering every bullet_id never fit one
+    page on a live run with 4 roles). Projects are filtered to strategy["projects_included"] and
+    raise ValueError if a name isn't a real master.json project key (the LLM strategy step is
+    prompted with the real project list, but this is the enforcement backstop -- a live run
+    showed it can still invent fictional project names/descriptions otherwise).
+    Education is already a list of literal entries in master.json -- no bullet_ids to resolve."""
     metrics_by_id = {m["id"]: m["text"] for m in metrics}
-    resolved = {"roles": [], "education": master.get("education"), "projects": {}}
+    resolved = {
+        "name": master.get("name", ""),
+        "contact": master.get("contact", {}),
+        "roles": [],
+        "education": master.get("education", []),
+        "projects": {},
+        "leadership_bullets": [],
+    }
     for role in master.get("roles", []):
         resolved["roles"].append({
             "title": role["title"], "company": role["company"], "period": role["period"],
-            "bullets": [metrics_by_id[bid] for bid in role.get("bullet_ids", []) if bid in metrics_by_id],
+            "descriptor": role.get("descriptor"), "location": role.get("location"),
+            "bullets": _resolve_bullets(role.get("bullet_ids", []), metrics_by_id),
         })
     for name in strategy.get("projects_included", []):
         project = master.get("projects", {}).get(name)
         if project is None:
-            continue
+            raise ValueError(
+                f"strategy proposed unknown project {name!r} -- must be an exact key from "
+                f"resume/data/master.json's \"projects\" (found on a live run where the LLM "
+                f"invented fictional project names/descriptions instead of choosing real ones)"
+            )
         resolved["projects"][name] = {
-            "bullets": [metrics_by_id[bid] for bid in project.get("bullet_ids", []) if bid in metrics_by_id],
+            "descriptor": project.get("descriptor"), "period": project.get("period"),
+            "bullets": _resolve_bullets(project.get("bullet_ids", []), metrics_by_id),
         }
+    leadership = master.get("leadership") or {}
+    resolved["leadership_bullets"] = _resolve_bullets(leadership.get("bullet_ids", []), metrics_by_id)
     return resolved
 
 
 def _resume_content_text(resolved_master):
     bullets = [b for role in resolved_master["roles"] for b in role["bullets"]]
     bullets += [b for p in resolved_master["projects"].values() for b in p["bullets"]]
+    bullets += resolved_master["leadership_bullets"]
     return " ".join(bullets)
+
+
+def _check_skills_governance(skills_data, strategy):
+    """Validate the strategy's proposed skills_groups against skills.json's governed pool --
+    every skill must come from spine/swap_pool and never from banned, same governance posture
+    as resume_lint.check_metrics_whitelist (never let an LLM proposal introduce an unbacked or
+    explicitly-banned claim)."""
+    allowed = set(skills_data.get("spine", [])) | set(skills_data.get("swap_pool", []))
+    banned = set(skills_data.get("banned", []))
+    violations = []
+    for group in strategy.get("skills_groups", []):
+        for skill in group.get("skills", []):
+            if skill in banned:
+                violations.append(f"'{skill}' is banned -- resume/data/skills.json")
+            elif skill not in allowed:
+                violations.append(f"'{skill}' not in the governed skills pool -- resume/data/skills.json")
+    return violations
 
 
 def _lint_cover_letter(cl_text, resume_text):
@@ -212,7 +276,12 @@ def build(application_id):
     master_raw = _load_data("master.json")
     metrics = _load_data("metrics.json")
     jargon = _load_data("jargon.json")
+    skills = _load_data("skills.json")
     master = _resolve_master(master_raw, metrics, strategy)
+
+    skills_violations = _check_skills_governance(skills, strategy)
+    if skills_violations:
+        raise LintFailedError(f"strategy fails skills governance: {skills_violations}")
 
     resume_text = _resume_content_text(master)
     resume_violations = resume_lint.check_metrics_whitelist(resume_text, metrics)
