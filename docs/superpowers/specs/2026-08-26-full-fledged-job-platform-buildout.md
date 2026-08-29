@@ -301,3 +301,8 @@ under `docs/superpowers/plans/` for it, and per its own stub section above it ne
 pass before a plan can be written. Phases 4 and 5 remain stubs too. Waiting on a human interactive
 session to author Phase 2.5's plan (via `writing-plans`) before this workflow can proceed; this
 workflow took no other action this run.
+
+**2026-08-29 (build-continue.yml, later run):** Re-checked — no change since the prior run. Phase
+2.5's plan file still doesn't exist under `docs/superpowers/plans/`; Phases 4 and 5 remain
+unplanned stubs. Still waiting on a human interactive session to author Phase 2.5's plan before
+this workflow can proceed; this workflow took no other action this run.
