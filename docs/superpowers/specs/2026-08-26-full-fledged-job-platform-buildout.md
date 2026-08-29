@@ -282,3 +282,13 @@ fire retries the same unchecked task.
 2026-08-27), but its plan file (`docs/superpowers/plans/2026-08-27-job-discovery.md`) still doesn't
 exist. Still waiting on a human interactive session to author it via `writing-plans`; this workflow
 took no other action this run.
+
+**2026-08-29 (build-continue.yml):** Phase 2 is now fully complete — both
+`docs/superpowers/plans/2026-08-27-job-discovery.md` and
+`docs/superpowers/plans/2026-08-27-jobright-puller.md` are fully checked off, and verified against
+the actual repo state (`job_discovery.py`, `jobright.py`, `.github/workflows/jobright_pull.yml` all
+exist). Phase 3 now has an approved design
+(`docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md`), but no plan file yet
+under `docs/superpowers/plans/`; Phase 2.5 remains an unplanned stub. Waiting on a human interactive
+session to author the next plan file (`writing-plans`) before this workflow can proceed; this
+workflow took no other action this run.
