@@ -497,3 +497,12 @@ RULES FOR USING THIS CONTEXT:
 - Do NOT invent facts. Do NOT embellish. If you would have to stretch to use the brief, do not use it.
 - Better generic than wrong. A safe email with a soft hook beats a confident email with a fabricated detail.
 """
+
+# ── Resume intelligence (Phase 3, full-fledged buildout) ────────────────────────
+
+RESUME_STORAGE_BUCKET = "resumes"
+RESUME_MODEL = EMAIL_MODEL
+RESUME_SOFFICE_TIMEOUT_SECONDS = 30
+RESUME_COVER_LETTER_MAX_WORDS = 300
+# preflight.py's own pattern: one automatic regeneration on a lint failure, then give up loudly.
+RESUME_MAX_BUILD_RETRIES = 1
