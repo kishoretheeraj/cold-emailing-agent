@@ -35,6 +35,11 @@ visa_matching.py
 visa_match_new.py
 job_discovery.py
 jobright.py
+resume_agent.py
+resume_lint.py
+resume_build.py
+resume_scrub.py
+resume/
 supabase/migrations/
 ```
 
@@ -773,6 +778,46 @@ record, including the live-reconnaissance findings that grounded the real endpoi
 here (not guessed) — the account authenticates via a native email+password login
 (`/swan/auth/login/pwd`), a separate path from the Google Sign-In flow discovered first during
 reconnaissance.
+
+## Resume intelligence (full-fledged buildout, Phase 3)
+
+`resume_agent.py` (manual only, two-command CLI: `--propose` then `--build`) generates a tailored
+resume + cover letter for a specific `job_applications` row, distilled from the user's own 30-session
+corpus spec (`RESUME_AGENT_SPEC.md`). `--propose` runs JD diagnosis/research/strategy and writes
+`job_applications.resume_strategy` (JSONB) -- nothing is built yet. `--build` only proceeds if a
+strategy already exists (i.e. a human reviewed it), then builds the DOCX, converts to PDF via
+LibreOffice (`soffice`, external system binary), lints, scrubs metadata, and uploads to the
+`resumes` Supabase Storage bucket. This mirrors the Gmail-draft pattern (propose, human reviews,
+human acts), not the critic-loop pattern -- strategy correctness isn't something a rubric score can
+validate.
+
+Reference data lives in git-versioned `resume/data/*.json` (`master.json`, `metrics.json`,
+`jargon.json`, `projects.json`, `skills.json`, `moments.json`), transcribed directly from the
+corpus spec, not fabricated. `metrics.json` entries carry `resolved: null` for the three flagged
+metric conflicts -- `resume_lint.check_metrics_whitelist` hard-fails a build that uses any of those
+numbers until the user resolves them by hand.
+
+`resume_lint.py`, `resume_build.py`, and `resume_scrub.py` are pure/deterministic modules that
+**raise on failure rather than swallowing it** -- unlike `ats.py`/`jobright.py`'s best-effort
+posture (built for unattended background runs), this pipeline is manual and interactive, so a
+failure should surface immediately.
+
+`resume_build.py`'s fitting ladder only implements the deterministic formatting rungs (spacing,
+margins, font floor) from the corpus spec's Part 13; the content-editing rungs (orphan-word trims,
+section folding, bullet drops) are handled by `resume_agent.py --build`'s one-retry regeneration
+loop instead (same pattern as `preflight.py`'s regenerate-with-error-list retry), since those are
+content decisions, not formatting. The fitting ladder starts at `build_docx`'s own `"standard"`
+margin preset, not the looser `"comfortable"` preset at index 0 of `_MARGIN_LADDER` -- it only ever
+tightens from the normal baseline.
+
+**AI-content-detection evasion was explicitly declined** -- see
+docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md's "Rejected, not deferred"
+section. The humanizer lint pass (em dashes, jargon) and the PDF metadata scrub (tool-fingerprint
+removal, realistic timestamps) both shipped; a dedicated AI-detector-evasion layer did not, and no
+third-party tool was fetched or integrated for that purpose.
+
+No auto-submit exists in this phase -- that is Phase 2.5 (auto-apply agent), a separate future
+design gated behind its own explicit opt-in.
 
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 

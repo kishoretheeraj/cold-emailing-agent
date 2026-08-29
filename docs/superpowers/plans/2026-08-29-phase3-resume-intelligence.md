@@ -72,7 +72,7 @@ spec — referenced throughout as "the corpus spec").
   `response_date`, `outcome` are for manual/future use — not written by this plan's code, but the
   schema exists now so a later phase or manual entry doesn't need another migration.
 
-- [ ] **Step 1: Write the migration**
+- [x] **Step 1: Write the migration**
 
 ```sql
 -- Phase 3 (resume intelligence) -- job_applications gets resume/cover-letter tracking columns.
@@ -99,17 +99,17 @@ ALTER TABLE job_applications
   ADD COLUMN IF NOT EXISTS outcome TEXT;
 ```
 
-- [ ] **Step 2: Push the migration**
+- [x] **Step 2: Push the migration**
 
 Run: `supabase db push`
 Expected: migration applies cleanly with no errors (additive-only, all nullable, no data at risk).
 
-- [ ] **Step 3: Verify the columns exist**
+- [x] **Step 3: Verify the columns exist**
 
 Run: `supabase db query --linked "select column_name from information_schema.columns where table_name = 'job_applications' order by column_name;"`
 Expected: includes all seven new column names alongside the existing `company`/`role`/`stage`/etc.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add supabase/migrations/20260829000000_add_resume_columns_to_job_applications.sql
@@ -127,7 +127,7 @@ git commit -m "feat: add resume-tracking columns to job_applications"
 - Produces: a private Storage bucket named `resumes`. Task 5's `db.upload_resume_file` writes into
   it via `get_client().storage.from_(config.RESUME_STORAGE_BUCKET)`.
 
-- [ ] **Step 1: Write the migration**
+- [x] **Step 1: Write the migration**
 
 ```sql
 -- Phase 3 (resume intelligence) -- Storage bucket for generated resume/cover-letter files.
@@ -154,17 +154,17 @@ create policy "resumes bucket -- anon update" on storage.objects
   for update using (bucket_id = 'resumes');
 ```
 
-- [ ] **Step 2: Push the migration**
+- [x] **Step 2: Push the migration**
 
 Run: `supabase db push`
 Expected: migration applies cleanly.
 
-- [ ] **Step 3: Verify the bucket exists**
+- [x] **Step 3: Verify the bucket exists**
 
 Run: `supabase db query --linked "select id, public from storage.buckets where id = 'resumes';"`
 Expected: one row, `public = false`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add supabase/migrations/20260829000001_create_resumes_storage_bucket.sql
@@ -184,7 +184,7 @@ git commit -m "feat: create resumes Storage bucket with anon-key policies"
   `config.RESUME_COVER_LETTER_MAX_WORDS`, `config.RESUME_MAX_BUILD_RETRIES`. Consumed by every
   later task in this plan.
 
-- [ ] **Step 1: Add dependencies**
+- [x] **Step 1: Add dependencies**
 
 Append to `requirements.txt`:
 
@@ -194,12 +194,12 @@ pikepdf>=9.0.0
 pypdf>=4.3.0
 ```
 
-- [ ] **Step 2: Install locally**
+- [x] **Step 2: Install locally**
 
 Run: `source .venv/bin/activate && pip install -r requirements.txt`
 Expected: all three packages install cleanly.
 
-- [ ] **Step 3: Add config constants**
+- [x] **Step 3: Add config constants**
 
 At the end of `config.py`, add a new section:
 
@@ -214,7 +214,7 @@ RESUME_COVER_LETTER_MAX_WORDS = 300
 RESUME_MAX_BUILD_RETRIES = 1
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add requirements.txt config.py
@@ -244,7 +244,7 @@ Task 6.)
   `projects.json`, and `skills.json`. Task 11's `resume_agent.py` consumes `moments.json` (cover
   letter stage) and all the others as prompt context.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_resume_data.py`:
 
@@ -319,12 +319,12 @@ def test_skills_has_spine_pool_and_banned():
     assert "Tableau" in skills["banned"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_data.py -v`
 Expected: FAIL — `resume/data/` doesn't exist yet (`FileNotFoundError`).
 
-- [ ] **Step 3: Create the package and data files**
+- [x] **Step 3: Create the package and data files**
 
 Create `resume/__init__.py` (empty file).
 
@@ -488,12 +488,12 @@ with the metrics whitelist rather than duplicating the text):
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_data.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add resume/__init__.py resume/data/ tests/test_resume_data.py
@@ -517,7 +517,7 @@ git commit -m "feat: seed resume reference data from the user's corpus spec"
   raises on failure -- no best-effort swallowing here, per Global Constraints). Consumed by Task 11
   (`--propose`) and Task 12 (`--build`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_job_applications_db.py`:
 
@@ -569,13 +569,13 @@ def test_upload_resume_file_raises_on_failure(fake_client):
 
 Add `import config` to the top of `tests/test_job_applications_db.py` (alongside `import db`).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py -v`
 Expected: the five new tests FAIL with `AttributeError: module 'db' has no attribute
 'set_resume_strategy'` (etc.) — the functions don't exist yet.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add `import config` near the top of `db.py`, alongside the existing imports.
 
@@ -613,19 +613,19 @@ def upload_resume_file(storage_path, file_bytes, content_type):
     return storage_path
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_job_applications_db.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `python3 -m pytest`
 Expected: all green — confirms adding `import config` to `db.py` doesn't break anything relying on
 `db.py`'s current import-time behavior (it shouldn't; `config.py` has no side effects beyond
 reading env vars, which every test already sets via `conftest.py`).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add db.py tests/test_job_applications_db.py
@@ -646,7 +646,7 @@ git commit -m "feat: add resume strategy/file/upload accessors to db.py"
   `check_metrics_whitelist(text, metrics) -> list[str]`. All pure functions: text in, a list of
   violation strings out (empty list = pass). Consumed by Task 12's `--build` orchestration.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_resume_lint.py`:
 
@@ -720,12 +720,12 @@ def test_check_metrics_whitelist_passes_text_with_no_numbers():
     assert resume_lint.check_metrics_whitelist("Led cross-functional collaboration", _METRICS) == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_lint.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'resume_lint'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `resume_lint.py`:
 
@@ -786,12 +786,12 @@ def check_metrics_whitelist(text, metrics):
     return violations
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_lint.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add resume_lint.py tests/test_resume_lint.py
@@ -812,7 +812,7 @@ git commit -m "feat: add resume_lint.py humanizer, jargon, and metrics-whitelist
   Part 9 detectors and returns their combined violations. Consumed by Task 12's `--build`
   orchestration.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_resume_lint.py`:
 
@@ -869,13 +869,13 @@ def test_check_cover_letter_passes_clean_letter():
     assert violations == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_lint.py -v`
 Expected: the seven new tests FAIL with `AttributeError: module 'resume_lint' has no attribute
 'check_cover_letter'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `resume_lint.py`:
 
@@ -941,12 +941,12 @@ def check_cover_letter(cl_text, resume_text):
     return violations
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_lint.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add resume_lint.py tests/test_resume_lint.py
@@ -966,7 +966,7 @@ git commit -m "feat: add resume_lint.py cover-letter violation checks"
   `output_path`). `_MARGIN_PRESETS` (dict), `_MARGIN_LADDER` (ordered list of preset names) — both
   also consumed by Task 9's fitting-ladder loop.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_resume_build.py`:
 
@@ -1040,12 +1040,12 @@ def test_margin_ladder_covers_every_preset():
     assert set(resume_build._MARGIN_LADDER) == set(resume_build._MARGIN_PRESETS.keys())
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_build.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'resume_build'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `resume_build.py`:
 
@@ -1165,12 +1165,12 @@ def build_docx(strategy, master, output_path, margin_preset="standard"):
     return output_path
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_build.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add resume_build.py tests/test_resume_build.py
@@ -1204,7 +1204,7 @@ same way `preflight.py` re-prompts Claude with an error list on a failed check. 
 `resume_build.py` pure/deterministic and reuses this repo's existing regenerate-on-failure pattern
 instead of inventing new content-editing string logic.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_resume_build.py`:
 
@@ -1275,13 +1275,13 @@ def test_fit_to_one_page_raises_still_overflow_error_after_exhausting_ladder(moc
         resume_build.fit_to_one_page(_STRATEGY, _MASTER, "r.docx", str(tmp_path))
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_build.py -v`
 Expected: the seven new tests FAIL — `resume_build.subprocess`/`PdfReader`/`convert_to_pdf`/
 `page_count`/`fit_to_one_page`/`StillOverflowError` don't exist yet.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add these imports to the top of `resume_build.py`:
 
@@ -1347,12 +1347,12 @@ def fit_to_one_page(strategy, master, output_path, output_dir):
     )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_build.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Live smoke test (requires LibreOffice installed locally)**
+- [x] **Step 5: Live smoke test (requires LibreOffice installed locally)**
 
 In your own terminal, confirm LibreOffice is installed (`brew install --cask libreoffice` on macOS
 if not), then:
@@ -1370,7 +1370,7 @@ print(f'built {pdf_path} using preset {preset}, pages={resume_build.page_count(p
 Expected: prints a real PDF path with `pages=1`. This confirms the real `soffice` conversion works
 end-to-end, not just the mocked test. Do not commit anything from this step.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add resume_build.py tests/test_resume_build.py
@@ -1402,7 +1402,7 @@ setting** `core_properties` (author, title, keywords, timestamps) via `python-do
 metadata defaults to naming the converting tool, e.g. `LibreOffice`) — plus a fingerprint grep that
 covers both file types for defense in depth.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_resume_scrub.py`:
 
@@ -1476,12 +1476,12 @@ def test_read_pdf_metadata_text_reflects_scrubbed_values(tiny_pdf):
     assert "libreoffice" not in text.lower()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_scrub.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'resume_scrub'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `resume_scrub.py`:
 
@@ -1545,12 +1545,12 @@ def read_pdf_metadata_text(pdf_path):
         return " ".join(str(v) for v in pdf.docinfo.values())
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_scrub.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add resume_scrub.py tests/test_resume_scrub.py
@@ -1574,7 +1574,7 @@ git commit -m "feat: add resume_scrub.py PDF metadata scrub and fingerprint veri
   `propose(application_id) -> dict` (the strategy dict, also written to the DB). `run_propose()` --
   CLI entry point for `--propose`. Task 12 adds `--build`'s entry point to this same file.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_resume_agent.py`:
 
@@ -1651,12 +1651,12 @@ def test_propose_raises_on_malformed_claude_response(mocker):
         resume_agent.propose(1)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_agent.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'resume_agent'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `resume_agent.py`:
 
@@ -1787,17 +1787,17 @@ if __name__ == "__main__":
         print("--build is not implemented yet.")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_agent.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `python3 -m pytest`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add resume_agent.py tests/test_resume_agent.py
@@ -1836,7 +1836,7 @@ the user resolves those three conflicts by hand in `metrics.json` -- this is the
 (Global Constraints: "fail loudly, don't silently pick"), not a bug. This task's own tests mock
 `_load_data` with clean fixtures so they test the mechanism, not today's real unresolved data.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_resume_agent.py`:
 
@@ -1963,13 +1963,13 @@ def test_build_still_overflow_error_propagates_after_retry(mocker):
         resume_agent.build(1)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_resume_agent.py -v`
 Expected: the four new tests FAIL — `resume_agent.build`/`LintFailedError`/`resume_build`/
 `resume_scrub` references don't exist in `resume_agent.py` yet.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add these imports to the top of `resume_agent.py`, alongside the existing ones:
 
@@ -2145,17 +2145,17 @@ Replace the `elif args.build:` branch at the bottom of `resume_agent.py`:
         run_build(args.job_id)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_resume_agent.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `python3 -m pytest`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add resume_agent.py tests/test_resume_agent.py
@@ -2173,12 +2173,12 @@ git commit -m "feat: add resume_agent.py --build mode (build, lint, scrub, uploa
 
 **Interfaces:** none — documentation only.
 
-- [ ] **Step 1: Update the root `CLAUDE.md` module layout list**
+- [x] **Step 1: Update the root `CLAUDE.md` module layout list**
 
 Add `resume_agent.py`, `resume_lint.py`, `resume_build.py`, `resume_scrub.py`, and `resume/` to the
 module-layout code block, right after `jobright.py`.
 
-- [ ] **Step 2: Add a "Resume intelligence" section to root `CLAUDE.md`**
+- [x] **Step 2: Add a "Resume intelligence" section to root `CLAUDE.md`**
 
 Add a new `##` section, right after the "JobRight puller" section:
 
@@ -2222,7 +2222,7 @@ No auto-submit exists in this phase -- that is Phase 2.5 (auto-apply agent), a s
 design gated behind its own explicit opt-in.
 ```
 
-- [ ] **Step 3: Update `docs/python/db-schema.md`**
+- [x] **Step 3: Update `docs/python/db-schema.md`**
 
 In the `job_applications` section, after the existing bullets about `posting_snapshot`, add:
 
@@ -2238,7 +2238,7 @@ In the `job_applications` section, after the existing bullets about `posting_sna
   failure here would mean `job_applications` pointing at a file that doesn't exist in Storage.
 ```
 
-- [ ] **Step 4: Update the buildout spec's Phase 3 pointer**
+- [x] **Step 4: Update the buildout spec's Phase 3 pointer**
 
 In `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, change the Phase 3
 stub heading's status. Find the line `## Phase 3 — Resume intelligence (stub)` and change it to:
@@ -2252,7 +2252,7 @@ generation" bullet below -- Phase 2.5 now only needs to add the actual submit ac
 documents this phase produces.
 ```
 
-- [ ] **Step 5: Add a memory entry**
+- [x] **Step 5: Add a memory entry**
 
 Write `~/.claude/projects/-Users-kishoretheeraj-Documents-cold-email-agent/memory/project-phase3-resume-intelligence.md`
 following the existing memory file format (frontmatter with `name`, `description`,
@@ -2266,12 +2266,12 @@ submit action. Add one line to `MEMORY.md`'s index.
 that environment. Note in the commit message instead that memory needs updating in an interactive
 session.)
 
-- [ ] **Step 6: Run the full test suite one last time**
+- [x] **Step 6: Run the full test suite one last time**
 
 Run: `python3 -m pytest`
 Expected: all green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add CLAUDE.md docs/python/db-schema.md docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md

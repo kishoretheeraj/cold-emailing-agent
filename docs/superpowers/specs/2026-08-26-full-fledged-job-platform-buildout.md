@@ -171,13 +171,12 @@ short doesn't fully specify. Recorded here so a cold session has the intended sh
   unattended agent to ever fire a real submission, even if its tests exercise the code path. Decide
   the exact mechanism as part of that phase's own design pass, not by inheriting this note verbatim.
 
-## Phase 3 — Resume intelligence (stub)
+## Phase 3 — Resume intelligence (shipped 2026-08-29)
 
-Fit-score a resume against a specific `job_applications` row (approach: Resume-Matcher-style
-embedding/keyword hybrid) and optionally draft a tailored cover letter, gated by the same
-human-review step as email drafts. Requires deciding where a resume lives in the schema — a new
-table vs. a `prompts`-style row, structured fields vs. a blob — as part of *this* phase's design,
-not preemptively now.
+Full design: `docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md`. Plan:
+`docs/superpowers/plans/2026-08-29-phase3-resume-intelligence.md`. Absorbed the Phase 2.5 "resume
+generation" bullet below -- Phase 2.5 now only needs to add the actual submit action on top of the
+documents this phase produces.
 
 ## Phase 4 — Interview & offer tracking (stub)
 

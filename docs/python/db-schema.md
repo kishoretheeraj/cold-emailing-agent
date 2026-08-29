@@ -313,3 +313,12 @@ CREATE TABLE job_applications (
 - `get_all_company_intel_names()` (defined alongside the other `company_intel` accessors) flattens
   every row's `raw_company_names` array into one list — used by `job_discovery.py` to build its
   company-scan universe alongside `contacts.company`.
+- **Phase 3 (resume intelligence)** added seven columns: `resume_strategy` (JSONB, stage-4
+  strategy output written by `resume_agent.py --propose`), `resume_file_ref` /
+  `cover_letter_file_ref` (Supabase Storage paths, written by `--build`), `resume_variant`
+  (traceability), and `source_channel` / `response_date` / `outcome` (outcome-tracking columns,
+  schema-only in this phase -- not written by any code yet, for manual or future-phase use).
+- `set_resume_strategy`, `set_resume_files`, and `upload_resume_file` (writes to the `resumes`
+  Storage bucket) are the Phase 3 accessors in `db.py`. `upload_resume_file` is **not**
+  best-effort -- it raises on failure, unlike most of this file's other accessors, since a silent
+  failure here would mean `job_applications` pointing at a file that doesn't exist in Storage.
