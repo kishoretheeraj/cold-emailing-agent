@@ -320,3 +320,15 @@ checked off on paper. No plan file exists under `docs/superpowers/plans/` for Ph
 Per this spec's own auto-continue rules, this workflow does not author Phase 2.5's plan itself —
 still waiting on a human interactive session to run `writing-plans` for it. No code changes made
 this run.
+
+**2026-08-30 (build-continue.yml, later run):** Phase 2.5's plan file now exists
+(`docs/superpowers/plans/2026-08-30-phase2.5-auto-apply.md`), authored in a human interactive
+session since the last entry above. A prior run of this workflow completed Task 1 Step 1 (wrote
+`supabase/migrations/20260830000000_add_apply_agent_columns_to_job_applications.sql`) and left
+Step 2 (`supabase db push`) unchecked with a `<!-- blocked: ... -->` note — no
+`SUPABASE_ACCESS_TOKEN` in this CI environment, same gap as Phase 1's Task 1. This run re-verified
+the blocker is unchanged (`npx supabase projects list` still returns
+`LegacyPlatformAuthRequiredError`) and took no other action, per the plan's own instruction to stop
+at a blocked step rather than continuing to later tasks. Still waiting on a human interactive
+session to run `supabase db push` and check off Task 1 Steps 2-4 before this workflow can proceed
+past Task 1.
