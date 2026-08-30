@@ -306,3 +306,9 @@ workflow took no other action this run.
 2.5's plan file still doesn't exist under `docs/superpowers/plans/`; Phases 4 and 5 remain
 unplanned stubs. Still waiting on a human interactive session to author Phase 2.5's plan before
 this workflow can proceed; this workflow took no other action this run.
+
+**2026-08-30 (build-continue.yml):** Re-checked — no change since the prior run. Phase 3's plan
+(`docs/superpowers/plans/2026-08-29-phase3-resume-intelligence.md`) is fully checked off (68/68).
+Phase 2.5's plan file still doesn't exist under `docs/superpowers/plans/`; Phases 4 and 5 remain
+unplanned stubs. Still waiting on a human interactive session to author Phase 2.5's plan before
+this workflow can proceed; this workflow took no other action this run.
