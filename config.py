@@ -538,3 +538,20 @@ RESUME_ALLOWED_SECTIONS = ("Education", "Experience", "Projects", "Skills", "Lea
 # N bullet_ids per entry (already curated in master.json's own order) -- deterministic, no new LLM
 # selection freedom, matching the real corpus's actual density.
 RESUME_MAX_BULLETS_PER_ENTRY = 3
+
+# ── Job-pick engine + apply agent (Phase 2.5, full-fledged buildout) ────────────
+
+JOB_PICK_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+# Cosine similarity cutoff to survive Stage 2 and reach the LLM judge. Deliberately permissive --
+# Stage 2's job is to shrink the pool cheaply, not make the final call; Stage 3's judge is the
+# conservative gate. Tune based on real false-negative reports, not guesswork.
+JOB_PICK_EMBEDDING_THRESHOLD = 0.35
+JOB_PICK_MODEL = EMAIL_MODEL
+
+APPLY_AGENT_HAND_MAPPED_PLATFORMS = ("greenhouse", "ashby", "lever")
+APPLY_AGENT_AGGREGATOR_DOMAINS = (
+    "indeed.com",
+    "ziprecruiter.com",
+    "ycombinator.com/companies",
+    "linkedin.com/jobs",
+)
