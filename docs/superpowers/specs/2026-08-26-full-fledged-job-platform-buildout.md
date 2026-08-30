@@ -312,3 +312,11 @@ this workflow can proceed; this workflow took no other action this run.
 Phase 2.5's plan file still doesn't exist under `docs/superpowers/plans/`; Phases 4 and 5 remain
 unplanned stubs. Still waiting on a human interactive session to author Phase 2.5's plan before
 this workflow can proceed; this workflow took no other action this run.
+
+**2026-08-30 (build-continue.yml, later run):** Re-checked again — no change. Verified against
+actual repo state: `resume_agent.py`, `resume_lint.py`, `resume_build.py`, `resume_scrub.py`, and
+all six `resume/data/*.json` files exist, confirming Phase 3 is genuinely complete, not just
+checked off on paper. No plan file exists under `docs/superpowers/plans/` for Phase 2.5, 4, or 5.
+Per this spec's own auto-continue rules, this workflow does not author Phase 2.5's plan itself —
+still waiting on a human interactive session to run `writing-plans` for it. No code changes made
+this run.
