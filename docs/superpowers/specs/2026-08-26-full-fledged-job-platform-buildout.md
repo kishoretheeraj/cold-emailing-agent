@@ -332,3 +332,12 @@ the blocker is unchanged (`npx supabase projects list` still returns
 at a blocked step rather than continuing to later tasks. Still waiting on a human interactive
 session to run `supabase db push` and check off Task 1 Steps 2-4 before this workflow can proceed
 past Task 1.
+
+**2026-08-30 (build-continue.yml, later run):** Re-checked — no change. `SUPABASE_ACCESS_TOKEN` is
+still absent from this CI environment and `npx supabase@latest projects list` still returns
+`LegacyPlatformAuthRequiredError`, identical to the prior run's finding. Task 1 Step 2
+(`supabase db push`) in `docs/superpowers/plans/2026-08-30-phase2.5-auto-apply.md` remains
+unchecked with its `<!-- blocked: ... -->` note; Steps 3-4 depend on the push succeeding first.
+Per the plan's own instruction to stop at a blocked step rather than proceeding to later tasks,
+this run took no other action. Still waiting on a human interactive session to run
+`supabase db push` before this workflow can proceed past Task 1.
