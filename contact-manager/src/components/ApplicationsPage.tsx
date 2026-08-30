@@ -43,7 +43,10 @@ export function ApplicationsPage() {
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
-    if (!company.trim() || !role.trim()) return;
+    if (!company.trim() || !role.trim()) {
+      toast.error("Company and role are required");
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch("/api/applications", {

@@ -7,6 +7,15 @@ vi.mock("@/components/ui/Tooltip", () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+const toastErrorMock = vi.fn();
+const toastSuccessMock = vi.fn();
+vi.mock("sonner", () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: (...args: unknown[]) => toastSuccessMock(...args),
+  },
+}));
+
 const sampleApplications = [
   { id: "1", contact_id: null, company: "Acme", role: "PM", job_url: null, source: "manual",
     stage: "saved", applied_date: null, notes: null, posting_snapshot: null,
@@ -17,6 +26,8 @@ const sampleApplications = [
 ];
 
 beforeEach(() => {
+  toastErrorMock.mockClear();
+  toastSuccessMock.mockClear();
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string, opts?: RequestInit) => {
@@ -54,5 +65,19 @@ describe("ApplicationsPage", () => {
         expect.objectContaining({ method: "POST" })
       );
     });
+  });
+
+  it("shows an error and does not submit when company and role are blank", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Acme");
+    await user.click(screen.getByRole("button", { name: /add application/i }));
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith("Company and role are required");
+    });
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "/api/applications",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 });

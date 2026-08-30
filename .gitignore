@@ -8,6 +8,8 @@ extract_voice.log
 visa_intel_ingest.log
 visa_match.log
 resume_agent.log
+jobright.log
+node_modules/
 .DS_Store
 .coverage
 htmlcov/
