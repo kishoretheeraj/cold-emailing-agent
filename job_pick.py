@@ -164,3 +164,13 @@ def run():
             errors += 1
 
     log.info(f"[JOB-PICK] | DONE | scored={scored} | resume_triggered={triggered} | errors={errors} | pipeline_errors={pipeline_errors}")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        filename="job_pick.log",
+        level=logging.INFO,
+        format="%(asctime)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M",
+    )
+    run()

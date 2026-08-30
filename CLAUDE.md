@@ -433,8 +433,16 @@ Four workflows live in `.github/workflows/`:
   so hourly fires queue instead of racing if one run overlaps the next. Needs
   `contents: write` + `actions: write` (self-disable) + `id-token: write` (the
   action's own auth) in addition to the standard secrets below.
+- **`jobright_pull.yml`** (named "JobRight Pull") — daily (`17 11 * * *`, 6:17am EST),
+  a manual-by-default JobRight puller that runs on an explicit daily schedule per
+  the user's override of the original manual-only rule (see
+  `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, "JobRight scheduling").
+  Pulls fresh recommendations via `jobright.py`, then runs `job_pick.py` to score
+  every newly-saved row through three stages (structured filters, embedding similarity,
+  LLM judge) and zero-tap trigger `resume_agent.py`'s propose+build on `strong`
+  verdicts (see `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
 
-All four workflows: upload the relevant `.log` file as an artifact (30-day
+All five workflows: upload the relevant `.log` file as an artifact (30-day
 retention) where one exists, and run `notify_failure.py` in an `if: failure()` step.
 All support `workflow_dispatch` for manual triggers.
 Python version: **3.11**. Dependencies installed via `requirements.txt`.
