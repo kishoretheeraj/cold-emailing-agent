@@ -37,9 +37,7 @@ def _passes_structured_filters(job):
 # ── Stage 2: local embedding similarity ──────────────────────────────────────────
 
 def _embed(text):
-    """Wraps the sentence-transformers model so tests mock this one function instead of loading
-    real weights. Lazily loads the model on first real call (never in tests, which always mock
-    this)."""
+    # Wraps SentenceTransformer so tests can mock this function directly instead of loading real weights.
     global _model
     if _model is None:
         _model = SentenceTransformer(config.JOB_PICK_EMBEDDING_MODEL)
@@ -62,10 +60,7 @@ def _embedding_similarity(job_description, profile_text):
 
 
 def _profile_text():
-    """Real profile text for Stage 2 comparison -- Phase 3's own resume/data/master.json role and
-    project titles plus the real bullet text from resume/data/metrics.json (roles/projects only
-    store bullet_ids, not text, so this joins across both files). Not a vague summary. Cached at
-    module level (these files don't change during a run)."""
+    # Real profile text from resume/data/master.json and metrics.json, cached at module level.
     global _profile_text_cache
     if _profile_text_cache is None:
         with open(_MASTER_DATA_PATH) as f:
@@ -126,6 +121,7 @@ def _llm_judge(job):
 # ── Orchestration ─────────────────────────────────────────────────────────────────
 
 def score_job(job):
+    """Score one job posting through three stages: structured filters, embedding similarity, and LLM judge."""
     if not _passes_structured_filters(job):
         return {"verdict": "no", "score": None, "reasoning": "structured filter: title/keyword mismatch"}
 
@@ -139,11 +135,13 @@ def score_job(job):
 
 
 def run():
+    """Batch-score unscored job applications; trigger resume_agent on strong verdicts."""
     jobs = db.get_unscored_saved_applications()
     log.info(f"[JOB-PICK] | START | jobs_to_score={len(jobs)}")
     scored = 0
     triggered = 0
     errors = 0
+    pipeline_errors = 0
 
     for job in jobs:
         job_id = job.get("id")
@@ -160,8 +158,9 @@ def run():
                     triggered += 1
                 except Exception as exc:
                     log.warning(f"[JOB-PICK] | {job.get('company')} | resume pipeline failed: {exc}")
+                    pipeline_errors += 1
         except Exception as exc:
             log.warning(f"[JOB-PICK] | {job.get('company')} | scoring error: {exc}")
             errors += 1
 
-    log.info(f"[JOB-PICK] | DONE | scored={scored} | resume_triggered={triggered} | errors={errors}")
+    log.info(f"[JOB-PICK] | DONE | scored={scored} | resume_triggered={triggered} | errors={errors} | pipeline_errors={pipeline_errors}")
