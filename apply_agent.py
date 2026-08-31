@@ -206,20 +206,26 @@ def submit(job_id):
     """Re-fills a job_applications row's application form fresh and submits it -- but only when
     APPLY_AGENT_ARMED is exactly '1'. This env var must never be set anywhere except
     apply_agent_submit.yml's own job definition -- never a repo secret, never set in
-    build-continue.yml, never set by a test. See the CI-safety note in
+    build-continue.yml, never set by a test, and never placed in .env -- config.load_dotenv()
+    would arm a local run. See the CI-safety note in
     docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md."""
     import os
 
     job = db.get_job_application(job_id)
     platform = ats_platform.classify(job.get("job_url"))
+    if platform in ("workday", "aggregator"):
+        raise ValueError(f"submit() called on a permanently-excluded platform: {platform}")
     page = _launch_page(job.get("job_url"))
     field_values = _standard_field_values(job)
 
-    if platform in ("greenhouse", "ashby", "lever"):
+    if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
         {"greenhouse": ats_fillers.fill_greenhouse,
          "ashby": ats_fillers.fill_ashby,
          "lever": ats_fillers.fill_lever}[platform](page, field_values)
     else:
+        # generic-platform fill runs an LLM browser agent against the real page before the ARMED
+        # gate below -- restrained only by the task-string instruction not to click Submit, not a
+        # hard guarantee. See the Phase 2.5 review notes.
         _fill_generic_via_browser_use(page, job, field_values)
 
     _attach_resume_and_cover_letter(page, job)

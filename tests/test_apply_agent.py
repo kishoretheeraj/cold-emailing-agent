@@ -227,7 +227,11 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
 
 
 def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
-    for falsy_value in ("0", "false", "", "no"):
+    # Includes both falsy-looking strings ("0", "false", "", "no") AND truthy-looking non-"1"
+    # strings ("true", "yes", "TRUE") -- the gate is exact-string-equality-to-"1", not a
+    # truthy/falsy interpretation, so a widened accept list (e.g. accepting "true"/"yes" too) must
+    # also fail this test. A probe set of only falsy-ish values cannot catch that drift direction.
+    for falsy_value in ("0", "false", "", "no", "true", "yes", "TRUE"):
         mocker.patch.dict(os.environ, {"APPLY_AGENT_ARMED": falsy_value})
         mocker.patch("apply_agent.db.get_job_application", return_value={
             "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
@@ -239,8 +243,9 @@ def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
         mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
         mocker.patch("apply_agent._attach_resume_and_cover_letter")
         mocker.patch("apply_agent._answer_screening_questions", return_value={})
-        mocker.patch("apply_agent.db.update_job_application_stage")
+        update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
 
         apply_agent.submit(1)
 
         page.get_by_role.return_value.click.assert_not_called()
+        update_stage_mock.assert_not_called()
