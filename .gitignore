@@ -10,6 +10,7 @@ visa_match.log
 resume_agent.log
 jobright.log
 job_pick.log
+apply_agent.log
 node_modules/
 .DS_Store
 .coverage

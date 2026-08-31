@@ -177,3 +177,70 @@ def test_fill_generic_via_browser_use_never_raises_when_library_call_itself_fail
     apply_agent._fill_generic_via_browser_use(page, {"company": "Acme"}, field_values)  # must not raise
 
     run_mock.assert_called_once()
+
+
+import os
+
+
+def test_submit_does_not_click_submit_when_not_armed(mocker):
+    mocker.patch.dict(os.environ, {}, clear=False)
+    if "APPLY_AGENT_ARMED" in os.environ:
+        del os.environ["APPLY_AGENT_ARMED"]
+    mocker.patch("apply_agent.db.get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
+        "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
+    })
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    page = MagicMock()
+    mocker.patch("apply_agent._launch_page", return_value=page)
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._answer_screening_questions", return_value={})
+    update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
+
+    apply_agent.submit(1)
+
+    page.get_by_role.return_value.click.assert_not_called()
+    update_stage_mock.assert_not_called()
+
+
+def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
+    mocker.patch.dict(os.environ, {"APPLY_AGENT_ARMED": "1"})
+    mocker.patch("apply_agent.db.get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
+        "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
+    })
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    page = MagicMock()
+    mocker.patch("apply_agent._launch_page", return_value=page)
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._answer_screening_questions", return_value={})
+    update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
+    mocker.patch("apply_agent.db.set_apply_preview")
+
+    apply_agent.submit(1)
+
+    page.get_by_role.assert_called_with("button", name=apply_agent._SUBMIT_BUTTON_NAME)
+    page.get_by_role.return_value.click.assert_called_once()
+    update_stage_mock.assert_called_once_with(1, "applied")
+
+
+def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
+    for falsy_value in ("0", "false", "", "no"):
+        mocker.patch.dict(os.environ, {"APPLY_AGENT_ARMED": falsy_value})
+        mocker.patch("apply_agent.db.get_job_application", return_value={
+            "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
+            "resume_file_ref": "r.pdf", "cover_letter_file_ref": "cl.pdf",
+        })
+        mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+        page = MagicMock()
+        mocker.patch("apply_agent._launch_page", return_value=page)
+        mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+        mocker.patch("apply_agent._attach_resume_and_cover_letter")
+        mocker.patch("apply_agent._answer_screening_questions", return_value={})
+        mocker.patch("apply_agent.db.update_job_application_stage")
+
+        apply_agent.submit(1)
+
+        page.get_by_role.return_value.click.assert_not_called()

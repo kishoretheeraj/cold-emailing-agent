@@ -195,3 +195,62 @@ def run_preview():
             errors += 1
 
     log.info(f"[APPLY-PREVIEW] | DONE | filled={filled} | blocked={blocked} | errors={errors}")
+
+
+# ── Submit pass ────────────────────────────────────────────────────────────────
+
+_SUBMIT_BUTTON_NAME = "Submit Application"
+
+
+def submit(job_id):
+    """Re-fills a job_applications row's application form fresh and submits it -- but only when
+    APPLY_AGENT_ARMED is exactly '1'. This env var must never be set anywhere except
+    apply_agent_submit.yml's own job definition -- never a repo secret, never set in
+    build-continue.yml, never set by a test. See the CI-safety note in
+    docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md."""
+    import os
+
+    job = db.get_job_application(job_id)
+    platform = ats_platform.classify(job.get("job_url"))
+    page = _launch_page(job.get("job_url"))
+    field_values = _standard_field_values(job)
+
+    if platform in ("greenhouse", "ashby", "lever"):
+        {"greenhouse": ats_fillers.fill_greenhouse,
+         "ashby": ats_fillers.fill_ashby,
+         "lever": ats_fillers.fill_lever}[platform](page, field_values)
+    else:
+        _fill_generic_via_browser_use(page, job, field_values)
+
+    _attach_resume_and_cover_letter(page, job)
+    _answer_screening_questions(page, job)
+
+    if os.environ.get("APPLY_AGENT_ARMED") != "1":
+        log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
+        return
+
+    page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
+    db.update_job_application_stage(job_id, "applied")
+    log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    logging.basicConfig(
+        filename="apply_agent.log",
+        level=logging.INFO,
+        format="%(asctime)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M",
+    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--preview", action="store_true")
+    parser.add_argument("--submit", type=int, default=None)
+    args = parser.parse_args()
+
+    if args.preview:
+        run_preview()
+    elif args.submit is not None:
+        submit(args.submit)
+    else:
+        parser.error("pass --preview or --submit <id>")
