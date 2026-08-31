@@ -4,6 +4,8 @@ Workday/aggregator exclusion, the eligibility-answer lookup, and per-row failure
 
 from unittest.mock import MagicMock
 
+import pytest
+
 import apply_agent
 
 
@@ -249,3 +251,22 @@ def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
 
         page.get_by_role.return_value.click.assert_not_called()
         update_stage_mock.assert_not_called()
+
+
+@pytest.mark.parametrize("platform", ["workday", "aggregator"])
+def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
+    """Regression test for the workday/aggregator guard in submit() -- _process_one_preview
+    (the preview pass) permanently blocks these platforms before any fill attempt, and submit()
+    must too. Without this guard, an armed submit against a workday/aggregator row would launch
+    the generic browser-use filler against a platform this codebase treats as permanently
+    excluded. Confirmed live: deleting the guard leaves this test failing (no ValueError raised)."""
+    mocker.patch("apply_agent.db.get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "job_url": "https://example.com/job/1",
+    })
+    mocker.patch("apply_agent.ats_platform.classify", return_value=platform)
+    launch_mock = mocker.patch("apply_agent._launch_page")
+
+    with pytest.raises(ValueError):
+        apply_agent.submit(1)
+
+    launch_mock.assert_not_called()
