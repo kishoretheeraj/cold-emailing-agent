@@ -109,3 +109,28 @@ def test_run_preview_isolates_one_row_failure_from_the_rest(mocker):
 
     set_preview_mock.assert_called_once()
     assert set_preview_mock.call_args[0][0] == 2
+
+
+def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
+    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+        {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
+         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"},
+        {"id": 2, "company": "Beta", "role": "PM", "job_url": "https://acme.wd1.myworkdayjobs.com/job/1",
+         "resume_file_ref": "resumes/2/r.pdf", "cover_letter_file_ref": "resumes/2/cl.pdf"},
+    ])
+    mocker.patch("apply_agent.ats_platform.classify", side_effect=["greenhouse", "workday"])
+    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent._answer_screening_questions", return_value={})
+    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent.db.load_prompts", return_value={})
+    mocker.patch("apply_agent.db.set_apply_preview")
+    mocker.patch("apply_agent.db.set_apply_blocked")
+
+    with caplog.at_level("INFO"):
+        apply_agent.run_preview()
+
+    done_line = next(r.message for r in caplog.records if "DONE" in r.message)
+    assert "filled=1" in done_line
+    assert "blocked=1" in done_line
+    assert "errors=0" in done_line

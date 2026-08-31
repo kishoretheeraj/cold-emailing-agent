@@ -83,10 +83,10 @@ def _process_one_preview(job):
 
     if platform == "workday":
         db.set_apply_blocked(job_id, "workday -- permanently excluded, see spec's Rejected section")
-        return
+        return "blocked"
     if platform == "aggregator":
         db.set_apply_blocked(job_id, "aggregator/listing link, not a real application page")
-        return
+        return "blocked"
 
     page = _launch_page(job.get("job_url"))
     field_values = _standard_field_values(job)
@@ -108,6 +108,7 @@ def _process_one_preview(job):
         "screening_answers": screening_answers,
     }
     db.set_apply_preview(job_id, preview)
+    return "filled"
 
 
 def run_preview():
@@ -120,9 +121,11 @@ def run_preview():
 
     for job in jobs:
         try:
-            before_blocked = job.get("apply_blocked_reason")
-            _process_one_preview(job)
-            filled += 1
+            status = _process_one_preview(job)
+            if status == "blocked":
+                blocked += 1
+            else:
+                filled += 1
         except Exception as exc:
             log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | error: {exc}")
             try:
@@ -131,4 +134,4 @@ def run_preview():
                 pass
             errors += 1
 
-    log.info(f"[APPLY-PREVIEW] | DONE | filled={filled} | errors={errors}")
+    log.info(f"[APPLY-PREVIEW] | DONE | filled={filled} | blocked={blocked} | errors={errors}")
