@@ -80,8 +80,7 @@ def _answer_screening_questions(page, job):
 
 
 def _attach_resume_and_cover_letter(page, job):
-    """Downloads the built resume/cover-letter from Storage and attaches them headlessly --
-    Playwright's set_input_files works with real bytes, no OS dialog, no third-party dependency."""
+    # set_input_files works with real bytes headlessly -- no OS dialog, no third-party dependency.
     import tempfile
 
     client = db.get_client()
@@ -122,9 +121,8 @@ def _browser_use_agent_run(task_description, page):
 
 
 def _fill_generic_via_browser_use(page, job, field_values):
-    """Generic-page filler for anything not Greenhouse/Ashby/Lever/Workday/aggregator. Never
-    raises -- a task-string build failure (missing field_values key) or a browser-use library
-    failure both degrade to a warning, same posture as the best-effort labeling rule."""
+    # Task-string build failure (missing field_values key) or a browser-use library failure both
+    # degrade to a warning here -- same best-effort posture as the labeling calls.
     try:
         task = (
             f"Fill in this job application form with: name={field_values['name']}, "
