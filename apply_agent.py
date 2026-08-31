@@ -46,17 +46,60 @@ def _eligibility_answers():
         return {}
 
 
+_SCREENING_PROMPT = """Answer this job application screening question, grounded only in real facts
+about the candidate below. Never invent experience, projects, or numbers not listed. Keep it to
+2-4 sentences.
+
+Question: {question}
+
+Candidate facts: {profile_summary}
+"""
+
+
 def _answer_screening_questions(page, job):
-    """Reads free-text screening questions off the page and answers them via Claude, grounded
-    only in the real profile. Stub for this task -- Task 10 fills in the real implementation
-    (question-detection + generation) once the browser-use integration exists to compare against."""
-    return {}
+    answers = {}
+    try:
+        question_elements = page.get_by_text("?").all()
+    except Exception:
+        return answers
+
+    for el in question_elements:
+        try:
+            question_text = el.inner_text()
+        except Exception:
+            continue
+        try:
+            answer = _call_claude(
+                _SCREENING_PROMPT.format(question=question_text, profile_summary=job.get("role", "")),
+                module="apply_agent", action="screening_question", contact_id=None,
+            )
+            answers[question_text] = answer
+        except Exception as exc:
+            log.info(f"[APPLY-AGENT] | screening question skipped: {exc}")
+    return answers
 
 
 def _attach_resume_and_cover_letter(page, job):
-    """Downloads job['resume_file_ref']/['cover_letter_file_ref'] from Storage and attaches them
-    via Playwright's headless setInputFiles-equivalent. Stub for this task -- filled in by Task 10
-    alongside the browser-use integration."""
+    """Downloads the built resume/cover-letter from Storage and attaches them headlessly --
+    Playwright's set_input_files works with real bytes, no OS dialog, no third-party dependency."""
+    import tempfile
+
+    client = db.get_client()
+    for field_ref_key, label, ext in (
+        ("resume_file_ref", "Resume", "pdf"),
+        ("cover_letter_file_ref", "Cover Letter", "pdf"),
+    ):
+        storage_path = job.get(field_ref_key)
+        if not storage_path:
+            continue
+        try:
+            content = client.storage.from_(config.RESUME_STORAGE_BUCKET).download(storage_path)
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
+                f.write(content)
+                temp_path = f.name
+            page.get_by_label(label).set_input_files(temp_path)
+        except Exception as exc:
+            log.info(f"[APPLY-AGENT] | {label} attach skipped: {exc}")
 
 
 # ── Browser lifecycle (real Playwright launch -- mocked in every test) ───────────
@@ -70,9 +113,28 @@ def _launch_page(job_url):
     return page
 
 
+def _browser_use_agent_run(task_description, page):
+    from browser_use import Agent
+    from browser_use.llm import ChatAnthropic
+
+    agent = Agent(task=task_description, llm=ChatAnthropic(model=config.JOB_PICK_MODEL), page=page)
+    return agent.run_sync()
+
+
 def _fill_generic_via_browser_use(page, job, field_values):
-    """Generic-page filler for anything not Greenhouse/Ashby/Lever/Workday/aggregator. Stub for
-    this task -- Task 10 fills in the real browser-use integration."""
+    """Generic-page filler for anything not Greenhouse/Ashby/Lever/Workday/aggregator. Never
+    raises -- a task-string build failure (missing field_values key) or a browser-use library
+    failure both degrade to a warning, same posture as the best-effort labeling rule."""
+    try:
+        task = (
+            f"Fill in this job application form with: name={field_values['name']}, "
+            f"email={field_values['email']}, phone={field_values['phone']}, "
+            f"location={field_values['location']}, linkedin={field_values['linkedin']}. "
+            f"Do not click any Submit or Apply button."
+        )
+        _browser_use_agent_run(task, page)
+    except Exception as exc:
+        log.warning(f"[APPLY-AGENT] | {job.get('company')} | browser-use failed: {exc}")
 
 
 # ── Preview pass ───────────────────────────────────────────────────────────────
