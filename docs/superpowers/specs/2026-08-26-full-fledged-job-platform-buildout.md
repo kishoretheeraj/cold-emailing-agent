@@ -1,7 +1,11 @@
 # Full-Fledged Job Platform Buildout — Spec
 
 **Status:** Phases 1-2 in detail (Phase 2 designed 2026-08-27, against what Phase 1 actually
-shipped), Phases 2.5-5 stubbed (design them when their turn comes).
+shipped), Phase 3 shipped 2026-08-29, Phase 5 shipped 2026-09-05 (design:
+`docs/superpowers/specs/2026-09-05-email-verification-preflight-design.md`, plan:
+`docs/superpowers/plans/2026-09-05-email-verification-preflight.md`). Phase 2.5 in progress
+(migration written, blocked on a Supabase db push). Phase 4 still stubbed (design it when its
+turn comes — needs Phase 1's pipeline to have applications flowing through it first).
 
 **Origin:** OSS landscape scan (2026-08-26) of ~50 cold-email/AI-SDR and job-search/tracking repos,
 mapped against this repo's current capabilities. Full findings: the "Pipeline Gaps" artifact from
@@ -183,10 +187,15 @@ documents this phase produces.
 Extend `job_applications` past `applied` with interview-prep notes and offer/negotiation fields.
 Only meaningful once Phase 1's pipeline actually has applications flowing through it.
 
-## Phase 5 — Email verification pre-flight (opportunistic, low priority)
+## Phase 5 — Email verification pre-flight (shipped 2026-09-05)
 
-A bounce-risk check (email-sleuth-style) before the first-touch draft, additive to `preflight.py`'s
-existing checks or a new pre-draft gate. Small, can be done any time after Phase 1.
+A bounce-risk check (email-sleuth-style) before the first-touch draft. Shipped as a new pre-draft
+gate (`email_verify.py`), not folded into `preflight.py`'s list — a bad email address is a contact-
+record defect, not something a body rewrite can fix, so it doesn't fit that module's
+regenerate-and-recheck contract. See `docs/superpowers/specs/2026-09-05-email-verification-preflight-design.md`
+and root `CLAUDE.md`'s "Email verification pre-flight" section for the full design (syntax +
+MX/A DNS check, three-way `valid`/`invalid`/`unknown` result, only `"invalid"` blocks, gated to
+`_FIRST_TOUCH_ACTIONS`, `EMAIL_VERIFY_ENABLED` off-switch, no new table or column).
 
 ---
 

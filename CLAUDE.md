@@ -22,6 +22,7 @@ engagement_report.py
 reply_drafter.py
 research.py
 ats.py
+email_verify.py
 gmail.py
 db.py
 config.py
@@ -910,6 +911,51 @@ independent Anthropic client (manual, never-cron posture) but its `_track_usage`
 `contact_id` and `job_application_id` are both nullable on `api_usage_log` and mutually exclusive
 in practice -- a call is either about a contact-based flow or a job_applications resume flow,
 never both.
+
+## Email verification pre-flight (full-fledged buildout, Phase 5)
+
+`email_verify.py` is a bounce-risk gate on `contact["email"]`, run once per contact
+**before** a first-touch draft is even generated -- unlike `preflight.py`'s checks, which
+run on the generated body and retry via regeneration, a bad email address is a property of
+the contact record that no body rewrite can fix, so this is its own small gate rather than
+a `preflight.check()` entry (the Phase 5 stub in the buildout spec explicitly left that
+choice open).
+
+Self-contained, in the shape of `content_trust.py`/`ats.py`: no `db`/`gmail`/`emailer`
+import. Its only outside dependency is `dnspython` (new `requirements.txt` entry -- the
+stdlib has no MX-record lookup). Public surface: `verify(email) -> EmailVerifyResult(status,
+reason)`, a namedtuple, and it **never raises**.
+
+`status` is one of three values -- syntax check first (a regex failure short-circuits
+before any DNS call), then an MX lookup with an A/AAAA fallback per RFC 5321 when no MX is
+published:
+- `"invalid"` -- a deterministic negative: malformed syntax, or the domain has neither an
+  MX nor a fallback A/AAAA record (`NXDOMAIN`, or `NoAnswer` on both lookups). The only
+  status that blocks a draft.
+- `"unknown"` -- the DNS lookup itself failed (`Timeout`, `NoNameservers`, any unexpected
+  exception). **Never** treated as a block -- same governance shape as the visa gate's
+  NULL-never-a-false-negative rule, applied to a blocking gate instead of a tagging one.
+- `"valid"` -- syntax passes and the domain resolves.
+
+Wired into `agent.run()`'s Phase 1 loop, gated to `_FIRST_TOUCH_ACTIONS` only (same set
+Voice DNA and Tier-1 critic eligibility already gate on) and to **before** the batch
+request is built -- the whole point is avoiding a wasted Claude call and draft on an
+address that will bounce, so the check has to happen earlier than `preflight.py`'s checks
+ever could. Only `result.status == "invalid"` skips the contact; `skipped` increments and
+`update_contact` is never called, exactly like an existing `decide_action == "skip"`
+outcome, so a bad address is re-checked (and re-skipped) on every run until the user fixes
+it in Supabase -- there is no new table to remember the flag, deliberately, since today's
+DNS failure can be tomorrow's success and vice versa (same never-persist-a-volatile-signal
+restraint as the ATS channel and JobRight puller).
+
+New marker `[EMAIL-VERIFY]`, and a new `agent_events` row (`event_type="email_verify"`,
+`status="blocked_invalid_email"`, `metadata={"email", "reason"}`) via the existing
+best-effort `db.log_agent_event`. `config.EMAIL_VERIFY_ENABLED` is the independent
+off-switch, matching `ATS_ENABLED`'s role -- flipping it off restores Phase 1's behavior
+byte-for-byte. `monitor.yml` is unaffected; it never imports `agent.py`'s draft-generation
+path.
+
+Design record: docs/superpowers/specs/2026-09-05-email-verification-preflight-design.md.
 
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 
