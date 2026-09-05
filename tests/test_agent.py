@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+from email_verify import EmailVerifyResult
 from gmail import DraftResult
 
 
@@ -342,6 +343,9 @@ def _mock_batch_pipeline(mocker, contact, action, subject, body,
     """
     custom_id = f"{contact['id']}-{action}"
 
+    mocker.patch("agent.email_verify.verify",
+                 return_value=EmailVerifyResult("valid", None))
+
     if prepare_side_effect:
         mock_prepare = mocker.patch("agent.prepare_email", side_effect=prepare_side_effect)
     else:
@@ -655,6 +659,8 @@ def test_batch_catastrophic_failure_falls_back_to_sequential(mocker):
     contact = _build_contact()
     mocker.patch("agent.get_all_contacts", return_value=[contact])
     mocker.patch("agent.prepare_email", return_value=("p", "s", {}))
+    mocker.patch("agent.email_verify.verify",
+                 return_value=EmailVerifyResult("valid", None))
 
     # Batch client raises on create()
     mock_client = MagicMock()
@@ -683,6 +689,8 @@ def test_batch_partial_failure_retries_errored_contacts(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[contact1, contact2])
     mocker.patch("agent.prepare_email", return_value=("p", "s", {}))
     mocker.patch("agent.finalize_email", return_value=("subj1", "body1"))
+    mocker.patch("agent.email_verify.verify",
+                 return_value=EmailVerifyResult("valid", None))
 
     # Batch returns: contact1 succeeded, contact2 errored
     ok_result = MagicMock()
@@ -732,6 +740,8 @@ def test_batch_empty_content_handled_per_contact_not_catastrophic(mocker):
     mocker.patch("agent.get_all_contacts", return_value=[contact1, contact2])
     mocker.patch("agent.prepare_email", return_value=("p", "s", {}))
     mocker.patch("agent.finalize_email", return_value=("subj1", "body1"))
+    mocker.patch("agent.email_verify.verify",
+                 return_value=EmailVerifyResult("valid", None))
 
     ok_result = MagicMock()
     ok_result.custom_id = "1-send_first_touch"

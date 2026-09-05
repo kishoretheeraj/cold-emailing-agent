@@ -21,11 +21,13 @@ from datetime import date, datetime, timezone
 
 import anthropic
 
+import config
 from config import ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL, EMAIL_MODEL, FOLLOWUP_DAYS
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id
+from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id, log_agent_event
 from emailer import generate_email, prepare_email, finalize_email, hash_prompt_set
 from gmail import create_draft, apply_label_to_latest_draft, find_sent_by_thread_id, find_sent_by_subject
+import email_verify
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -440,6 +442,25 @@ def run():
             log.info(f"{mode_tag} {name} | {company} | skip | {reason}")
             skipped += 1
             continue
+
+        if action in _FIRST_TOUCH_ACTIONS and config.EMAIL_VERIFY_ENABLED:
+            try:
+                verify_result = email_verify.verify(contact.get("email", ""))
+            except Exception as exc:
+                log.warning(f"{mode_tag} {name} | {company} | email-verify raised ({exc}) — allowing")
+                verify_result = None
+            if verify_result is not None and verify_result.status == "invalid":
+                log.warning(
+                    f"{mode_tag} {name} | {company} | skip | "
+                    f"[EMAIL-VERIFY] invalid email: {verify_result.reason}"
+                )
+                log_agent_event(
+                    "email_verify", contact_id=contact.get("id"), contact_name=name,
+                    status="blocked_invalid_email",
+                    metadata={"email": contact.get("email"), "reason": verify_result.reason},
+                )
+                skipped += 1
+                continue
 
         thread_message_id = None
         original_subject = None

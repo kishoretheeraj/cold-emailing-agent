@@ -51,6 +51,13 @@ ATS_MAX_SLUG_CANDIDATES = 2
 # than ATS_MAX_JOBS (which sizes a research-brief snippet, not a discovery scan).
 ATS_DISCOVERY_MAX_JOBS = 25
 
+# ── Email verification pre-flight (Phase 5, full-fledged buildout) ─────────────
+
+EMAIL_VERIFY_ENABLED = True
+# Short on purpose. This runs inside a per-contact loop in a cron job, so a
+# blackholed or slow resolver must never stall a run.
+EMAIL_VERIFY_DNS_TIMEOUT_SECONDS = 5
+
 # ── JobRight puller (Phase 2, full-fledged buildout) ────────────────────────────
 
 # Optional. Absent means jobright.py no-ops (fetch_recommended_jobs returns []) -- never a
