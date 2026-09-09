@@ -191,6 +191,7 @@ def test_submit_does_not_click_submit_when_not_armed(mocker):
     mocker.patch("apply_agent.db.get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
+        "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -211,6 +212,7 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
     mocker.patch("apply_agent.db.get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
+        "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -238,6 +240,7 @@ def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
         mocker.patch("apply_agent.db.get_job_application", return_value={
             "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
             "resume_file_ref": "r.pdf", "cover_letter_file_ref": "cl.pdf",
+            "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
         })
         mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
         page = MagicMock()
@@ -260,13 +263,87 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
     must too. Without this guard, an armed submit against a workday/aggregator row would launch
     the generic browser-use filler against a platform this codebase treats as permanently
     excluded. Confirmed live: deleting the guard leaves this test failing (no ValueError raised)."""
+    # Must be an otherwise-approved row, or the approval guard (which runs first) would
+    # raise instead and this would pass without exercising the platform guard at all.
     mocker.patch("apply_agent.db.get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://example.com/job/1",
+        "stage": "ready_to_submit", "apply_preview": {"platform": platform},
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value=platform)
     launch_mock = mocker.patch("apply_agent._launch_page")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="permanently-excluded"):
         apply_agent.submit(1)
 
     launch_mock.assert_not_called()
+
+
+# ── The approval guard: ARMED proves a human tapped, this proves they tapped THIS row ──
+
+@pytest.mark.parametrize("job,reason", [
+    ({"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x",
+      "stage": "saved", "apply_preview": {"platform": "greenhouse"}}, "never previewed"),
+    ({"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x",
+      "stage": "applied", "apply_preview": {"platform": "greenhouse"}}, "already submitted"),
+    ({"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x",
+      "stage": "ready_to_submit", "apply_preview": None}, "no preview blob"),
+])
+def test_submit_raises_on_unapproved_row(mocker, job, reason):
+    """The ARMED gate only proves a human tapped *something*. Without this guard any id
+    reaching the workflow gets submitted -- a stale id, a mistyped manual workflow_dispatch,
+    or a row that was never previewed (no eligibility/screening answers, possibly no resume)
+    would go to a real employer. Armed here on purpose: the guard must hold even when armed."""
+    mocker.patch.dict(os.environ, {"APPLY_AGENT_ARMED": "1"})
+    mocker.patch("apply_agent.db.get_job_application", return_value=job)
+    launch_mock = mocker.patch("apply_agent._launch_page")
+    update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
+
+    with pytest.raises(ValueError, match="unapproved row"):
+        apply_agent.submit(1)
+
+    launch_mock.assert_not_called()
+    update_stage_mock.assert_not_called()
+
+
+def test_submit_raises_on_nonexistent_row(mocker):
+    mocker.patch.dict(os.environ, {"APPLY_AGENT_ARMED": "1"})
+    mocker.patch("apply_agent.db.get_job_application", return_value=None)
+    launch_mock = mocker.patch("apply_agent._launch_page")
+
+    with pytest.raises(ValueError, match="nonexistent"):
+        apply_agent.submit(1)
+
+    launch_mock.assert_not_called()
+
+
+# ── Browser teardown: run_preview loops one launch per row; leaking them OOMs a batch ──
+
+def test_process_one_preview_closes_the_page_even_when_filling_raises(mocker):
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    page = MagicMock()
+    mocker.patch("apply_agent._launch_page", return_value=page)
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", side_effect=RuntimeError("boom"))
+    close_mock = mocker.patch("apply_agent._close_page")
+
+    with pytest.raises(RuntimeError):
+        apply_agent._process_one_preview({"id": 1, "company": "Acme", "job_url": "https://boards.greenhouse.io/x"})
+
+    close_mock.assert_called_once_with(page)
+
+
+def test_close_page_tears_down_browser_and_driver():
+    page, browser, playwright = MagicMock(), MagicMock(), MagicMock()
+    apply_agent._OPEN_SESSIONS[id(page)] = (browser, playwright)
+
+    apply_agent._close_page(page)
+
+    page.close.assert_called_once()
+    browser.close.assert_called_once()
+    playwright.stop.assert_called_once()
+    assert id(page) not in apply_agent._OPEN_SESSIONS
+
+
+def test_close_page_never_raises_when_teardown_fails():
+    page = MagicMock()
+    page.close.side_effect = RuntimeError("already closed")
+    apply_agent._close_page(page)  # must not raise

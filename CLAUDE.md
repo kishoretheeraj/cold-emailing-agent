@@ -459,7 +459,24 @@ Seven workflows live in `.github/workflows/`:
 All seven workflows: upload the relevant `.log` file as an artifact (30-day
 retention) where one exists, and run `notify_failure.py` in an `if: failure()` step.
 All support `workflow_dispatch` for manual triggers.
-Python version: **3.11**. Dependencies installed via `requirements.txt`.
+Python version: **3.11**. Dependencies are split so the frequently-run workflows stay light —
+`monitor.yml` alone runs ~50×/day and must not install `torch` on every run:
+
+- **`requirements.txt`** — the base every workflow needs. Installed directly by `daily_agent.yml`,
+  `monitor.yml`, `visa_intel_ingest.yml`.
+- **`requirements-jobs.txt`** (`-r requirements.txt` + `sentence-transformers`) — `job_pick.py`
+  imports `sentence_transformers` at **module level**, so anything importing `job_pick` needs this.
+  Installed by `jobright_pull.yml`, and by `requirements-dev.txt` (the test suite imports
+  `job_pick`).
+- **`requirements-apply.txt`** (`-r requirements.txt` + `playwright` + `browser-use`) — installed
+  by `apply_agent_preview.yml` / `apply_agent_submit.yml` only. Both libraries are imported
+  **lazily inside functions** in `apply_agent.py`, never at module level, which is why the test
+  suite doesn't need them. These workflows additionally run `playwright install --with-deps
+  chromium`, a system-level step pip can't do.
+- **`requirements-dev.txt`** (`-r requirements-jobs.txt` + pytest) — `build-continue.yml`.
+
+If you add a module-level import of a heavy dependency, check which of these files needs it and
+which workflows consequently pay for it.
 
 `daily_agent.yml` and `visa_intel_ingest.yml` pass these secrets:
 `ANTHROPIC_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `SUPABASE_URL`,
@@ -941,10 +958,14 @@ form fresh (never reuses the preview pass's browser session) and clicks Submit f
 
 **`APPLY_AGENT_ARMED` is the single hard safety rule of this entire feature. This environment
 variable must never be set anywhere except `apply_agent_submit.yml`'s own env block -- never a
-repo secret, never in `build-continue.yml`'s environment, never in a test, never in a local `.env`
+repo secret, never in `build-continue.yml`'s environment, never in a local `.env`
 file** (`config.py`'s `load_dotenv()` would otherwise silently arm a local `--submit` run --
-document this explicitly if you ever touch `apply_agent.py`'s docstring or this rule). Setting it
-anywhere else, even to make a test pass, defeats the entire point: it is what makes it structurally
+document this explicitly if you ever touch `apply_agent.py`'s docstring or this rule). The one
+deliberate exception is *transiently inside a test*, via `mocker.patch.dict`, with `_launch_page`
+and `db` mocked so no real page is reachable: that is the coverage proving the armed path actually
+clicks Submit and flips the stage, and deleting it to satisfy the letter of this rule would leave
+the gate strictly less safe. Setting it anywhere else, even to make a test pass, defeats the
+entire point: it is what makes it structurally
 impossible for the unattended hourly `build-continue.yml` (or the daily `apply_agent_preview.yml`
 schedule) to ever cause a real, un-approved job application submission. `apply_agent.submit()`
 checks `os.environ.get("APPLY_AGENT_ARMED") != "1"` (exact-string equality, not any truthy/falsy

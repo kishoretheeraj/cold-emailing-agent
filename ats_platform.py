@@ -10,7 +10,11 @@ import re
 
 import config
 
-_WORKDAY_PATTERN = re.compile(r"\.wd\d+\.myworkdayjobs\.com", re.IGNORECASE)
+# Matches the Workday domains themselves, NOT the `.wdN.` tenant segment -- that segment
+# isn't universal, and Workday also serves career sites on myworkdaysite.com. Requiring it
+# would let those URLs fall through to 'generic' (the browser-use path) despite Workday
+# being permanently excluded -- currently inert only because browser-use doesn't work yet.
+_WORKDAY_PATTERN = re.compile(r"myworkdayjobs\.com|myworkdaysite\.com", re.IGNORECASE)
 
 
 def classify(job_url):

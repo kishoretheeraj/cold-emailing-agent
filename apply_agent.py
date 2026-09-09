@@ -103,13 +103,32 @@ def _attach_resume_and_cover_letter(page, job):
 
 # ── Browser lifecycle (real Playwright launch -- mocked in every test) ───────────
 
+# Maps a launched page to the browser + driver behind it, so _close_page can tear the
+# whole stack down. run_preview launches one per eligible row in a loop; without this,
+# every Chromium and every driver process stays alive for the entire run.
+_OPEN_SESSIONS = {}
+
+
 def _launch_page(job_url):
     from playwright.sync_api import sync_playwright
     playwright = sync_playwright().start()
     browser = playwright.chromium.launch(headless=True)
     page = browser.new_page()
     page.goto(job_url)
+    _OPEN_SESSIONS[id(page)] = (browser, playwright)
     return page
+
+
+def _close_page(page):
+    browser, playwright = _OPEN_SESSIONS.pop(id(page), (None, None))
+    for label, target in (("page", page), ("browser", browser), ("playwright", playwright)):
+        closer = getattr(target, "stop" if label == "playwright" else "close", None)
+        if closer is None:
+            continue
+        try:
+            closer()
+        except Exception as exc:
+            log.info(f"[APPLY-AGENT] | {label} cleanup skipped: {exc}")
 
 
 def _browser_use_agent_run(task_description, page):
@@ -149,26 +168,29 @@ def _process_one_preview(job):
         return "blocked"
 
     page = _launch_page(job.get("job_url"))
-    field_values = _standard_field_values(job)
+    try:
+        field_values = _standard_field_values(job)
 
-    if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
-        {"greenhouse": ats_fillers.fill_greenhouse,
-         "ashby": ats_fillers.fill_ashby,
-         "lever": ats_fillers.fill_lever}[platform](page, field_values)
-    else:
-        _fill_generic_via_browser_use(page, job, field_values)
+        if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
+            {"greenhouse": ats_fillers.fill_greenhouse,
+             "ashby": ats_fillers.fill_ashby,
+             "lever": ats_fillers.fill_lever}[platform](page, field_values)
+        else:
+            _fill_generic_via_browser_use(page, job, field_values)
 
-    _attach_resume_and_cover_letter(page, job)
-    screening_answers = _answer_screening_questions(page, job)
+        _attach_resume_and_cover_letter(page, job)
+        screening_answers = _answer_screening_questions(page, job)
 
-    preview = {
-        "platform": platform,
-        "field_values": field_values,
-        "eligibility_answers": _eligibility_answers(),
-        "screening_answers": screening_answers,
-    }
-    db.set_apply_preview(job_id, preview)
-    return "filled"
+        preview = {
+            "platform": platform,
+            "field_values": field_values,
+            "eligibility_answers": _eligibility_answers(),
+            "screening_answers": screening_answers,
+        }
+        db.set_apply_preview(job_id, preview)
+        return "filled"
+    finally:
+        _close_page(page)
 
 
 def run_preview():
@@ -206,38 +228,57 @@ def submit(job_id):
     """Re-fills a job_applications row's application form fresh and submits it -- but only when
     APPLY_AGENT_ARMED is exactly '1'. This env var must never be set anywhere except
     apply_agent_submit.yml's own job definition -- never a repo secret, never set in
-    build-continue.yml, never set by a test, and never placed in .env -- config.load_dotenv()
-    would arm a local run. See the CI-safety note in
+    build-continue.yml, and never placed in .env -- config.load_dotenv() would arm a local run.
+    The one exception is transiently inside a test, via mocker.patch.dict, where _launch_page
+    and db are mocked so no real page can be reached -- that coverage is what proves the armed
+    path actually clicks Submit and flips the stage, so deleting it to satisfy the letter of
+    this rule would make the gate strictly less safe, not more. See the CI-safety note in
     docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md."""
     import os
 
     job = db.get_job_application(job_id)
+    if not job:
+        raise ValueError(f"submit() called on a nonexistent job_applications row: id={job_id}")
+
+    # The ARMED gate proves a human tapped *something*; this proves they approved *this row*.
+    # Without it, any id reaching the workflow gets submitted -- a stale id, a mistyped manual
+    # workflow_dispatch, or a row that was never previewed (no eligibility answers, no screening
+    # answers, possibly no resume) would go to a real employer.
+    if job.get("stage") != "ready_to_submit" or not job.get("apply_preview"):
+        raise ValueError(
+            f"submit() called on an unapproved row: id={job_id} | stage={job.get('stage')} | "
+            f"has_preview={bool(job.get('apply_preview'))}"
+        )
+
     platform = ats_platform.classify(job.get("job_url"))
     if platform in ("workday", "aggregator"):
         raise ValueError(f"submit() called on a permanently-excluded platform: {platform}")
     page = _launch_page(job.get("job_url"))
-    field_values = _standard_field_values(job)
+    try:
+        field_values = _standard_field_values(job)
 
-    if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
-        {"greenhouse": ats_fillers.fill_greenhouse,
-         "ashby": ats_fillers.fill_ashby,
-         "lever": ats_fillers.fill_lever}[platform](page, field_values)
-    else:
-        # generic-platform fill runs an LLM browser agent against the real page before the ARMED
-        # gate below -- restrained only by the task-string instruction not to click Submit, not a
-        # hard guarantee. See the Phase 2.5 review notes.
-        _fill_generic_via_browser_use(page, job, field_values)
+        if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
+            {"greenhouse": ats_fillers.fill_greenhouse,
+             "ashby": ats_fillers.fill_ashby,
+             "lever": ats_fillers.fill_lever}[platform](page, field_values)
+        else:
+            # generic-platform fill runs an LLM browser agent against the real page before the
+            # ARMED gate below -- restrained only by the task-string instruction not to click
+            # Submit, not a hard guarantee. See the Phase 2.5 review notes.
+            _fill_generic_via_browser_use(page, job, field_values)
 
-    _attach_resume_and_cover_letter(page, job)
-    _answer_screening_questions(page, job)
+        _attach_resume_and_cover_letter(page, job)
+        _answer_screening_questions(page, job)
 
-    if os.environ.get("APPLY_AGENT_ARMED") != "1":
-        log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
-        return
+        if os.environ.get("APPLY_AGENT_ARMED") != "1":
+            log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
+            return
 
-    page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
-    db.update_job_application_stage(job_id, "applied")
-    log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
+        page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
+        db.update_job_application_stage(job_id, "applied")
+        log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
+    finally:
+        _close_page(page)
 
 
 if __name__ == "__main__":

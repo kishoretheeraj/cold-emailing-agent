@@ -31,12 +31,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements-apply.txt
           playwright install --with-deps chromium
 
+      # APPLICATION_ID is passed through the env, never interpolated into the run:
+      # script. A `${{ }}` expression is substituted into the script text before the
+      # shell parses it, so an id like `1"; curl ...|sh; "` would execute arbitrary
+      # code -- inside the one job in this repo that is ARMED and holds every secret.
+      # argparse's type=int is no defense: the shell has already run by then.
       - name: Submit the approved application
-        run: python apply_agent.py --submit "${{ github.event.inputs.application_id }}"
+        run: python apply_agent.py --submit "$APPLICATION_ID"
         env:
+          APPLICATION_ID: ${{ github.event.inputs.application_id }}
           APPLY_AGENT_ARMED: "1"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}

@@ -27,7 +27,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-jobs.txt   # base + sentence-transformers (job_pick.py)
 
       - name: Pull JobRight recommendations
         run: python jobright.py

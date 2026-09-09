@@ -23,3 +23,16 @@ import ats_platform
 ])
 def test_classify(url, expected):
     assert ats_platform.classify(url) == expected
+
+
+@pytest.mark.parametrize("url", [
+    # Workday also serves career sites on myworkdaysite.com, and the `.wdN.` tenant segment
+    # is not universal. Requiring it let these fall through to 'generic' -- the browser-use
+    # path -- despite Workday being permanently excluded.
+    "https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Product-Manager_JR1",
+    "https://myworkdayjobs.com/en-US/acme/job/Product-Manager_JR1",
+    "https://acme.myworkdaysite.com/en-US/careers/job/Product-Manager_JR1",
+    "https://ACME.WD1.MYWORKDAYJOBS.COM/job/1",
+])
+def test_workday_variants_are_all_excluded(url):
+    assert ats_platform.classify(url) == "workday"
