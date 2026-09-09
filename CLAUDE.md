@@ -448,7 +448,7 @@ Seven workflows live in `.github/workflows/`:
   and stops before Submit — sets `stage='ready_to_submit'`. Never sets
   `APPLY_AGENT_ARMED`. `timeout-minutes: 45` (vs. 30 for the daily job) — installs
   Playwright's Chromium binary (`playwright install --with-deps chromium`) on top of
-  the usual `requirements.txt` install. See "Auto-apply agent" below.
+  its `requirements-apply.txt` install. See "Auto-apply agent" below.
 - **`apply_agent_submit.yml`** (named "Apply Agent Submit") — triggered **only** by a
   human's approval tap in the contact-manager's `/applications` page (never a
   schedule), `workflow_dispatch` with a required `application_id` input. Runs
@@ -977,14 +977,41 @@ attribute-patching). `submit()` also hard-blocks Workday/aggregator platforms th
 rather than swallowing it -- there's no batch to protect on a single-row armed submit, and a
 silent failure there would leave the UI showing "ready to submit" when nothing actually happened.
 
+**There are TWO gates, not one, and they answer different questions.** `APPLY_AGENT_ARMED` proves
+*a human tapped something*; it says nothing about **which** row. The second gate, at the top of
+`submit()` before any browser launch, is what proves they approved *this* row:
+
+```python
+if job.get("stage") != "ready_to_submit" or not job.get("apply_preview"):
+    raise ValueError(...)
+```
+
+Without it, any id that reaches the workflow gets submitted -- a stale id from a re-ordered list, a
+mistyped manual `workflow_dispatch`, or a `stage='saved'` row that was never previewed (no
+eligibility answers, no screening answers, possibly no resume) would go to a real employer. Neither
+the API route nor the workflow validates that the row is approved, so **this check is the only
+thing enforcing it** -- do not remove or weaken it, and keep it before `_launch_page`. Note it is
+*not* double-submit protection: `submit()` clicks and then writes `stage='applied'`, so if the
+click lands and the Supabase write fails, the row stays `ready_to_submit` and a re-dispatch would
+file a second real application. Belt-and-braces for that gap lives in the follow-up list, not here.
+
+Defense in depth around the same id: `POST /api/applications/[id]/submit` rejects any non-numeric
+id with a 400 before dispatching, and `apply_agent_submit.yml` passes it through `env:` rather than
+interpolating `${{ }}` into its `run:` script -- a `${{ }}` expression is substituted into the
+script *text* before the shell parses it, so an id like `1"; curl ...|sh; "` would execute
+arbitrary code inside the one job that is ARMED and holds every secret. `argparse`'s `type=int` is
+not a mitigation there; the shell has already run. **Never move that input back into the `run:`
+line.**
+
 **Known follow-ups, not yet fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
 assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
 live-smoke-test pass; `submit()` regenerates screening-question answers instead of reusing what the
 human approved in the preview; a resume/cover-letter attach failure is silently swallowed even in
 the armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None
-of these are safety gaps -- the ARMED gate is the actual safety boundary, and everything above it
-degrading just means the *preview* is incomplete, not that an unapproved submission could happen.
+of these are safety gaps -- the two gates above are the actual safety boundary, and everything
+upstream of them degrading just means the *preview* is incomplete, not that an unapproved
+submission could happen.
 
 ## System-wide Claude API cost tracking
 
