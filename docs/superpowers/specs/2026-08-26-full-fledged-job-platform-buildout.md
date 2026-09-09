@@ -1,7 +1,7 @@
 # Full-Fledged Job Platform Buildout — Spec
 
-**Status:** Phases 1-2 in detail (Phase 2 designed 2026-08-27, against what Phase 1 actually
-shipped), Phases 2.5-5 stubbed (design them when their turn comes).
+**Status:** Phases 1, 2, 2.5, and 3 shipped (Phase 2.5 shipped 2026-09-03, Phase 3 2026-08-29).
+Phases 4-5 remain stubs (design them when their turn comes).
 
 **Origin:** OSS landscape scan (2026-08-26) of ~50 cold-email/AI-SDR and job-search/tracking repos,
 mapped against this repo's current capabilities. Full findings: the "Pipeline Gaps" artifact from
@@ -147,29 +147,38 @@ session-check endpoint `GET /swan/auth/newinfo` returns `{result: {logined: true
 both cookie-authenticated (no bearer token in `localStorage`, consistent with an httpOnly session
 cookie).
 
-## Phase 2.5 — Auto-apply agent (future, stub — NOT part of Phase 2's plan)
+## Phase 2.5 — Auto-apply agent (shipped 2026-09-03)
 
-Deliberately excluded from Phase 2's plan file: this needs its own spec once Phase 2 has produced
-real `job_applications` inventory at `stage='saved'` to apply to, and because it introduces a
-genuinely higher-consequence action (irreversible real-world submissions) that a design pass this
-short doesn't fully specify. Recorded here so a cold session has the intended shape:
+Full design: `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`. Plan:
+`docs/superpowers/plans/2026-08-30-phase2.5-auto-apply.md`. Root `CLAUDE.md`'s "Auto-apply agent"
+section is the living reference.
 
-- **Resume generation**: given a `job_applications` row, generate a tailored resume (ties into
-  Phase 3's resume intelligence — likely needs Phase 3 designed first, or folded into this phase).
-- **Review queue (default)**: generated resume + application shown to the user in the
-  contact-manager, editable, with explicit approve-to-submit. Matches the JobCtrl/AutoApply/
-  dear-hiring-manager pattern already cited above.
-- **Auto-apply toggle**: a separate, explicit opt-in (per-application or global) to skip the review
-  queue and submit without a human click. This is the part that overrides the original
-  human-gated-everything rule; the review queue remains the default.
-- **CI-safety constraint for whichever agent builds this**: `build-continue.yml` runs unattended
-  hourly, pushes straight to `main` with no PR review, and its prompt tells it to implement whatever
-  task it finds next. The actual submit call must be gated behind a local-only env var (e.g.
-  `JOBRIGHT_AUTOAPPLY_ARMED`) that is **never** a GitHub Actions secret — same pattern as
-  `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD` being local-only today. This lets `build-continue.yml` build
-  and test the full dry-run path autonomously while making it structurally impossible for that
-  unattended agent to ever fire a real submission, even if its tests exercise the code path. Decide
-  the exact mechanism as part of that phase's own design pass, not by inheriting this note verbatim.
+Shipped: `job_pick.py`'s three-stage scoring funnel (structured filter -> local embedding
+similarity -> Claude judge) with a zero-tap `resume_agent` propose+build trigger on `strong`
+verdicts; `apply_agent.py`'s `--preview` pass (unattended, fills Greenhouse/Ashby/Lever via
+hand-mapped Playwright fillers or `browser-use` for generic pages, stops before Submit) and
+`--submit <id>` pass (armed-only); `/applications` UI surfacing pick verdicts, blocked reasons,
+and an approve queue; `POST /api/applications/[id]/submit`; and the `apply_agent_preview.yml` /
+`apply_agent_submit.yml` workflows.
+
+**The CI-safety constraint above was honored, with a different variable name than this stub
+guessed**: the gate is `APPLY_AGENT_ARMED`, set inline in `apply_agent_submit.yml`'s own env block
+and **nowhere else in the repo** — not a GitHub Actions secret, not in `build-continue.yml`, not in
+any test, and explicitly not in a local `.env` (which `config.load_dotenv()` would otherwise pick
+up). It is checked as exact-string equality to `"1"`. This exact gate was adversarially reviewed
+and mutation-tested before shipping and found to have no bypass. The review-queue-by-default shape
+was kept; the "auto-apply toggle" bullet (skipping human review entirely) was **not** built — every
+real submission still requires an explicit human tap.
+
+**Deliberately excluded, permanently**: Workday and job-board aggregator links (Indeed,
+ZipRecruiter, LinkedIn Jobs, YC) are hard-blocked before any fill attempt — account-per-tenant and
+bot-detection constraints, not "not built yet."
+
+Known follow-ups (none are safety gaps — see root `CLAUDE.md` and the
+`project-phase2.5-auto-apply` memory file): `browser-use`'s installed API doesn't match what the
+generic filler assumes, so that path fails safely but doesn't work yet; `submit()` regenerates
+screening answers rather than reusing the approved preview; attach failures are swallowed even in
+the armed path; `source_channel`/`applied_date` aren't written on submit.
 
 ## Phase 3 — Resume intelligence (shipped 2026-08-29)
 
