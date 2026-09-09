@@ -40,7 +40,7 @@ Two modes in one pipeline:
 
 ```bash
 cd cold-email-agent
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # base + job-scoring deps + pytest; use requirements.txt for a runtime-only install
 cp .env.example .env
 # Edit .env and fill in all 5 values
 ```

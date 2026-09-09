@@ -386,7 +386,7 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
 
 ## GitHub Actions
 
-Four workflows live in `.github/workflows/`:
+Seven workflows live in `.github/workflows/`:
 
 - **`daily_agent.yml`** — runs `agent.py` Mon-Fri at 4:37am EST (cron
   `37 9 * * 1-5`). Has a `check-duplicate` preflight job: if a
@@ -433,11 +433,50 @@ Four workflows live in `.github/workflows/`:
   so hourly fires queue instead of racing if one run overlaps the next. Needs
   `contents: write` + `actions: write` (self-disable) + `id-token: write` (the
   action's own auth) in addition to the standard secrets below.
+- **`jobright_pull.yml`** (named "JobRight Pull") — daily (`17 11 * * *`, 6:17am EST),
+  a manual-by-default JobRight puller that runs on an explicit daily schedule per
+  the user's override of the original manual-only rule (see
+  `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, "JobRight scheduling").
+  Pulls fresh recommendations via `jobright.py`, then runs `job_pick.py` to score
+  every newly-saved row through three stages (structured filters, embedding similarity,
+  LLM judge) and zero-tap trigger `resume_agent.py`'s propose+build on `strong`
+  verdicts (see `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
+- **`apply_agent_preview.yml`** (named "Apply Agent Preview") — daily (`37 12 * * *`,
+  off the hour), runs `python apply_agent.py --preview` unattended: fills every eligible
+  job application's form (Greenhouse/Ashby/Lever hand-mapped, or `browser-use` for
+  generic ATS pages), attaches the resume/cover letter, answers screening questions,
+  and stops before Submit — sets `stage='ready_to_submit'`. Never sets
+  `APPLY_AGENT_ARMED`. `timeout-minutes: 45` (vs. 30 for the daily job) — installs
+  Playwright's Chromium binary (`playwright install --with-deps chromium`) on top of
+  its `requirements-apply.txt` install. See "Auto-apply agent" below.
+- **`apply_agent_submit.yml`** (named "Apply Agent Submit") — triggered **only** by a
+  human's approval tap in the contact-manager's `/applications` page (never a
+  schedule), `workflow_dispatch` with a required `application_id` input. Runs
+  `python apply_agent.py --submit <id>` with `APPLY_AGENT_ARMED: "1"` set inline in
+  this workflow's own env block — **the only place in this entire repo this variable
+  is ever set.** `timeout-minutes: 15`. See "Auto-apply agent" below.
 
-All four workflows: upload the relevant `.log` file as an artifact (30-day
+All seven workflows: upload the relevant `.log` file as an artifact (30-day
 retention) where one exists, and run `notify_failure.py` in an `if: failure()` step.
 All support `workflow_dispatch` for manual triggers.
-Python version: **3.11**. Dependencies installed via `requirements.txt`.
+Python version: **3.11**. Dependencies are split so the frequently-run workflows stay light —
+`monitor.yml` alone runs ~50×/day and must not install `torch` on every run:
+
+- **`requirements.txt`** — the base every workflow needs. Installed directly by `daily_agent.yml`,
+  `monitor.yml`, `visa_intel_ingest.yml`.
+- **`requirements-jobs.txt`** (`-r requirements.txt` + `sentence-transformers`) — `job_pick.py`
+  imports `sentence_transformers` at **module level**, so anything importing `job_pick` needs this.
+  Installed by `jobright_pull.yml`, and by `requirements-dev.txt` (the test suite imports
+  `job_pick`).
+- **`requirements-apply.txt`** (`-r requirements.txt` + `playwright` + `browser-use`) — installed
+  by `apply_agent_preview.yml` / `apply_agent_submit.yml` only. Both libraries are imported
+  **lazily inside functions** in `apply_agent.py`, never at module level, which is why the test
+  suite doesn't need them. These workflows additionally run `playwright install --with-deps
+  chromium`, a system-level step pip can't do.
+- **`requirements-dev.txt`** (`-r requirements-jobs.txt` + pytest) — `build-continue.yml`.
+
+If you add a module-level import of a heavy dependency, check which of these files needs it and
+which workflows consequently pay for it.
 
 `daily_agent.yml` and `visa_intel_ingest.yml` pass these secrets:
 `ANTHROPIC_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `SUPABASE_URL`,
@@ -876,8 +915,103 @@ section. The humanizer lint pass (em dashes, jargon) and the PDF metadata scrub 
 removal, realistic timestamps) both shipped; a dedicated AI-detector-evasion layer did not, and no
 third-party tool was fetched or integrated for that purpose.
 
-No auto-submit exists in this phase -- that is Phase 2.5 (auto-apply agent), a separate future
-design gated behind its own explicit opt-in.
+No auto-submit exists in this phase -- Phase 2.5 (auto-apply agent, documented below) is the
+separate, later phase that adds it, gated behind its own explicit opt-in.
+
+## Auto-apply agent (Phase 2.5, full-fledged buildout)
+
+Two new modules on top of Phase 2/3's `job_applications`/resume pipeline: `job_pick.py` (scores
+newly-discovered jobs for fit) and `apply_agent.py` (fills and, only on explicit human approval,
+submits real application forms). See docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md
+for the full design and docs/superpowers/plans/2026-08-30-phase2.5-auto-apply.md for the
+implementation plan.
+
+**`job_pick.py`'s three-stage scoring funnel** (run() is wired into `jobright_pull.yml`, after
+`jobright.py`'s pull): a cheap structured keyword filter on the job title short-circuits obvious
+mismatches at zero cost -> a local `sentence-transformers` embedding-similarity check against the
+user's real resume/project text (no API key, no cost) short-circuits below-threshold jobs before
+any Claude call -> a Claude judge (`strong`/`maybe`/`no` + reasoning) only for jobs that survive
+both. A `strong` verdict **zero-tap** triggers `resume_agent.propose()` then `resume_agent.build()`
+-- real spend, no human pause between them, deliberately looser than Phase 3's manual-CLI
+strategy-review gate, but only for this auto-pick path.
+
+**`apply_agent.py`'s platform routing** (`ats_platform.classify(job_url)` -> one of six strings):
+Greenhouse/Ashby/Lever get hand-mapped, deterministic Playwright fillers (`ats_fillers.py`);
+anything else with a real application page gets `browser-use` (an LLM-driven browser agent);
+Workday and job-board aggregator links (Indeed, ZipRecruiter, LinkedIn Jobs, etc.) are
+**permanently excluded** -- blocked before any fill attempt is even tried, `apply_blocked_reason`
+set, row stays at `stage='saved'` for the user to handle by hand. Both fill paths attach the
+resume/cover letter (headless `set_input_files`, no OS dialog), answer free-text screening
+questions via Claude (grounded only in the real profile, never fabricated), and fill fixed
+EEO/work-authorization answers from the `applicant_eligibility` prompts key (never LLM-generated
+per application -- the user's own fixed answers, edited live via the contact-manager's Prompts
+page).
+
+**Two-pass submit gate, this is the load-bearing safety design of the whole feature:**
+`apply_agent.py --preview` (run by `apply_agent_preview.yml`, scheduled daily, fully unattended)
+fills everything and **stops before Submit**, writing `apply_preview` (every filled value +
+generated answers) and flipping `stage='ready_to_submit'`. The user reviews this in the
+contact-manager's `/applications` page and taps "Approve & Submit" on rows they actually want to
+apply to. That tap POSTs to `/api/applications/[id]/submit`, which fires a `workflow_dispatch` on
+`apply_agent_submit.yml` with the row's id -- `apply_agent.py --submit <id>` then re-fills the
+form fresh (never reuses the preview pass's browser session) and clicks Submit for real.
+
+**`APPLY_AGENT_ARMED` is the single hard safety rule of this entire feature. This environment
+variable must never be set anywhere except `apply_agent_submit.yml`'s own env block -- never a
+repo secret, never in `build-continue.yml`'s environment, never in a local `.env`
+file** (`config.py`'s `load_dotenv()` would otherwise silently arm a local `--submit` run --
+document this explicitly if you ever touch `apply_agent.py`'s docstring or this rule). The one
+deliberate exception is *transiently inside a test*, via `mocker.patch.dict`, with `_launch_page`
+and `db` mocked so no real page is reachable: that is the coverage proving the armed path actually
+clicks Submit and flips the stage, and deleting it to satisfy the letter of this rule would leave
+the gate strictly less safe. Setting it anywhere else, even to make a test pass, defeats the
+entire point: it is what makes it structurally
+impossible for the unattended hourly `build-continue.yml` (or the daily `apply_agent_preview.yml`
+schedule) to ever cause a real, un-approved job application submission. `apply_agent.submit()`
+checks `os.environ.get("APPLY_AGENT_ARMED") != "1"` (exact-string equality, not any truthy/falsy
+interpretation) and returns without clicking Submit if it isn't armed -- this exact gate was
+adversarially reviewed and mutation-tested before shipping and found to have no bypass (no
+alternate call site, no exception fall-through, function-local `os` import immune to
+attribute-patching). `submit()` also hard-blocks Workday/aggregator platforms the same way
+`--preview` does, and is the one function in this pipeline that raises loudly on any failure
+rather than swallowing it -- there's no batch to protect on a single-row armed submit, and a
+silent failure there would leave the UI showing "ready to submit" when nothing actually happened.
+
+**There are TWO gates, not one, and they answer different questions.** `APPLY_AGENT_ARMED` proves
+*a human tapped something*; it says nothing about **which** row. The second gate, at the top of
+`submit()` before any browser launch, is what proves they approved *this* row:
+
+```python
+if job.get("stage") != "ready_to_submit" or not job.get("apply_preview"):
+    raise ValueError(...)
+```
+
+Without it, any id that reaches the workflow gets submitted -- a stale id from a re-ordered list, a
+mistyped manual `workflow_dispatch`, or a `stage='saved'` row that was never previewed (no
+eligibility answers, no screening answers, possibly no resume) would go to a real employer. Neither
+the API route nor the workflow validates that the row is approved, so **this check is the only
+thing enforcing it** -- do not remove or weaken it, and keep it before `_launch_page`. Note it is
+*not* double-submit protection: `submit()` clicks and then writes `stage='applied'`, so if the
+click lands and the Supabase write fails, the row stays `ready_to_submit` and a re-dispatch would
+file a second real application. Belt-and-braces for that gap lives in the follow-up list, not here.
+
+Defense in depth around the same id: `POST /api/applications/[id]/submit` rejects any non-numeric
+id with a 400 before dispatching, and `apply_agent_submit.yml` passes it through `env:` rather than
+interpolating `${{ }}` into its `run:` script -- a `${{ }}` expression is substituted into the
+script *text* before the shell parses it, so an id like `1"; curl ...|sh; "` would execute
+arbitrary code inside the one job that is ARMED and holds every secret. `argparse`'s `type=int` is
+not a mitigation there; the shell has already run. **Never move that input back into the `run:`
+line.**
+
+**Known follow-ups, not yet fixed** (see the `project-phase2.5-auto-apply` memory file for full
+detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
+assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
+live-smoke-test pass; `submit()` regenerates screening-question answers instead of reusing what the
+human approved in the preview; a resume/cover-letter attach failure is silently swallowed even in
+the armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None
+of these are safety gaps -- the two gates above are the actual safety boundary, and everything
+upstream of them degrading just means the *preview* is incomplete, not that an unapproved
+submission could happen.
 
 ## System-wide Claude API cost tracking
 

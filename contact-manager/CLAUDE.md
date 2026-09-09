@@ -175,10 +175,25 @@ given). Returns `{ application: JobApplication }` or `{ error }` (400/500). This
 app's first dynamic (`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js
 16's route handler convention.
 
+**POST `/api/applications/[id]/submit`** — no body. Fires a `workflow_dispatch` on
+`apply_agent_submit.yml` (`ref: "main"`, `inputs: { application_id: id }`) using
+`GITHUB_DISPATCH_TOKEN` (a Vercel-hosted env var, not a GitHub Actions secret — this route
+runs on Vercel and calls GitHub's REST API directly; `gh secret list` will never show it).
+Mirrors the existing `/api/trigger-agent` route's exact dispatch shape. Returns `{ ok: true }`
+(200) or `{ error }` (502 if the GitHub dispatch call itself fails). This is the **only** way
+a real job-application submission can be triggered — see root `CLAUDE.md`'s "Auto-apply agent"
+section for the full `APPLY_AGENT_ARMED` safety design this route is one link in.
+
 `ApplicationsPage.tsx` (rendered at `/applications`) fetches the list on mount, adds new
 applications via a form, and changes `stage` inline via a `Select` with optimistic update
 (reverts and toasts on failure) — same pattern as the contacts side sheet's stage/tier
-changes.
+changes. Three additional columns surface the Phase 2.5 auto-apply pipeline, all populated by
+Python-side jobs (`job_pick.py`, `apply_agent.py`) rather than this app: **Pick** — a `Badge`
+showing `pick_verdict` (`strong`/`maybe`/`no`, or `—` if not yet scored); **Blocked** —
+`apply_blocked_reason` text (or `—`), covering Workday/aggregator exclusions and any field the
+filler couldn't confidently handle; **Preview / Submit** — for `stage='ready_to_submit'` rows
+with `apply_preview` set, shows a screening-answer count and an "Approve & Submit" button that
+calls the route above.
 
 ### Gmail API routes (Phase 0 — bulk-send infrastructure)
 
@@ -306,7 +321,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 77** (vitest: 624 passed, playwright: 77 passed).
+- **Current test count: 77** (vitest: 633 across 41 files, playwright: 77).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
