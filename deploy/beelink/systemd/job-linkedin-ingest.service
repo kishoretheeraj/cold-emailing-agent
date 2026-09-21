@@ -1,0 +1,32 @@
+# One paced LinkedIn discovery session on display slot 0. Slot 0 is exactly one LinkedIn
+# session, always: the pacing cap is per-account not per-process, and two simultaneous LinkedIn
+# sessions is itself a detection signal.
+[Unit]
+Description=LinkedIn job discovery via Computer Use (display slot 0)
+After=chrome-profile@0.service
+Requires=chrome-profile@0.service
+JoinsNamespaceOf=xvfb@0.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/job-agent
+EnvironmentFile=/etc/job-agent/base.env
+Environment=DISPLAY=:0
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/opt/job-agent/.venv/bin/python cu_linkedin.py
+# Replaces GitHub Actions' timeout-minutes: a wedged Chrome must not run forever. Comfortably
+# above config.CU_LINKEDIN_MAX_SESSION_SECONDS (900) so the in-process cap fires first.
+#
+# Type=oneshot: the process runs during activation, so the real bound is TimeoutStartSec=, not
+# RuntimeMaxSec (which governs a unit's post-activation runtime and is a no-op for oneshot --
+# using that directive here would silently let the distro default TimeoutStartSec, commonly 90s,
+# kill every session mid-browse well before the in-process 900s cap ever fires).
+TimeoutStartSec=1200
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/job-agent /var/lib/job-agent

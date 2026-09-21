@@ -43,6 +43,7 @@ resume_scrub.py
 resume/
 usage_tracking.py
 supabase/migrations/
+deploy/beelink/
 ```
 
 Every module that touches the outside world is wrapped behind a function so
