@@ -2529,9 +2529,11 @@ interface and needs no change here.
 
 ## 6. Log in to LinkedIn once, by hand
 
-Open `http://<beelink-lan-ip>:6000/vnc.html` from a laptop on the same LAN, enter the VNC
-password, and sign in to LinkedIn inside that Chrome window — including any 2FA. The session
-cookie now lives in `/var/lib/job-agent/profiles/0` and survives restarts.
+Open `http://<beelink-lan-ip>:6080/vnc.html` (slot 0's noVNC front end — 6080 is `608%i` for
+`%i=0`, matching `novnc@0.service` and the ufw rule in section 5 above; a later slot would be
+6081-6083) from a laptop on the same LAN, enter the VNC password, and sign in to LinkedIn inside
+that Chrome window — including any 2FA. The session cookie now lives in
+`/var/lib/job-agent/profiles/0` and survives restarts.
 
 This is the **only** place a LinkedIn credential is ever entered. It is never typed by the agent,
 never stored in `/etc/job-agent/base.env`, and never appears in this repo.
