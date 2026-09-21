@@ -621,3 +621,8 @@ CU_LINKEDIN_KEYSTROKE_JITTER_MS = 15
 # Prune all but the last N screenshots out of the message history each turn -- the single
 # biggest cost lever in the loop.
 CU_LINKEDIN_SCREENSHOT_HISTORY = 3
+
+# Multi-step cursor interpolation rather than instant jumps -- mirrors values used in
+# comparable open-source computer-use implementations.
+CU_LINKEDIN_MOUSE_STEPS = 4
+CU_LINKEDIN_MAX_WAIT_SECONDS = 300

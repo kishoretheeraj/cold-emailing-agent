@@ -17,9 +17,17 @@ own session cookie is the credential.
 Usage: python3 cu_linkedin.py
 """
 
+import base64
+import logging
+import os
 import random
+import subprocess
+import tempfile
+import time
 
 import config
+
+log = logging.getLogger(__name__)
 
 
 # ── Pacing ─────────────────────────────────────────────────────────────────────
@@ -58,3 +66,164 @@ def worst_case_views_per_session():
     different, looser thing."""
     return (config.CU_LINKEDIN_MAX_ACTIONS_PER_SESSION
             // config.CU_LINKEDIN_WORST_CASE_ACTIONS_PER_POSTING)
+
+
+# ── X11 action execution ───────────────────────────────────────────────────────
+
+# The display is 1280x800 (see deploy/beelink/systemd/xvfb@.service). Long edge 1280 is under
+# the toolset's 2576px limit, so screenshots are sent unscaled and Claude's coordinates apply
+# directly to the screen. Do NOT add a scale factor here -- there is no inverse transform to get
+# wrong.
+_BUTTONS = {"left_click": "1", "middle_click": "2", "right_click": "3"}
+_MULTI_CLICKS = {"double_click": "2", "triple_click": "3"}
+_SCROLL_BUTTONS = {"up": "4", "down": "5", "left": "6", "right": "7"}
+
+
+def _x11_env():
+    return dict(os.environ, DISPLAY=config.CU_LINKEDIN_DISPLAY)
+
+
+def _run(command):
+    proc = subprocess.run(
+        command, check=True, capture_output=True,
+        timeout=config.CU_LINKEDIN_SUBPROCESS_TIMEOUT_SECONDS, env=_x11_env(),
+    )
+    return proc.stdout or b""
+
+
+def _xdotool(args):
+    return _run(["xdotool"] + args)
+
+
+def _read_png(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _screenshot_content():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "screen.png")
+        _run(["scrot", "--overwrite", path])
+        data = _read_png(path)
+    return [{
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": base64.standard_b64encode(data).decode("ascii"),
+        },
+    }]
+
+
+def _move_to(coordinate):
+    x, y = int(coordinate[0]), int(coordinate[1])
+    _xdotool(["mousemove", "--sync", str(x), str(y)])
+
+
+def _current_position():
+    # Shared by the cursor_position tool and _glide_to -- a glide has to interpolate from where
+    # the cursor actually is, not from the screen origin (0, 0). Defaults to (0, 0) only if
+    # xdotool's output is unparseable, which only ever happens before the very first move.
+    out = _xdotool(["getmouselocation", "--shell"]).decode("utf-8", errors="replace")
+    fields = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    try:
+        return int(fields.get("X", 0)), int(fields.get("Y", 0))
+    except ValueError:
+        return 0, 0
+
+
+def _glide_to(coordinate):
+    # Interpolates from the CURRENT cursor position to the target, not from (0, 0). Gliding from
+    # the origin every time -- an earlier draft's bug -- teleports the cursor to a fraction of the
+    # way from the top-left corner before walking to the target, which is a stronger automation
+    # tell than a single jump, not a weaker one, and made left_click_drag actively wrong (it
+    # dragged toward the origin instead of toward the requested end point).
+    start_x, start_y = _current_position()
+    end_x, end_y = int(coordinate[0]), int(coordinate[1])
+    steps = max(1, config.CU_LINKEDIN_MOUSE_STEPS)
+    for step in range(1, steps + 1):
+        x = start_x + int((end_x - start_x) * step / steps)
+        y = start_y + int((end_y - start_y) * step / steps)
+        _xdotool(["mousemove", "--sync", str(x), str(y)])
+
+
+def _dispatch(name, params, rand):
+    if name == "screenshot":
+        return _screenshot_content(), False
+
+    if name in _BUTTONS or name in _MULTI_CLICKS:
+        coordinate = params.get("coordinate")
+        if coordinate:
+            _move_to(coordinate)
+        modifiers = params.get("text")
+        if modifiers:
+            _xdotool(["keydown", modifiers])
+        if name in _MULTI_CLICKS:
+            _xdotool(["click", "--repeat", _MULTI_CLICKS[name], "1"])
+        else:
+            _xdotool(["click", _BUTTONS[name]])
+        if modifiers:
+            _xdotool(["keyup", modifiers])
+        return "OK", False
+
+    if name == "mouse_move":
+        _glide_to(params["coordinate"])
+        return "OK", False
+
+    if name == "left_click_drag":
+        _move_to(params["start_coordinate"])
+        _xdotool(["mousedown", "1"])
+        _glide_to(params["coordinate"])
+        _xdotool(["mouseup", "1"])
+        return "OK", False
+
+    if name in ("left_mouse_down", "left_mouse_up"):
+        _xdotool(["mousedown" if name == "left_mouse_down" else "mouseup", "1"])
+        return "OK", False
+
+    if name == "cursor_position":
+        x, y = _current_position()
+        return f"X={x}, Y={y}", False
+
+    if name == "type":
+        _xdotool(["type", "--delay", str(keystroke_delay_ms(rand)),
+                  "--clearmodifiers", params.get("text", "")])
+        return "OK", False
+
+    if name == "key":
+        _xdotool(["key", "--repeat", str(int(params.get("repeat", 1))),
+                  "--clearmodifiers", params["text"]])
+        return "OK", False
+
+    if name == "hold_key":
+        duration = min(float(params.get("duration", 1)), config.CU_LINKEDIN_MAX_WAIT_SECONDS)
+        _xdotool(["keydown", "--clearmodifiers", params["text"]])
+        time.sleep(duration)
+        _xdotool(["keyup", "--clearmodifiers", params["text"]])
+        return "OK", False
+
+    if name == "scroll":
+        coordinate = params.get("coordinate")
+        if coordinate:
+            _move_to(coordinate)
+        button = _SCROLL_BUTTONS[params.get("scroll_direction", "down")]
+        _xdotool(["click", "--repeat", str(int(params.get("scroll_amount", 1))), button])
+        return "OK", False
+
+    if name == "wait":
+        time.sleep(min(float(params.get("duration", 1)), config.CU_LINKEDIN_MAX_WAIT_SECONDS))
+        return "OK", False
+
+    # zoom lands here deliberately: it is disabled in the toolset config (see _TOOLS) so the
+    # model should never emit it, and this is the backstop if it ever does.
+    return f"Unsupported action: {name}", True
+
+
+def execute_action(name, params, rand=random.random):
+    """Execute one computer-toolset member action against the X11 display. Returns
+    (content, is_error) for the caller to wrap in a tool_result. Never raises."""
+    try:
+        return _dispatch(name, params or {}, rand)
+    except Exception as exc:
+        log.warning(f"[CU-LINKEDIN] | {name} | action failed: {exc}")
+        return f"Action {name} failed: {exc}", True
