@@ -25,9 +25,14 @@ import subprocess
 import tempfile
 import time
 
+import anthropic
+
 import config
+import usage_tracking
 
 log = logging.getLogger(__name__)
+
+_claude = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=4)
 
 
 # ── Pacing ─────────────────────────────────────────────────────────────────────
@@ -227,3 +232,131 @@ def execute_action(name, params, rand=random.random):
     except Exception as exc:
         log.warning(f"[CU-LINKEDIN] | {name} | action failed: {exc}")
         return f"Action {name} failed: {exc}", True
+
+
+# ── Computer Use sampling loop ─────────────────────────────────────────────────
+
+# zoom is disabled: at 1280x800 the full screenshot is already under the toolset's pixel limit,
+# so zoom would only add a second image-returning member to implement for no legibility gain.
+_TOOLS = [{"type": "computer_toolset_20260801", "configs": {"zoom": {"enabled": False}}}]
+
+_SYSTEM = """You are operating a real Chrome window on a Linux desktop, already signed in to
+LinkedIn as the operator. Your only job is to READ job postings and report them.
+
+Hard rules:
+- Never click Apply, Easy Apply, Connect, Follow, Message, Save, or any button that writes
+  something to LinkedIn or to another person. You are read-only.
+- Never type into a message box, comment box, or post composer.
+- Never attempt to solve, bypass, or work around a CAPTCHA, a security check, or a login
+  challenge. If you see one, stop immediately and reply with the exact text
+  CAPTCHA_OR_CHALLENGE and nothing else.
+- Move deliberately. Take a screenshot, decide one thing, act, then look again.
+- When you have gathered what you were asked for, or you cannot make further progress, stop
+  calling tools and reply with the JSON array described in the user's instructions."""
+
+_WRAP_UP_PROMPT = (
+    "Session limit reached. Stop browsing now and reply with ONLY the JSON array of the "
+    "postings you have already collected, in the format you were given. If you collected "
+    "none, reply with []."
+)
+
+
+def _final_text(resp):
+    return "".join(b.text for b in resp.content
+                   if getattr(b, "type", None) == "text").strip()
+
+
+def _execute_tool_uses(blocks, rand=random.random):
+    results = []
+    executed = 0
+    failed = False
+    for block in blocks:
+        if failed:
+            results.append({
+                "type": "tool_result", "tool_use_id": block.id, "toolset_name": "computer",
+                "is_error": True,
+                "content": "Not executed: an earlier computer action in this turn failed.",
+            })
+            continue
+        time.sleep(next_action_delay(rand))
+        content, is_error = execute_action(block.name, dict(block.input or {}), rand=rand)
+        executed += 1
+        result = {"type": "tool_result", "tool_use_id": block.id,
+                  "toolset_name": "computer", "content": content}
+        if is_error:
+            result["is_error"] = True
+            failed = True
+        results.append(result)
+    return results, executed
+
+
+def _prune_screenshots(messages):
+    # Screenshots are 1,000-1,800 tokens each and a session runs dozens of turns. Only the most
+    # recent few are worth resending; older ones become a short text placeholder so the
+    # tool_use/tool_result pairing stays intact.
+    seen = 0
+    for message in reversed(messages):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in reversed(content):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            if not isinstance(block.get("content"), list):
+                continue
+            seen += 1
+            if seen > config.CU_LINKEDIN_SCREENSHOT_HISTORY:
+                block["content"] = "[screenshot pruned to save tokens]"
+    return messages
+
+
+def _call(messages, tool_choice=None, action="session_turn"):
+    kwargs = dict(
+        model=config.CU_LINKEDIN_MODEL,
+        max_tokens=config.CU_LINKEDIN_MAX_TOKENS,
+        system=_SYSTEM,
+        tools=_TOOLS,
+        messages=messages,
+    )
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
+    resp = _claude.messages.create(**kwargs)
+    # contact_id and job_application_id are both None on purpose: one session discovers many
+    # postings, so there is no single row to attribute the spend to (same reasoning as
+    # extract_voice.py).
+    usage_tracking.log_usage(
+        "cu_linkedin", action, config.CU_LINKEDIN_MODEL,
+        {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens},
+    )
+    return resp
+
+
+def _wrap_up(messages):
+    messages.append({"role": "user", "content": _WRAP_UP_PROMPT})
+    return _final_text(_call(messages, tool_choice={"type": "none"}, action="wrap_up"))
+
+
+def run_session(task_prompt, rand=random.random, now=time.monotonic):
+    """Drive one paced Computer Use session and return Claude's final text reply."""
+    started = now()
+    actions = 0
+    messages = [{"role": "user", "content": task_prompt}]
+
+    for turn in range(config.CU_LINKEDIN_MAX_TURNS):
+        resp = _call(messages)
+        messages.append({"role": "assistant", "content": resp.content})
+        if resp.stop_reason != "tool_use":
+            return _final_text(resp)
+
+        tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
+        results, executed = _execute_tool_uses(tool_uses, rand=rand)
+        actions += executed
+        messages.append({"role": "user", "content": results})
+        _prune_screenshots(messages)
+
+        if session_exhausted(actions, now() - started):
+            log.info(f"[CU-LINKEDIN] | session cap reached | turn={turn} | actions={actions}")
+            return _wrap_up(messages)
+
+    log.info(f"[CU-LINKEDIN] | max turns reached | actions={actions}")
+    return _wrap_up(messages)

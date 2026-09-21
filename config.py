@@ -518,9 +518,16 @@ RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0
 # MODEL, REPLY_RESPONSE_MODEL, RESEARCH_QUERY_MODEL, RESEARCH_CURATE_MODEL, RESUME_MODEL all
 # resolve to one of these two strings). usage_tracking.calculate_cost raises KeyError for any
 # other model -- add its verified price here rather than guessing before using a new model.
+# Verified prices, not estimates. claude-sonnet-4-6 / claude-haiku-4-5-20251001 were checked
+# against platform.claude.com's pricing page 2026-08-29; claude-opus-5 ($5/$25 per MTok) and
+# claude-sonnet-5 ($2/$10 per MTok) against the same source 2026-09-17 when the Computer Use
+# agent landed. usage_tracking.calculate_cost raises KeyError for any model not listed here --
+# add its verified price rather than guessing before using a new model.
 MODEL_PRICING = {
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-haiku-4-5-20251001": (1.0, 5.0),
+    "claude-opus-5": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
 }
 # Font extracted from the user's own real resume corpus (77 .docx files, checked 2026-08-29):
 # Calibri is the dominant choice (~76/77 files); Garamond appeared in exactly one recent
