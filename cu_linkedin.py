@@ -447,3 +447,71 @@ def persist_postings(postings):
             log.warning(f"[CU-LINKEDIN] | {posting.get('role')} | {posting.get('company')} | "
                         f"persist error: {exc}")
     return saved, skipped, errors
+
+
+# ── Public entry point ─────────────────────────────────────────────────────────
+
+_TASK_PROMPT = """Open the LinkedIn Jobs tab that is already loaded in this Chrome window and
+review the job recommendations there. For each posting you open, note the company, the role
+title, the posting URL shown in the address bar, the location, and a one-paragraph summary of
+the description.
+
+Look at no more than {max_postings} postings, then stop.
+
+When you are done, reply with ONLY a JSON array (no prose, no markdown fence) where each element
+is an object with exactly these keys: "company", "role", "job_url", "location", "description".
+If you found nothing, reply with []."""
+
+_CAPTCHA_SENTINEL = "CAPTCHA_OR_CHALLENGE"
+
+
+def run():
+    """Run one paced LinkedIn discovery session and persist what it found. Never raises."""
+    start = time.time()
+    saved = skipped = errors = 0
+
+    if not config.CU_LINKEDIN_ENABLED:
+        log.info("[CU-LINKEDIN] | disabled via config.CU_LINKEDIN_ENABLED, skipping")
+        return
+
+    # LinkedIn browsing is the highest-consequence activity in this whole system -- it risks the
+    # user's real account -- so it must respect the global pause switch, same as agent.py and
+    # monitor.py. No record_run call on the paused exit, matching monitor.py's own rule: this
+    # check can be hit far more often than a real session runs and must not flood agent_runs.
+    if db.get_pause_scope() in ("agent", "all"):
+        log.info("[CU-LINKEDIN] | PAUSED | skipping (pause_scope)")
+        return
+
+    log.info("[CU-LINKEDIN] | START")
+    try:
+        text = run_session(
+            _TASK_PROMPT.format(max_postings=config.CU_LINKEDIN_MAX_POSTINGS_PER_SESSION)
+        )
+        if _CAPTCHA_SENTINEL in (text or ""):
+            # Never solved, never bypassed, never retried with a workaround: a human VNCs in.
+            log.warning("[CU-LINKEDIN] | CAPTCHA or login challenge -- needs a human at the VNC "
+                        "console for display slot 0")
+        else:
+            postings = extract_postings(text)
+            log.info(f"[CU-LINKEDIN] | extracted={len(postings)}")
+            saved, skipped, errors = persist_postings(postings)
+    except Exception as exc:
+        errors += 1
+        log.warning(f"[CU-LINKEDIN] | unexpected error: {exc}")
+
+    log.info(f"[CU-LINKEDIN] | DONE | saved={saved} | skipped={skipped} | errors={errors}")
+    try:
+        db.record_run("failure" if errors else "success", saved, skipped, errors,
+                      round(time.time() - start), source="cu_linkedin")
+    except Exception as exc:
+        log.warning(f"[CU-LINKEDIN] | record_run failed: {exc}")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        filename="cu_linkedin.log",
+        level=logging.INFO,
+        format="%(asctime)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M",
+    )
+    run()
