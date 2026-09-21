@@ -555,3 +555,69 @@ APPLY_AGENT_AGGREGATOR_DOMAINS = (
     "ycombinator.com/companies",
     "linkedin.com/jobs",
 )
+
+# ── LinkedIn computer-use ingestion (Beelink M1) ───────────────────────────────
+
+# Every constant below is a plain literal on purpose. There is NO CU_LINKEDIN_EMAIL and NO
+# CU_LINKEDIN_PASSWORD, and there never will be: the persistent Chrome profile's own session
+# cookie is the credential, and the user logs in once by hand over VNC. See
+# docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md, "The ARMED gate on a
+# persistent host".
+CU_LINKEDIN_ENABLED = True
+
+# computer_toolset_20260801 is supported on claude-opus-5 / claude-sonnet-5 (and the Opus 4.8+
+# family). Defaults to claude-sonnet-5, not claude-opus-5: this is fundamentally a screen-reading
+# task (a session runs 15-40 turns at 1,000-1,800 tokens per screenshot), and at Opus pricing
+# across a few sessions/day that's a real, avoidable monthly cost. Upshifting to claude-opus-5 is
+# a one-line change here if sonnet-5 proves unreliable at reading LinkedIn's UI -- both are priced
+# in MODEL_PRICING.
+CU_LINKEDIN_MODEL = "claude-sonnet-5"
+CU_LINKEDIN_MAX_TOKENS = 4096
+
+# X11 display slot 0 -- the LinkedIn slot is exactly 1, always. Concurrency buys nothing (the
+# pacing cap is per-account, not per-process) and two simultaneous LinkedIn sessions is itself a
+# detection signal.
+CU_LINKEDIN_DISPLAY = ":0"
+CU_LINKEDIN_SUBPROCESS_TIMEOUT_SECONDS = 30
+
+# Session shape. A screenshot costs 1,000-1,800 tokens and a session runs 15-40 turns, so these
+# are cost ceilings as much as pacing ceilings.
+#
+# MAX_ACTIONS_PER_SESSION is tightened to 60, not the 120 an earlier draft used. Reasoning:
+# CU_LINKEDIN_MAX_POSTINGS_PER_SESSION (below) only caps what the model *reports* in its final
+# JSON answer -- it says nothing about how many postings it actually looked at while browsing,
+# since a single screenshot of a search-results list can surface many postings' summaries at
+# once, or a single detailed posting page can take several actions to read. The quantity that
+# maps to real LinkedIn-side exposure is actions taken, not postings reported. See
+# WORST_CASE_ACTIONS_PER_POSTING below for the derivation this cap is checked against.
+CU_LINKEDIN_MAX_TURNS = 40
+CU_LINKEDIN_MAX_ACTIONS_PER_SESSION = 60
+CU_LINKEDIN_MAX_SESSION_SECONDS = 900
+CU_LINKEDIN_MAX_POSTINGS_PER_SESSION = 25
+
+# The fewest actions a single posting glance could plausibly take (e.g. one scroll + one read),
+# used as the conservative (most-views-permissive) end of the range for sizing the daily cap.
+# This is a judgment call, not a measured LinkedIn number -- there is no documented LinkedIn
+# limit for job-posting views specifically (their published 500/day figure governs *profile*
+# views, a different, unrelated resource, and citing it here would be comparing the wrong
+# metric).
+CU_LINKEDIN_WORST_CASE_ACTIONS_PER_POSTING = 2
+
+# Declared schedule (must match job-linkedin-ingest.timer's OnCalendar= firing count).
+# SESSIONS_PER_DAY * (MAX_ACTIONS_PER_SESSION // WORST_CASE_ACTIONS_PER_POSTING) must stay
+# <= DAILY_VIEW_CAP -- test_daily_cap_arithmetic_holds_for_shipped_config fails if it doesn't.
+# This bounds the worst-case number of postings the model could plausibly have glanced at, not
+# just the number it chooses to report -- see cu_linkedin.worst_case_views_per_session().
+CU_LINKEDIN_SESSIONS_PER_DAY = 3
+CU_LINKEDIN_DAILY_VIEW_CAP = 100
+
+# Per-action jitter. Never a constant: perfectly-regular intervals are the single most commonly
+# cited bot-detection trigger.
+CU_LINKEDIN_MIN_ACTION_DELAY_SECONDS = 1.5
+CU_LINKEDIN_MAX_ACTION_DELAY_SECONDS = 6.0
+CU_LINKEDIN_KEYSTROKE_DELAY_MS = 25
+CU_LINKEDIN_KEYSTROKE_JITTER_MS = 15
+
+# Prune all but the last N screenshots out of the message history each turn -- the single
+# biggest cost lever in the loop.
+CU_LINKEDIN_SCREENSHOT_HISTORY = 3
