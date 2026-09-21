@@ -18,6 +18,7 @@ Usage: python3 cu_linkedin.py
 """
 
 import base64
+import json
 import logging
 import os
 import random
@@ -28,6 +29,7 @@ import time
 import anthropic
 
 import config
+import db
 import usage_tracking
 
 log = logging.getLogger(__name__)
@@ -360,3 +362,88 @@ def run_session(task_prompt, rand=random.random, now=time.monotonic):
 
     log.info(f"[CU-LINKEDIN] | max turns reached | actions={actions}")
     return _wrap_up(messages)
+
+
+# ── Posting extraction and persistence ─────────────────────────────────────────
+
+def _strip_json_fence(text):
+    # Claude sometimes wraps a JSON response in a ```json fence despite being told not to --
+    # same handling as research.py's _generate_queries and resume_agent.py.
+    stripped = (text or "").strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[-1] if "\n" in stripped else ""
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3]
+    return stripped.strip()
+
+
+def _canonical_job_url(url):
+    # LinkedIn posting URLs carry a per-impression ?refId=/?trackingId= query string. Dedup in
+    # db.create_job_application is an exact match on job_url, so two sightings of one posting
+    # would otherwise create two rows.
+    if not isinstance(url, str):
+        return None
+    cleaned = url.strip().split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    return cleaned or None
+
+
+def _clean_text(value):
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def extract_postings(text):
+    """Parse the session's final reply into clean posting dicts. Never raises -- returns []."""
+    try:
+        parsed = json.loads(_strip_json_fence(text))
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    postings = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        company = _clean_text(entry.get("company"))
+        role = _clean_text(entry.get("role"))
+        job_url = _canonical_job_url(entry.get("job_url"))
+        # Governance: a posting missing any of the three required fields degrades to
+        # not-observed. It is never inserted with a None column.
+        if not (company and role and job_url):
+            continue
+        postings.append({
+            "company": company,
+            "role": role,
+            "job_url": job_url,
+            "location": _clean_text(entry.get("location")) or "",
+            "description": _clean_text(entry.get("description")) or "",
+            "source": "linkedin",
+        })
+    return postings
+
+
+def persist_postings(postings):
+    """Write each posting into job_applications at stage='saved'. Returns
+    (saved, skipped, errors). One row's failure never stops the rest."""
+    saved = skipped = errors = 0
+    for posting in postings[:config.CU_LINKEDIN_MAX_POSTINGS_PER_SESSION]:
+        try:
+            row = db.create_job_application(
+                company=posting["company"],
+                role=posting["role"],
+                job_url=posting["job_url"],
+                source="linkedin",
+                posting_snapshot=posting,
+            )
+            if row is None:
+                skipped += 1
+                log.info(f"[CU-LINKEDIN] | {posting['role']} | {posting['company']} | "
+                         f"skipped (already tracked)")
+            else:
+                saved += 1
+                log.info(f"[CU-LINKEDIN] | {posting['role']} | {posting['company']} | saved")
+        except Exception as exc:
+            errors += 1
+            log.warning(f"[CU-LINKEDIN] | {posting.get('role')} | {posting.get('company')} | "
+                        f"persist error: {exc}")
+    return saved, skipped, errors
