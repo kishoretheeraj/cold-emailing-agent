@@ -385,3 +385,25 @@ def test_call_claude_fast_fails_when_credit_exhausted(mocker):
 
     mock_create.assert_not_called()
     emailer._credit_exhausted = False  # reset for other tests
+
+
+def test_finalize_email_sleeps_only_for_first_touch(mocker):
+    """INTER_CALL_SLEEP gates subject/critic spacing; follow-ups must skip it."""
+    mocker.patch("preflight.check", return_value=[])
+    mocker.patch("db.log_agent_event")
+    sleep = mocker.patch("emailer.time.sleep")
+    mocker.patch.object(emailer, "_generate_subject", return_value="Subject")
+    mocker.patch.object(emailer, "critique_and_revise", side_effect=lambda s, b, *a, **k: (s, b))
+
+    contact = {
+        "id": 1, "name": "Dana", "company": "Acme", "mode": "outreach", "tier": 2,
+    }
+    emailer.finalize_email(contact, "send_first_touch", "Hi Dana,\n\nBody.\n\nBest,")
+    sleep.assert_called_once_with(emailer.INTER_CALL_SLEEP)
+
+    sleep.reset_mock()
+    emailer.finalize_email(
+        contact, "send_followup1", "Hi Dana,\n\nBody.\n\nBest,",
+        original_subject="Original",
+    )
+    sleep.assert_not_called()

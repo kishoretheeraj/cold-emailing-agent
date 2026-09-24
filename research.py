@@ -1,5 +1,6 @@
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import ats
@@ -10,18 +11,22 @@ from emailer import _call_claude
 
 log = logging.getLogger(__name__)
 
-# ── Tavily client (lazy singleton) ─────────────────────────────────────────────
+# ── Tavily client (lazy singleton for single-call paths; fresh per parallel run) ─
 
 _client = None
+
+
+def _make_tavily_client():
+    if not config.TAVILY_API_KEY:
+        raise RuntimeError("TAVILY_API_KEY is not set")
+    from tavily import TavilyClient
+    return TavilyClient(api_key=config.TAVILY_API_KEY)
 
 
 def _get_client():
     global _client
     if _client is None:
-        if not config.TAVILY_API_KEY:
-            raise RuntimeError("TAVILY_API_KEY is not set")
-        from tavily import TavilyClient
-        _client = TavilyClient(api_key=config.TAVILY_API_KEY)
+        _client = _make_tavily_client()
     return _client
 
 
@@ -95,6 +100,23 @@ def _generate_queries(contact, sender_profile, prompts):
 
 # ── Tavily execution ───────────────────────────────────────────────────────────
 
+def _tavily_one(client, q):
+    """Run one Tavily search. Returns (query, resp_or_None, error_or_None)."""
+    try:
+        resp = client.search(
+            query=q,
+            search_depth="basic",
+            max_results=config.RESEARCH_TAVILY_RESULTS_PER_QUERY,
+            include_answer=True,
+            include_raw_content=True,
+        )
+        if resp and (resp.get("results") or resp.get("answer")):
+            return q, resp, None
+        return q, None, None
+    except Exception as exc:
+        return q, None, exc
+
+
 def _run_tavily(queries, contact):
     name = contact.get("name") or ""
     company = contact.get("company") or ""
@@ -103,25 +125,29 @@ def _run_tavily(queries, contact):
         return []
 
     try:
-        client = _get_client()
+        # Fresh client per contact brief so concurrent Phase-1 workers do not
+        # share one requests.Session (not thread-safe).
+        client = _make_tavily_client()
     except RuntimeError as exc:
         log.warning(f"[RESEARCH-T] | {name} | {company} | client init failed: {exc}")
         return []
 
-    results = []
-    for q in queries:
-        try:
-            resp = client.search(
-                query=q,
-                search_depth="basic",
-                max_results=config.RESEARCH_TAVILY_RESULTS_PER_QUERY,
-                include_answer=True,
-                include_raw_content=True,
-            )
-            if resp and (resp.get("results") or resp.get("answer")):
-                results.append({"query": q, "result": resp})
-        except Exception as exc:
-            log.warning(f"[RESEARCH-T] | {name} | {company} | query failed: {q!r} | {exc}")
+    # Preserve input order in the returned list; run searches concurrently so
+    # RESEARCH_MAX_QUERIES network round-trips don't stack serially.
+    workers = min(config.RESEARCH_TAVILY_WORKERS, len(queries))
+    by_query = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_tavily_one, client, q): q for q in queries}
+        for fut in as_completed(futures):
+            q, resp, exc = fut.result()
+            if exc is not None:
+                log.warning(
+                    f"[RESEARCH-T] | {name} | {company} | query failed: {q!r} | {exc}"
+                )
+            elif resp is not None:
+                by_query[q] = resp
+
+    results = [{"query": q, "result": by_query[q]} for q in queries if q in by_query]
 
     log.info(
         f"[RESEARCH-T] | {name} | {company} | "
@@ -238,6 +264,11 @@ def _curate_input(raw_results, ats_jobs):
     return f"{formatted}\n{ats_section}" if formatted else ats_section
 
 
+# Sentinel: curator call failed (API/template). Distinct from "" which means
+# NO_RELIABLE_BRIEF or nothing to curate — only the latter may be cached.
+_CURATE_FAILED = object()
+
+
 def _curate_brief(contact, raw_results, prompts, ats_jobs=None):
     name = contact.get("name") or ""
     company = contact.get("company") or ""
@@ -259,7 +290,7 @@ def _curate_brief(contact, raw_results, prompts, ats_jobs=None):
         )
     except Exception as exc:
         log.warning(f"[RESEARCH-C] | {name} | {company} | template format error: {exc}")
-        return ""
+        return _CURATE_FAILED
 
     try:
         raw = _call_claude(formatted_prompt, model=config.RESEARCH_CURATE_MODEL,
@@ -267,7 +298,7 @@ def _curate_brief(contact, raw_results, prompts, ats_jobs=None):
                            module="research", action="curate", contact_id=contact.get("id"))
     except Exception as exc:
         log.warning(f"[RESEARCH-C] | {name} | {company} | _call_claude error: {exc}")
-        return ""
+        return _CURATE_FAILED
 
     output = raw.strip()
     brief = "" if output == "NO_RELIABLE_BRIEF" else output
@@ -359,6 +390,27 @@ def get_research_brief(contact, sender_profile, prompts):
                 )
 
         brief_text = _curate_brief(contact, raw_results, prompts, ats_jobs=ats_jobs)
+        if brief_text is _CURATE_FAILED:
+            # API/template failure — do NOT cache, or a transient 429 poisons
+            # this contact's brief for RESEARCH_CACHE_TTL_DAYS.
+            log.warning(
+                f"[RESEARCH] | {name} | {company} | "
+                f"curate failed — skipping cache write"
+            )
+            db.log_agent_event(
+                "research",
+                contact_id=contact.get("id"),
+                contact_name=name,
+                status="curate_failed",
+                metadata={
+                    "cache_hit": False,
+                    "queries_generated": len(queries),
+                    "tavily_results": len(raw_results),
+                    "ats_jobs": len(ats_jobs),
+                },
+            )
+            return ""
+
         brief_reliable = bool(brief_text)
 
         # Untrusted-content guardrail: flag only, never block. See CLAUDE.md.

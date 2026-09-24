@@ -160,6 +160,22 @@ def test_empty_brief_is_cached_to_prevent_repeat_research(mocker):
     assert mock_set.call_args.args[3] == ""
 
 
+def test_curate_api_failure_does_not_cache(mocker):
+    """Transient curator failures must not poison research_cache for the TTL."""
+    mocker.patch.object(config, "TAVILY_API_KEY", "test-key")
+    mocker.patch.object(db, "get_research_cache", return_value=None)
+    mocker.patch.object(research, "_generate_queries", return_value=["q1"])
+    mocker.patch.object(research, "_run_tavily", return_value=[{"query": "q1", "result": {}}])
+    mocker.patch.object(research, "_run_ats", return_value=[])
+    mocker.patch.object(research, "_curate_brief", return_value=research._CURATE_FAILED)
+    mock_set = mocker.patch.object(db, "set_research_cache", return_value=True)
+
+    result = research.get_research_brief(_CONTACT, _SENDER, {})
+
+    assert result == ""
+    mock_set.assert_not_called()
+
+
 # ── Never raises ──────────────────────────────────────────────────────────────
 
 

@@ -8,6 +8,11 @@ Key invariants:
 - **Best-effort, per-contact**: any per-contact failure (IMAP error, Supabase
   error, missing message_id) logs a warning and continues to the next contact.
   A single failure never aborts the loop or blocks reply detection.
+- **Shared IMAP session**: opens one Sent Mail session via
+  `gmail.open_sent_mail_session()` for the whole pass and passes it into every
+  `find_sent_*` call. Falls back to per-call connections if the shared login
+  fails *or* if a mid-pass lookup raises on the shared socket (each helper
+  retries once with a fresh connection). Always `logout()` in a `finally`.
 - **`message_id` required**: contacts with `message_id=None` are skipped with
   an info log. The agent populates `message_id` when it creates the first draft.
 - **Cadence reuse**: `followup_date` is set using `FOLLOWUP_DAYS[action]` from
