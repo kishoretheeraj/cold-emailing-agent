@@ -1,0 +1,31 @@
+# Browser-reachable VNC for slot %i. Reachable on the LAN interface only -- no port forwarding,
+# no public exposure. The runbook's ufw rules are what actually confine it; adding Tailscale
+# later is transparent to this unit.
+#
+# Port scheme (slots 0-3 only, per the hard concurrency cap -- this scheme needs a two-digit
+# instance number to extend past slot 9): x11vnc listens on 590%i (5900-5903), noVNC's websocket
+# front end listens on 608%i (6080-6083) and proxies to the matching x11vnc port. These are the
+# conventional VNC/noVNC port bases (5900, 6080) plus the slot number, not the 59%i/60%i scheme
+# from an earlier draft, which produced privileged ports (590, 600) a non-root unit cannot bind.
+[Unit]
+Description=noVNC web front end for display :%i
+After=x11vnc@%i.service
+Requires=x11vnc@%i.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+User=jobagent
+Group=jobagent
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 608%i localhost:590%i
+Restart=always
+RestartSec=5
+RuntimeMaxSec=infinity
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

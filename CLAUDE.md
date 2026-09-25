@@ -35,6 +35,7 @@ visa_matching.py
 visa_match_new.py
 job_discovery.py
 jobright.py
+cu_linkedin.py
 resume_agent.py
 resume_lint.py
 resume_build.py
@@ -42,6 +43,7 @@ resume_scrub.py
 resume/
 usage_tracking.py
 supabase/migrations/
+deploy/beelink/
 ```
 
 Every module that touches the outside world is wrapped behind a function so
@@ -74,7 +76,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, `[RESEARCH-A]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -829,6 +831,114 @@ here (not guessed) — the account authenticates via a native email+password log
 (`/swan/auth/login/pwd`), a separate path from the Google Sign-In flow discovered first during
 reconnaissance.
 
+## LinkedIn computer-use ingestion (Beelink M1)
+
+`cu_linkedin.py` drives the user's real, persistently-logged-in Chrome window on the Beelink's
+X11 display slot 0 through Anthropic's Computer Use API (`computer_toolset_20260801`, model
+`config.CU_LINKEDIN_MODEL`), reads LinkedIn job postings, and persists them into
+`job_applications` at `stage='saved'`, `source='linkedin'` via the same dedup-by-`job_url`
+`db.create_job_application` path `job_discovery.py`/`jobright.py` use. Log marker
+`[CU-LINKEDIN]`, own log file (`cu_linkedin.log`). Best-effort: never raises past `run()`.
+
+**Discovery only.** `linkedin.com/jobs` stays a permanently-excluded *apply* target in
+`config.APPLY_AGENT_AGGREGATOR_DOMAINS` -- both facts hold simultaneously.
+
+**The safety property is pacing, not evasion.** `next_action_delay` is randomized on every
+action (never linear -- regular intervals are the most commonly cited detection trigger),
+`session_exhausted` caps actions and wall-clock per session, and
+`daily_cap_satisfied(CU_LINKEDIN_SESSIONS_PER_DAY, cu_linkedin.worst_case_views_per_session()) <=
+CU_LINKEDIN_DAILY_VIEW_CAP` is asserted by `test_daily_cap_arithmetic_holds_for_shipped_config`.
+`worst_case_views_per_session()` derives from `CU_LINKEDIN_MAX_ACTIONS_PER_SESSION`, **not** from
+`CU_LINKEDIN_MAX_POSTINGS_PER_SESSION` -- the latter only caps what the model reports at the end
+of a session, not how many postings it actually looked at while browsing, so it cannot be the
+enforced quantity. The ~100/day figure is a self-imposed ceiling, not a documented LinkedIn limit:
+their published 500/day figure governs *profile* views, an unrelated resource. Loosening
+`MAX_ACTIONS_PER_SESSION`, `SESSIONS_PER_DAY`, or `WORST_CASE_ACTIONS_PER_POSTING` without the
+others must fail the test above, and the timer's `OnCalendar=` firing count must keep matching
+`CU_LINKEDIN_SESSIONS_PER_DAY`. On a CAPTCHA or login challenge the model replies
+`CAPTCHA_OR_CHALLENGE` and `run()` logs a warning -- never solved, never bypassed.
+
+**Respects the global pause switch.** `run()` checks `db.get_pause_scope()` and exits before doing
+anything on `"agent"`/`"all"`, same convention as `agent.py`/`monitor.py` -- LinkedIn browsing is
+the one activity in this system that risks the user's real account, so it is the one thing that
+switch must be able to stop.
+
+**Feeds `job_pick.py`'s auto-pick pipeline like any other source, deliberately.** `job_pick.run()`
+has no `source` filter, so a `strong` verdict on a `source='linkedin'` row zero-taps real
+`resume_agent` spend exactly like an `ats_scan`/`jobright` row does. This is an explicit decision
+made during M1's design, not an overlooked coupling.
+
+**No LinkedIn credentials exist anywhere.** Every `CU_LINKEDIN_*` constant is a plain literal
+with no `os.environ.get`; there is no `CU_LINKEDIN_EMAIL`/`CU_LINKEDIN_PASSWORD`, by design. The
+persistent Chrome profile's session cookie is the credential and the user logs in once by hand
+over VNC.
+
+**Never import `sentence_transformers`/`torch` here** (asserted statically by
+`test_cu_linkedin_never_imports_sentence_transformers_or_torch`) -- torch must never be
+co-resident with a long-lived browser-agent process on a 16GB box; that's `job_pick.py`'s
+short-lived `oneshot` unit's job.
+
+Cost is logged to `api_usage_log` from the first commit via
+`usage_tracking.log_usage("cu_linkedin", "session_turn"|"wrap_up", ...)` with both
+`contact_id` and `job_application_id` `None` (one session discovers many postings, so there is
+no single row to attribute spend to -- same reasoning as `extract_voice.py`).
+Screenshots are 1,000-1,800 tokens each; `_prune_screenshots` keeps only the last
+`CU_LINKEDIN_SCREENSHOT_HISTORY` (3).
+
+Sampling-loop details that are easy to get wrong: `tool_result` blocks must carry a
+`toolset_name`, derived from the incoming `tool_use` block (`getattr(block, "toolset_name",
+None) or "computer"`) rather than hardcoded, so a future toolset family self-corrects; one
+`tool_result` per `tool_use` block, all in a **single** user message; a batched turn executes
+sequentially and stops at the first failure, with every un-run block answered `is_error: true` /
+`"Not executed: an earlier computer action in this turn failed."`. At 1280x800 screenshots are
+**not** scaled (long edge is under the toolset's limit), so Claude's coordinates apply to the
+screen directly -- don't add a scale factor. `CU_LINKEDIN_MAX_TOKENS` is 8192, not 4096 -- a full
+25-posting JSON reply plus Sonnet 5's adaptive thinking budget can plausibly truncate at 4096, and
+a truncated reply parses to `[]` (a silent 0-saved "success"); `run_session`/`_wrap_up` treat a
+`stop_reason == "max_tokens"` final answer as a logged, counted error, not a clean empty result.
+`_execute_tool_uses` returns `(results, executed, errors)` -- `errors` (action failures during
+the session, not persistence failures) threads through `run_session`'s return
+`(text, actions, errors)` into `run()`'s own `errors` count and `db.record_run`. Any nonzero
+action-error count therefore flips `agent_runs.status` to `'failure'` for `source='cu_linkedin'`
+even when postings were saved -- a reader of that status (e.g. M2's "last successful run per
+service" health UI) should treat the `errors` count, not just `status`, as the wedged-box signal,
+since one transient recovered action failure now marks the run a "failure" too.
+
+**`_canonical_job_url` -- the posting id can live only in the query string.** Clicking a result in
+LinkedIn's Jobs list pane commonly leaves the address bar on `.../jobs/search/?currentJobId=<id>`
+or `.../jobs/collections/recommended/?currentJobId=<id>`, not a `/jobs/view/<id>` path -- a blind
+`split("?")[0]` strips the id along with the tracking noise and collapses every posting in a
+session onto the same bare URL, poisoning `db.create_job_application`'s exact-match dedup
+permanently (one bad row, then false "already tracked" skips forever after). The function
+validates before canonicalizing: `/jobs/view/<digits>` is accepted as-is (query stripped), a
+`currentJobId=<digits>` query param is recovered into the canonical `/jobs/view/<id>` form, and
+anything matching neither shape returns `None` so the caller skips the posting rather than
+persisting a garbage or missing `job_url`.
+
+**Two more bugs found by external PR review (2026-09-24, PR #8)**, both in the session-budget/exit
+plumbing: (1) `session_exhausted()` used to be checked only once per turn, after a whole batch of
+tool_use blocks had already executed -- a single turn can carry several actions (the model may
+call more than one tool in one response), so a batch straddling the cap always ran to completion
+before the check fired. Reproduced live: 61 executed actions against a 60-action cap. Fixed by
+checking the budget inside `_execute_tool_uses` before *each* action, not just once between turns
+-- it now takes `actions_so_far`/`started`/`now` so it can call `session_exhausted()` per action
+and mark the rest of the batch `is_error: true` / `"Not executed: the session's action/time budget
+was reached mid-batch."` the moment the cap is crossed, the same way it already handles an
+in-batch action failure. `run_session` always passes its own running `actions`/`started`/`now`
+through on every turn; `started`/`actions_so_far` default to `None`/`0` for any other caller, which
+skips the per-action check entirely (only the existing failure-short-circuit still applies). (2)
+`run()`'s own `except Exception` swallowed every unhandled error (recorded it, logged it, never
+re-raised -- matching its documented "never raises past this boundary" contract), but nothing
+ever turned that into a nonzero process exit: `__main__` just called `run()` with no exit-code
+handling, so `job-linkedin-ingest.service` always exited 0 even after a caught API exception,
+which meant its `OnFailure=notify-failure@%i.service` could never fire. `run()` now returns the
+total error count (0 on a clean, disabled, or paused run -- every early-return path returns
+`errors` explicitly) and `__main__` calls `sys.exit(1)` when it's nonzero, while `run()` itself
+still never raises, preserving the "never raises" contract library callers of `run()` (there
+currently are none, but the docstring promises it) can rely on.
+
+Spec: docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md (M1).
+
 ## Resume intelligence (full-fledged buildout, Phase 3)
 
 `resume_agent.py` (manual only, two-command CLI: `--propose` then `--build`) generates a tailored
@@ -1013,15 +1123,62 @@ arbitrary code inside the one job that is ARMED and holds every secret. `argpars
 not a mitigation there; the shell has already run. **Never move that input back into the `run:`
 line.**
 
-**Known follow-ups, not yet fixed** (see the `project-phase2.5-auto-apply` memory file for full
+**Fixed after external PR review (2026-09-24, PR #8)**: two real bugs found by a human reviewing
+the code directly, not caught by the (green) test suite. (1) `submit()` used to click the Submit
+button and immediately flip `stage='applied'` with no confirmation the click actually landed --
+a client-side validation error commonly leaves the button's own click handler a no-op with the
+form still on screen, which would have silently mismarked a failed submission as successful.
+`_submission_confirmed(page)` now checks for common ATS post-submit confirmation copy after the
+click (best-effort, never raises -- a check failure degrades to "not confirmed", the safe
+direction) and `submit()` now raises instead of advancing the stage when it comes back false, so
+the row stays at `ready_to_submit` for a human to investigate. (2) `_answer_screening_questions`
+(the preview pass) generated screening-question answers via Claude but never actually filled them
+into the page -- it only returned a dict that got stored in `apply_preview` and otherwise
+discarded, so every screening question shipped blank. `submit()` compounded this by calling the
+same generation function *again* (a fresh, possibly different Claude call, its result also
+discarded) instead of reusing what the human reviewed. Split into `_generate_screening_answers`
+(Claude call, preview pass only) + `_fill_screening_questions`/`_fill_eligibility_answers`
+(page-filling, by label, best-effort like `ats_fillers._try_fill`) -- the preview pass now
+generates and fills; `submit()` now only ever fills, from `job["apply_preview"]`'s stored
+`screening_answers`/`eligibility_answers`, never regenerating. Eligibility answers
+(`_eligibility_answers()`) were computed and stored in `apply_preview` from the very first
+version of this feature but were **never filled into any page field at all**, in either pass --
+the same fill helper now closes that gap too.
+
+**A second review pass on the same commit (still 2026-09-24) found two more real bugs in that
+fix**, both since fixed: (3) `_submission_confirmed`'s original confirmation regex had an
+unanchored `your application (is|has been) (complete|in)` clause -- the bare `in` alternative
+matched as a substring prefix with no word boundary, so "Your application is **in**complete" and
+"Your application is **in**valid" (real client-side validation copy) both read as confirmed,
+exactly inverting the fix's own purpose. That clause is gone; `_CONFIRMATION_TEXT_PATTERN` is now
+anchored with `\b` around each alternative, and a new, checked-first `_REJECTION_TEXT_PATTERN`
+(incomplete/invalid/please correct/field required/error copy) makes `_submission_confirmed`
+return `False` immediately on any rejection-shaped text, before it ever looks for a confirmation
+match -- a second, independent line of defense against this whole class of bug, not just a fix
+for the one regex. (4) `_fill_eligibility_answers` searched the page for labels like
+`"work_authorized_us"` verbatim -- an internal `applicant_eligibility` seed-data key, never real
+form text -- and `.fill()` can't set a dropdown or radio button anyway, which is what these
+specific EEO/work-auth questions almost always are. Fixed with two changes: a new
+`_ELIGIBILITY_QUESTION_PATTERNS` dict translates each known internal key (`work_authorized_us`,
+`requires_visa_sponsorship`, `gender`, `race_ethnicity`, `veteran_status`, `disability_status`) to
+a regex matching the question's real wording *before* the field is located (an unrecognized key
+falls back to trying the raw key, so a custom key the user adds is still attempted, not silently
+dropped) -- and a new shared `_set_field_by_label(page, label_pattern, value)` tries
+`select_option()` (dropdown), then a role="group"-scoped radio click, then `.fill()` (plain text),
+stopping at the first that succeeds; both `_fill_screening_questions` and
+`_fill_eligibility_answers` now go through it, since a screening question can be a dropdown too,
+not only free text. **`applicant_eligibility`'s stored JSON shape is unchanged** (still
+`{internal_key: value}`, edited live via the contact-manager's Prompts page) -- only how those
+keys get translated to page labels changed, so no live-data migration was needed.
+
+**Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
 assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
-live-smoke-test pass; `submit()` regenerates screening-question answers instead of reusing what the
-human approved in the preview; a resume/cover-letter attach failure is silently swallowed even in
-the armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None
-of these are safety gaps -- the two gates above are the actual safety boundary, and everything
-upstream of them degrading just means the *preview* is incomplete, not that an unapproved
-submission could happen.
+live-smoke-test pass; a resume/cover-letter attach failure is silently swallowed even in the
+armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None of
+these are safety gaps -- the two ARMED/approval gates above are the actual safety boundary, and
+everything upstream of them degrading just means the *preview* is incomplete, not that an
+unapproved submission could happen.
 
 ## System-wide Claude API cost tracking
 
@@ -1032,9 +1189,9 @@ entry in `config.MODEL_PRICING`; `log_usage(module, action, model, usage, contac
 job_application_id=None)`, best-effort, never raises) is the single shared entry point. Every real
 number is a fact, not an estimate: `usage` always comes from the real Anthropic API response's
 `.usage.input_tokens`/`.output_tokens`, and `config.MODEL_PRICING` prices (currently
-`claude-sonnet-4-6` and `claude-haiku-4-5-20251001` -- the only two model strings any config
-constant resolves to) were verified against platform.claude.com/docs/en/about-claude/pricing, not
-guessed.
+`claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `claude-opus-5` and `claude-sonnet-5` -- the
+model strings every config constant resolves to, including `CU_LINKEDIN_MODEL`) were verified
+against platform.claude.com/docs/en/about-claude/pricing, not guessed.
 
 `emailer._call_claude` -- the shared function `agent.py`, `monitor.py`, `reply_drafter.py`,
 `research.py`, `extract_voice.py`, and `reclassify_unrelated.py` all call -- gained optional
