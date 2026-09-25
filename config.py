@@ -30,6 +30,8 @@ RESEARCH_CACHE_TTL_DAYS = 7
 RESEARCH_MAX_QUERIES = 5
 RESEARCH_MAX_QUERY_LEN = 80
 RESEARCH_TAVILY_RESULTS_PER_QUERY = 5
+# Cap concurrent Tavily searches inside one contact's research brief.
+RESEARCH_TAVILY_WORKERS = 5
 RESEARCH_HARDCODED_FALLBACK_QUERY = "{company} news 2026"
 RESEARCH_TIERS = {1, 2}
 
@@ -366,9 +368,15 @@ code fences, no preamble:
 CRITIC_PASS_THRESHOLD = 6
 
 # Seconds to sleep between body generation and subject/critic calls within a single
-# contact, to avoid exhausting the 30k input-tokens-per-minute rate limit.
-INTER_CALL_SLEEP = 10
-BATCH_POLL_INTERVAL = 30  # seconds between batch status polls
+# contact. Kept small — the Anthropic SDK already retries 429s (max_retries=4).
+# Was 10s; at ~20 first-touches that alone burned ~3 minutes of pure sleep.
+INTER_CALL_SLEEP = 2
+# Seconds between Messages Batch status polls (was a fixed 30s).
+BATCH_POLL_INTERVAL = 5
+
+# Parallel prepare_email calls in agent Phase 1 (research + prompt assembly).
+# Kept modest so concurrent Sonnet curate calls stay under typical ITPM limits.
+PREPARE_EMAIL_WORKERS = 2
 
 # ── Research prompt defaults ───────────────────────────────────────────────────
 RESEARCH_QUERY_DEFAULT = """You generate web search queries to help a job seeker write a personalized cold outreach email.

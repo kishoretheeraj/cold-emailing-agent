@@ -216,6 +216,16 @@ Follow-up emails must land in the same Gmail thread as the original.
   draft has the highest UID in `[Gmail]/Drafts` (a race with any other draft
   being created — manual or concurrent — could mislabel it). Falls back to the
   highest-UID draft only when `message_id` is omitted.
+- **Perf (daily agent + monitor)**: Phase 1 runs `prepare_email` across
+  actionable contacts with `ThreadPoolExecutor(PREPARE_EMAIL_WORKERS=2)`; Tavily
+  queries inside one brief run concurrently (`RESEARCH_TAVILY_WORKERS`) on a
+  fresh client per contact; Messages Batch polls every `BATCH_POLL_INTERVAL`
+  (5s, was 30s); `INTER_CALL_SLEEP` is 2s (subject/critic spacing).
+  `monitor.detect_sent_drafts` opens one Sent Mail IMAP session per pass via
+  `gmail.open_sent_mail_session()`; if a shared-session call fails, that lookup
+  retries on a fresh connection so one dead socket cannot wipe the rest of the
+  pass. Curator API failures skip `research_cache` writes (empty/`NO_RELIABLE`
+  briefs still cache).
 - `generate_email()` in `emailer.py` accepts `original_subject=None`. For
   follow-up actions it returns `"Re: " + original_subject` without calling
   Claude — only first-touch actions call `_generate_subject()`.

@@ -23,9 +23,22 @@
   `_call_claude` calls raise `RuntimeError` immediately without hitting the
   network, saving the `INTER_CALL_SLEEP` sleep and HTTP round-trip for every
   remaining contact. Log marker: `[CREDIT] Anthropic credit balance exhausted`.
-- **Tavily** (`research.py`): `_get_client()` lazily initialises a singleton
-  `TavilyClient`. All failures inside `get_research_brief` degrade to `""` —
-  the function never raises. Absent `TAVILY_API_KEY` short-circuits immediately.
+- **Tavily** (`research.py`): `_make_tavily_client()` builds a fresh
+  `TavilyClient` per `_run_tavily` call (avoids sharing one `requests.Session`
+  across Phase-1 worker threads). `_run_tavily` fans queries out on a thread
+  pool (`RESEARCH_TAVILY_WORKERS`) and reorders results to match input order.
+  Curator API/template failures return a sentinel and **skip** `research_cache`
+  writes so a transient 429 cannot poison a contact for the 7-day TTL; genuine
+  empty/`NO_RELIABLE_BRIEF` results still cache. All other failures inside
+  `get_research_brief` degrade to `""` — the function never raises. Absent
+  `TAVILY_API_KEY` short-circuits immediately.
+- **Phase-1 parallel prepare** (`agent.run`): after deciding actions,
+  `prepare_email` (research + prompt assembly) runs across actionable contacts
+  via `ThreadPoolExecutor(max_workers=PREPARE_EMAIL_WORKERS)`. Results are
+  collected in submission order before the Messages Batch is built. The
+  Supabase client is warmed on the main thread before the pool starts.
+- **Batch poll**: Messages Batch status polls every `BATCH_POLL_INTERVAL` (5s),
+  down from a fixed 30s.
 - **Supabase** (`db._retry`): every query/update is wrapped in a 3-attempt
   retry with the same 2 s / 4 s backoff. Catches broad `Exception` — Supabase
   blips are transient; the retry budget is small.

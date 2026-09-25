@@ -332,7 +332,7 @@ def finalize_email(contact, action, body, original_subject=None, prompts=None,
     _log_event("preflight", contact_id=contact.get("id"),
                contact_name=contact.get("name"), status="success")
 
-    # Space out subject + critic calls to stay within per-minute token budget.
+    # Space out subject + critic calls slightly; SDK retries handle 429s.
     if action in _FIRST_TOUCH_ACTIONS:
         time.sleep(INTER_CALL_SLEEP)
 

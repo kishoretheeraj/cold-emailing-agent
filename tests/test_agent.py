@@ -864,3 +864,102 @@ def test_run_aborts_on_output_schema_mismatch(mocker):
         agent.run()
 
     get_contacts.assert_not_called()
+
+
+def test_run_batch_poll_backs_off(mocker):
+    """Batch poll uses a fixed BATCH_POLL_INTERVAL (5s), not the old 30s."""
+    contact = _build_contact()
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    mocker.patch("agent.load_prompts", return_value={})
+    mocker.patch("agent.get_pause_scope", return_value="none")
+    mocker.patch("agent.record_run")
+    mocker.patch("agent.create_draft", return_value=DraftResult("<mid@gmail.com>", None, 1))
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.log_drafted_email")
+    mocker.patch("agent.prepare_email", return_value=("prompt", "system", {}))
+    mocker.patch("agent.finalize_email", return_value=("subj", "body"))
+    sleep = mocker.patch("agent.time.sleep")
+
+    in_progress = MagicMock()
+    in_progress.id = "batch-test"
+    in_progress.processing_status = "in_progress"
+    in_progress.request_counts = MagicMock()
+    ended = MagicMock()
+    ended.id = "batch-test"
+    ended.processing_status = "ended"
+    ended.request_counts = MagicMock()
+
+    mock_result = MagicMock()
+    mock_result.custom_id = "1-send_first_touch"
+    mock_result.result.type = "succeeded"
+    mock_result.result.message.content = [MagicMock(text="body")]
+
+    mock_client = MagicMock()
+    mock_client.messages.batches.create.return_value = in_progress
+    mock_client.messages.batches.retrieve.side_effect = [in_progress, ended]
+    mock_client.messages.batches.results.return_value = [mock_result]
+    mocker.patch("agent.anthropic.Anthropic", return_value=mock_client)
+
+    agent.run()
+
+    poll_sleeps = [
+        c.args[0] for c in sleep.call_args_list
+        if c.args and c.args[0] == agent.BATCH_POLL_INTERVAL
+    ]
+    assert poll_sleeps == [agent.BATCH_POLL_INTERVAL, agent.BATCH_POLL_INTERVAL]
+
+
+def test_run_prepares_multiple_contacts(mocker):
+    """Phase 1 prepares every actionable contact; prompts stay paired to custom_ids."""
+    c1 = _build_contact(id=1, name="A", email="a@ex.com")
+    c2 = _build_contact(id=2, name="B", email="b@ex.com", company="Beta")
+    mocker.patch("agent.get_all_contacts", return_value=[c1, c2])
+    mocker.patch("agent.load_prompts", return_value={})
+    mocker.patch("agent.get_pause_scope", return_value="none")
+    mocker.patch("agent.record_run")
+    mocker.patch("agent.time.sleep")
+
+    def _prepare(contact, action, prompts=None):
+        return (f"prompt-{contact['id']}", "system", {})
+
+    prepare = mocker.patch("agent.prepare_email", side_effect=_prepare)
+    mocker.patch("agent.finalize_email", return_value=("subj", "body"))
+
+    results = []
+    for contact in (c1, c2):
+        r = MagicMock()
+        r.custom_id = f"{contact['id']}-send_first_touch"
+        r.result.type = "succeeded"
+        r.result.message.content = [MagicMock(text="body")]
+        results.append(r)
+
+    mock_batch = MagicMock()
+    mock_batch.id = "batch-multi"
+    mock_batch.processing_status = "ended"
+    mock_batch.request_counts = MagicMock()
+    mock_client = MagicMock()
+    mock_client.messages.batches.create.return_value = mock_batch
+    mock_client.messages.batches.retrieve.return_value = mock_batch
+    mock_client.messages.batches.results.return_value = results
+    mocker.patch("agent.anthropic.Anthropic", return_value=mock_client)
+
+    mocker.patch("agent.create_draft", return_value=DraftResult("<mid@gmail.com>", None, 1))
+    mocker.patch("agent.apply_label_to_latest_draft")
+    mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.log_drafted_email")
+
+    agent.run()
+
+    assert prepare.call_count == 2
+    created = mock_client.messages.batches.create.call_args.kwargs["requests"]
+    assert [r["custom_id"] for r in created] == [
+        "1-send_first_touch", "2-send_first_touch",
+    ]
+    assert [
+        r["params"]["messages"][0]["content"] for r in created
+    ] == ["prompt-1", "prompt-2"]

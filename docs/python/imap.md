@@ -12,12 +12,18 @@
   gmail_thread_id)`, or `DraftResult(None, None, None)` if a duplicate was
   detected via `X-Cold-Email-Key`. Do not try to fetch the ID from IMAP after
   append — Gmail drafts only receive a server Message-ID when actually sent.
-- `find_sent_for_thread(message_id, since_date, mode)` searches `[Gmail]/Sent Mail`
+- `find_sent_for_thread(message_id, since_date, mode, imap=None)` searches `[Gmail]/Sent Mail`
   with `readonly=True`. Use `mode="first_touch"` to match on `Message-ID`,
   `mode="followup"` to match on `In-Reply-To`. Returns the **actual Message-ID string**
   from the found sent email (not the stored one — Gmail may rewrite it on send), or
   `None` if not found. Never raises. The `message_id` search arg is double-quoted in
   the IMAP command because angle brackets are IMAP special characters.
+  Pass `imap=` from `open_sent_mail_session()` to reuse one connection; when omitted,
+  each call opens/logs-out its own session (legacy / single-shot callers).
+  `find_sent_by_thread_id` and `find_sent_by_subject` take the same optional `imap=`.
+- `open_sent_mail_session()` — login + select Sent Mail once. Caller must `logout()`
+  in a `finally`. Used by `monitor.detect_sent_drafts()` so a monitor pass with N
+  drafted contacts does one IMAP handshake instead of up to 3N.
 - **Every `HEADER Message-ID` IMAP search must double-quote the value** — this
   bit `apply_label_to_latest_draft`'s `message_id`-targeted fallback once
   (shipped unquoted, silently found nothing, and fell through to a no-op
