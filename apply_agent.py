@@ -85,36 +85,109 @@ def _generate_screening_answers(page, job):
     return answers
 
 
+def _set_field_by_label(page, label_pattern, value):
+    """Best-effort generic field setter supporting the three control shapes a screening or
+    eligibility question can actually be: a <select> dropdown, a radio-button group, or a
+    plain text/textarea field. A generic filler can't know a question's control type in
+    advance, so this tries each in turn and stops at the first that succeeds -- Playwright
+    raises when a locator method doesn't apply to the element it resolved to (e.g.
+    select_option() on a text input, fill() on a radio), which is exactly the signal used to
+    fall through to the next strategy. Radios are scoped to the question's own
+    role="group"/fieldset first, since page.get_by_role("radio", name=value) alone would grab
+    the first same-labeled radio anywhere on the page if more than one Yes/No question is
+    present. Returns True on success, False if no strategy worked; never raises."""
+    # Each strategy re-resolves the locator independently (rather than sharing one `locator`
+    # variable across all three) so a failure IN page.get_by_label() itself -- e.g. a strict-
+    # mode violation from more than one match -- degrades to "try the next strategy" like any
+    # other failure, instead of raising past this function entirely.
+    try:
+        page.get_by_label(label_pattern).select_option(label=str(value))
+        return True
+    except Exception:
+        pass
+    try:
+        page.get_by_role("group", name=label_pattern).get_by_role("radio", name=str(value)).click()
+        return True
+    except Exception:
+        pass
+    try:
+        page.get_by_label(label_pattern).fill(str(value))
+        return True
+    except Exception:
+        pass
+    return False
+
+
 def _fill_screening_questions(page, answers):
     """Writes pre-computed screening-question answers into the page, by label -- best-effort
-    per question, same posture as ats_fillers._try_fill. Used right after generation in the
-    preview pass, and again during submit to replay a stored preview's answers verbatim."""
+    per question via _set_field_by_label (a screening question can be a dropdown or a
+    yes/no radio, not only free text). Used right after generation in the preview pass, and
+    again during submit to replay a stored preview's answers verbatim."""
     for question_text, answer in (answers or {}).items():
         if not answer:
             continue
-        try:
-            page.get_by_label(question_text).fill(answer)
-        except Exception as exc:
-            log.info(f"[APPLY-AGENT] | screening field not fillable: {question_text[:60]!r}: {exc}")
+        if not _set_field_by_label(page, question_text, answer):
+            log.info(f"[APPLY-AGENT] | screening field not fillable: {question_text[:60]!r}")
+
+
+# Known applicant_eligibility keys -> the real on-page question wording those keys mean,
+# matched as a case-insensitive substring/regex against the form's actual label text. The
+# `applicant_eligibility` prompts key itself stays keyed by these stable internal names (the
+# user edits it live via the contact-manager's Prompts page, and nothing here should force a
+# migration of that live data) -- but a real ATS form never has a field literally labeled
+# "work_authorized_us", so filling must go through this translation, not the raw key. An
+# eligibility key with no entry here falls back to trying the raw key as the label (today's
+# behavior) and is logged as unmapped, so a custom key the user adds still gets attempted
+# rather than silently dropped.
+_ELIGIBILITY_QUESTION_PATTERNS = {
+    "work_authorized_us": re.compile(r"(legally )?authorized to work", re.IGNORECASE),
+    "requires_visa_sponsorship": re.compile(r"require.{0,25}sponsorship", re.IGNORECASE),
+    "gender": re.compile(r"\bgender\b", re.IGNORECASE),
+    "race_ethnicity": re.compile(r"race|ethnicity", re.IGNORECASE),
+    "veteran_status": re.compile(r"veteran", re.IGNORECASE),
+    "disability_status": re.compile(r"disability", re.IGNORECASE),
+}
 
 
 def _fill_eligibility_answers(page, answers):
-    """Writes the fixed EEO/work-authorization answers into the page, by label. Same
-    best-effort posture as _fill_screening_questions -- a field this generic filler can't
-    locate is logged and skipped, never a blocking error."""
-    for label, value in (answers or {}).items():
+    """Writes the fixed EEO/work-authorization answers into the page -- translates each
+    internal applicant_eligibility key to the real question wording it means
+    (_ELIGIBILITY_QUESTION_PATTERNS) before locating the field, and fills via
+    _set_field_by_label so a dropdown or radio-button EEO question (the overwhelmingly common
+    shape for these specific questions) is handled, not only a text input. Same best-effort
+    posture as _fill_screening_questions -- a field this generic filler can't locate is logged
+    and skipped, never a blocking error."""
+    for key, value in (answers or {}).items():
         if not value:
             continue
-        try:
-            page.get_by_label(label).fill(str(value))
-        except Exception as exc:
-            log.info(f"[APPLY-AGENT] | eligibility field not fillable: {label!r}: {exc}")
+        pattern = _ELIGIBILITY_QUESTION_PATTERNS.get(key, key)
+        if not _set_field_by_label(page, pattern, value):
+            log.info(f"[APPLY-AGENT] | eligibility field not fillable: {key!r}")
 
+
+# A rejection/validation-error message takes precedence over any confirmation match below --
+# checked first, and short-circuits to "not confirmed" regardless of what else is on the page.
+# Without this, "Your application is incomplete" / "is invalid" (real Greenhouse/Lever
+# client-side validation copy) would otherwise need to NOT match the confirmation pattern by
+# omission alone, which is exactly how the previous version's unanchored `...(complete|in)`
+# alternative broke: "in" matched as a bare prefix of "incomplete"/"invalid" with no word
+# boundary, so both rejection messages read as confirmed. An explicit, checked-first rejection
+# list is a second, independent line of defense against that whole class of bug, not just a
+# fix for this one regex.
+_REJECTION_TEXT_PATTERN = re.compile(
+    r"application is (incomplete|invalid)"
+    r"|please (correct|complete|review|fix)"
+    r"|this field is required"
+    r"|could not (be )?(submitted|processed)"
+    r"|something went wrong"
+    r"|an error occurred",
+    re.IGNORECASE,
+)
 
 _CONFIRMATION_TEXT_PATTERN = re.compile(
-    r"application (has been |was )?(submitted|received)"
-    r"|thank you for (applying|your application)"
-    r"|your application (is|has been) (complete|in)",
+    r"\bapplication (has been |was )?(successfully )?(submitted|received)\b"
+    r"|\bthank you for (applying|your application)\b"
+    r"|\byour application (has been|was) (successfully )?(submitted|received)\b",
     re.IGNORECASE,
 )
 
@@ -123,14 +196,17 @@ def _submission_confirmed(page):
     """Best-effort post-click confirmation check -- clicking Submit is not proof the
     application landed; a client-side validation error can leave the button's click handler
     a no-op with the form still on screen. Looks for common ATS post-submit copy after a
-    short settle/navigation wait. Never raises: a check failure degrades to "not confirmed",
-    the safe direction, since submit() treats an unconfirmed click as a failed submission and
-    does not flip the row to 'applied'."""
+    short settle/navigation wait, checking the rejection pattern FIRST so validation-error
+    copy can never read as a confirmation (see _REJECTION_TEXT_PATTERN). Never raises: a
+    check failure degrades to "not confirmed", the safe direction, since submit() treats an
+    unconfirmed click as a failed submission and does not flip the row to 'applied'."""
     try:
         page.wait_for_timeout(2000)
     except Exception:
         pass
     try:
+        if page.get_by_text(_REJECTION_TEXT_PATTERN).count() > 0:
+            return False
         return page.get_by_text(_CONFIRMATION_TEXT_PATTERN).count() > 0
     except Exception:
         return False

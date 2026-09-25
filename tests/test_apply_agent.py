@@ -162,52 +162,183 @@ def test_generate_screening_answers_grounds_answer_in_call_claude(mocker):
     assert result == {"Why do you want this role?": "Grounded answer text."}
 
 
-def test_fill_screening_questions_fills_each_answer_by_label(mocker):
+# ── _set_field_by_label: the shared dropdown/radio/text fallback chain ──────────
+
+def test_set_field_by_label_selects_a_dropdown_option(mocker):
+    page = MagicMock()  # select_option succeeds on a fresh mock -- must stop there
+
+    result = apply_agent._set_field_by_label(page, "Work authorized?", "Yes")
+
+    assert result is True
+    page.get_by_label.return_value.select_option.assert_called_with(label="Yes")
+    page.get_by_label.return_value.fill.assert_not_called()
+
+
+def test_set_field_by_label_clicks_a_radio_option_scoped_to_the_questions_group(mocker):
     page = MagicMock()
+    page.get_by_label.return_value.select_option.side_effect = Exception("not a select")
+
+    result = apply_agent._set_field_by_label(page, "Work authorized?", "Yes")
+
+    assert result is True
+    page.get_by_role.assert_any_call("group", name="Work authorized?")
+    page.get_by_role.return_value.get_by_role.assert_called_with("radio", name="Yes")
+    page.get_by_role.return_value.get_by_role.return_value.click.assert_called_once()
+    page.get_by_label.return_value.fill.assert_not_called()
+
+
+def test_set_field_by_label_falls_back_to_a_plain_text_fill(mocker):
+    page = MagicMock()
+    page.get_by_label.return_value.select_option.side_effect = Exception("not a select")
+    page.get_by_role.return_value.get_by_role.return_value.click.side_effect = Exception("no group")
+
+    result = apply_agent._set_field_by_label(page, "Phone", "555-1234")
+
+    assert result is True
+    page.get_by_label.return_value.fill.assert_called_with("555-1234")
+
+
+def test_set_field_by_label_returns_false_when_no_strategy_works(mocker):
+    page = MagicMock()
+    page.get_by_label.return_value.select_option.side_effect = Exception("not a select")
+    page.get_by_role.return_value.get_by_role.return_value.click.side_effect = Exception("no group")
+    page.get_by_label.return_value.fill.side_effect = Exception("not fillable either")
+
+    assert apply_agent._set_field_by_label(page, "Q", "A") is False
+
+
+def test_set_field_by_label_never_raises_when_get_by_label_itself_raises(mocker):
+    page = MagicMock()
+    page.get_by_label.side_effect = RuntimeError("strict mode violation: 2 elements match")
+    page.get_by_role.return_value.get_by_role.return_value.click.side_effect = Exception("no group")
+
+    assert apply_agent._set_field_by_label(page, "Q", "A") is False  # must not raise
+
+
+# ── _fill_screening_questions / _fill_eligibility_answers: orchestration only ───
+
+def test_fill_screening_questions_calls_set_field_by_label_for_each_answer(mocker):
+    page = MagicMock()
+    set_field_mock = mocker.patch("apply_agent._set_field_by_label", return_value=True)
 
     apply_agent._fill_screening_questions(page, {"Why this role?": "Because reasons."})
 
-    page.get_by_label.assert_called_with("Why this role?")
-    page.get_by_label.return_value.fill.assert_called_with("Because reasons.")
+    set_field_mock.assert_called_once_with(page, "Why this role?", "Because reasons.")
 
 
-def test_fill_screening_questions_never_raises_when_field_not_found(mocker):
+def test_fill_screening_questions_never_raises_when_field_not_fillable(mocker):
     page = MagicMock()
-    page.get_by_label.side_effect = RuntimeError("not found")
+    mocker.patch("apply_agent._set_field_by_label", return_value=False)
 
     apply_agent._fill_screening_questions(page, {"Q": "A"})  # must not raise
 
 
 def test_fill_screening_questions_handles_none_and_empty(mocker):
     page = MagicMock()
+    set_field_mock = mocker.patch("apply_agent._set_field_by_label")
 
     apply_agent._fill_screening_questions(page, None)  # must not raise
     apply_agent._fill_screening_questions(page, {})
 
-    page.get_by_label.assert_not_called()
+    set_field_mock.assert_not_called()
 
 
-def test_fill_eligibility_answers_fills_each_value_by_label(mocker):
+def test_fill_eligibility_answers_translates_known_keys_to_real_question_patterns(mocker):
+    """Regression test for the reported bug: the filler used to search for labels like
+    "work_authorized_us" verbatim -- an internal seed-data key, not real form text. Every
+    known applicant_eligibility key must resolve through _ELIGIBILITY_QUESTION_PATTERNS
+    before reaching the page, never the raw key."""
     page = MagicMock()
+    set_field_mock = mocker.patch("apply_agent._set_field_by_label", return_value=True)
 
-    apply_agent._fill_eligibility_answers(page, {"Work authorized in the US?": "Yes"})
+    apply_agent._fill_eligibility_answers(page, {"work_authorized_us": "Yes"})
 
-    page.get_by_label.assert_called_with("Work authorized in the US?")
-    page.get_by_label.return_value.fill.assert_called_with("Yes")
+    set_field_mock.assert_called_once_with(
+        page, apply_agent._ELIGIBILITY_QUESTION_PATTERNS["work_authorized_us"], "Yes"
+    )
+    assert "work_authorized_us" not in [c.args[1] for c in set_field_mock.call_args_list]
 
 
-def test_fill_eligibility_answers_never_raises_when_field_not_found(mocker):
+@pytest.mark.parametrize("key", list(apply_agent._ELIGIBILITY_QUESTION_PATTERNS))
+def test_every_known_eligibility_key_has_a_question_pattern_that_compiles(key):
+    pattern = apply_agent._ELIGIBILITY_QUESTION_PATTERNS[key]
+    assert hasattr(pattern, "search")  # a compiled re.Pattern, not a bare string
+
+
+def test_fill_eligibility_answers_falls_back_to_the_raw_key_for_unrecognized_keys(mocker):
     page = MagicMock()
-    page.get_by_label.side_effect = RuntimeError("not found")
+    set_field_mock = mocker.patch("apply_agent._set_field_by_label", return_value=True)
 
-    apply_agent._fill_eligibility_answers(page, {"Q": "A"})  # must not raise
+    apply_agent._fill_eligibility_answers(page, {"some_future_custom_key": "Yes"})
+
+    set_field_mock.assert_called_once_with(page, "some_future_custom_key", "Yes")
+
+
+def test_fill_eligibility_answers_never_raises_when_field_not_fillable(mocker):
+    page = MagicMock()
+    mocker.patch("apply_agent._set_field_by_label", return_value=False)
+
+    apply_agent._fill_eligibility_answers(page, {"work_authorized_us": "Yes"})  # must not raise
+
+
+# ── _submission_confirmed: rejection copy must never read as confirmed ──────────
+
+@pytest.mark.parametrize("rejection_text", [
+    "Your application is incomplete",
+    "Your application is invalid",
+    "Please correct the highlighted fields",
+    "This field is required",
+    "Something went wrong while submitting your application",
+])
+def test_rejection_pattern_matches_real_validation_copy(rejection_text):
+    assert apply_agent._REJECTION_TEXT_PATTERN.search(rejection_text)
+
+
+@pytest.mark.parametrize("rejection_text", [
+    "Your application is incomplete",
+    "Your application is invalid",
+])
+def test_confirmation_pattern_does_not_match_rejection_copy(rejection_text):
+    """Regression test for the exact bug PR review found: the old
+    `your application (is|has been) (complete|in)` clause let bare "in" match as an
+    unanchored prefix of "incomplete"/"invalid", so both of these read as confirmed."""
+    assert not apply_agent._CONFIRMATION_TEXT_PATTERN.search(rejection_text)
+
+
+@pytest.mark.parametrize("confirmation_text", [
+    "Your application has been submitted",
+    "Application received",
+    "Thank you for applying",
+    "Thank you for your application",
+    "Your application was successfully submitted",
+])
+def test_confirmation_pattern_matches_real_confirmation_copy(confirmation_text):
+    assert apply_agent._CONFIRMATION_TEXT_PATTERN.search(confirmation_text)
+
+
+def _get_by_text_matching(matching_pattern):
+    def get_by_text(pattern):
+        result = MagicMock()
+        result.count.return_value = 1 if pattern is matching_pattern else 0
+        return result
+    return get_by_text
 
 
 def test_submission_confirmed_true_when_confirmation_text_present(mocker):
     page = MagicMock()
-    page.get_by_text.return_value.count.return_value = 1
+    page.get_by_text.side_effect = _get_by_text_matching(apply_agent._CONFIRMATION_TEXT_PATTERN)
 
     assert apply_agent._submission_confirmed(page) is True
+
+
+def test_submission_confirmed_false_when_rejection_text_present_even_if_it_also_looks_confirmed(mocker):
+    """The rejection check runs first and short-circuits -- get_by_text must be called
+    exactly once (for the rejection pattern), never reaching the confirmation check at all."""
+    page = MagicMock()
+    page.get_by_text.return_value.count.return_value = 1
+
+    assert apply_agent._submission_confirmed(page) is False
+    assert page.get_by_text.call_count == 1
 
 
 def test_submission_confirmed_false_when_no_confirmation_text(mocker):

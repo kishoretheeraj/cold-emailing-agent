@@ -1135,6 +1135,32 @@ generates and fills; `submit()` now only ever fills, from `job["apply_preview"]`
 version of this feature but were **never filled into any page field at all**, in either pass --
 the same fill helper now closes that gap too.
 
+**A second review pass on the same commit (still 2026-09-24) found two more real bugs in that
+fix**, both since fixed: (3) `_submission_confirmed`'s original confirmation regex had an
+unanchored `your application (is|has been) (complete|in)` clause -- the bare `in` alternative
+matched as a substring prefix with no word boundary, so "Your application is **in**complete" and
+"Your application is **in**valid" (real client-side validation copy) both read as confirmed,
+exactly inverting the fix's own purpose. That clause is gone; `_CONFIRMATION_TEXT_PATTERN` is now
+anchored with `\b` around each alternative, and a new, checked-first `_REJECTION_TEXT_PATTERN`
+(incomplete/invalid/please correct/field required/error copy) makes `_submission_confirmed`
+return `False` immediately on any rejection-shaped text, before it ever looks for a confirmation
+match -- a second, independent line of defense against this whole class of bug, not just a fix
+for the one regex. (4) `_fill_eligibility_answers` searched the page for labels like
+`"work_authorized_us"` verbatim -- an internal `applicant_eligibility` seed-data key, never real
+form text -- and `.fill()` can't set a dropdown or radio button anyway, which is what these
+specific EEO/work-auth questions almost always are. Fixed with two changes: a new
+`_ELIGIBILITY_QUESTION_PATTERNS` dict translates each known internal key (`work_authorized_us`,
+`requires_visa_sponsorship`, `gender`, `race_ethnicity`, `veteran_status`, `disability_status`) to
+a regex matching the question's real wording *before* the field is located (an unrecognized key
+falls back to trying the raw key, so a custom key the user adds is still attempted, not silently
+dropped) -- and a new shared `_set_field_by_label(page, label_pattern, value)` tries
+`select_option()` (dropdown), then a role="group"-scoped radio click, then `.fill()` (plain text),
+stopping at the first that succeeds; both `_fill_screening_questions` and
+`_fill_eligibility_answers` now go through it, since a screening question can be a dropdown too,
+not only free text. **`applicant_eligibility`'s stored JSON shape is unchanged** (still
+`{internal_key: value}`, edited live via the contact-manager's Prompts page) -- only how those
+keys get translated to page labels changed, so no live-data migration was needed.
+
 **Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
 assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
