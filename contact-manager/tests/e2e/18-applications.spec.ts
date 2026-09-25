@@ -20,6 +20,15 @@ test.describe("Applications page", () => {
                 pick_verdict: null, pick_score: null, pick_reasoning: null,
                 apply_preview: null, apply_blocked_reason: null, approved_at: null,
                 created_at: "2026-08-26T00:00:00Z", updated_at: "2026-08-26T00:00:00Z" },
+              { id: "2", contact_id: null, company: "Ashby Co", role: "PM",
+                job_url: "https://jobs.example/2", source: "jobright", source_channel: null,
+                stage: "ready_to_submit", applied_date: null, notes: null,
+                posting_snapshot: null, resume_file_ref: null, cover_letter_file_ref: null,
+                resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
+                pick_verdict: "strong", pick_score: 0.9, pick_reasoning: "Great fit.",
+                apply_preview: { platform: "ashby", field_values: {}, eligibility_answers: {}, screening_answers: {} },
+                apply_blocked_reason: null, approved_at: null,
+                created_at: "2026-08-30T00:00:00Z", updated_at: "2026-08-30T00:00:00Z" },
             ],
           }),
         });
@@ -43,6 +52,34 @@ test.describe("Applications page", () => {
           resume_error: false,
           cover_letter_url: null,
           cover_letter_error: false,
+        }),
+      });
+    });
+    await page.route("**/api/applications/2/files", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          resume_url: null,
+          resume_error: false,
+          cover_letter_url: null,
+          cover_letter_error: false,
+        }),
+      });
+    });
+    await page.route("**/api/applications/2/submit", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    });
+    await page.route("**/api/applications/2", async (route) => {
+      // I8's single-row polling target. Distinct from "**/api/applications" (the list, no
+      // trailing path segment) and from "**/api/applications/2/submit" / ".../2/files" (both
+      // have an extra path segment) -- Playwright's glob match requires the URL to end exactly
+      // where each pattern ends, so these four registrations don't collide.
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          application: { id: "2", stage: "applied", apply_blocked_reason: null },
         }),
       });
     });
@@ -102,11 +139,23 @@ test.describe("Applications page", () => {
 
   test("opens the detail sheet and shows job details on View click", async ({ page }) => {
     await page.goto("/applications");
-    await page.getByRole("button", { name: "View" }).click();
+    await page.getByRole("row", { name: /Acme/ }).getByRole("button", { name: "View" }).click();
     await expect(page.getByText("Own the roadmap.")).toBeVisible();
     await expect(page.getByText("Remote")).toBeVisible();
     await expect(page.getByText("No resume on file yet.")).toBeVisible();
     await expect(page.getByText("Not yet scored.")).toBeVisible();
     await page.screenshot({ path: "tests/e2e/screenshots/18-applications-detail-sheet.png" });
+  });
+
+  test("confirms before submitting and shows the confirm dialog copy", async ({ page }) => {
+    await page.goto("/applications");
+    await page.getByRole("button", { name: "Approve & Submit" }).click();
+    await expect(page.getByText("Submit this application?")).toBeVisible();
+    // I10: getByText(/Ashby Co/) alone matches both the table cell AND the modal -- scope to
+    // the dialog.
+    await expect(page.getByRole("dialog").getByText(/Ashby Co/)).toBeVisible();
+    await page.getByRole("dialog").getByRole("button", { name: "Approve & Submit" }).click();
+    await expect(page.getByText(/watching for it to land/i)).toBeVisible();
+    await page.screenshot({ path: "tests/e2e/screenshots/18-applications-confirm-modal.png" });
   });
 });

@@ -25,6 +25,25 @@ function isValidApplyPreview(v: unknown): v is JobApplicationApplyPreview {
   );
 }
 
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  if (!/^\d+$/.test(id)) {
+    return Response.json({ error: "Invalid application id" }, { status: 400 });
+  }
+  try {
+    const supabase = getClient();
+    const { data, error } = await supabase
+      .from("job_applications")
+      .select("*")
+      .eq("id", Number(id))
+      .single();
+    if (error) throw error;
+    return Response.json({ application: data });
+  } catch (err) {
+    return Response.json({ error: String(err) }, { status: 500 });
+  }
+}
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 

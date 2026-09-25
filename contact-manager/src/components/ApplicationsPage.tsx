@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
 import {
@@ -10,6 +10,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { Loader2 } from "lucide-react";
 import { ApplicationDetailSheet } from "@/components/ApplicationDetailSheet";
 import { pickVerdictVariant } from "@/lib/applicationBadges";
 import {
@@ -31,6 +33,38 @@ export function ApplicationsPage() {
   const [selectedApplication, setSelectedApplication] = useState<JobApplication | null>(null);
   const [stageFilter, setStageFilter] = useState<string>("__all__");
   const [sourceFilter, setSourceFilter] = useState<string>("__all__");
+
+  const SUBMITTING_IDS_STORAGE_KEY = "applications_submitting_ids";
+
+  const [confirmingApplication, setConfirmingApplication] = useState<JobApplication | null>(null);
+  const [approveLoading, setApproveLoading] = useState(false);
+  const [submittingIds, setSubmittingIds] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem(SUBMITTING_IDS_STORAGE_KEY);
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  // Keyed the same way as submittingIds: id -> the row's last-known apply_blocked_reason once
+  // polling observes one, so the UI can show a specific failure and a Try again action instead
+  // of leaving the row looking stuck until the 90s timeout.
+  const [blockedReasons, setBlockedReasons] = useState<Record<string, string>>({});
+  const pollTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SUBMITTING_IDS_STORAGE_KEY, JSON.stringify([...submittingIds]));
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [submittingIds]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(pollTimers.current).forEach(clearTimeout);
+    };
+  }, []);
 
   const load = async (stage: string = stageFilter, source: string = sourceFilter) => {
     setLoading(true);
@@ -111,13 +145,93 @@ export function ApplicationsPage() {
     setSelectedApplication(updated);
   };
 
-  const handleApprove = async (id: string) => {
+  const POLL_INTERVAL_MS = 5000;
+  const POLL_TIMEOUT_MS = 90000;
+
+  const stopPolling = (id: string) => {
+    setSubmittingIds((cur) => {
+      const next = new Set(cur);
+      next.delete(id);
+      return next;
+    });
+    delete pollTimers.current[id];
+  };
+
+  const pollForCompletion = (id: string) => {
+    const startedAt = Date.now();
+    const tick = async () => {
+      if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+        stopPolling(id);
+        toast.error("Still processing -- check back in a bit");
+        return;
+      }
+      try {
+        const res = await fetch(`/api/applications/${id}`);
+        const data = await res.json();
+        const app: { stage?: string; apply_blocked_reason?: string | null } | undefined =
+          data.application;
+        if (app?.stage === "applied") {
+          stopPolling(id);
+          toast.success("Application submitted");
+          load(stageFilter, sourceFilter);
+          return;
+        }
+        if (app?.apply_blocked_reason) {
+          stopPolling(id);
+          setBlockedReasons((cur) => ({ ...cur, [id]: app.apply_blocked_reason as string }));
+          toast.error("Submission failed -- see the row for details");
+          return;
+        }
+      } catch {
+        // best-effort poll; retry on the next tick
+      }
+      pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+    };
+    pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+  };
+
+  const doApprove = async () => {
+    if (!confirmingApplication) return;
+    const app = confirmingApplication;
+    setApproveLoading(true);
     try {
-      const res = await fetch(`/api/applications/${id}/submit`, { method: "POST" });
+      const res = await fetch(`/api/applications/${app.id}/submit`, { method: "POST" });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || "request failed");
+      }
+      toast.success("Submission triggered -- watching for it to land");
+      setBlockedReasons((cur) => {
+        const next = { ...cur };
+        delete next[app.id];
+        return next;
+      });
+      setSubmittingIds((cur) => new Set(cur).add(app.id));
+      pollForCompletion(app.id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not trigger submission");
+    } finally {
+      setApproveLoading(false);
+      setConfirmingApplication(null);
+    }
+  };
+
+  // I8: a row that ends up here still has approved_at set (the dispatch itself succeeded;
+  // apply_agent.py failed downstream, inside the workflow) -- re-clicking Approve & Submit
+  // directly would just 409 against approve_application's own already-approved guard. Clear it
+  // via Task 1's reset_approval RPC first, then the row is a normal candidate for Approve again.
+  const handleTryAgain = async (id: string) => {
+    try {
+      const res = await fetch(`/api/applications/${id}/reset-approval`, { method: "POST" });
       if (!res.ok) throw new Error("request failed");
-      toast.success("Submission triggered -- check back shortly");
+      setBlockedReasons((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      load(stageFilter, sourceFilter);
     } catch {
-      toast.error("Could not trigger submission");
+      toast.error("Could not reset -- try again in a moment");
     }
   };
 
@@ -258,13 +372,30 @@ export function ApplicationsPage() {
                       <span className="text-fg-dim text-xs">
                         {Object.entries(app.apply_preview.screening_answers).length} screening answer(s)
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => handleApprove(app.id)}
-                        className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
-                      >
-                        Approve & Submit
-                      </button>
+                      {submittingIds.has(app.id) ? (
+                        <span className="text-fg-dim text-xs flex items-center gap-1">
+                          <Loader2 className="size-3 animate-spin" /> Submitting...
+                        </span>
+                      ) : blockedReasons[app.id] ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="text-red-400 text-xs">{blockedReasons[app.id]}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleTryAgain(app.id)}
+                            className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                          >
+                            Try again
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingApplication(app)}
+                          className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
+                        >
+                          Approve & Submit
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <span className="text-fg-dim">—</span>
@@ -289,6 +420,24 @@ export function ApplicationsPage() {
         application={selectedApplication}
         onClose={() => setSelectedApplication(null)}
         onSaved={handleApplicationSaved}
+      />
+
+      <ConfirmModal
+        open={confirmingApplication !== null}
+        title="Submit this application?"
+        body={
+          confirmingApplication ? (
+            <p>
+              This will submit a real application to <strong>{confirmingApplication.company}</strong>{" "}
+              for <strong>{confirmingApplication.role}</strong>. This cannot be undone.
+            </p>
+          ) : null
+        }
+        confirmLabel="Approve & Submit"
+        confirmVariant="primary"
+        onConfirm={doApprove}
+        onCancel={() => setConfirmingApplication(null)}
+        loading={approveLoading}
       />
     </div>
   );

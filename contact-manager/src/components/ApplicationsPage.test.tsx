@@ -1,7 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, within, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApplicationsPage } from "./ApplicationsPage";
+
+// @testing-library/dom's waitFor/findBy* only detect Jest fake timers (it gates on
+// `typeof jest`), not Vitest's -- under vi.useFakeTimers() its fallback setInterval/setTimeout
+// polling is itself silently mocked and never fires, hanging forever even when the awaited
+// condition is already true. The fake-timer tests below use fireEvent + explicit act() flushes
+// instead (same precedent as QueuePage.test.tsx / RepliesPage.test.tsx). This safety net
+// guards against a left-over vi.useFakeTimers() (e.g. from a test that threw before its own
+// vi.useRealTimers() call) silently hanging an unrelated later test in this file.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 vi.mock("@/components/ui/Tooltip", () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -74,6 +85,39 @@ vi.mock("@radix-ui/react-select", async () => {
   };
 });
 
+vi.mock("@radix-ui/react-dialog", () => ({
+  Root: ({
+    children,
+    open,
+    onOpenChange,
+  }: {
+    children: React.ReactNode;
+    open?: boolean;
+    onOpenChange?: (o: boolean) => void;
+  }) =>
+    open ? (
+      <div data-testid="confirm-modal" onKeyDown={(e) => e.key === "Escape" && onOpenChange?.(false)}>
+        {children}
+      </div>
+    ) : null,
+  Portal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Overlay: () => <div />,
+  Content: ({ children }: { children: React.ReactNode }) => (
+    <div role="dialog" data-testid="confirm-content">
+      {children}
+    </div>
+  ),
+  Title: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+  Description: ({
+    children,
+    asChild,
+  }: {
+    children: React.ReactNode;
+    asChild?: boolean;
+  }) => (asChild ? <>{children}</> : <p>{children}</p>),
+  Close: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 const toastErrorMock = vi.fn();
 const toastSuccessMock = vi.fn();
 vi.mock("sonner", () => ({
@@ -138,6 +182,7 @@ const readyApplication = {
 };
 
 beforeEach(() => {
+  sessionStorage.clear();
   toastErrorMock.mockClear();
   toastSuccessMock.mockClear();
   vi.stubGlobal(
@@ -245,18 +290,6 @@ describe("ApplicationsPage -- pipeline visibility", () => {
     expect(screen.getByRole("button", { name: /approve & submit/i })).toBeInTheDocument();
   });
 
-  it("clicking Approve & Submit posts to the submit route", async () => {
-    const user = userEvent.setup();
-    render(<ApplicationsPage />);
-    await screen.findByText("Ashby Co");
-    await user.click(screen.getByRole("button", { name: /approve & submit/i }));
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        "/api/applications/5/submit",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-  });
 });
 
 describe("ApplicationsPage -- detail sheet (U1/U2)", () => {
@@ -336,6 +369,183 @@ describe("ApplicationsPage -- filters and source columns (U7/U8/U12)", () => {
     await user.click(option);
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/applications?source=linkedin");
+    });
+  });
+});
+
+describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
+  it("opens a confirm modal instead of submitting immediately", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Ashby Co");
+    await user.click(screen.getByRole("button", { name: /approve & submit/i }));
+    expect(await screen.findByTestId("confirm-content")).toBeInTheDocument();
+    expect(within(screen.getByTestId("confirm-content")).getByText(/Ashby Co/)).toBeInTheDocument();
+    // Confirming has not happened yet -- no submit POST fired from the click alone.
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "/api/applications/5/submit",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("submits only after confirming in the modal", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Ashby Co");
+    await user.click(screen.getByRole("button", { name: /approve & submit/i }));
+    const modal = await screen.findByTestId("confirm-content");
+    await user.click(within(modal).getByRole("button", { name: /approve & submit/i }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/applications/5/submit",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
+  // @testing-library/dom's waitFor/findBy*/user-event's internal waits rely on real
+  // setInterval/setTimeout (or Jest's fake-timer detection, which doesn't recognize Vitest) --
+  // under vi.useFakeTimers() those never fire without an explicit advance, so they hang forever
+  // even when the awaited condition is already true. These fake-timer tests flush pending
+  // microtasks via act() and use fireEvent + synchronous queries instead (same precedent as
+  // QueuePage.test.tsx / RepliesPage.test.tsx), while keeping every assertion identical to
+  // what waitFor/findBy would have checked.
+  async function flushMicrotasks() {
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+  }
+
+  async function openModalAndConfirmSubmit() {
+    render(<ApplicationsPage />);
+    await flushMicrotasks();
+    expect(screen.getByText("Ashby Co")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /approve & submit/i }));
+    });
+    const modal = screen.getByTestId("confirm-content");
+    await act(async () => {
+      fireEvent.click(within(modal).getByRole("button", { name: /approve & submit/i }));
+    });
+    await flushMicrotasks();
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/applications/5/submit",
+      expect.objectContaining({ method: "POST" })
+    );
+  }
+
+  it("shows a submitting state for the row and polls GET /api/applications/5 until it reports applied (I8 -- single-row polling, not the filtered list)", async () => {
+    vi.useFakeTimers();
+    await openModalAndConfirmSubmit();
+    expect(screen.getByText(/submitting/i)).toBeInTheDocument();
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "applied", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(toastSuccessMock).toHaveBeenCalledWith("Application submitted");
+    vi.useRealTimers();
+  });
+
+  it("shows a distinct failed/blocked state (not the generic timeout message) and a Try again action when the row reports apply_blocked_reason (I8)", async () => {
+    vi.useFakeTimers();
+    await openModalAndConfirmSubmit();
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            application: {
+              id: "5",
+              stage: "ready_to_submit",
+              apply_blocked_reason: "confirmation element not found after clicking Submit",
+            },
+          }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(screen.getByText(/confirmation element not found/i)).toBeInTheDocument();
+    const tryAgainButton = screen.getByRole("button", { name: /try again/i });
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce((url: string, opts?: RequestInit) => {
+      if (typeof url === "string" && url === "/api/applications/5/reset-approval" && opts?.method === "POST") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      fireEvent.click(tryAgainButton);
+    });
+    await flushMicrotasks();
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/applications/5/reset-approval",
+      expect.objectContaining({ method: "POST" })
+    );
+    // Once reset, the row is back to a plain Approve & Submit state, not stuck "submitting".
+    // handleTryAgain's load() re-fetches the list -- flush again so the refetched (loading:
+    // false) table renders before asserting on it.
+    await flushMicrotasks();
+    expect(screen.getByRole("button", { name: /approve & submit/i })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("still shows the ambiguous timeout message when polling exceeds the timeout with no resolution either way", async () => {
+    vi.useFakeTimers();
+    await openModalAndConfirmSubmit();
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "ready_to_submit", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(95000);
+    });
+
+    expect(toastErrorMock).toHaveBeenCalledWith("Still processing -- check back in a bit");
+    vi.useRealTimers();
+  });
+
+  it("persists submittingIds to sessionStorage so a page refresh mid-poll doesn't re-enable Approve (M14 -- same precedent as QueuePage's skip-list)", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Ashby Co");
+    await user.click(screen.getByRole("button", { name: /approve & submit/i }));
+    const modal = await screen.findByTestId("confirm-content");
+    await user.click(within(modal).getByRole("button", { name: /approve & submit/i }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/applications/5/submit",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    await waitFor(() => {
+      const raw = sessionStorage.getItem("applications_submitting_ids");
+      expect(raw ? (JSON.parse(raw) as string[]) : []).toContain("5");
     });
   });
 });

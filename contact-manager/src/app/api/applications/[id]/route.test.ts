@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PATCH } from "./route";
+import { GET, PATCH } from "./route";
 
 const mockSingle = vi.fn();
 const mockSelect = vi.fn();
 const mockEq = vi.fn();
 const mockUpdate = vi.fn();
 const mockFrom = vi.fn();
+// GET's chain (from -> select -> eq -> single) is shaped differently from PATCH's
+// (from -> update -> eq -> select -> single), so it needs its own select/eq mocks rather
+// than reusing mockSelect/mockEq above -- both terminate at the same shared mockSingle.
+const mockGetSelect = vi.fn();
+const mockGetEq = vi.fn();
 
 vi.mock("@supabase/supabase-js", () => ({
   createClient: vi.fn(() => ({ from: mockFrom })),
@@ -21,7 +26,9 @@ beforeEach(() => {
   mockSelect.mockReturnValue({ single: mockSingle });
   mockEq.mockReturnValue({ select: mockSelect });
   mockUpdate.mockReturnValue({ eq: mockEq });
-  mockFrom.mockReturnValue({ update: mockUpdate });
+  mockGetEq.mockReturnValue({ single: mockSingle });
+  mockGetSelect.mockReturnValue({ eq: mockGetEq });
+  mockFrom.mockReturnValue({ update: mockUpdate, select: mockGetSelect });
 });
 
 describe("PATCH /api/applications/[id]", () => {
@@ -108,5 +115,26 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain("apply_preview must be");
+  });
+});
+
+describe("GET /api/applications/[id] (I8 -- single-row fetch for status polling)", () => {
+  it("returns the row for a valid id", async () => {
+    mockSingle.mockResolvedValue({ data: { id: "5", stage: "applied", apply_blocked_reason: null }, error: null });
+    const res = await GET(new Request("http://test"), params("5"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.application).toEqual({ id: "5", stage: "applied", apply_blocked_reason: null });
+  });
+
+  it("rejects a non-numeric id", async () => {
+    const res = await GET(new Request("http://test"), params("abc"));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 500 on a supabase read error", async () => {
+    mockSingle.mockResolvedValue({ data: null, error: new Error("db down") });
+    const res = await GET(new Request("http://test"), params("5"));
+    expect(res.status).toBe(500);
   });
 });
