@@ -10,6 +10,7 @@ docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md.
 import json
 import logging
 import re
+from datetime import date
 
 import ats_fillers
 import ats_platform
@@ -379,11 +380,19 @@ def submit(job_id):
     # The ARMED gate proves a human tapped *something*; this proves they approved *this row*.
     # Without it, any id reaching the workflow gets submitted -- a stale id, a mistyped manual
     # workflow_dispatch, or a row that was never previewed (no eligibility answers, no screening
-    # answers, possibly no resume) would go to a real employer.
-    if job.get("stage") != "ready_to_submit" or not job.get("apply_preview"):
+    # answers, possibly no resume) would go to a real employer. approved_at (Task 1) closes the
+    # last gap: it can only ever be set via the approve_application RPC, which a human actually
+    # tapping "Approve & Submit" in the UI triggers -- so this is the one condition here that
+    # can't be satisfied by a stale id or a mistyped manual workflow_dispatch alone.
+    if (
+        job.get("stage") != "ready_to_submit"
+        or not job.get("apply_preview")
+        or not job.get("approved_at")
+    ):
         raise ValueError(
             f"submit() called on an unapproved row: id={job_id} | stage={job.get('stage')} | "
-            f"has_preview={bool(job.get('apply_preview'))}"
+            f"has_preview={bool(job.get('apply_preview'))} | "
+            f"approved={bool(job.get('approved_at'))}"
         )
 
     platform = ats_platform.classify(job.get("job_url"))
@@ -427,7 +436,7 @@ def submit(job_id):
                 f"no confirmation on the page afterward -- treating this as a failed submission "
                 f"and leaving the stage unchanged so a human can investigate before any retry."
             )
-        db.update_job_application_stage(job_id, "applied")
+        db.record_submission(job_id, platform, date.today().isoformat())
         log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
     finally:
         _close_page(page)

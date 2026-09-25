@@ -580,6 +580,17 @@ def update_job_application_stage(application_id, stage):
     return result.data[0] if result.data else None
 
 
+def record_submission(application_id, source_channel, applied_date):
+    """Atomically flip a row to 'applied' and record how/when it was actually filed. Must be
+    ONE update, not stage-then-fields separately -- a partial failure between two calls would
+    leave the row applied with no source_channel/applied_date, or vice versa."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"stage": "applied", "source_channel": source_channel,
+                              "applied_date": applied_date, "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
 def get_job_application(application_id):
     """Fetch a single job application by id."""
     result = _retry(lambda: get_client().table("job_applications")

@@ -411,18 +411,19 @@ def test_submit_does_not_click_submit_when_not_armed(mocker):
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
         "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
+        "approved_at": "2026-09-20T00:00:00Z",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
     mocker.patch("apply_agent._launch_page", return_value=page)
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
-    update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
+    record_submission_mock = mocker.patch("apply_agent.db.record_submission")
 
     apply_agent.submit(1)
 
     page.get_by_role.return_value.click.assert_not_called()
-    update_stage_mock.assert_not_called()
+    record_submission_mock.assert_not_called()
 
 
 def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
@@ -431,6 +432,7 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
         "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
+        "approved_at": "2026-09-20T00:00:00Z",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -438,14 +440,16 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent._submission_confirmed", return_value=True)
-    update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
+    fake_date = mocker.patch("apply_agent.date")
+    fake_date.today.return_value.isoformat.return_value = "2026-09-24"
+    record_submission_mock = mocker.patch("apply_agent.db.record_submission")
     mocker.patch("apply_agent.db.set_apply_preview")
 
     apply_agent.submit(1)
 
     page.get_by_role.assert_called_with("button", name=apply_agent._SUBMIT_BUTTON_NAME)
     page.get_by_role.return_value.click.assert_called_once()
-    update_stage_mock.assert_called_once_with(1, "applied")
+    record_submission_mock.assert_called_once_with(1, "greenhouse", "2026-09-24")
 
 
 def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(mocker):
@@ -458,6 +462,7 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
         "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
+        "approved_at": "2026-09-20T00:00:00Z",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -465,13 +470,13 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent._submission_confirmed", return_value=False)
-    update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
+    record_submission_mock = mocker.patch("apply_agent.db.record_submission")
 
     with pytest.raises(RuntimeError, match="no confirmation"):
         apply_agent.submit(1)
 
     page.get_by_role.return_value.click.assert_called_once()
-    update_stage_mock.assert_not_called()
+    record_submission_mock.assert_not_called()
 
 
 def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_regenerated(mocker):
@@ -490,6 +495,7 @@ def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_rege
     mocker.patch("apply_agent.db.get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
         "stage": "ready_to_submit", "apply_preview": stored_preview,
+        "approved_at": "2026-09-20T00:00:00Z",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -497,7 +503,7 @@ def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_rege
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent._submission_confirmed", return_value=True)
-    mocker.patch("apply_agent.db.update_job_application_stage")
+    mocker.patch("apply_agent.db.record_submission")
 
     apply_agent.submit(1)
 
@@ -517,6 +523,7 @@ def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
             "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
             "resume_file_ref": "r.pdf", "cover_letter_file_ref": "cl.pdf",
             "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
+            "approved_at": "2026-09-20T00:00:00Z",
         })
         mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
         page = MagicMock()
@@ -543,6 +550,7 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
     mocker.patch("apply_agent.db.get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://example.com/job/1",
         "stage": "ready_to_submit", "apply_preview": {"platform": platform},
+        "approved_at": "2026-09-20T00:00:00Z",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value=platform)
     launch_mock = mocker.patch("apply_agent._launch_page")
@@ -562,6 +570,9 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
       "stage": "applied", "apply_preview": {"platform": "greenhouse"}}, "already submitted"),
     ({"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x",
       "stage": "ready_to_submit", "apply_preview": None}, "no preview blob"),
+    ({"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x",
+      "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
+      "approved_at": None}, "not yet approved"),
 ])
 def test_submit_raises_on_unapproved_row(mocker, job, reason):
     """The ARMED gate only proves a human tapped *something*. Without this guard any id

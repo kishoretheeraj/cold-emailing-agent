@@ -35,6 +35,45 @@ vi.mock("vaul", () => ({
   },
 }));
 
+vi.mock("@radix-ui/react-select", async () => {
+  const actual = await vi.importActual<typeof import("react")>("react");
+  const SelectCtx = actual.createContext<{ onValueChange?: (v: string) => void }>({});
+  return {
+    Root: ({
+      children,
+      value,
+      onValueChange,
+    }: {
+      children: React.ReactNode;
+      value?: string;
+      onValueChange?: (v: string) => void;
+    }) => (
+      <SelectCtx.Provider value={{ onValueChange }}>
+        <div data-select-value={value}>{children}</div>
+      </SelectCtx.Provider>
+    ),
+    Trigger: ({ children }: { children: React.ReactNode }) => <button type="button">{children}</button>,
+    Value: () => null,
+    Icon: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Portal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Content: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Viewport: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Group: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Label: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Item: ({ children, value }: { children: React.ReactNode; value: string }) => {
+      const ctx = actual.useContext(SelectCtx);
+      return (
+        <div role="option" data-value={value} onClick={() => ctx.onValueChange?.(value)}>
+          {children}
+        </div>
+      );
+    },
+    ItemText: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    ItemIndicator: () => null,
+    Separator: () => <hr />,
+  };
+});
+
 const toastErrorMock = vi.fn();
 const toastSuccessMock = vi.fn();
 vi.mock("sonner", () => ({
@@ -259,5 +298,44 @@ describe("ApplicationsPage -- apply-preview save propagates to the table (I7)", 
         "Because I love the product."
       )
     ).toBeInTheDocument();
+  });
+});
+
+describe("ApplicationsPage -- filters and source columns (U7/U8/U12)", () => {
+  it("renders both the source and filed-via columns", async () => {
+    render(<ApplicationsPage />);
+    const cell = await screen.findByText("Ashby Co");
+    const row = cell.closest("tr") as HTMLElement;
+    expect(within(row).getByText("jobright")).toBeInTheDocument();
+    expect(within(row).getByText("ashby")).toBeInTheDocument();
+  });
+
+  it("refetches with the stage filter applied", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Acme");
+    const filter = screen.getByTestId("stage-filter");
+    await waitFor(() => {
+      expect(within(filter).getAllByRole("option").length).toBeGreaterThan(0);
+    });
+    (global.fetch as ReturnType<typeof vi.fn>).mockClear();
+    const option = within(filter).getByRole("option", { name: "Applied" });
+    await user.click(option);
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/applications?stage=applied");
+    });
+  });
+
+  it("refetches with the source filter applied", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Acme");
+    const filter = screen.getByTestId("source-filter");
+    const option = within(filter).getByRole("option", { name: "linkedin" });
+    (global.fetch as ReturnType<typeof vi.fn>).mockClear();
+    await user.click(option);
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/applications?source=linkedin");
+    });
   });
 });

@@ -19,6 +19,8 @@ import {
   type JobApplicationStage,
 } from "@/lib/types";
 
+const SOURCE_OPTIONS = ["linkedin", "ats_scan", "jobright", "manual"] as const;
+
 export function ApplicationsPage() {
   const [applications, setApplications] = useState<JobApplication[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,10 +29,17 @@ export function ApplicationsPage() {
   const [jobUrl, setJobUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [selectedApplication, setSelectedApplication] = useState<JobApplication | null>(null);
+  const [stageFilter, setStageFilter] = useState<string>("__all__");
+  const [sourceFilter, setSourceFilter] = useState<string>("__all__");
 
-  const load = async () => {
+  const load = async (stage: string = stageFilter, source: string = sourceFilter) => {
+    setLoading(true);
     try {
-      const res = await fetch("/api/applications");
+      const params = new URLSearchParams();
+      if (stage !== "__all__") params.set("stage", stage);
+      if (source !== "__all__") params.set("source", source);
+      const qs = params.toString();
+      const res = await fetch(`/api/applications${qs ? `?${qs}` : ""}`);
       const data = await res.json();
       setApplications(data.applications ?? []);
     } catch {
@@ -38,6 +47,16 @@ export function ApplicationsPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleStageFilterChange = (v: string) => {
+    setStageFilter(v);
+    load(v, sourceFilter);
+  };
+
+  const handleSourceFilterChange = (v: string) => {
+    setSourceFilter(v);
+    load(stageFilter, v);
   };
 
   useEffect(() => {
@@ -143,6 +162,41 @@ export function ApplicationsPage() {
         </button>
       </form>
 
+      <div className="flex gap-3">
+        <label data-testid="stage-filter" className="flex flex-col gap-1 text-sm text-fg-muted">
+          Stage
+          <Select value={stageFilter} onValueChange={handleStageFilterChange}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All stages</SelectItem>
+              {JOB_APPLICATION_STAGES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {JOB_APPLICATION_STAGE_LABELS[s]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+        <label data-testid="source-filter" className="flex flex-col gap-1 text-sm text-fg-muted">
+          Source
+          <Select value={sourceFilter} onValueChange={handleSourceFilterChange}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All sources</SelectItem>
+              {SOURCE_OPTIONS.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+      </div>
+
       {loading ? (
         <p className="text-sm text-fg-dim">Loading...</p>
       ) : applications.length === 0 ? (
@@ -157,6 +211,8 @@ export function ApplicationsPage() {
               <th className="py-2 pr-4">Applied</th>
               <th className="py-2 pr-4">Pick</th>
               <th className="py-2 pr-4">Blocked</th>
+              <th className="py-2 pr-4">Source</th>
+              <th className="py-2 pr-4">Filed via</th>
               <th className="py-2 pr-4">Preview / Submit</th>
               <th className="py-2 pr-4">Details</th>
             </tr>
@@ -194,6 +250,8 @@ export function ApplicationsPage() {
                 <td className="py-2 pr-4 text-fg-dim">
                   {app.apply_blocked_reason ?? "—"}
                 </td>
+                <td className="py-2 pr-4 text-fg-dim">{app.source ?? "—"}</td>
+                <td className="py-2 pr-4 text-fg-dim">{app.source_channel ?? "—"}</td>
                 <td className="py-2 pr-4">
                   {app.stage === "ready_to_submit" && app.apply_preview ? (
                     <div className="flex flex-col gap-1">

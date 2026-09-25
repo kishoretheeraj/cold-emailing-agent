@@ -18,7 +18,7 @@ vi.mock("@supabase/supabase-js", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   mockOrder.mockResolvedValue({ data: [{ id: "1", company: "Acme" }], error: null });
-  mockEq.mockReturnValue({ order: mockOrder });
+  mockEq.mockReturnValue({ order: mockOrder, eq: mockEq });
   mockSelect.mockReturnValue({ order: mockOrder, eq: mockEq });
   mockSingle.mockResolvedValue({ data: { id: "1", company: "Acme", role: "PM" }, error: null });
   mockInsertSelect.mockReturnValue({ single: mockSingle });
@@ -36,6 +36,17 @@ describe("GET /api/applications", () => {
   it("filters by stage query param", async () => {
     await GET(new Request("http://test/api/applications?stage=applied"));
     expect(mockEq).toHaveBeenCalledWith("stage", "applied");
+  });
+
+  it("filters by source query param", async () => {
+    await GET(new Request("http://test/api/applications?source=linkedin"));
+    expect(mockEq).toHaveBeenCalledWith("source", "linkedin");
+  });
+
+  it("filters by both stage and source query params together (M4)", async () => {
+    await GET(new Request("http://test/api/applications?stage=applied&source=linkedin"));
+    expect(mockEq).toHaveBeenCalledWith("stage", "applied");
+    expect(mockEq).toHaveBeenCalledWith("source", "linkedin");
   });
 
   it("returns 500 on supabase error", async () => {
