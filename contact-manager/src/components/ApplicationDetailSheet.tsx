@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   Sheet,
   SheetContent,
@@ -51,15 +52,103 @@ function snapshotValue(
   return null;
 }
 
+function AnswerEditor({
+  title,
+  answers,
+  multiline,
+  onChange,
+}: {
+  title: string;
+  answers: Record<string, string>;
+  multiline: boolean;
+  onChange: (key: string, value: string) => void;
+}) {
+  const entries = Object.entries(answers);
+  if (entries.length === 0) {
+    return (
+      <div>
+        <p className="text-xs text-fg-dim uppercase tracking-wide">{title}</p>
+        <p className="text-sm text-fg-dim">None.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs text-fg-dim uppercase tracking-wide">{title}</p>
+      {entries.map(([question, value]) =>
+        multiline ? (
+          <label key={question} className="flex flex-col gap-1 text-sm">
+            <span className="text-fg-muted">{question}</span>
+            <textarea
+              value={value}
+              onChange={(e) => onChange(question, e.target.value)}
+              className="px-2 py-1 bg-surface-2 border border-border rounded-md text-sm text-fg min-h-[60px]"
+            />
+          </label>
+        ) : (
+          <label key={question} className="flex flex-col gap-1 text-sm">
+            <span className="text-fg-muted">{question}</span>
+            <input
+              value={value}
+              onChange={(e) => onChange(question, e.target.value)}
+              className="px-2 py-1 bg-surface-2 border border-border rounded-md text-sm text-fg"
+            />
+          </label>
+        )
+      )}
+    </div>
+  );
+}
+
 export function ApplicationDetailSheet({
   application,
   onClose,
+  onSaved,
 }: {
   application: JobApplication | null;
   onClose: () => void;
+  onSaved?: (app: JobApplication) => void;
 }) {
   const [files, setFiles] = useState<Files>(EMPTY_FILES);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [screeningAnswers, setScreeningAnswers] = useState<Record<string, string>>({});
+  const [eligibilityAnswers, setEligibilityAnswers] = useState<Record<string, string>>({});
+  const [savingAnswers, setSavingAnswers] = useState(false);
+
+  useEffect(() => {
+    setScreeningAnswers(application?.apply_preview?.screening_answers ?? {});
+    setEligibilityAnswers(application?.apply_preview?.eligibility_answers ?? {});
+  }, [application?.id, application?.apply_preview]);
+
+  const handleSaveAnswers = async () => {
+    if (!application || !application.apply_preview) return;
+    setSavingAnswers(true);
+    try {
+      const res = await fetch(`/api/applications/${application.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apply_preview: {
+            ...application.apply_preview,
+            screening_answers: screeningAnswers,
+            eligibility_answers: eligibilityAnswers,
+          },
+        }),
+      });
+      if (!res.ok) throw new Error("request failed");
+      const data = await res.json();
+      toast.success("Answers saved");
+      // I7: without this, a successful save updates the database but the table's answer
+      // count and a re-opened/re-rendered sheet both keep showing the pre-edit data --
+      // defeating U11's entire point (the human's edit should be what actually gets
+      // submitted, and they should be able to SEE that it was saved).
+      if (data.application) onSaved?.(data.application as JobApplication);
+    } catch {
+      toast.error("Could not save answers");
+    } finally {
+      setSavingAnswers(false);
+    }
+  };
 
   useEffect(() => {
     if (!application) {
@@ -179,6 +268,47 @@ export function ApplicationDetailSheet({
                     />
                   ) : (
                     <p className="text-fg-dim text-sm">No cover letter on file yet.</p>
+                  )}
+                </section>
+
+                <section>
+                  <h3 className="text-sm font-medium text-fg mb-2">Application preview</h3>
+                  {application.apply_preview ? (
+                    <div className="flex flex-col gap-4">
+                      <p className="text-sm text-fg-muted">Platform: {application.apply_preview.platform}</p>
+                      <div>
+                        <p className="text-xs text-fg-dim uppercase tracking-wide">Field values</p>
+                        <div className="flex flex-col gap-1 mt-1">
+                          {Object.entries(application.apply_preview.field_values).map(([k, v]) => (
+                            <p key={k} className="text-sm text-fg-muted">
+                              <span className="text-fg-dim">{k}:</span> {v}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                      <AnswerEditor
+                        title="Eligibility answers"
+                        answers={eligibilityAnswers}
+                        multiline={false}
+                        onChange={(k, v) => setEligibilityAnswers((cur) => ({ ...cur, [k]: v }))}
+                      />
+                      <AnswerEditor
+                        title="Screening answers"
+                        answers={screeningAnswers}
+                        multiline={true}
+                        onChange={(k, v) => setScreeningAnswers((cur) => ({ ...cur, [k]: v }))}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSaveAnswers}
+                        disabled={savingAnswers}
+                        className="px-3 py-2 bg-indigo-600 text-white rounded-md text-sm w-fit disabled:opacity-50"
+                      >
+                        {savingAnswers ? "Saving..." : "Save changes"}
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-fg-dim text-sm">No application preview yet.</p>
                   )}
                 </section>
               </div>

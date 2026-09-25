@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ApplicationDetailSheet } from "./ApplicationDetailSheet";
 import type { JobApplication } from "@/lib/types";
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 vi.mock("vaul", () => ({
   Drawer: {
@@ -66,17 +71,27 @@ const baseApplication: JobApplication = {
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(() =>
-      Promise.resolve({
-        ok: true,
-        json: async () => ({
-          resume_url: "https://signed.example/resume.pdf",
-          resume_error: false,
-          cover_letter_url: null,
-          cover_letter_error: false,
-        }),
-      } as Response)
-    )
+    vi.fn((url: string, opts?: RequestInit) => {
+      if (typeof url === "string" && url.includes("/files")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            resume_url: "https://signed.example/resume.pdf",
+            resume_error: false,
+            cover_letter_url: null,
+            cover_letter_error: false,
+          }),
+        } as Response);
+      }
+      if (opts?.method === "PATCH") {
+        const patchBody = JSON.parse((opts.body as string) ?? "{}");
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { ...baseApplication, ...patchBody } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ application: {} }) } as Response);
+    })
   );
 });
 
@@ -162,5 +177,98 @@ describe("ApplicationDetailSheet", () => {
     );
     expect(screen.getByText("Own the roadmap.")).toBeInTheDocument();
     expect(screen.getByText("Ship weekly.")).toBeInTheDocument();
+  });
+});
+
+describe("ApplicationDetailSheet -- apply preview (U3/U11)", () => {
+  const appWithAnswers: JobApplication = {
+    ...baseApplication,
+    apply_preview: {
+      platform: "ashby",
+      field_values: { name: "Kishore" },
+      eligibility_answers: { "Authorized to work in the US?": "Yes" },
+      screening_answers: { "Why this role?": "Because of the mission." },
+    },
+  };
+
+  it("renders the platform and field values", async () => {
+    render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
+    // Scoped to the platform line specifically -- baseApplication.company is "Ashby Co",
+    // which also matches a bare /ashby/i against the sheet's <h2> title.
+    expect(screen.getByText(/platform: ashby/i)).toBeInTheDocument();
+    expect(screen.getByText(/Kishore/)).toBeInTheDocument();
+  });
+
+  it("renders screening and eligibility answers as editable fields", async () => {
+    render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
+    expect(await screen.findByDisplayValue("Because of the mission.")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Yes")).toBeInTheDocument();
+  });
+
+  it("edits a screening answer and saves it via PATCH with the merged apply_preview", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
+    const textarea = await screen.findByDisplayValue("Because of the mission.");
+    await user.clear(textarea);
+    await user.type(textarea, "Because I love the product.");
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      const patchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        ([url, opts]) => url === "/api/applications/5" && (opts as RequestInit | undefined)?.method === "PATCH"
+      );
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+      expect(body.apply_preview.screening_answers["Why this role?"]).toBe("Because I love the product.");
+      expect(body.apply_preview.eligibility_answers["Authorized to work in the US?"]).toBe("Yes");
+      expect(body.apply_preview.platform).toBe("ashby");
+    });
+  });
+
+  it("shows a placeholder when there is no apply_preview yet", () => {
+    render(
+      <ApplicationDetailSheet application={{ ...baseApplication, apply_preview: null }} onClose={() => {}} />
+    );
+    expect(screen.getByText("No application preview yet.")).toBeInTheDocument();
+  });
+
+  it("calls onSaved with the PATCH response's application on a successful save (I7)", async () => {
+    const user = userEvent.setup();
+    const onSaved = vi.fn();
+    render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} onSaved={onSaved} />);
+    const textarea = await screen.findByDisplayValue("Because of the mission.");
+    await user.clear(textarea);
+    await user.type(textarea, "Because I love the product.");
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(onSaved).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apply_preview: expect.objectContaining({
+            screening_answers: expect.objectContaining({ "Why this role?": "Because I love the product." }),
+          }),
+        })
+      );
+    });
+  });
+
+  it("reflects the saved answer once the parent re-renders with the onSaved value, not the stale original (I7)", async () => {
+    const user = userEvent.setup();
+    let current = appWithAnswers;
+    const onSaved = vi.fn((updated: JobApplication) => {
+      current = updated;
+    });
+    const { rerender } = render(
+      <ApplicationDetailSheet application={current} onClose={() => {}} onSaved={onSaved} />
+    );
+    const textarea = await screen.findByDisplayValue("Because of the mission.");
+    await user.clear(textarea);
+    await user.type(textarea, "Because I love the product.");
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+
+    rerender(<ApplicationDetailSheet application={current} onClose={() => {}} onSaved={onSaved} />);
+    expect(screen.getByDisplayValue("Because I love the product.")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Because of the mission.")).not.toBeInTheDocument();
   });
 });

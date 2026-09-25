@@ -123,6 +123,15 @@ beforeEach(() => {
           }),
         } as Response);
       }
+      if (opts?.method === "PATCH" && typeof opts.body === "string") {
+        const patchBody = JSON.parse(opts.body);
+        if (patchBody.apply_preview) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ application: { ...readyApplication, ...patchBody } }),
+          } as Response);
+        }
+      }
       return Promise.resolve({
         ok: true,
         json: async () => ({ application: { ...sampleApplications[0], stage: "applied" } }),
@@ -214,5 +223,33 @@ describe("ApplicationsPage -- detail sheet (U1/U2)", () => {
       expect(screen.getByTestId("sheet-content")).toBeInTheDocument();
     });
     expect(within(screen.getByTestId("sheet-content")).getByText("https://jobs.example/5")).toBeInTheDocument();
+  });
+});
+
+describe("ApplicationsPage -- apply-preview save propagates to the table (I7)", () => {
+  it("updates the table's screening-answer count after Save changes in the sheet", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Ashby Co");
+    const row = screen.getByText("Ashby Co").closest("tr") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /view/i }));
+    const sheet = await screen.findByTestId("sheet-content");
+    const textarea = await within(sheet).findByDisplayValue("Because of the mission.");
+    await user.clear(textarea);
+    await user.type(textarea, "Because I love the product.");
+    await user.click(within(sheet).getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(within(row).getByText("1 screening answer(s)")).toBeInTheDocument();
+    });
+    // The count text existed before the save too (readyApplication already had one answer) --
+    // the real assertion is that a second edit-and-save cycle starts from the saved value, not
+    // the original. Re-open the sheet and confirm the textarea now shows the saved text.
+    await user.click(within(row).getByRole("button", { name: /view/i }));
+    expect(
+      await within(await screen.findByTestId("sheet-content")).findByDisplayValue(
+        "Because I love the product."
+      )
+    ).toBeInTheDocument();
   });
 });

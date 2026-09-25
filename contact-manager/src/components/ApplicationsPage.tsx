@@ -86,6 +86,11 @@ export function ApplicationsPage() {
     }
   };
 
+  const handleApplicationSaved = (updated: JobApplication) => {
+    setApplications((cur) => cur.map((a) => (a.id === updated.id ? updated : a)));
+    setSelectedApplication(updated);
+  };
+
   const handleApprove = async (id: string) => {
     try {
       const res = await fetch(`/api/applications/${id}/submit`, { method: "POST" });
@@ -220,6 +225,7 @@ export function ApplicationsPage() {
       <ApplicationDetailSheet
         application={selectedApplication}
         onClose={() => setSelectedApplication(null)}
+        onSaved={handleApplicationSaved}
       />
     </div>
   );
