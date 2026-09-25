@@ -125,6 +125,65 @@ def test_a_paced_delay_is_taken_before_every_action(mocker):
     assert sleep.call_args_list == [mocker.call(2.5), mocker.call(2.5)]
 
 
+def test_a_batch_straddling_the_cap_stops_mid_batch_not_after_it(mocker):
+    # Reproduced live: 61 executed actions against a 60-action cap, because
+    # session_exhausted() was only checked once, between turns -- a single turn's batch that
+    # crossed the cap was always allowed to run to completion. With actions_so_far=59 and a cap
+    # of 60 (one action still allowed), a 3-action batch must execute exactly 1 and refuse 2.
+    execute = mocker.patch.object(cu_linkedin, "execute_action", return_value=("OK", False))
+    mocker.patch.object(config, "CU_LINKEDIN_MAX_ACTIONS_PER_SESSION", 60)
+    mocker.patch.object(config, "CU_LINKEDIN_MAX_SESSION_SECONDS", 900)
+    blocks = [_tool_use("a", "screenshot"), _tool_use("b", "screenshot"), _tool_use("c", "screenshot")]
+
+    results, executed, errors = cu_linkedin._execute_tool_uses(
+        blocks, actions_so_far=59, started=0.0, now=lambda: 10.0
+    )
+
+    assert executed == 1
+    assert errors == 0
+    assert execute.call_count == 1
+    assert "is_error" not in results[0]
+    assert results[1]["is_error"] is True
+    assert results[1]["content"] == "Not executed: the session's action/time budget was reached mid-batch."
+    assert results[2]["is_error"] is True
+
+
+def test_omitting_started_skips_the_per_action_budget_check(mocker):
+    # started defaults to None -- callers that don't pass it (existing tests, any future
+    # non-session caller) get no per-action budget enforcement at all, only the failure
+    # short-circuit. run_session is the only caller that must always pass it.
+    execute = mocker.patch.object(cu_linkedin, "execute_action", return_value=("OK", False))
+    blocks = [_tool_use("a", "screenshot"), _tool_use("b", "screenshot")]
+
+    results, executed, errors = cu_linkedin._execute_tool_uses(blocks, actions_so_far=999)
+
+    assert executed == 2
+    assert execute.call_count == 2
+
+
+def test_run_session_passes_the_running_action_count_and_start_time_into_each_batch(mocker):
+    # Regression test for the mid-batch cap bug: run_session must feed its own running
+    # actions/started into _execute_tool_uses on every turn, not just check session_exhausted()
+    # after the batch returns -- otherwise the per-action guard added to _execute_tool_uses does
+    # nothing in the real code path.
+    claude = mocker.patch.object(cu_linkedin, "_claude", MagicMock(name="anthropic_client"))
+    claude.messages.create.side_effect = [
+        _response([_tool_use("a", "screenshot")], "tool_use"),
+        _response([_text("[]")], "end_turn"),
+    ]
+    execute_mock = mocker.patch.object(
+        cu_linkedin, "_execute_tool_uses",
+        wraps=cu_linkedin._execute_tool_uses,
+    )
+    mocker.patch.object(cu_linkedin, "execute_action", return_value=("OK", False))
+    times = iter([0.0, 1.0, 2.0, 3.0])
+    cu_linkedin.run_session("task", now=lambda: next(times))
+
+    call = execute_mock.call_args_list[0]
+    assert call.kwargs["actions_so_far"] == 0
+    assert call.kwargs["started"] == 0.0
+
+
 # ── _prune_screenshots ─────────────────────────────────────────────────────────
 
 def _screenshot_result(tool_use_id):

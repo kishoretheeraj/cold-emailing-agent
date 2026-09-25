@@ -905,6 +905,28 @@ validates before canonicalizing: `/jobs/view/<digits>` is accepted as-is (query 
 anything matching neither shape returns `None` so the caller skips the posting rather than
 persisting a garbage or missing `job_url`.
 
+**Two more bugs found by external PR review (2026-09-24, PR #8)**, both in the session-budget/exit
+plumbing: (1) `session_exhausted()` used to be checked only once per turn, after a whole batch of
+tool_use blocks had already executed -- a single turn can carry several actions (the model may
+call more than one tool in one response), so a batch straddling the cap always ran to completion
+before the check fired. Reproduced live: 61 executed actions against a 60-action cap. Fixed by
+checking the budget inside `_execute_tool_uses` before *each* action, not just once between turns
+-- it now takes `actions_so_far`/`started`/`now` so it can call `session_exhausted()` per action
+and mark the rest of the batch `is_error: true` / `"Not executed: the session's action/time budget
+was reached mid-batch."` the moment the cap is crossed, the same way it already handles an
+in-batch action failure. `run_session` always passes its own running `actions`/`started`/`now`
+through on every turn; `started`/`actions_so_far` default to `None`/`0` for any other caller, which
+skips the per-action check entirely (only the existing failure-short-circuit still applies). (2)
+`run()`'s own `except Exception` swallowed every unhandled error (recorded it, logged it, never
+re-raised -- matching its documented "never raises past this boundary" contract), but nothing
+ever turned that into a nonzero process exit: `__main__` just called `run()` with no exit-code
+handling, so `job-linkedin-ingest.service` always exited 0 even after a caught API exception,
+which meant its `OnFailure=notify-failure@%i.service` could never fire. `run()` now returns the
+total error count (0 on a clean, disabled, or paused run -- every early-return path returns
+`errors` explicitly) and `__main__` calls `sys.exit(1)` when it's nonzero, while `run()` itself
+still never raises, preserving the "never raises" contract library callers of `run()` (there
+currently are none, but the docstring promises it) can rely on.
+
 Spec: docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md (M1).
 
 ## Resume intelligence (full-fledged buildout, Phase 3)
@@ -1091,15 +1113,36 @@ arbitrary code inside the one job that is ARMED and holds every secret. `argpars
 not a mitigation there; the shell has already run. **Never move that input back into the `run:`
 line.**
 
-**Known follow-ups, not yet fixed** (see the `project-phase2.5-auto-apply` memory file for full
+**Fixed after external PR review (2026-09-24, PR #8)**: two real bugs found by a human reviewing
+the code directly, not caught by the (green) test suite. (1) `submit()` used to click the Submit
+button and immediately flip `stage='applied'` with no confirmation the click actually landed --
+a client-side validation error commonly leaves the button's own click handler a no-op with the
+form still on screen, which would have silently mismarked a failed submission as successful.
+`_submission_confirmed(page)` now checks for common ATS post-submit confirmation copy after the
+click (best-effort, never raises -- a check failure degrades to "not confirmed", the safe
+direction) and `submit()` now raises instead of advancing the stage when it comes back false, so
+the row stays at `ready_to_submit` for a human to investigate. (2) `_answer_screening_questions`
+(the preview pass) generated screening-question answers via Claude but never actually filled them
+into the page -- it only returned a dict that got stored in `apply_preview` and otherwise
+discarded, so every screening question shipped blank. `submit()` compounded this by calling the
+same generation function *again* (a fresh, possibly different Claude call, its result also
+discarded) instead of reusing what the human reviewed. Split into `_generate_screening_answers`
+(Claude call, preview pass only) + `_fill_screening_questions`/`_fill_eligibility_answers`
+(page-filling, by label, best-effort like `ats_fillers._try_fill`) -- the preview pass now
+generates and fills; `submit()` now only ever fills, from `job["apply_preview"]`'s stored
+`screening_answers`/`eligibility_answers`, never regenerating. Eligibility answers
+(`_eligibility_answers()`) were computed and stored in `apply_preview` from the very first
+version of this feature but were **never filled into any page field at all**, in either pass --
+the same fill helper now closes that gap too.
+
+**Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
 assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
-live-smoke-test pass; `submit()` regenerates screening-question answers instead of reusing what the
-human approved in the preview; a resume/cover-letter attach failure is silently swallowed even in
-the armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None
-of these are safety gaps -- the two gates above are the actual safety boundary, and everything
-upstream of them degrading just means the *preview* is incomplete, not that an unapproved
-submission could happen.
+live-smoke-test pass; a resume/cover-letter attach failure is silently swallowed even in the
+armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None of
+these are safety gaps -- the two ARMED/approval gates above are the actual safety boundary, and
+everything upstream of them degrading just means the *preview* is incomplete, not that an
+unapproved submission could happen.
 
 ## System-wide Claude API cost tracking
 

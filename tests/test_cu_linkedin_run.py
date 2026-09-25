@@ -153,3 +153,35 @@ def test_run_survives_a_record_run_failure(mocker):
     mocker.patch.object(cu_linkedin, "run_session", return_value=("[]", 0, 0))
     mocker.patch.object(db, "record_run", side_effect=RuntimeError("supabase down"))
     cu_linkedin.run()
+
+
+# ── run()'s return value drives __main__'s exit code ────────────────────────────
+#
+# record_run's DB "failure" status is a separate, best-effort signal for the UI. Without a
+# nonzero process exit, systemd's OnFailure= on job-linkedin-ingest.service could never fire --
+# an API exception was caught, logged, and recorded, but the process still exited 0.
+
+def test_run_returns_zero_on_a_clean_session(mocker):
+    mocker.patch.object(cu_linkedin, "run_session", return_value=(_posting_json(), 5, 0))
+    assert cu_linkedin.run() == 0
+
+
+def test_run_returns_the_error_count_on_a_failed_session(mocker):
+    mocker.patch.object(cu_linkedin, "run_session", return_value=("[]", 12, 3))
+    assert cu_linkedin.run() == 3
+
+
+def test_run_returns_zero_when_disabled(mocker):
+    mocker.patch.object(config, "CU_LINKEDIN_ENABLED", False)
+    assert cu_linkedin.run() == 0
+
+
+@pytest.mark.parametrize("scope", ["agent", "all"])
+def test_run_returns_zero_when_paused(mocker, scope):
+    mocker.patch.object(db, "get_pause_scope", return_value=scope)
+    assert cu_linkedin.run() == 0
+
+
+def test_run_returns_a_nonzero_count_when_the_session_itself_raises(mocker):
+    mocker.patch.object(cu_linkedin, "run_session", side_effect=RuntimeError("anthropic down"))
+    assert cu_linkedin.run() == 1

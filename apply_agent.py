@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md.
 
 import json
 import logging
+import re
 
 import ats_fillers
 import ats_platform
@@ -56,7 +57,12 @@ Candidate facts: {profile_summary}
 """
 
 
-def _answer_screening_questions(page, job):
+def _generate_screening_answers(page, job):
+    """Finds on-page screening questions and generates grounded answers via Claude --
+    generation only, this never fills the page. Called exactly once, in the preview pass;
+    submit() must reuse the stored result via _fill_screening_questions instead of calling
+    this again, so a submitted application always matches what the human reviewed in the
+    preview rather than a freshly (and differently) generated answer."""
     answers = {}
     try:
         question_elements = page.get_by_text("?").all()
@@ -77,6 +83,57 @@ def _answer_screening_questions(page, job):
         except Exception as exc:
             log.info(f"[APPLY-AGENT] | screening question skipped: {exc}")
     return answers
+
+
+def _fill_screening_questions(page, answers):
+    """Writes pre-computed screening-question answers into the page, by label -- best-effort
+    per question, same posture as ats_fillers._try_fill. Used right after generation in the
+    preview pass, and again during submit to replay a stored preview's answers verbatim."""
+    for question_text, answer in (answers or {}).items():
+        if not answer:
+            continue
+        try:
+            page.get_by_label(question_text).fill(answer)
+        except Exception as exc:
+            log.info(f"[APPLY-AGENT] | screening field not fillable: {question_text[:60]!r}: {exc}")
+
+
+def _fill_eligibility_answers(page, answers):
+    """Writes the fixed EEO/work-authorization answers into the page, by label. Same
+    best-effort posture as _fill_screening_questions -- a field this generic filler can't
+    locate is logged and skipped, never a blocking error."""
+    for label, value in (answers or {}).items():
+        if not value:
+            continue
+        try:
+            page.get_by_label(label).fill(str(value))
+        except Exception as exc:
+            log.info(f"[APPLY-AGENT] | eligibility field not fillable: {label!r}: {exc}")
+
+
+_CONFIRMATION_TEXT_PATTERN = re.compile(
+    r"application (has been |was )?(submitted|received)"
+    r"|thank you for (applying|your application)"
+    r"|your application (is|has been) (complete|in)",
+    re.IGNORECASE,
+)
+
+
+def _submission_confirmed(page):
+    """Best-effort post-click confirmation check -- clicking Submit is not proof the
+    application landed; a client-side validation error can leave the button's click handler
+    a no-op with the form still on screen. Looks for common ATS post-submit copy after a
+    short settle/navigation wait. Never raises: a check failure degrades to "not confirmed",
+    the safe direction, since submit() treats an unconfirmed click as a failed submission and
+    does not flip the row to 'applied'."""
+    try:
+        page.wait_for_timeout(2000)
+    except Exception:
+        pass
+    try:
+        return page.get_by_text(_CONFIRMATION_TEXT_PATTERN).count() > 0
+    except Exception:
+        return False
 
 
 def _attach_resume_and_cover_letter(page, job):
@@ -179,12 +236,15 @@ def _process_one_preview(job):
             _fill_generic_via_browser_use(page, job, field_values)
 
         _attach_resume_and_cover_letter(page, job)
-        screening_answers = _answer_screening_questions(page, job)
+        screening_answers = _generate_screening_answers(page, job)
+        _fill_screening_questions(page, screening_answers)
+        eligibility_answers = _eligibility_answers()
+        _fill_eligibility_answers(page, eligibility_answers)
 
         preview = {
             "platform": platform,
             "field_values": field_values,
-            "eligibility_answers": _eligibility_answers(),
+            "eligibility_answers": eligibility_answers,
             "screening_answers": screening_answers,
         }
         db.set_apply_preview(job_id, preview)
@@ -268,13 +328,29 @@ def submit(job_id):
             _fill_generic_via_browser_use(page, job, field_values)
 
         _attach_resume_and_cover_letter(page, job)
-        _answer_screening_questions(page, job)
+        # Reuse the stored preview's answers verbatim -- never regenerate here. The human
+        # approved what's in apply_preview when they tapped "Approve & Submit"; a fresh
+        # Claude call at submit time could produce a different answer than the one they saw,
+        # and any screening/eligibility question the preview pass couldn't fill would
+        # otherwise go out blank instead of being retried from the same known values.
+        preview = job.get("apply_preview") or {}
+        _fill_screening_questions(page, preview.get("screening_answers"))
+        _fill_eligibility_answers(page, preview.get("eligibility_answers"))
 
         if os.environ.get("APPLY_AGENT_ARMED") != "1":
             log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
             return
 
         page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
+        # The click succeeding is not proof the application landed -- a client-side validation
+        # error commonly leaves the button's own click handler a no-op with the form still on
+        # screen. Do not advance the stage until the site itself confirms it.
+        if not _submission_confirmed(page):
+            raise RuntimeError(
+                f"submit() clicked Submit for job_id={job_id} ({job.get('company')}) but found "
+                f"no confirmation on the page afterward -- treating this as a failed submission "
+                f"and leaving the stage unchanged so a human can investigate before any retry."
+            )
         db.update_job_application_stage(job_id, "applied")
         log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
     finally:

@@ -24,6 +24,7 @@ import os
 import random
 import re
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -280,18 +281,35 @@ def _truncation_errors(resp, context):
     return 0
 
 
-def _execute_tool_uses(blocks, rand=random.random):
+def _execute_tool_uses(blocks, actions_so_far=0, started=None, rand=random.random, now=time.monotonic):
+    """Executes one turn's batch of tool_use blocks. A single turn can carry several actions
+    (the model may call more than one tool in one response) -- session_exhausted() is checked
+    before EACH one, not just once between turns, or a batch straddling the cap can run past it
+    (reproduced live: 61 executed actions against a 60-action cap, because the whole batch that
+    crossed the cap was allowed to finish). Pass actions_so_far/started to enforce the budget;
+    omitting started (the default) skips the per-action check entirely, for callers that don't
+    need it."""
     results = []
     executed = 0
     errors = 0
-    failed = False
+    stop_reason = None  # None | "failed" | "budget"
     for block in blocks:
         toolset_name = getattr(block, "toolset_name", None) or "computer"
-        if failed:
+        if stop_reason == "failed":
             results.append({
                 "type": "tool_result", "tool_use_id": block.id, "toolset_name": toolset_name,
                 "is_error": True,
                 "content": "Not executed: an earlier computer action in this turn failed.",
+            })
+            continue
+        if stop_reason == "budget" or (
+            started is not None and session_exhausted(actions_so_far + executed, now() - started)
+        ):
+            stop_reason = "budget"
+            results.append({
+                "type": "tool_result", "tool_use_id": block.id, "toolset_name": toolset_name,
+                "is_error": True,
+                "content": "Not executed: the session's action/time budget was reached mid-batch.",
             })
             continue
         time.sleep(next_action_delay(rand))
@@ -301,7 +319,7 @@ def _execute_tool_uses(blocks, rand=random.random):
                   "toolset_name": toolset_name, "content": content}
         if is_error:
             result["is_error"] = True
-            failed = True
+            stop_reason = "failed"
             errors += 1
         results.append(result)
     return results, executed, errors
@@ -369,7 +387,9 @@ def run_session(task_prompt, rand=random.random, now=time.monotonic):
             return _final_text(resp), actions, errors
 
         tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
-        results, executed, action_errors = _execute_tool_uses(tool_uses, rand=rand)
+        results, executed, action_errors = _execute_tool_uses(
+            tool_uses, actions_so_far=actions, started=started, rand=rand, now=now
+        )
         actions += executed
         errors += action_errors
         messages.append({"role": "user", "content": results})
@@ -514,13 +534,18 @@ _CAPTCHA_SENTINEL = "CAPTCHA_OR_CHALLENGE"
 
 
 def run():
-    """Run one paced LinkedIn discovery session and persist what it found. Never raises."""
+    """Run one paced LinkedIn discovery session and persist what it found. Never raises past
+    this boundary -- but DOES return the total error count (0 on a clean, disabled, or paused
+    run) so __main__ can turn a failed session into a nonzero process exit. record_run's own DB
+    'failure' status is a separate, best-effort signal for the UI; without a nonzero exit code
+    here, systemd's OnFailure= on job-linkedin-ingest.service could never fire, since the
+    process itself always exited 0 even after an unhandled exception was caught and logged."""
     start = time.time()
     saved = skipped = errors = 0
 
     if not config.CU_LINKEDIN_ENABLED:
         log.info("[CU-LINKEDIN] | disabled via config.CU_LINKEDIN_ENABLED, skipping")
-        return
+        return errors
 
     # LinkedIn browsing is the highest-consequence activity in this whole system -- it risks the
     # user's real account -- so it must respect the global pause switch, same as agent.py and
@@ -528,7 +553,7 @@ def run():
     # check can be hit far more often than a real session runs and must not flood agent_runs.
     if db.get_pause_scope() in ("agent", "all"):
         log.info("[CU-LINKEDIN] | PAUSED | skipping (pause_scope)")
-        return
+        return errors
 
     log.info("[CU-LINKEDIN] | START")
     try:
@@ -562,6 +587,7 @@ def run():
                       round(time.time() - start), source="cu_linkedin")
     except Exception as exc:
         log.warning(f"[CU-LINKEDIN] | record_run failed: {exc}")
+    return errors
 
 
 if __name__ == "__main__":
@@ -571,4 +597,5 @@ if __name__ == "__main__":
         format="%(asctime)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M",
     )
-    run()
+    if run():
+        sys.exit(1)
