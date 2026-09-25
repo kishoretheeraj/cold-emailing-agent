@@ -352,7 +352,10 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 78** (vitest: 659 across 43 files, playwright: 78).
+- **Current test count: 79** (vitest: 680 across 44 files, playwright: 79). The vitest count
+  includes pre-existing drift from before Beelink M2 Task 6 (that task only added 5 vitest
+  cases to existing files: two in `route.test.ts`, three in `ApplicationsPage.test.tsx`) --
+  the gap between the two counts was not audited as part of that task.
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.

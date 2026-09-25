@@ -62,6 +62,33 @@ test.describe("Applications page", () => {
     await page.screenshot({ path: "tests/e2e/screenshots/18-applications.png" });
   });
 
+  test("shows the source and filed-via columns and refetches with filters (U7/U8/U12)", async ({
+    page,
+  }) => {
+    const requestUrls: string[] = [];
+    page.on("request", (req) => {
+      if (req.url().includes("/api/applications")) requestUrls.push(req.url());
+    });
+    await page.goto("/applications");
+    const row = page.locator("tr", { hasText: "Acme" });
+    await expect(row.getByText("manual")).toBeVisible();
+
+    await page.getByTestId("stage-filter").getByRole("combobox").click();
+    await page.getByRole("option", { name: "Applied" }).click();
+    await expect
+      .poll(() => requestUrls[requestUrls.length - 1] ?? "")
+      .toContain("stage=applied");
+
+    await page.getByTestId("source-filter").getByRole("combobox").click();
+    await page.getByRole("option", { name: "linkedin" }).click();
+    await expect
+      .poll(() => requestUrls[requestUrls.length - 1] ?? "")
+      .toContain("source=linkedin");
+    expect(requestUrls[requestUrls.length - 1]).toContain("stage=applied");
+
+    await page.screenshot({ path: "tests/e2e/screenshots/18-applications-filters.png" });
+  });
+
   test("opens the detail sheet and shows job details on View click", async ({ page }) => {
     await page.goto("/applications");
     await page.getByRole("button", { name: "View" }).click();
