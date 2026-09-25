@@ -17,8 +17,13 @@ def _block(**fields):
     return block
 
 
-def _tool_use(block_id, name, params=None):
-    return _block(type="tool_use", id=block_id, name=name, input=params or {})
+def _tool_use(block_id, name, params=None, toolset_name=None):
+    # toolset_name defaults to explicit None (not left unset on the MagicMock) so
+    # getattr(block, "toolset_name", None) sees a real None and falls back to "computer" --
+    # an unset MagicMock attribute auto-vivifies to a truthy Mock instead of raising, which
+    # would silently defeat the getattr(..., None) fallback in _execute_tool_uses.
+    return _block(type="tool_use", id=block_id, name=name, input=params or {},
+                 toolset_name=toolset_name)
 
 
 def _text(value):
@@ -60,14 +65,24 @@ def test_toolset_is_the_current_type_with_zoom_disabled():
 
 def test_results_carry_the_toolset_name_and_tool_use_id(mocker):
     mocker.patch.object(cu_linkedin, "execute_action", return_value=("OK", False))
-    results, executed = cu_linkedin._execute_tool_uses([_tool_use("toolu_1", "left_click")])
+    results, executed, errors = cu_linkedin._execute_tool_uses([_tool_use("toolu_1", "left_click")])
     assert executed == 1
+    assert errors == 0
     assert results == [{
         "type": "tool_result",
         "tool_use_id": "toolu_1",
         "toolset_name": "computer",
         "content": "OK",
     }]
+
+
+def test_tool_result_derives_toolset_name_from_the_incoming_block(mocker):
+    # Prefer deriving toolset_name from the incoming tool_use block over hardcoding the literal,
+    # so this self-corrects if a future toolset family uses a different name.
+    mocker.patch.object(cu_linkedin, "execute_action", return_value=("OK", False))
+    block = _tool_use("toolu_1", "left_click", toolset_name="some_future_toolset")
+    results, _executed, _errors = cu_linkedin._execute_tool_uses([block])
+    assert results[0]["toolset_name"] == "some_future_toolset"
 
 
 def test_batched_actions_run_sequentially_in_order(mocker):
@@ -77,8 +92,9 @@ def test_batched_actions_run_sequentially_in_order(mocker):
         _tool_use("b", "left_click", {"coordinate": [1, 2]}),
         _tool_use("c", "screenshot"),
     ]
-    results, executed = cu_linkedin._execute_tool_uses(blocks)
+    results, executed, errors = cu_linkedin._execute_tool_uses(blocks)
     assert executed == 3
+    assert errors == 0
     assert [c.args[0] for c in execute.call_args_list] == ["screenshot", "left_click", "screenshot"]
     assert [r["tool_use_id"] for r in results] == ["a", "b", "c"]
 
@@ -87,8 +103,9 @@ def test_a_failed_action_short_circuits_the_rest_of_the_batch(mocker):
     execute = mocker.patch.object(cu_linkedin, "execute_action",
                                   side_effect=[("boom", True), ("OK", False)])
     blocks = [_tool_use("a", "left_click"), _tool_use("b", "screenshot")]
-    results, executed = cu_linkedin._execute_tool_uses(blocks)
+    results, executed, errors = cu_linkedin._execute_tool_uses(blocks)
     assert executed == 1
+    assert errors == 1
     assert execute.call_count == 1
     assert results[0]["is_error"] is True
     assert results[1] == {
@@ -139,7 +156,10 @@ def test_prune_never_touches_text_results():
 
 def test_run_session_returns_final_text_when_claude_stops(claude):
     claude.messages.create.return_value = _response([_text('[{"company": "Acme"}]')], "end_turn")
-    assert cu_linkedin.run_session("go") == '[{"company": "Acme"}]'
+    text, actions, errors = cu_linkedin.run_session("go")
+    assert text == '[{"company": "Acme"}]'
+    assert actions == 0
+    assert errors == 0
     assert claude.messages.create.call_count == 1
 
 
@@ -172,7 +192,8 @@ def test_run_session_feeds_tool_results_back_and_loops(mocker, claude):
         return next(responses)
 
     claude.messages.create.side_effect = _create
-    assert cu_linkedin.run_session("go") == "all done"
+    text, actions, errors = cu_linkedin.run_session("go")
+    assert (text, actions, errors) == ("all done", 1, 0)
 
     assert len(seen_messages) == 2
     second_call_messages = seen_messages[1]
@@ -198,7 +219,8 @@ def test_run_session_wraps_up_without_tools_when_the_session_cap_is_hit(mocker, 
         _response([_tool_use("a", "screenshot")], "tool_use"),
         _response([_text("here is what I found")], "end_turn"),
     ]
-    assert cu_linkedin.run_session("go") == "here is what I found"
+    text, actions, errors = cu_linkedin.run_session("go")
+    assert (text, errors) == ("here is what I found", 0)
     wrap_up = claude.messages.create.call_args_list[1].kwargs
     assert wrap_up["tool_choice"] == {"type": "none"}
 
@@ -210,5 +232,27 @@ def test_run_session_stops_at_max_turns(mocker, claude):
         [_response([_tool_use("a", "screenshot")], "tool_use")] * 2
         + [_response([_text("wrapped")], "end_turn")]
     )
-    assert cu_linkedin.run_session("go") == "wrapped"
+    text, actions, errors = cu_linkedin.run_session("go")
+    assert (text, errors) == ("wrapped", 0)
     assert claude.messages.create.call_count == 3
+
+
+# ── max_tokens truncation (2a) ────────────────────────────────────────────────
+
+def test_run_session_counts_a_truncated_final_answer_as_an_error(claude):
+    claude.messages.create.return_value = _response([_text('[{"company": "Acm')], "max_tokens")
+    text, actions, errors = cu_linkedin.run_session("go")
+    assert text == '[{"company": "Acm'
+    assert errors == 1
+
+
+def test_wrap_up_counts_a_truncated_response_as_an_error(mocker, claude):
+    mocker.patch.object(cu_linkedin, "execute_action", return_value=("OK", False))
+    mocker.patch.object(cu_linkedin, "session_exhausted", return_value=True)
+    claude.messages.create.side_effect = [
+        _response([_tool_use("a", "screenshot")], "tool_use"),
+        _response([_text('[{"company": "Acm')], "max_tokens"),
+    ]
+    text, actions, errors = cu_linkedin.run_session("go")
+    assert text == '[{"company": "Acm'
+    assert errors == 1

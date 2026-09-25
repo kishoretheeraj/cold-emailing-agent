@@ -67,7 +67,7 @@ def test_every_service_explicitly_blanks_apply_agent_armed():
 
 def test_nothing_in_m1_arms_the_submit_path():
     for path in _unit_paths() + [_ENV_EXAMPLE]:
-        content = _read(path)
+        content = _directives(path)
         assert "APPLY_AGENT_ARMED=1" not in content, path
         assert "armed.env" not in content, path
 
@@ -78,7 +78,7 @@ def test_nothing_in_m1_arms_the_submit_path():
     "LINKEDIN_EMAIL", "LINKEDIN_PASSWORD", "CU_LINKEDIN_EMAIL", "CU_LINKEDIN_PASSWORD",
 ])
 def test_env_template_carries_no_linkedin_credentials(key):
-    assert key not in _read(_ENV_EXAMPLE)
+    assert key not in _directives(_ENV_EXAMPLE)
 
 
 def test_env_template_lists_every_hard_required_secret():
@@ -109,7 +109,7 @@ def test_the_ingest_unit_cannot_run_forever():
     # Type=oneshot: TimeoutStartSec= is the directive that actually bounds this unit's run.
     # RuntimeMaxSec= only governs post-activation runtime and is a silent no-op for oneshot --
     # asserting it here would manufacture confidence in a directive that does nothing.
-    unit = _read(os.path.join(_SYSTEMD, "job-linkedin-ingest.service"))
+    unit = _directives(os.path.join(_SYSTEMD, "job-linkedin-ingest.service"))
     assert "Type=oneshot" in unit
     assert "TimeoutStartSec=1200" in unit
     assert "RuntimeMaxSec=" not in unit

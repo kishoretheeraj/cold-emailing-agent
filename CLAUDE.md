@@ -875,12 +875,35 @@ no single row to attribute spend to -- same reasoning as `extract_voice.py`).
 Screenshots are 1,000-1,800 tokens each; `_prune_screenshots` keeps only the last
 `CU_LINKEDIN_SCREENSHOT_HISTORY` (3).
 
-Sampling-loop details that are easy to get wrong: `tool_result` blocks must carry
-`toolset_name: "computer"`; one `tool_result` per `tool_use` block, all in a **single** user
-message; a batched turn executes sequentially and stops at the first failure, with every un-run
-block answered `is_error: true` / `"Not executed: an earlier computer action in this turn
-failed."`. At 1280x800 screenshots are **not** scaled (long edge is under the toolset's limit),
-so Claude's coordinates apply to the screen directly -- don't add a scale factor.
+Sampling-loop details that are easy to get wrong: `tool_result` blocks must carry a
+`toolset_name`, derived from the incoming `tool_use` block (`getattr(block, "toolset_name",
+None) or "computer"`) rather than hardcoded, so a future toolset family self-corrects; one
+`tool_result` per `tool_use` block, all in a **single** user message; a batched turn executes
+sequentially and stops at the first failure, with every un-run block answered `is_error: true` /
+`"Not executed: an earlier computer action in this turn failed."`. At 1280x800 screenshots are
+**not** scaled (long edge is under the toolset's limit), so Claude's coordinates apply to the
+screen directly -- don't add a scale factor. `CU_LINKEDIN_MAX_TOKENS` is 8192, not 4096 -- a full
+25-posting JSON reply plus Sonnet 5's adaptive thinking budget can plausibly truncate at 4096, and
+a truncated reply parses to `[]` (a silent 0-saved "success"); `run_session`/`_wrap_up` treat a
+`stop_reason == "max_tokens"` final answer as a logged, counted error, not a clean empty result.
+`_execute_tool_uses` returns `(results, executed, errors)` -- `errors` (action failures during
+the session, not persistence failures) threads through `run_session`'s return
+`(text, actions, errors)` into `run()`'s own `errors` count and `db.record_run`. Any nonzero
+action-error count therefore flips `agent_runs.status` to `'failure'` for `source='cu_linkedin'`
+even when postings were saved -- a reader of that status (e.g. M2's "last successful run per
+service" health UI) should treat the `errors` count, not just `status`, as the wedged-box signal,
+since one transient recovered action failure now marks the run a "failure" too.
+
+**`_canonical_job_url` -- the posting id can live only in the query string.** Clicking a result in
+LinkedIn's Jobs list pane commonly leaves the address bar on `.../jobs/search/?currentJobId=<id>`
+or `.../jobs/collections/recommended/?currentJobId=<id>`, not a `/jobs/view/<id>` path -- a blind
+`split("?")[0]` strips the id along with the tracking noise and collapses every posting in a
+session onto the same bare URL, poisoning `db.create_job_application`'s exact-match dedup
+permanently (one bad row, then false "already tracked" skips forever after). The function
+validates before canonicalizing: `/jobs/view/<digits>` is accepted as-is (query stripped), a
+`currentJobId=<digits>` query param is recovered into the canonical `/jobs/view/<id>` form, and
+anything matching neither shape returns `None` so the caller skips the posting rather than
+persisting a garbage or missing `job_url`.
 
 Spec: docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md (M1).
 

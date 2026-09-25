@@ -49,12 +49,16 @@ def test_every_subprocess_call_targets_the_configured_display(mocker, run):
 # ── clicks and movement ────────────────────────────────────────────────────────
 
 def test_left_click_moves_then_clicks_button_one(run):
+    # Routes through _glide_to now (not an instant _move_to jump) -- `run`'s mocked stdout is
+    # b"", so _current_position() falls back to (0, 0), same shape as
+    # test_mouse_move_interpolates_instead_of_jumping.
     content, is_error = cu_linkedin.execute_action("left_click", {"coordinate": [640, 480]})
     assert (content, is_error) == ("OK", False)
-    assert _commands(run) == [
-        ["xdotool", "mousemove", "--sync", "640", "480"],
-        ["xdotool", "click", "1"],
-    ]
+    commands = _commands(run)
+    assert commands[0] == ["xdotool", "getmouselocation", "--shell"]
+    assert len(commands) == config.CU_LINKEDIN_MOUSE_STEPS + 2  # glide steps + click
+    assert commands[-2] == ["xdotool", "mousemove", "--sync", "640", "480"]
+    assert commands[-1] == ["xdotool", "click", "1"]
 
 
 def test_left_click_without_coordinate_clicks_in_place(run):
@@ -64,8 +68,10 @@ def test_left_click_without_coordinate_clicks_in_place(run):
 
 def test_left_click_with_modifier_text_holds_then_releases_it(run):
     cu_linkedin.execute_action("left_click", {"coordinate": [1, 2], "text": "ctrl+shift"})
-    assert _commands(run) == [
-        ["xdotool", "mousemove", "--sync", "1", "2"],
+    commands = _commands(run)
+    assert commands[0] == ["xdotool", "getmouselocation", "--shell"]
+    assert commands[config.CU_LINKEDIN_MOUSE_STEPS] == ["xdotool", "mousemove", "--sync", "1", "2"]
+    assert commands[config.CU_LINKEDIN_MOUSE_STEPS + 1:] == [
         ["xdotool", "keydown", "ctrl+shift"],
         ["xdotool", "click", "1"],
         ["xdotool", "keyup", "ctrl+shift"],
@@ -202,13 +208,14 @@ def test_hold_key_presses_sleeps_then_releases(mocker, run):
     ("up", "4"), ("down", "5"), ("left", "6"), ("right", "7"),
 ])
 def test_scroll_maps_direction_to_a_wheel_button(run, direction, button):
+    # Routes through _glide_to now (not an instant _move_to jump), same as left_click.
     cu_linkedin.execute_action("scroll", {
         "coordinate": [10, 20], "scroll_direction": direction, "scroll_amount": 3,
     })
-    assert _commands(run) == [
-        ["xdotool", "mousemove", "--sync", "10", "20"],
-        ["xdotool", "click", "--repeat", "3", button],
-    ]
+    commands = _commands(run)
+    assert commands[0] == ["xdotool", "getmouselocation", "--shell"]
+    assert commands[config.CU_LINKEDIN_MOUSE_STEPS] == ["xdotool", "mousemove", "--sync", "10", "20"]
+    assert commands[-1] == ["xdotool", "click", "--repeat", "3", button]
 
 
 def test_wait_sleeps_but_is_clamped(mocker, run):

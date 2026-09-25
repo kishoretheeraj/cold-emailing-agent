@@ -178,8 +178,10 @@ Watch the session live in the noVNC window while it runs. Confirm, before enabli
 
 - the cursor moves in visible steps and pauses irregularly between actions (not a metronome);
 - the agent never clicks Apply, Connect, Follow, Message, or Save;
-- `job_applications` gained rows with `source='linkedin'` and clean `job_url`s with no
-  `?refId=` tail;
+- `job_applications` gained rows with `source='linkedin'` and every new `job_url` matches
+  `https://www.linkedin.com/jobs/view/<digits>` (with an optional query string) -- NOT merely "no
+  `?refId=`/`?trackingId=` tail", which a collapsed `.../jobs/collections/recommended` URL would
+  also pass;
 - `api_usage_log` gained `module='cu_linkedin'` rows with real token counts;
 - `agent_runs` gained one row with `source='cu_linkedin'`.
 

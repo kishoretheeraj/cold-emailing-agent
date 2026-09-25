@@ -18,12 +18,30 @@ def test_canonical_job_url_strips_linkedin_tracking_params():
 
 
 def test_canonical_job_url_strips_fragments_and_trailing_slash():
-    assert cu_linkedin._canonical_job_url("https://x.com/jobs/1/#top") == "https://x.com/jobs/1"
+    url = "https://www.linkedin.com/jobs/view/42/#top"
+    assert cu_linkedin._canonical_job_url(url) == "https://www.linkedin.com/jobs/view/42"
 
 
 @pytest.mark.parametrize("value", [None, "", "   ", 42, {"url": "x"}])
 def test_canonical_job_url_returns_none_for_junk(value):
     assert cu_linkedin._canonical_job_url(value) is None
+
+
+def test_canonical_job_url_recovers_current_job_id_from_the_query_string():
+    # Clicking a result in LinkedIn's list pane commonly leaves the address bar on
+    # .../jobs/collections/recommended/?currentJobId=<id> -- the posting id lives only in the
+    # query string there, not the path. The old split("?")[0] behavior stripped it along with the
+    # tracking noise, collapsing every posting in a session onto the same bare "recommended" URL.
+    url = ("https://www.linkedin.com/jobs/collections/recommended/"
+           "?currentJobId=4123456789&some=other&params=here")
+    assert cu_linkedin._canonical_job_url(url) == "https://www.linkedin.com/jobs/view/4123456789"
+
+
+def test_canonical_job_url_returns_none_for_a_non_posting_url():
+    # No currentJobId in the query string and not a /jobs/view/<id> path -- this is the
+    # "can't be parsed" case, not a posting. Must return None, never a truthy garbage string.
+    url = "https://www.linkedin.com/jobs/search/?keywords=engineer"
+    assert cu_linkedin._canonical_job_url(url) is None
 
 
 # ── extract_postings ───────────────────────────────────────────────────────────
@@ -45,8 +63,21 @@ def test_extract_postings_parses_a_plain_json_array():
 
 
 def test_extract_postings_strips_a_markdown_json_fence():
-    text = '```json\n[{"company": "Acme", "role": "PM", "job_url": "https://x/1"}]\n```'
+    text = ('```json\n[{"company": "Acme", "role": "PM", '
+            '"job_url": "https://www.linkedin.com/jobs/view/1"}]\n```')
     assert len(cu_linkedin.extract_postings(text)) == 1
+
+
+def test_extract_postings_skips_a_posting_whose_url_cannot_be_canonicalized():
+    # _canonical_job_url returns None for a non-posting URL (no /jobs/view/<id>, no
+    # currentJobId) -- the posting must be skipped entirely, never persisted with a bad or
+    # missing job_url.
+    import json
+    text = json.dumps([{
+        "company": "Acme", "role": "PM",
+        "job_url": "https://www.linkedin.com/jobs/search/?keywords=engineer",
+    }])
+    assert cu_linkedin.extract_postings(text) == []
 
 
 @pytest.mark.parametrize("posting", [

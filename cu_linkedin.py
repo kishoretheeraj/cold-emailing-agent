@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import tempfile
 import time
@@ -161,7 +162,7 @@ def _dispatch(name, params, rand):
     if name in _BUTTONS or name in _MULTI_CLICKS:
         coordinate = params.get("coordinate")
         if coordinate:
-            _move_to(coordinate)
+            _glide_to(coordinate)
         modifiers = params.get("text")
         if modifiers:
             _xdotool(["keydown", modifiers])
@@ -212,7 +213,7 @@ def _dispatch(name, params, rand):
     if name == "scroll":
         coordinate = params.get("coordinate")
         if coordinate:
-            _move_to(coordinate)
+            _glide_to(coordinate)
         button = _SCROLL_BUTTONS[params.get("scroll_direction", "down")]
         _xdotool(["click", "--repeat", str(int(params.get("scroll_amount", 1))), button])
         return "OK", False
@@ -268,14 +269,27 @@ def _final_text(resp):
                    if getattr(b, "type", None) == "text").strip()
 
 
+def _truncation_errors(resp, context):
+    # A truncated final answer parses to [] and the session silently records as a success with 0
+    # saved -- log it and feed it into the same error count run() reports, so a wedged/truncating
+    # session is visible instead of looking identical to "found nothing today".
+    if resp.stop_reason == "max_tokens":
+        log.warning(f"[CU-LINKEDIN] | {context} | stop_reason=max_tokens, response likely "
+                    f"truncated")
+        return 1
+    return 0
+
+
 def _execute_tool_uses(blocks, rand=random.random):
     results = []
     executed = 0
+    errors = 0
     failed = False
     for block in blocks:
+        toolset_name = getattr(block, "toolset_name", None) or "computer"
         if failed:
             results.append({
-                "type": "tool_result", "tool_use_id": block.id, "toolset_name": "computer",
+                "type": "tool_result", "tool_use_id": block.id, "toolset_name": toolset_name,
                 "is_error": True,
                 "content": "Not executed: an earlier computer action in this turn failed.",
             })
@@ -284,12 +298,13 @@ def _execute_tool_uses(blocks, rand=random.random):
         content, is_error = execute_action(block.name, dict(block.input or {}), rand=rand)
         executed += 1
         result = {"type": "tool_result", "tool_use_id": block.id,
-                  "toolset_name": "computer", "content": content}
+                  "toolset_name": toolset_name, "content": content}
         if is_error:
             result["is_error"] = True
             failed = True
+            errors += 1
         results.append(result)
-    return results, executed
+    return results, executed, errors
 
 
 def _prune_screenshots(messages):
@@ -335,33 +350,39 @@ def _call(messages, tool_choice=None, action="session_turn"):
 
 def _wrap_up(messages):
     messages.append({"role": "user", "content": _WRAP_UP_PROMPT})
-    return _final_text(_call(messages, tool_choice={"type": "none"}, action="wrap_up"))
+    resp = _call(messages, tool_choice={"type": "none"}, action="wrap_up")
+    return _final_text(resp), _truncation_errors(resp, "wrap_up")
 
 
 def run_session(task_prompt, rand=random.random, now=time.monotonic):
-    """Drive one paced Computer Use session and return Claude's final text reply."""
+    """Drive one paced Computer Use session and return (final_text, actions_taken, errors)."""
     started = now()
     actions = 0
+    errors = 0
     messages = [{"role": "user", "content": task_prompt}]
 
     for turn in range(config.CU_LINKEDIN_MAX_TURNS):
         resp = _call(messages)
         messages.append({"role": "assistant", "content": resp.content})
         if resp.stop_reason != "tool_use":
-            return _final_text(resp)
+            errors += _truncation_errors(resp, "final answer")
+            return _final_text(resp), actions, errors
 
         tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
-        results, executed = _execute_tool_uses(tool_uses, rand=rand)
+        results, executed, action_errors = _execute_tool_uses(tool_uses, rand=rand)
         actions += executed
+        errors += action_errors
         messages.append({"role": "user", "content": results})
         _prune_screenshots(messages)
 
         if session_exhausted(actions, now() - started):
             log.info(f"[CU-LINKEDIN] | session cap reached | turn={turn} | actions={actions}")
-            return _wrap_up(messages)
+            text, wrap_up_errors = _wrap_up(messages)
+            return text, actions, errors + wrap_up_errors
 
     log.info(f"[CU-LINKEDIN] | max turns reached | actions={actions}")
-    return _wrap_up(messages)
+    text, wrap_up_errors = _wrap_up(messages)
+    return text, actions, errors + wrap_up_errors
 
 
 # ── Posting extraction and persistence ─────────────────────────────────────────
@@ -377,14 +398,41 @@ def _strip_json_fence(text):
     return stripped.strip()
 
 
+_JOBS_VIEW_ID_RE = re.compile(r"/jobs/view/(\d+)")
+_CURRENT_JOB_ID_RE = re.compile(r"(?:^|&)currentJobId=(\d+)")
+
+
 def _canonical_job_url(url):
     # LinkedIn posting URLs carry a per-impression ?refId=/?trackingId= query string. Dedup in
     # db.create_job_application is an exact match on job_url, so two sightings of one posting
-    # would otherwise create two rows.
+    # would otherwise create two rows -- but on LinkedIn's Jobs surfaces, clicking a result in the
+    # list pane commonly leaves the address bar on .../jobs/search/?currentJobId=<id> or
+    # .../jobs/collections/recommended/?currentJobId=<id>, where the posting id lives ONLY in the
+    # query string. The old blind split("?")[0] stripped that id along with the tracking noise,
+    # collapsing every posting seen in a session onto the same bare "recommended" URL and
+    # poisoning the exact-match dedup (25 real postings -> 1 garbage row + 24 false "already
+    # tracked" skips, permanently, since that one URL stays poisoned for every future session
+    # too). A URL that resolves to neither the canonical /jobs/view/<id> shape nor a recoverable
+    # currentJobId isn't a posting -- return None so the caller skips it instead of persisting a
+    # garbage or missing job_url (governance: "a posting that can't be parsed is skipped, never
+    # inserted with None fields").
     if not isinstance(url, str):
         return None
-    cleaned = url.strip().split("#", 1)[0].split("?", 1)[0].rstrip("/")
-    return cleaned or None
+    cleaned = url.strip().split("#", 1)[0]
+    if not cleaned:
+        return None
+    path, _, query = cleaned.partition("?")
+    path = path.rstrip("/")
+
+    match = _JOBS_VIEW_ID_RE.search(path)
+    if match:
+        return f"https://www.linkedin.com/jobs/view/{match.group(1)}"
+
+    match = _CURRENT_JOB_ID_RE.search(query)
+    if match:
+        return f"https://www.linkedin.com/jobs/view/{match.group(1)}"
+
+    return None
 
 
 def _clean_text(value):
@@ -484,9 +532,10 @@ def run():
 
     log.info("[CU-LINKEDIN] | START")
     try:
-        text = run_session(
+        text, _actions, session_errors = run_session(
             _TASK_PROMPT.format(max_postings=config.CU_LINKEDIN_MAX_POSTINGS_PER_SESSION)
         )
+        errors += session_errors
         if _CAPTCHA_SENTINEL in (text or ""):
             # Never solved, never bypassed, never retried with a workaround: a human VNCs in.
             log.warning("[CU-LINKEDIN] | CAPTCHA or login challenge -- needs a human at the VNC "
@@ -494,7 +543,15 @@ def run():
         else:
             postings = extract_postings(text)
             log.info(f"[CU-LINKEDIN] | extracted={len(postings)}")
-            saved, skipped, errors = persist_postings(postings)
+            if (text or "").strip() and not postings:
+                # A non-empty reply that yields zero postings could be a genuine "nothing found"
+                # session or a broken extraction path -- these must not look identical on the
+                # first live run. Never log the text itself (may be large, this is a log line, not
+                # a debug dump), only its length.
+                log.info(f"[CU-LINKEDIN] | extraction yielded 0 postings from a non-empty reply "
+                         f"| reply_len={len(text)}")
+            saved, skipped, persist_errors = persist_postings(postings)
+            errors += persist_errors
     except Exception as exc:
         errors += 1
         log.warning(f"[CU-LINKEDIN] | unexpected error: {exc}")

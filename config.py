@@ -579,7 +579,11 @@ CU_LINKEDIN_ENABLED = True
 # a one-line change here if sonnet-5 proves unreliable at reading LinkedIn's UI -- both are priced
 # in MODEL_PRICING.
 CU_LINKEDIN_MODEL = "claude-sonnet-5"
-CU_LINKEDIN_MAX_TOKENS = 4096
+# 8192, not the original 4096: a full 25-posting JSON array (company/role/url/location/a
+# paragraph description each) plus Sonnet 5's default adaptive thinking budget can plausibly
+# truncate mid-response at 4096, and a truncated JSON array parses to [] -- a silent 0-saved
+# "success". See the stop_reason == "max_tokens" handling around _wrap_up/run_session below.
+CU_LINKEDIN_MAX_TOKENS = 8192
 
 # X11 display slot 0 -- the LinkedIn slot is exactly 1, always. Concurrency buys nothing (the
 # pacing cap is per-account, not per-process) and two simultaneous LinkedIn sessions is itself a
