@@ -1,0 +1,30 @@
+# OnFailure= target for every unit above. %i is the failed unit's name.
+#
+# notify_failure.py currently reads only GITHUB_WORKFLOW/GITHUB_RUN_ID/GITHUB_REPOSITORY (its
+# GHA-era env vars) and has no FAILED_UNIT handling, so this unit deliberately does not set
+# Environment=FAILED_UNIT=%i -- setting it here without teaching the script to read it would
+# read as wired-up when it isn't, and every failure email would silently omit which unit failed.
+# Wiring FAILED_UNIT into notify_failure.py (with its own test) is real, in-scope work but
+# belongs to whichever milestone first exercises this unit for real -- M1 ships no timer that
+# depends on it firing correctly. Until then, `journalctl -u notify-failure@*.service` on the box
+# shows the instance name directly.
+[Unit]
+Description=Notify on failure of %i
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/job-agent
+EnvironmentFile=/etc/job-agent/base.env
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/opt/job-agent/.venv/bin/python notify_failure.py
+# Type=oneshot: the process runs during activation, so the real bound is TimeoutStartSec=, not
+# RuntimeMaxSec= (which only applies once a unit is considered "started" -- a no-op here since
+# the service is done by then). Using RuntimeMaxSec= on a oneshot unit silently does nothing.
+TimeoutStartSec=120
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/job-agent

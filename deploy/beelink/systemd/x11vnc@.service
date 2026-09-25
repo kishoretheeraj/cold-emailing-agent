@@ -1,0 +1,25 @@
+# VNC server for slot %i, bound to localhost only. noVNC (below) is what reaches the LAN.
+[Unit]
+Description=x11vnc for display :%i
+After=xvfb@%i.service
+Requires=xvfb@%i.service
+JoinsNamespaceOf=xvfb@%i.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+User=jobagent
+Group=jobagent
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/usr/bin/x11vnc -display :%i -rfbport 590%i -localhost -rfbauth /etc/job-agent/vncpasswd -forever -shared -noxdamage
+Restart=always
+RestartSec=5
+RuntimeMaxSec=infinity
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/job-agent
+
+[Install]
+WantedBy=multi-user.target

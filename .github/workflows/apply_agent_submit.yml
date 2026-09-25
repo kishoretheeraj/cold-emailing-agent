@@ -1,0 +1,66 @@
+name: Apply Agent Submit
+
+# Triggered ONLY by a human's approval tap in the contact-manager UI (POST
+# /api/applications/[id]/submit), never on a schedule. APPLY_AGENT_ARMED is set HERE, inline,
+# and nowhere else in this repo -- never a GitHub Actions secret, never present in
+# build-continue.yml's environment. This is the one thing that makes it structurally
+# impossible for the unattended hourly build-continue.yml workflow to ever cause a real
+# submission. See docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_id:
+        description: 'job_applications.id to submit'
+        required: true
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-apply.txt
+          playwright install --with-deps chromium
+
+      # APPLICATION_ID is passed through the env, never interpolated into the run:
+      # script. A `${{ }}` expression is substituted into the script text before the
+      # shell parses it, so an id like `1"; curl ...|sh; "` would execute arbitrary
+      # code -- inside the one job in this repo that is ARMED and holds every secret.
+      # argparse's type=int is no defense: the shell has already run by then.
+      - name: Submit the approved application
+        run: python apply_agent.py --submit "$APPLICATION_ID"
+        env:
+          APPLICATION_ID: ${{ github.event.inputs.application_id }}
+          APPLY_AGENT_ARMED: "1"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apply-agent-submit-log-${{ github.run_id }}
+          path: apply_agent.log
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: python notify_failure.py
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

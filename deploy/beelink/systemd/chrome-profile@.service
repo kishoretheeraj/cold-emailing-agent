@@ -1,0 +1,54 @@
+# The LinkedIn browser for slot %i.
+#
+# NEVER add --headless or --remote-debugging-port to the ExecStart below. Those flags are what
+# set Chrome's automation-detectable launch state; a CDP attachment alone does not, but the
+# launch configuration does. This is why the LinkedIn profile cannot use Playwright,
+# browser-use, or any other CDP-based tool -- input comes from real X11 events (xdotool) and
+# screenshots from real X11 capture (scrot). tests/test_beelink_units.py enforces this.
+#
+# --disable-dev-shm-usage is required unless /dev/shm is mounted >= 2GB; the 64MB default
+# crashes Chrome tabs.
+#
+# JoinsNamespaceOf= is load-bearing: PrivateTmp= gives each unit its own /tmp, and the X11
+# socket lives in /tmp/.X11-unix. Without it this unit cannot see the display at all.
+#
+# HOME is overridden even though --user-data-dir is set explicitly: Chrome still touches $HOME
+# directly for crashpad, ~/.pki, and ~/.config regardless of the profile directory. With
+# ProtectHome=yes masking /home and no HOME= override, $HOME resolves to an inaccessible
+# /home/jobagent and Chrome fails to start. Pointing it at the already-writable profile root
+# keeps ProtectHome=yes intact instead of loosening it to ProtectHome=tmpfs.
+[Unit]
+Description=Headful Chrome on display :%i with the persistent LinkedIn profile
+After=xvfb@%i.service
+Requires=xvfb@%i.service
+JoinsNamespaceOf=xvfb@%i.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+User=jobagent
+Group=jobagent
+Environment=DISPLAY=:%i
+Environment=HOME=/var/lib/job-agent
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/usr/bin/google-chrome \
+    --user-data-dir=/var/lib/job-agent/profiles/%i \
+    --window-position=0,0 \
+    --window-size=1280,800 \
+    --disable-dev-shm-usage \
+    --no-first-run \
+    --no-default-browser-check \
+    https://www.linkedin.com/jobs/
+Restart=always
+RestartSec=5
+# Daily recycle for a wedged renderer. The login session survives -- it lives in the profile
+# directory on disk, not in process memory.
+RuntimeMaxSec=86400
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/job-agent
+
+[Install]
+WantedBy=multi-user.target

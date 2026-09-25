@@ -587,6 +587,41 @@ def get_job_application(application_id):
     return result.data
 
 
+def get_unscored_saved_applications():
+    """Fetch job_applications rows at stage='saved' that job_pick.py hasn't scored yet."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .select("*").eq("stage", "saved").is_("pick_verdict", "null")
+                     .order("created_at", desc=True).execute())
+    return result.data or []
+
+
+def set_pick_verdict(application_id, verdict, score, reasoning):
+    """Write job_pick.py's three-stage scoring output onto a row. Written once; never rescored."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"pick_verdict": verdict, "pick_score": score, "pick_reasoning": reasoning,
+                              "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
+def set_apply_preview(application_id, preview):
+    """Write apply_agent.py --preview's filled values and flip the row to ready_to_submit."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"apply_preview": preview, "stage": "ready_to_submit",
+                              "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
+def set_apply_blocked(application_id, reason):
+    """Flag a row as blocked (Workday, aggregator link, CAPTCHA, unrecognized field). Stage stays
+    'saved' -- a blocked row is still eligible for the user to apply to by hand."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"apply_blocked_reason": reason, "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
 def set_resume_strategy(application_id, strategy):
     """Write stage-4 strategy output onto a job_applications row. Builds nothing."""
     result = _retry(lambda: get_client().table("job_applications")

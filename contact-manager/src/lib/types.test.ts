@@ -7,6 +7,8 @@ import {
   EMPTY_FILTERS,
   filtersEqual,
   type ReplyStatus,
+  JOB_APPLICATION_STAGES,
+  JOB_APPLICATION_STAGE_LABELS,
 } from "./types";
 
 describe("stage and status enums", () => {
@@ -94,5 +96,18 @@ describe("filtersEqual / sponsorsH1bOnly", () => {
     const a = { ...EMPTY_FILTERS, sponsorsH1bOnly: true, tiers: [1] };
     const b = { ...EMPTY_FILTERS, sponsorsH1bOnly: true, tiers: [1] };
     expect(filtersEqual(a, b)).toBe(true);
+  });
+});
+
+describe("JOB_APPLICATION_STAGES", () => {
+  it("includes ready_to_submit with a label", () => {
+    expect(JOB_APPLICATION_STAGES).toContain("ready_to_submit");
+    expect(JOB_APPLICATION_STAGE_LABELS["ready_to_submit"]).toBe("Ready to submit");
+  });
+
+  it("every stage has a label", () => {
+    for (const stage of JOB_APPLICATION_STAGES) {
+      expect(JOB_APPLICATION_STAGE_LABELS[stage]).toBeTruthy();
+    }
   });
 });
