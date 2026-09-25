@@ -327,6 +327,27 @@ CREATE TABLE job_applications (
   that row. `db.record_resume_usage(application_id, tokens_input, tokens_output, cost_usd)` reads
   the current totals and adds to them (not atomic -- acceptable for this manual, single-user CLI).
   Written by `resume_agent._track_usage()` after every `_call_claude()` call.
+- **Added 2026-09-25 (Beelink M2, `approved_at` -- the third leg of the ARMED submit gate):**
+  `approved_at TIMESTAMPTZ NULL`. This column can **only ever be set** via the
+  `approve_application(p_id BIGINT)` Postgres RPC (`SECURITY DEFINER`), and **only ever cleared**
+  via the companion `reset_approval(p_id BIGINT)` RPC (also `SECURITY DEFINER`, guarded to a
+  still-`ready_to_submit` row so it can never un-approve an already-submitted one) -- never a
+  direct column write. `apply_agent.py`'s `submit()` requires it truthy (alongside
+  `stage='ready_to_submit'` and a non-null `apply_preview`) before it will ever click Submit.
+  **Column-allowlist rule, load-bearing for any future schema change:** the anon role's
+  table-level `UPDATE` and `INSERT` on `job_applications` are revoked and re-granted on a column
+  list derived *dynamically* from `information_schema.columns` at migration time (not
+  hand-enumerated), excluding `approved_at`. A new column added to `job_applications` needs no
+  manual edit to this grant (it's picked up automatically) -- but any future migration that ALSO
+  touches `UPDATE`/`INSERT` grants on this table **must run after**
+  `20260925000000_add_approved_at_and_approve_application_rpc.sql`, or it will re-grant a blanket
+  table-level privilege and silently reopen `approved_at` to direct anon writes. No RLS is used
+  for this (or any table in this repo) -- see `docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md`'s
+  Global Constraints for why a column-grant approach was chosen instead.
+- `db.record_submission(application_id, source_channel, applied_date)` (Beelink M2): the one
+  atomic update `apply_agent.py`'s `submit()` uses on a real successful submission -- sets
+  `stage='applied'` plus `source_channel`/`applied_date` together, since a partial failure between
+  two separate calls would leave the row `applied` with neither field recorded, or vice versa.
 
 ## api_usage_log (system-wide cost tracking, added 2026-08-29)
 
