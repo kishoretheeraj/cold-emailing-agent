@@ -46,6 +46,7 @@ src/
 │   ├── api/preview-draft/route.ts
 │   ├── api/applications/route.ts
 │   ├── api/applications/[id]/route.ts
+│   ├── api/applications/[id]/files/route.ts
 │   ├── applications/page.tsx
 │   ├── import/page.tsx
 │   ├── lab/page.tsx
@@ -88,6 +89,7 @@ src/
 │   ├── LabPromptEditor.tsx
 │   ├── LabPreviewPanel.tsx
 │   ├── ApplicationsPage.tsx
+│   ├── ApplicationDetailSheet.tsx
 │   └── Field.tsx
 └── lib/
     ├── supabase.ts
@@ -204,7 +206,25 @@ showing `pick_verdict` (`strong`/`maybe`/`no`, or `—` if not yet scored); **Bl
 `apply_blocked_reason` text (or `—`), covering Workday/aggregator exclusions and any field the
 filler couldn't confidently handle; **Preview / Submit** — for `stage='ready_to_submit'` rows
 with `apply_preview` set, shows a screening-answer count and an "Approve & Submit" button that
-calls the route above.
+calls the route above. A **Details** column's "View" button opens `ApplicationDetailSheet.tsx`
+(Vaul side sheet, same primitive as the contacts sheet) via `selectedApplication` state.
+
+**GET `/api/applications/[id]/files`** — no body. Reads `resume_file_ref` /
+`cover_letter_file_ref` from the row and, for each present ref, calls
+`supabase.storage.from("resumes").createSignedUrl(path, 300)`. Returns
+`{ resume_url, resume_error, cover_letter_url, cover_letter_error }` — a missing ref yields
+`url: null, error: false`; a signing failure yields `url: null, error: true` (I11: these two
+states must never be conflated, since a resume may genuinely exist even when signing fails
+transiently). 400 for a non-numeric id, 500 on a Supabase read error.
+
+`ApplicationDetailSheet.tsx` fetches `/api/applications/[id]/files` on open (keyed on
+`application?.id` only, not the whole object, so an in-place `apply_preview` edit doesn't
+re-trigger the fetch) and renders: the `job_url` link, every present `posting_snapshot` text
+field (`description`, `responsibilities`, `qualifications`, `benefits`, `location` — an
+array-valued field renders as a `<ul>` of separate `<li>` items, not a flattened string, since
+`job_discovery.py`/`jobright.py` can store some fields as string lists), and the resume/cover
+letter as inline `<iframe>`s fed by the signed URLs (PDFs render natively — no viewer
+dependency needed).
 
 ### Gmail API routes (Phase 0 — bulk-send infrastructure)
 
@@ -332,7 +352,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 77** (vitest: 645 across 41 files, playwright: 77).
+- **Current test count: 78** (vitest: 659 across 43 files, playwright: 78).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.

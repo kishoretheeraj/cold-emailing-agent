@@ -7,6 +7,34 @@ vi.mock("@/components/ui/Tooltip", () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+vi.mock("vaul", () => ({
+  Drawer: {
+    Root: ({ children, open }: { children: React.ReactNode; open?: boolean }) =>
+      open ? <>{children}</> : null,
+    Portal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Overlay: () => <div />,
+    Content: ({ children }: { children: React.ReactNode }) => (
+      <div role="dialog" data-testid="sheet-content">{children}</div>
+    ),
+    Trigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Close: ({
+      children,
+      onClick,
+      "aria-label": ariaLabel,
+    }: {
+      children?: React.ReactNode;
+      onClick?: () => void;
+      "aria-label"?: string;
+    }) => (
+      <button type="button" onClick={onClick} aria-label={ariaLabel}>
+        {children}
+      </button>
+    ),
+    Title: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+    Description: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+  },
+}));
+
 const toastErrorMock = vi.fn();
 const toastSuccessMock = vi.fn();
 vi.mock("sonner", () => ({
@@ -16,38 +44,57 @@ vi.mock("sonner", () => ({
   },
 }));
 
+// I12: every fixture below includes the full JobApplication field set (source_channel,
+// resume_cost_usd/resume_tokens_input/resume_tokens_output, approved_at) with plausible
+// null/default values -- an earlier draft of this plan's Self-Review claimed this was already
+// true and it wasn't. Harmless at runtime either way (the fetch mock is untyped), but keeping
+// these complete avoids the fixtures silently drifting from the real JobApplication shape.
 const sampleApplications = [
   { id: "1", contact_id: null, company: "Acme", role: "PM", job_url: null, source: "manual",
-    stage: "saved", applied_date: null, notes: null, posting_snapshot: null,
+    source_channel: null, stage: "saved", applied_date: null, notes: null, posting_snapshot: null,
+    resume_file_ref: null, cover_letter_file_ref: null,
+    resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
+    pick_verdict: null, pick_score: null, pick_reasoning: null,
+    apply_preview: null, apply_blocked_reason: null, approved_at: null,
     created_at: "2026-08-26T00:00:00Z", updated_at: "2026-08-26T00:00:00Z" },
   { id: "2", contact_id: null, company: "Globex", role: "Eng", job_url: null, source: "manual",
-    stage: "applied", applied_date: "2026-08-20", notes: null, posting_snapshot: null,
+    source_channel: null, stage: "applied", applied_date: "2026-08-20", notes: null, posting_snapshot: null,
+    resume_file_ref: null, cover_letter_file_ref: null,
+    resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
+    pick_verdict: null, pick_score: null, pick_reasoning: null,
+    apply_preview: null, apply_blocked_reason: null, approved_at: null,
     created_at: "2026-08-20T00:00:00Z", updated_at: "2026-08-20T00:00:00Z" },
 ];
 
 const pickedApplication = {
   id: "3", contact_id: null, company: "LangChain", role: "PM", job_url: null, source: "jobright",
-  stage: "saved", applied_date: null, notes: null, posting_snapshot: null,
+  source_channel: null, stage: "saved", applied_date: null, notes: null, posting_snapshot: null,
   resume_file_ref: null, cover_letter_file_ref: null,
+  resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
   pick_verdict: "strong", pick_score: 0.82, pick_reasoning: "Direct title match.",
-  apply_preview: null, apply_blocked_reason: null,
+  apply_preview: null, apply_blocked_reason: null, approved_at: null,
   created_at: "2026-08-30T00:00:00Z", updated_at: "2026-08-30T00:00:00Z",
 };
 const blockedApplication = {
   id: "4", contact_id: null, company: "Starz", role: "PM", job_url: null, source: "jobright",
-  stage: "saved", applied_date: null, notes: null, posting_snapshot: null,
+  source_channel: null, stage: "saved", applied_date: null, notes: null, posting_snapshot: null,
   resume_file_ref: null, cover_letter_file_ref: null,
+  resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
   pick_verdict: null, pick_score: null, pick_reasoning: null,
-  apply_preview: null, apply_blocked_reason: "workday -- permanently excluded",
+  apply_preview: null, apply_blocked_reason: "workday -- permanently excluded", approved_at: null,
   created_at: "2026-08-30T00:00:00Z", updated_at: "2026-08-30T00:00:00Z",
 };
 const readyApplication = {
-  id: "5", contact_id: null, company: "Ashby Co", role: "PM", job_url: null, source: "jobright",
-  stage: "ready_to_submit", applied_date: null, notes: null, posting_snapshot: null,
+  id: "5", contact_id: null, company: "Ashby Co", role: "PM", job_url: "https://jobs.example/5",
+  source: "jobright", source_channel: "ashby",
+  stage: "ready_to_submit", applied_date: null, notes: null,
+  posting_snapshot: { description: "Own the roadmap.", location: "Remote" },
   resume_file_ref: "resumes/5/resume.pdf", cover_letter_file_ref: "resumes/5/cl.pdf",
+  resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
   pick_verdict: "strong", pick_score: 0.9, pick_reasoning: "Great fit.",
   apply_preview: { platform: "ashby", field_values: { name: "Kishore" }, eligibility_answers: {}, screening_answers: { "Why this role?": "Because of the mission." } },
   apply_blocked_reason: null,
+  approved_at: null,
   created_at: "2026-08-30T00:00:00Z", updated_at: "2026-08-30T00:00:00Z",
 };
 
@@ -57,6 +104,12 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string, opts?: RequestInit) => {
+      if (typeof url === "string" && url.includes("/files")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ resume_url: null, cover_letter_url: null }),
+        } as Response);
+      }
       if (!opts || opts.method === undefined) {
         return Promise.resolve({
           ok: true,
@@ -147,5 +200,19 @@ describe("ApplicationsPage -- pipeline visibility", () => {
         expect.objectContaining({ method: "POST" })
       );
     });
+  });
+});
+
+describe("ApplicationsPage -- detail sheet (U1/U2)", () => {
+  it("opens the detail sheet with job details when View is clicked", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Ashby Co");
+    const row = screen.getByText("Ashby Co").closest("tr") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /view/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("sheet-content")).toBeInTheDocument();
+    });
+    expect(within(screen.getByTestId("sheet-content")).getByText("https://jobs.example/5")).toBeInTheDocument();
   });
 });

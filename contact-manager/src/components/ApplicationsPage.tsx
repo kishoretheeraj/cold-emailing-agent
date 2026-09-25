@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select";
+import { ApplicationDetailSheet } from "@/components/ApplicationDetailSheet";
 import {
   JOB_APPLICATION_STAGES,
   JOB_APPLICATION_STAGE_LABELS,
@@ -24,6 +25,7 @@ export function ApplicationsPage() {
   const [role, setRole] = useState("");
   const [jobUrl, setJobUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [selectedApplication, setSelectedApplication] = useState<JobApplication | null>(null);
 
   const load = async () => {
     try {
@@ -150,6 +152,7 @@ export function ApplicationsPage() {
               <th className="py-2 pr-4">Pick</th>
               <th className="py-2 pr-4">Blocked</th>
               <th className="py-2 pr-4">Preview / Submit</th>
+              <th className="py-2 pr-4">Details</th>
             </tr>
           </thead>
           <tbody>
@@ -199,11 +202,25 @@ export function ApplicationsPage() {
                     <span className="text-fg-dim">—</span>
                   )}
                 </td>
+                <td className="py-2 pr-4">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedApplication(app)}
+                    className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg"
+                  >
+                    View
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+
+      <ApplicationDetailSheet
+        application={selectedApplication}
+        onClose={() => setSelectedApplication(null)}
+      />
     </div>
   );
 }
