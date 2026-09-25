@@ -1,15 +1,27 @@
 export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
-
-const JOB_APPLICATION_STAGES = [
-  "saved", "applied", "phone_screen", "onsite", "offer", "rejected", "withdrawn", "accepted",
-] as const;
+import {
+  JOB_APPLICATION_STAGES,
+  type JobApplicationStage,
+  type JobApplicationApplyPreview,
+} from "@/lib/types";
 
 function getClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
+
+function isValidApplyPreview(v: unknown): v is JobApplicationApplyPreview {
+  if (typeof v !== "object" || v === null) return false;
+  const p = v as Record<string, unknown>;
+  return (
+    typeof p.platform === "string" &&
+    typeof p.field_values === "object" && p.field_values !== null &&
+    typeof p.eligibility_answers === "object" && p.eligibility_answers !== null &&
+    typeof p.screening_answers === "object" && p.screening_answers !== null
   );
 }
 
@@ -30,7 +42,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const updates: Record<string, unknown> = {};
 
   if ("stage" in b) {
-    if (!JOB_APPLICATION_STAGES.includes(b.stage as (typeof JOB_APPLICATION_STAGES)[number])) {
+    if (!JOB_APPLICATION_STAGES.includes(b.stage as JobApplicationStage)) {
       return Response.json(
         { error: `stage must be one of: ${JOB_APPLICATION_STAGES.join(", ")}` },
         { status: 400 }
@@ -40,6 +52,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
   if ("notes" in b && typeof b.notes === "string") {
     updates.notes = b.notes;
+  }
+  if ("apply_preview" in b) {
+    if (!isValidApplyPreview(b.apply_preview)) {
+      return Response.json(
+        {
+          error:
+            "apply_preview must be an object with platform, field_values, eligibility_answers, screening_answers",
+        },
+        { status: 400 }
+      );
+    }
+    updates.apply_preview = b.apply_preview;
   }
 
   if (Object.keys(updates).length === 0) {

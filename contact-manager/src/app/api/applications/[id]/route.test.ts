@@ -57,4 +57,56 @@ describe("PATCH /api/applications/[id]", () => {
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(500);
   });
+
+  it("accepts ready_to_submit as a valid stage (regression test for U10)", async () => {
+    mockSingle.mockResolvedValue({ data: { id: "1", stage: "ready_to_submit" }, error: null });
+    const req = new Request("http://test", {
+      method: "PATCH",
+      body: JSON.stringify({ stage: "ready_to_submit" }),
+    });
+    const res = await PATCH(req, params("1"));
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
+  const validPreview = {
+    platform: "ashby",
+    field_values: { name: "Kishore" },
+    eligibility_answers: { "Authorized to work in the US?": "Yes" },
+    screening_answers: { "Why this role?": "Because of the mission." },
+  };
+
+  it("updates apply_preview when given a valid object", async () => {
+    mockSingle.mockResolvedValue({ data: { id: "1", apply_preview: validPreview }, error: null });
+    const req = new Request("http://test", {
+      method: "PATCH",
+      body: JSON.stringify({ apply_preview: validPreview }),
+    });
+    const res = await PATCH(req, params("1"));
+    expect(res.status).toBe(200);
+    expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ apply_preview: validPreview }));
+  });
+
+  it("rejects apply_preview that isn't a well-formed object", async () => {
+    const req = new Request("http://test", {
+      method: "PATCH",
+      body: JSON.stringify({ apply_preview: "nope" }),
+    });
+    const res = await PATCH(req, params("1"));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("apply_preview must be");
+  });
+
+  it("rejects apply_preview missing a required key", async () => {
+    const req = new Request("http://test", {
+      method: "PATCH",
+      body: JSON.stringify({ apply_preview: { platform: "ashby" } }),
+    });
+    const res = await PATCH(req, params("1"));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("apply_preview must be");
+  });
 });

@@ -169,20 +169,31 @@ when paused. "Run Agent" is disabled while `scope !== "none"`.
 contact_id?: string, applied_date?, notes? }`. `company`/`role` required (400 if missing).
 Returns `{ application: JobApplication }` (201) or `{ error }` (400/500).
 
-**PATCH `/api/applications/[id]`** — body: `{ stage?: JobApplicationStage, notes?: string }`.
-Validates `stage` against `JOB_APPLICATION_STAGES` (400 if invalid or if no valid field is
-given). Returns `{ application: JobApplication }` or `{ error }` (400/500). This is the
-app's first dynamic (`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js
-16's route handler convention.
+**PATCH `/api/applications/[id]`** — body: `{ stage?: JobApplicationStage, notes?: string,
+apply_preview?: JobApplicationApplyPreview }`. Validates `stage` against
+`JOB_APPLICATION_STAGES` (400 if invalid) and `apply_preview` for shape (an object with
+`platform`, `field_values`, `eligibility_answers`, `screening_answers`; 400 with an
+`"apply_preview must be..."` message if malformed). 400 if no valid field is given. Returns
+`{ application: JobApplication }` or `{ error }` (400/500). This is the app's first dynamic
+(`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js 16's route handler
+convention.
 
-**POST `/api/applications/[id]/submit`** — no body. Fires a `workflow_dispatch` on
-`apply_agent_submit.yml` (`ref: "main"`, `inputs: { application_id: id }`) using
-`GITHUB_DISPATCH_TOKEN` (a Vercel-hosted env var, not a GitHub Actions secret — this route
-runs on Vercel and calls GitHub's REST API directly; `gh secret list` will never show it).
-Mirrors the existing `/api/trigger-agent` route's exact dispatch shape. Returns `{ ok: true }`
-(200) or `{ error }` (502 if the GitHub dispatch call itself fails). This is the **only** way
-a real job-application submission can be triggered — see root `CLAUDE.md`'s "Auto-apply agent"
-section for the full `APPLY_AGENT_ARMED` safety design this route is one link in.
+**POST `/api/applications/[id]/submit`** — no body. Calls the `approve_application` Postgres
+RPC (`supabase.rpc("approve_application", { p_id })`) before dispatching — this is a
+`SECURITY DEFINER` function and the only way `approved_at` can ever be set, since the anon
+key's table-level UPDATE grant excludes that column. If the RPC rejects the row (wrong stage,
+missing `apply_preview`, etc.), returns `409` with the RPC's error message and never
+dispatches. On success, fires a `workflow_dispatch` on `apply_agent_submit.yml`
+(`ref: "main"`, `inputs: { application_id: id }`) using `GITHUB_DISPATCH_TOKEN` (a
+Vercel-hosted env var, not a GitHub Actions secret — this route runs on Vercel and calls
+GitHub's REST API directly; `gh secret list` will never show it). Mirrors the existing
+`/api/trigger-agent` route's exact dispatch shape. If the dispatch itself fails (a non-ok
+response, or the `fetch` call throwing), calls the `reset_approval` RPC to clear
+`approved_at` before returning `502` — otherwise the row would stay permanently approved
+with no role able to clear that column. Returns `{ ok: true }` (200) on success. This is the
+**only** way a real job-application submission can be triggered — see root `CLAUDE.md`'s
+"Auto-apply agent" section for the full `APPLY_AGENT_ARMED` safety design this route is one
+link in.
 
 `ApplicationsPage.tsx` (rendered at `/applications`) fetches the list on mount, adds new
 applications via a form, and changes `stage` inline via a `Select` with optimistic update
@@ -321,7 +332,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 77** (vitest: 633 across 41 files, playwright: 77).
+- **Current test count: 77** (vitest: 645 across 41 files, playwright: 77).
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
