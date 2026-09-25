@@ -37,6 +37,25 @@
 
 **`agent_runs`** gains `source TEXT DEFAULT 'agent'` — values: `'agent'` (daily agent.py run) or `'monitor'` (monitor.py run). `monitor.run()` calls `record_run(source='monitor')` at the end of every cycle.
 
+**Added 2026-09-25 (Beelink M2, U14 -- health strip signal):** `agent_runs.status`'s CHECK
+constraint is widened to allow a third value, `'blocked'`, alongside `'success'`/`'failure'`
+(migration `20260925000001_widen_agent_runs_status_and_add_health_view.sql`, discovered via
+`pg_constraint` rather than a hardcoded constraint name -- this schema has drifted from
+`setup_supabase.sql` before). `cu_linkedin.py`'s `run()` records `status='blocked'` (with a
+`failure_reason` of `"CAPTCHA_OR_CHALLENGE: ..."`) when a session hits a CAPTCHA or login
+challenge and needs a human at the VNC console, instead of falling through to the ordinary
+error-count-based `'success'`/`'failure'` branch -- without this, a wedged session was
+indistinguishable from a normal run via `status` alone. The same migration adds a read-only view,
+`agent_runs_latest_by_source` (`SELECT DISTINCT ON (source) ... ORDER BY source, ran_at DESC`,
+`WITH (security_invoker = true)`, `GRANT SELECT ... TO anon`), returning one row per distinct
+`source` currently present in `agent_runs` (confirmed live at migration time: `jobright`,
+`monitor`, `visa_match`; `cu_linkedin` and others join the set as they accumulate rows) --
+Task 9's `/api/system-health` route queries it directly. A
+view rather than a windowed "recent rows" query, because low-frequency sources (`visa_ingest_lca`/
+`visa_ingest_uscis` run quarterly) would drop out of any practically-sized recent window, and a
+missing chip on the health strip reads as "healthy" -- the exact failure this view exists to
+prevent.
+
 **`research_cache`** gains `queries_generated INT` and `brief_reliable BOOLEAN` — populated by `db.set_research_cache()`. Allows querying which contacts had no reliable brief without unpacking `brief_json`.
 
 **`prompts_history`** — append-only audit log of every prompt value change. Populated automatically via a Supabase BEFORE UPDATE trigger on the `prompts` table (no application code needed). Columns: `id`, `key`, `old_value`, `new_value`, `changed_at`.

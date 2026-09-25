@@ -138,6 +138,40 @@ def test_run_flags_a_captcha_without_persisting_anything(mocker):
     create.assert_not_called()
 
 
+def test_run_records_blocked_status_and_stops_on_captcha(mocker):
+    mocker.patch.object(cu_linkedin, "run_session",
+                        return_value=("CAPTCHA_OR_CHALLENGE", 3, 0))
+    record_run = mocker.patch.object(db, "record_run")
+    create = mocker.patch.object(db, "create_job_application")
+    cu_linkedin.run()
+    create.assert_not_called()
+    record_run.assert_called_once()
+    args, kwargs = record_run.call_args
+    assert args[0] == "blocked"
+    assert kwargs["source"] == "cu_linkedin"
+    assert "CAPTCHA_OR_CHALLENGE" in kwargs["failure_reason"]
+
+
+def test_run_returns_accumulated_errors_on_captcha_without_double_recording(mocker):
+    # session_errors accumulated before the CAPTCHA was hit must still surface in both the
+    # return value and the one record_run call -- and there must be exactly ONE record_run
+    # call, not the CAPTCHA branch's plus the function's normal end-of-run call.
+    mocker.patch.object(cu_linkedin, "run_session",
+                        return_value=("CAPTCHA_OR_CHALLENGE", 3, 2))
+    record_run = mocker.patch.object(db, "record_run")
+    result = cu_linkedin.run()
+    assert result == 2
+    record_run.assert_called_once()
+    assert record_run.call_args.args[3] == 2
+    # I5: this is the assertion that actually distinguishes "recorded as blocked" from
+    # "recorded as failure" -- without it, this test passes against TODAY'S unfixed code too
+    # (today's CAPTCHA branch already falls through to the shared end-of-run call, which
+    # already produces exactly one record_run call with args[3] == 2 given these inputs, and
+    # run() already returns 2 either way -- none of that is what this task changes). The one
+    # property this task's fix actually adds is status == "blocked" instead of "failure".
+    assert record_run.call_args.args[0] == "blocked"
+
+
 @pytest.mark.parametrize("failure", [
     RuntimeError("anthropic down"),
     ValueError("bad response"),
