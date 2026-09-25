@@ -288,3 +288,52 @@ def test_subject_search_different_recipients_get_different_results(mocker):
     assert result_snow == "<snow-mid@mail.gmail.com>"
     assert result_adams == "<adams-mid@mail.gmail.com>"
     assert result_snow != result_adams
+
+
+def test_shared_imap_skips_login_and_logout(mocker):
+    """When imap= is passed, helpers must not open or close the connection."""
+    shared = _make_imap()
+    ssl = mocker.patch.object(gmail.imaplib, "IMAP4_SSL")
+
+    result = gmail.find_sent_for_thread(MID, SINCE, mode="first_touch", imap=shared)
+
+    assert result == MID
+    ssl.assert_not_called()
+    shared.login.assert_not_called()
+    shared.logout.assert_not_called()
+    shared.search.assert_called_once()
+
+
+def test_shared_imap_failure_falls_back_to_fresh_connection(mocker):
+    """A dead shared session must not kill remaining lookups — open a fresh one."""
+    shared = MagicMock(name="dead_shared")
+    shared.search.side_effect = Exception("socket error: EOF")
+
+    fresh = _make_imap()
+    ssl = mocker.patch.object(gmail.imaplib, "IMAP4_SSL", return_value=fresh)
+
+    result = gmail.find_sent_for_thread(MID, SINCE, mode="first_touch", imap=shared)
+
+    assert result == MID
+    ssl.assert_called_once()
+    fresh.login.assert_called_once()
+    fresh.logout.assert_called_once()
+    shared.logout.assert_not_called()
+
+
+def test_shared_imap_works_for_thrid_and_subject(mocker):
+    shared = _make_thrid_imap()
+    shared.fetch.side_effect = [
+        FETCH_RESPONSE,
+        SUBJ_FETCH,
+    ]
+    ssl = mocker.patch.object(gmail.imaplib, "IMAP4_SSL")
+
+    thrid = gmail.find_sent_by_thread_id(THRID, SINCE, imap=shared)
+    subj = gmail.find_sent_by_subject(SUBJECT, SINCE, to_email=TO, imap=shared)
+
+    assert thrid == MID
+    assert subj == "<found-mid@mail.gmail.com>"
+    ssl.assert_not_called()
+    shared.logout.assert_not_called()
+    assert shared.search.call_count == 2

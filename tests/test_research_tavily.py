@@ -23,7 +23,7 @@ def _make_client(results=None, answer="summary answer"):
 
 def test_run_tavily_returns_list_of_dicts(mocker):
     client = _make_client()
-    mocker.patch.object(research, "_get_client", return_value=client)
+    mocker.patch.object(research, "_make_tavily_client", return_value=client)
     queries = ["Jane Doe Acme Corp interview 2026", "Acme Corp news 2026"]
     result = research._run_tavily(queries, _CONTACT)
     assert len(result) == 2
@@ -33,7 +33,7 @@ def test_run_tavily_returns_list_of_dicts(mocker):
 
 def test_run_tavily_passes_include_raw_content(mocker):
     client = _make_client()
-    mocker.patch.object(research, "_get_client", return_value=client)
+    mocker.patch.object(research, "_make_tavily_client", return_value=client)
     research._run_tavily(["Jane Doe Acme Corp"], _CONTACT)
     _, kwargs = client.search.call_args
     assert kwargs.get("include_raw_content") is True
@@ -45,7 +45,7 @@ def test_run_tavily_skips_query_that_raises(mocker):
         Exception("timeout"),
         {"results": [{"title": "T", "content": "C", "url": "https://ex.com"}], "answer": "ans"},
     ]
-    mocker.patch.object(research, "_get_client", return_value=client)
+    mocker.patch.object(research, "_make_tavily_client", return_value=client)
     result = research._run_tavily(["bad query", "good query"], _CONTACT)
     assert len(result) == 1
     assert result[0]["query"] == "good query"
@@ -54,16 +54,40 @@ def test_run_tavily_skips_query_that_raises(mocker):
 def test_run_tavily_skips_query_returning_no_results(mocker):
     client = MagicMock()
     client.search.return_value = {"results": [], "answer": None}
-    mocker.patch.object(research, "_get_client", return_value=client)
+    mocker.patch.object(research, "_make_tavily_client", return_value=client)
     result = research._run_tavily(["empty query"], _CONTACT)
     assert result == []
 
 
 def test_run_tavily_empty_queries_returns_empty(mocker):
-    mock_get = mocker.patch.object(research, "_get_client")
+    mock_get = mocker.patch.object(research, "_make_tavily_client")
     result = research._run_tavily([], _CONTACT)
     assert result == []
     mock_get.assert_not_called()
+
+
+def test_run_tavily_preserves_query_order_under_parallelism(mocker):
+    """Results stay in input-query order even when searches finish out of order."""
+    import time
+
+    client = MagicMock()
+
+    def _search(**kwargs):
+        q = kwargs["query"]
+        # Later query finishes first.
+        if q == "q1":
+            time.sleep(0.05)
+        return {
+            "results": [{"title": q, "content": "c", "url": "https://ex.com"}],
+            "answer": q,
+        }
+
+    client.search.side_effect = _search
+    mocker.patch.object(research, "_make_tavily_client", return_value=client)
+
+    result = research._run_tavily(["q1", "q2", "q3"], _CONTACT)
+    assert [r["query"] for r in result] == ["q1", "q2", "q3"]
+    assert client.search.call_count == 3
 
 
 def test_run_hardcoded_fallback_skips_empty_company(mocker):

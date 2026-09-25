@@ -17,11 +17,15 @@ User workflow:
 import sys
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL, EMAIL_MODEL, FOLLOWUP_DAYS
+from config import (
+    ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL,
+    EMAIL_MODEL, FOLLOWUP_DAYS, PREPARE_EMAIL_WORKERS,
+)
 from constants import TERMINAL_REPLY_STATUSES
 from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id
 from emailer import generate_email, prepare_email, finalize_email, hash_prompt_set
@@ -416,10 +420,11 @@ def run():
     skipped = 0
     errors  = 0
 
-    # ── Phase 1: Collect batch requests ───────────────────────────────────────
+    # ── Phase 1: Decide actions, then prepare prompts (research in parallel) ──
     # (contact, action, thread_message_id, original_subject, custom_id, ctx)
     batch_items = []
     batch_requests = []
+    pending = []  # contacts that need prepare_email before batching
 
     for contact in contacts:
         name    = contact.get("name", "Unknown")
@@ -450,26 +455,63 @@ def run():
             thread_message_id = thread_info.get("latest_message_id") or thread_info.get("message_id")
             original_subject = thread_info.get("original_subject")
 
-        try:
-            user_prompt, system, ctx = prepare_email(contact, action, prompts=prompts)
-        except Exception as exc:
-            log.error(f"{mode_tag} {name} | {company} | {action} | prepare error: {exc}")
-            errors += 1
-            continue
+        pending.append(
+            (contact, action, thread_message_id, original_subject, mode_tag)
+        )
 
+    def _prepare_one(item):
+        contact, action, thread_message_id, original_subject, mode_tag = item
+        user_prompt, system, ctx = prepare_email(contact, action, prompts=prompts)
         custom_id = f"{contact['id']}-{action}"
-        batch_requests.append({
-            "custom_id": custom_id,
-            "params": {
-                "model": EMAIL_MODEL,
-                "max_tokens": 1000,
-                "system": [{"type": "text", "text": system,
-                             "cache_control": {"type": "ephemeral"}}],
-                "messages": [{"role": "user", "content": user_prompt}],
-            },
-        })
-        batch_items.append((contact, action, thread_message_id, original_subject,
-                             custom_id, ctx, mode_tag))
+        return (
+            contact, action, thread_message_id, original_subject,
+            custom_id, ctx, mode_tag, user_prompt, system,
+        )
+
+    if pending:
+        # Warm the Supabase client on the main thread before the pool starts —
+        # db.get_client()'s re.match monkeypatch is not safe under concurrent
+        # first-time initialisation.
+        try:
+            from db import get_client
+            get_client()
+        except Exception:
+            pass
+        workers = min(PREPARE_EMAIL_WORKERS, len(pending))
+        # Preserve submission order when collecting results so batch custom_ids
+        # stay deterministic relative to the decision pass above.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_prepare_one, item) for item in pending]
+            for item, fut in zip(pending, futures):
+                contact, action, _, _, mode_tag = item
+                name    = contact.get("name", "Unknown")
+                company = contact.get("company", "Unknown")
+                try:
+                    (
+                        contact, action, thread_message_id, original_subject,
+                        custom_id, ctx, mode_tag, user_prompt, system,
+                    ) = fut.result()
+                except Exception as exc:
+                    log.error(
+                        f"{mode_tag} {name} | {company} | {action} | prepare error: {exc}"
+                    )
+                    errors += 1
+                    continue
+
+                batch_requests.append({
+                    "custom_id": custom_id,
+                    "params": {
+                        "model": EMAIL_MODEL,
+                        "max_tokens": 1000,
+                        "system": [{"type": "text", "text": system,
+                                     "cache_control": {"type": "ephemeral"}}],
+                        "messages": [{"role": "user", "content": user_prompt}],
+                    },
+                })
+                batch_items.append((
+                    contact, action, thread_message_id, original_subject,
+                    custom_id, ctx, mode_tag,
+                ))
 
     if not batch_requests:
         elapsed = round(time.time() - start)
