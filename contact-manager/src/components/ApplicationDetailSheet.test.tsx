@@ -272,3 +272,37 @@ describe("ApplicationDetailSheet -- apply preview (U3/U11)", () => {
     expect(screen.queryByDisplayValue("Because of the mission.")).not.toBeInTheDocument();
   });
 });
+
+describe("ApplicationDetailSheet -- pick and cost sections (U6/U9/U15)", () => {
+  it("renders the pick verdict badge, score, and full reasoning", async () => {
+    render(<ApplicationDetailSheet application={baseApplication} onClose={() => {}} />);
+    expect(screen.getByText("strong")).toBeInTheDocument();
+    expect(screen.getByText(/0\.9/)).toBeInTheDocument();
+    expect(screen.getByText("Great fit.")).toBeInTheDocument();
+  });
+
+  it("shows a not-yet-scored placeholder when pick_verdict is null", () => {
+    render(
+      <ApplicationDetailSheet application={{ ...baseApplication, pick_verdict: null }} onClose={() => {}} />
+    );
+    expect(screen.getByText("Not yet scored.")).toBeInTheDocument();
+  });
+
+  it("renders cost fields when present", async () => {
+    const withCost = {
+      ...baseApplication,
+      resume_cost_usd: 0.42,
+      resume_tokens_input: 1000,
+      resume_tokens_output: 500,
+    };
+    render(<ApplicationDetailSheet application={withCost} onClose={() => {}} />);
+    expect(screen.getByText(/0\.4200/)).toBeInTheDocument();
+    expect(screen.getByText(/1000/)).toBeInTheDocument();
+    expect(screen.getByText(/500/)).toBeInTheDocument();
+  });
+
+  it("omits the cost section entirely when all cost fields are null", async () => {
+    render(<ApplicationDetailSheet application={baseApplication} onClose={() => {}} />);
+    expect(screen.queryByText("Cost")).not.toBeInTheDocument();
+  });
+});

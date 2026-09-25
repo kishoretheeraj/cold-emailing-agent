@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select";
 import { ApplicationDetailSheet } from "@/components/ApplicationDetailSheet";
+import { pickVerdictVariant } from "@/lib/applicationBadges";
 import {
   JOB_APPLICATION_STAGES,
   JOB_APPLICATION_STAGE_LABELS,
@@ -184,7 +185,11 @@ export function ApplicationsPage() {
                 </td>
                 <td className="py-2 pr-4 text-fg-dim">{app.applied_date ?? <Badge>Not yet</Badge>}</td>
                 <td className="py-2 pr-4">
-                  {app.pick_verdict ? <Badge>{app.pick_verdict}</Badge> : <span className="text-fg-dim">—</span>}
+                  {app.pick_verdict ? (
+                    <Badge variant={pickVerdictVariant(app.pick_verdict)}>{app.pick_verdict}</Badge>
+                  ) : (
+                    <span className="text-fg-dim">—</span>
+                  )}
                 </td>
                 <td className="py-2 pr-4 text-fg-dim">
                   {app.apply_blocked_reason ?? "—"}

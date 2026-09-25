@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-type BadgeVariant = "default" | "indigo" | "emerald" | "amber" | "red" | "muted";
+export type BadgeVariant = "default" | "indigo" | "emerald" | "amber" | "red" | "muted";
 
 const variantClasses: Record<BadgeVariant, string> = {
   default: "bg-surface-2 text-fg-muted border-border",

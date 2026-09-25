@@ -68,6 +68,7 @@ test.describe("Applications page", () => {
     await expect(page.getByText("Own the roadmap.")).toBeVisible();
     await expect(page.getByText("Remote")).toBeVisible();
     await expect(page.getByText("No resume on file yet.")).toBeVisible();
+    await expect(page.getByText("Not yet scored.")).toBeVisible();
     await page.screenshot({ path: "tests/e2e/screenshots/18-applications-detail-sheet.png" });
   });
 });

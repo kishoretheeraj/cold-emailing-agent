@@ -11,6 +11,8 @@ import {
   SheetClose,
 } from "@/components/ui/Sheet";
 import type { JobApplication } from "@/lib/types";
+import { Badge } from "@/components/ui/Badge";
+import { pickVerdictVariant } from "@/lib/applicationBadges";
 
 type Files = {
   resume_url: string | null;
@@ -311,6 +313,46 @@ export function ApplicationDetailSheet({
                     <p className="text-fg-dim text-sm">No application preview yet.</p>
                   )}
                 </section>
+
+                <section>
+                  <h3 className="text-sm font-medium text-fg mb-2">Pick</h3>
+                  {application.pick_verdict ? (
+                    <div className="flex flex-col gap-2">
+                      <Badge variant={pickVerdictVariant(application.pick_verdict)}>
+                        {application.pick_verdict}
+                      </Badge>
+                      {application.pick_score !== null && (
+                        <p className="text-sm text-fg-muted">Score: {application.pick_score}</p>
+                      )}
+                      {application.pick_reasoning && (
+                        <p className="text-sm text-fg-muted whitespace-pre-wrap">
+                          {application.pick_reasoning}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-fg-dim text-sm">Not yet scored.</p>
+                  )}
+                </section>
+
+                {(application.resume_cost_usd !== null ||
+                  application.resume_tokens_input !== null ||
+                  application.resume_tokens_output !== null) && (
+                  <section>
+                    <h3 className="text-sm font-medium text-fg mb-2">Cost</h3>
+                    <div className="flex flex-col gap-1 text-sm text-fg-muted">
+                      {application.resume_cost_usd !== null && (
+                        <p>Cost: ${application.resume_cost_usd.toFixed(4)}</p>
+                      )}
+                      {application.resume_tokens_input !== null && (
+                        <p>Input tokens: {application.resume_tokens_input}</p>
+                      )}
+                      {application.resume_tokens_output !== null && (
+                        <p>Output tokens: {application.resume_tokens_output}</p>
+                      )}
+                    </div>
+                  </section>
+                )}
               </div>
             </SheetBody>
           </>

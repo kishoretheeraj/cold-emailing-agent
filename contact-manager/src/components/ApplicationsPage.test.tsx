@@ -186,6 +186,14 @@ describe("ApplicationsPage -- pipeline visibility", () => {
     expect(within(row as HTMLElement).getByText("strong")).toBeInTheDocument();
   });
 
+  it("colors the pick-verdict badge by verdict", async () => {
+    render(<ApplicationsPage />);
+    const cell = await screen.findByText("LangChain");
+    const row = cell.closest("tr") as HTMLElement;
+    const badge = within(row).getByText("strong");
+    expect(badge.className).toContain("emerald");
+  });
+
   it("shows the blocked reason for an excluded row", async () => {
     render(<ApplicationsPage />);
     await screen.findByText("Starz");
