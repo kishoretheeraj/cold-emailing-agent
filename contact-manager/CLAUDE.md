@@ -164,8 +164,8 @@ when paused. "Run Agent" is disabled while `scope !== "none"`.
 
 ### `/api/applications` and `/api/applications/[id]` — job application tracking
 
-**GET `/api/applications`** — optional `?stage=<stage>` query param. Returns
-`{ applications: JobApplication[] }`, newest first.
+**GET `/api/applications`** — optional `?stage=<stage>` and `?source=<source>` query params
+(combinable). Returns `{ applications: JobApplication[] }`, newest first.
 
 **POST `/api/applications`** — body: `{ company: string, role: string, job_url?, source?,
 contact_id?: string, applied_date?, notes? }`. `company`/`role` required (400 if missing).
@@ -200,14 +200,18 @@ link in.
 `ApplicationsPage.tsx` (rendered at `/applications`) fetches the list on mount, adds new
 applications via a form, and changes `stage` inline via a `Select` with optimistic update
 (reverts and toasts on failure) — same pattern as the contacts side sheet's stage/tier
-changes. Three additional columns surface the Phase 2.5 auto-apply pipeline, all populated by
-Python-side jobs (`job_pick.py`, `apply_agent.py`) rather than this app: **Pick** — a `Badge`
-showing `pick_verdict` (`strong`/`maybe`/`no`, or `—` if not yet scored); **Blocked** —
-`apply_blocked_reason` text (or `—`), covering Workday/aggregator exclusions and any field the
-filler couldn't confidently handle; **Preview / Submit** — for `stage='ready_to_submit'` rows
-with `apply_preview` set, shows a screening-answer count and an "Approve & Submit" button that
-calls the route above. A **Details** column's "View" button opens `ApplicationDetailSheet.tsx`
-(Vaul side sheet, same primitive as the contacts sheet) via `selectedApplication` state.
+changes. Stage and Source filter `Select`s (`data-testid="stage-filter"` /
+`"source-filter"`) above the table refetch via `?stage=`/`?source=` query params (combinable)
+whenever either changes. Additional columns surface the Phase 2.5 auto-apply pipeline, all
+populated by Python-side jobs (`job_pick.py`, `apply_agent.py`, `job_discovery.py`) rather
+than this app: **Pick** — a `Badge` showing `pick_verdict` (`strong`/`maybe`/`no`, or `—` if
+not yet scored); **Blocked** — `apply_blocked_reason` text (or `—`), covering
+Workday/aggregator exclusions and any field the filler couldn't confidently handle;
+**Source** — `source` text (or `—`); **Filed via** — `source_channel` text (or `—`);
+**Preview / Submit** — for `stage='ready_to_submit'` rows with `apply_preview` set, shows a
+screening-answer count and an "Approve & Submit" button that calls the route above. A
+**Details** column's "View" button opens `ApplicationDetailSheet.tsx` (Vaul side sheet, same
+primitive as the contacts sheet) via `selectedApplication` state.
 
 **GET `/api/applications/[id]/files`** — no body. Reads `resume_file_ref` /
 `cover_letter_file_ref` from the row and, for each present ref, calls

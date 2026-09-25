@@ -86,6 +86,17 @@ test.describe("Applications page", () => {
       .toContain("source=linkedin");
     expect(requestUrls[requestUrls.length - 1]).toContain("stage=applied");
 
+    // The poll above only confirms the refetch was *issued*, not that it resolved --
+    // ApplicationsPage shows a "Loading..." state while the request is in flight. Wait for
+    // the actual table content (the row's "manual" Source cell, same text the assertion
+    // above already checks) to be visible again before screenshotting, so the screenshot
+    // captures the rendered, filtered table rather than the loading placeholder. (Not using
+    // getByText("—") here -- Pick/Blocked/Filed-via all render "—" for this fixture row, so
+    // that locator would match 3 elements and fail Playwright's strict mode.)
+    await expect(row.getByText("manual")).toBeVisible();
+    const filedViaCell = row.locator("td").nth(7);
+    await expect(filedViaCell).toHaveText("—");
+
     await page.screenshot({ path: "tests/e2e/screenshots/18-applications-filters.png" });
   });
 
