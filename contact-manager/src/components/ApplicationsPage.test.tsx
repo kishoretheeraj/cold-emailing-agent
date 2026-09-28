@@ -295,6 +295,57 @@ describe("ApplicationsPage -- pipeline visibility", () => {
 
 });
 
+describe("ApplicationsPage -- Try again from a row's own apply_blocked_reason (C1)", () => {
+  // A row can end up blocked in a PREVIOUS session (submit failed, tab closed or refreshed
+  // before/without this tab's own polling ever observing it) -- blockedReasons (populated only
+  // by this tab's client-side polling) must not be the only source for the Try again
+  // affordance. This must show up purely from the API-loaded row's own apply_blocked_reason,
+  // with blockedReasons empty (never populated -- no submit was ever triggered in this render).
+  const previouslyBlockedApplication = {
+    ...readyApplication,
+    id: "6",
+    company: "Previously Blocked Co",
+    apply_blocked_reason: "submit() clicked Submit but found no confirmation on the page afterward",
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/system-health")) {
+          return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+        }
+        if (typeof url === "string" && url.includes("/files")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ resume_url: null, cover_letter_url: null }),
+          } as Response);
+        }
+        if (!opts || opts.method === undefined) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ applications: [previouslyBlockedApplication] }),
+          } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      })
+    );
+  });
+
+  it("shows the Try again affordance for a row whose apply_blocked_reason came from the API, not from client-side polling", async () => {
+    render(<ApplicationsPage />);
+    await screen.findByText("Previously Blocked Co");
+    const row = screen.getByText("Previously Blocked Co").closest("tr") as HTMLElement;
+    // The row's plain "Blocked" column and the Preview/Submit column's Try again state both
+    // surface apply_blocked_reason text -- scope to the row and allow either/both, the point
+    // here is the Try again button, not text uniqueness.
+    expect(within(row).getAllByText(/no confirmation on the page afterward/i).length).toBeGreaterThan(0);
+    expect(within(row).getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    // The plain Approve & Submit button must not also render for this row.
+    expect(within(row).queryByRole("button", { name: /^approve & submit$/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("ApplicationsPage -- detail sheet (U1/U2)", () => {
   it("opens the detail sheet with job details when View is clicked", async () => {
     const user = userEvent.setup();
@@ -454,8 +505,9 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
       return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
     });
 
+    // C2: POLL_INTERVAL_MS is now 15s (was 5s) -- advance by the new interval, not the old one.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(15000);
     });
 
     expect(toastSuccessMock).toHaveBeenCalledWith("Application submitted");
@@ -482,8 +534,9 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
       return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
     });
 
+    // C2: POLL_INTERVAL_MS is now 15s (was 5s) -- advance by the new interval, not the old one.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(15000);
     });
 
     expect(screen.getByText(/confirmation element not found/i)).toBeInTheDocument();
@@ -525,8 +578,11 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
       return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
     });
 
+    // C2: POLL_TIMEOUT_MS is now 16 minutes (was 90s). The stop check only runs on a tick
+    // (every POLL_INTERVAL_MS=15s), so advance well past the timeout plus a full interval to
+    // guarantee a tick actually lands after it, not just up to the exact boundary.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(95000);
+      await vi.advanceTimersByTimeAsync(17 * 60 * 1000 + 30000);
     });
 
     expect(toastErrorMock).toHaveBeenCalledWith("Still processing -- check back in a bit");

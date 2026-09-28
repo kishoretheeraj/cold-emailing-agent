@@ -65,6 +65,13 @@ describe("PATCH /api/applications/[id]", () => {
     expect(res.status).toBe(500);
   });
 
+  it("rejects a non-numeric id (M9 -- matches GET/submit/reset-approval/files routes)", async () => {
+    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
+    const res = await PATCH(req, params("abc"));
+    expect(res.status).toBe(400);
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
   it("accepts ready_to_submit as a valid stage (regression test for U10)", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", stage: "ready_to_submit" }, error: null });
     const req = new Request("http://test", {

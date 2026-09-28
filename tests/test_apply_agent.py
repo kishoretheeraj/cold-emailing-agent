@@ -471,12 +471,19 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent._submission_confirmed", return_value=False)
     record_submission_mock = mocker.patch("apply_agent.db.record_submission")
+    blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
 
     with pytest.raises(RuntimeError, match="no confirmation"):
         apply_agent.submit(1)
 
     page.get_by_role.return_value.click.assert_called_once()
     record_submission_mock.assert_not_called()
+    # C1: a failed submit must write apply_blocked_reason before the exception propagates --
+    # without this, the row stays approved_at-set/stage='ready_to_submit' forever with no UI
+    # path to recover (ApplicationsPage.tsx's Try again button depends on this field).
+    blocked_mock.assert_called_once()
+    assert blocked_mock.call_args[0][0] == 1
+    assert "no confirmation" in blocked_mock.call_args[0][1]
 
 
 def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_regenerated(mocker):
@@ -554,11 +561,18 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value=platform)
     launch_mock = mocker.patch("apply_agent._launch_page")
+    blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
 
     with pytest.raises(ValueError, match="permanently-excluded"):
         apply_agent.submit(1)
 
     launch_mock.assert_not_called()
+    # C1: the platform-exclusion guard runs AFTER the approval guard has already passed, so a
+    # failure here must also record apply_blocked_reason -- same as any other post-approval
+    # submit failure.
+    blocked_mock.assert_called_once()
+    assert blocked_mock.call_args[0][0] == 1
+    assert "permanently-excluded" in blocked_mock.call_args[0][1]
 
 
 # ── The approval guard: ARMED proves a human tapped, this proves they tapped THIS row ──

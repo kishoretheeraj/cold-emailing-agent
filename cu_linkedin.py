@@ -579,6 +579,10 @@ def run():
                               source="cu_linkedin")
             except Exception as exc:
                 log.warning(f"[CU-LINKEDIN] | record_run failed: {exc}")
+            # M10: every other exit path (including the unexpected-error one just below) ends
+            # with a DONE summary line -- this early return must too, so a blocked run's log
+            # always has a terminal summary line to grep for, not just the WARNING above.
+            log.info(f"[CU-LINKEDIN] | DONE | saved={saved} | skipped={skipped} | errors={errors} | blocked=true")
             return errors
         else:
             postings = extract_postings(text)

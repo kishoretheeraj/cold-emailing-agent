@@ -18,7 +18,7 @@ export async function GET() {
     // ran_at, so no client-side windowing or reduction is needed here.
     const { data, error } = await supabase
       .from("agent_runs_latest_by_source")
-      .select("source, status, ran_at, failure_reason")
+      .select("source, status, ran_at, failure_reason, errors")
       .order("source", { ascending: true });
     if (error) throw error;
     return Response.json({ health: (data ?? []) as SystemHealthRow[] });

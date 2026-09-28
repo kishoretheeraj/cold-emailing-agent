@@ -85,4 +85,60 @@ describe("SystemHealthStrip", () => {
     expect(within(monitorChip).getByText("success").className).toContain("amber");
     expect(within(agentChip).getByText("success").className).not.toContain("amber");
   });
+
+  it("keeps a stale failure red instead of downgrading it to amber (M6)", async () => {
+    const staleIso = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(); // 3h ago, stale for monitor
+    mockHealth([
+      { source: "monitor", status: "failure", ran_at: staleIso, failure_reason: "boom", errors: 1 },
+    ]);
+    render(<SystemHealthStrip />);
+    const monitorChip = (await screen.findByText("monitor")).closest("div") as HTMLElement;
+    const badge = within(monitorChip).getByText("failure");
+    expect(badge.className).toContain("red");
+    expect(badge.className).not.toContain("amber");
+  });
+
+  it("renders the errors count on a chip when errors > 0 (M7)", async () => {
+    mockHealth([
+      { source: "agent", status: "success", ran_at: new Date().toISOString(), failure_reason: null, errors: 3 },
+    ]);
+    render(<SystemHealthStrip />);
+    const agentChip = (await screen.findByText("agent")).closest("div") as HTMLElement;
+    expect(within(agentChip).getByText(/errors: 3/i)).toBeInTheDocument();
+  });
+
+  it("does not render an errors label when errors is 0 or missing (M7)", async () => {
+    mockHealth([
+      { source: "agent", status: "success", ran_at: new Date().toISOString(), failure_reason: null, errors: 0 },
+    ]);
+    render(<SystemHealthStrip />);
+    const agentChip = (await screen.findByText("agent")).closest("div") as HTMLElement;
+    expect(within(agentChip).queryByText(/errors:/i)).not.toBeInTheDocument();
+  });
+
+  it("renders chips for the three sources M4 added (job_discovery, form_d_ingest, visa_match), not just the original six", async () => {
+    mockHealth([
+      { source: "agent", status: "success", ran_at: new Date().toISOString(), failure_reason: null },
+    ]);
+    render(<SystemHealthStrip />);
+    await screen.findByText("agent");
+    expect(screen.getByText("job_discovery")).toBeInTheDocument();
+    expect(screen.getByText("form_d_ingest")).toBeInTheDocument();
+    expect(screen.getByText("visa_match")).toBeInTheDocument();
+  });
+
+  it("gives jobright and job_discovery real staleness thresholds instead of the 100-day default (M4)", async () => {
+    // 2 days ago: stale for jobright (threshold ~26h), fresh for job_discovery (threshold ~35 days).
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    mockHealth([
+      { source: "jobright", status: "success", ran_at: twoDaysAgo, failure_reason: null },
+      { source: "job_discovery", status: "success", ran_at: twoDaysAgo, failure_reason: null },
+    ]);
+    render(<SystemHealthStrip />);
+    await screen.findByText("jobright");
+    const jobrightChip = screen.getByText("jobright").closest("div") as HTMLElement;
+    const jobDiscoveryChip = screen.getByText("job_discovery").closest("div") as HTMLElement;
+    expect(within(jobrightChip).getByText("success").className).toContain("amber");
+    expect(within(jobDiscoveryChip).getByText("success").className).not.toContain("amber");
+  });
 });

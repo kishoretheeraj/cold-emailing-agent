@@ -47,6 +47,8 @@ src/
 │   ├── api/applications/route.ts
 │   ├── api/applications/[id]/route.ts
 │   ├── api/applications/[id]/files/route.ts
+│   ├── api/applications/[id]/submit/route.ts
+│   ├── api/applications/[id]/reset-approval/route.ts
 │   ├── api/system-health/route.ts
 │   ├── applications/page.tsx
 │   ├── import/page.tsx
@@ -381,12 +383,15 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 81** (vitest: 701 across 47 files, playwright: 81). Beelink M2 Task 9
+- **Current test count: 81** (vitest: 711 across 47 files, playwright: 81). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
-  and 1 new playwright case. The vitest count still includes pre-existing drift from before
-  Beelink M2 Task 6 (that task only added 5 vitest cases to existing files) -- the gap between
-  the two counts has still not been audited.
+  and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 10 more
+  vitest cases to existing files, no new files, no new playwright cases (C1's frontend fallback,
+  C2's timeout, I5's reset_approval error handling, M4/M6/M7/M9's SystemHealthStrip and PATCH
+  route fixes). The vitest count still includes pre-existing drift from before Beelink M2 Task 6
+  (that task only added 5 vitest cases to existing files) -- the gap between the two counts has
+  still not been audited.
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.

@@ -86,6 +86,40 @@ describe("POST /api/applications/[id]/submit", () => {
     expect(mockRpc).not.toHaveBeenCalled();
   });
 
+  it("I5: still returns the original 502 (not a 500) when reset_approval's own RPC call throws, on a non-ok dispatch response", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, status: 500 } as Response)));
+    mockRpc.mockImplementation((fn: string) => {
+      if (fn === "approve_application") return Promise.resolve({ data: null, error: null });
+      if (fn === "reset_approval") return Promise.reject(new Error("network down"));
+      return Promise.resolve({ data: null, error: null });
+    });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(502);
+  });
+
+  it("I5: still returns the original 502 (not a 500) when reset_approval's own RPC call throws, on a thrown fetch error", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("network down"))));
+    mockRpc.mockImplementation((fn: string) => {
+      if (fn === "approve_application") return Promise.resolve({ data: null, error: null });
+      if (fn === "reset_approval") return Promise.reject(new Error("network down again"));
+      return Promise.resolve({ data: null, error: null });
+    });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(502);
+  });
+
+  it("I5: still returns the original 502 when reset_approval resolves with an error field (row already moved on)", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, status: 500 } as Response)));
+    mockRpc.mockImplementation((fn: string) => {
+      if (fn === "approve_application") return Promise.resolve({ data: null, error: null });
+      if (fn === "reset_approval")
+        return Promise.resolve({ data: null, error: { message: "not resettable" } });
+      return Promise.resolve({ data: null, error: null });
+    });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(502);
+  });
+
   it("returns 500 when GITHUB_DISPATCH_TOKEN is missing, without dispatching or calling the RPC", async () => {
     vi.stubEnv("GITHUB_DISPATCH_TOKEN", "");
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });

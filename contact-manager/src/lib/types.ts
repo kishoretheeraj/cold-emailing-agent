@@ -303,4 +303,8 @@ export type SystemHealthRow = {
   status: string;
   ran_at: string;
   failure_reason: string | null;
+  // M7: root CLAUDE.md's own health-strip write-up says a reader "should treat the `errors`
+  // count, not just `status`, as the wedged-box signal" -- a run can report status='success'
+  // while still having logged per-row errors along the way.
+  errors: number | null;
 };

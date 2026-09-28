@@ -7,23 +7,35 @@ import type { SystemHealthRow } from "@/lib/types";
 // I9c: sources that should always render a chip, even with zero reported rows -- otherwise a
 // source that has simply stopped reporting entirely just vanishes, which is indistinguishable
 // from "nothing to show" and defeats the whole point of replacing the GHA red-X signal.
+// M4: db.record_run(source=...) is called with nine distinct values across the Python
+// codebase (grep `record_run(` at the repo root to confirm) -- agent, monitor, cu_linkedin,
+// jobright, job_discovery, form_d_ingest, visa_ingest_lca, visa_ingest_uscis, visa_match. All
+// nine get a chip here, not just the six that shipped with U13 -- an allowlist gap is exactly
+// the "silently reads as healthy" failure mode this strip exists to prevent.
 const KNOWN_SOURCES = [
   "agent",
   "monitor",
   "cu_linkedin",
   "jobright",
+  "job_discovery",
+  "form_d_ingest",
   "visa_ingest_lca",
   "visa_ingest_uscis",
+  "visa_match",
 ] as const;
 
 // I9b: a source dead for weeks must not render in the same dim "success" style as one that ran
 // minutes ago. Thresholds are deliberately per-source -- cu_linkedin runs a few times a day,
-// monitor every 20-60 min, the daily agent once a day, and the quarterly visa ingests get a
-// generous catch-all default rather than their own entries.
+// monitor every 20-60 min, the daily agent once a day, jobright once a day (M4: a bit over a
+// day's grace), job_discovery has no fixed schedule but should still surface a dead source
+// within about a month (M4), and the quarterly visa/form-d/visa-match ingests get a generous
+// catch-all default rather than their own entries.
 const SOURCE_MAX_AGE_MINUTES: Record<string, number> = {
   cu_linkedin: 60 * 8, // within the last ~3 timer fires
   agent: 60 * 30,
   monitor: 60 * 2,
+  jobright: 60 * 26, // runs daily -- a bit over a day
+  job_discovery: 60 * 24 * 35, // manual/no fixed schedule -- should still run at least monthly
 };
 const DEFAULT_MAX_AGE_MINUTES = 60 * 24 * 100; // quarterly/manual sources -- generous default
 
@@ -145,7 +157,18 @@ export function SystemHealthStrip() {
               className="flex items-center gap-2 px-2 py-1 bg-surface-2 border border-border rounded-md text-xs"
             >
               <span className="text-fg-muted">{row.source}</span>
-              <Badge variant={stale ? "amber" : statusVariant(row.status)}>{row.status}</Badge>
+              {/* M6: a failure must stay red regardless of staleness -- a stale failure is not
+                  less severe than a fresh one, so only a non-failure status downgrades to amber
+                  when stale. */}
+              <Badge variant={statusVariant(row.status) === "red" ? "red" : stale ? "amber" : statusVariant(row.status)}>
+                {row.status}
+              </Badge>
+              {/* M7: root CLAUDE.md calls out `errors`, not just `status`, as the wedged-box
+                  signal -- a run can report status='success' while still logging per-row
+                  errors along the way. */}
+              {typeof row.errors === "number" && row.errors > 0 && (
+                <span className="text-amber-400">errors: {row.errors}</span>
+              )}
               <span className={stale ? "text-amber-400" : "text-fg-dim"}>{relativeTime(row.ran_at)}</span>
             </div>
           );

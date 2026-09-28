@@ -46,6 +46,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!/^\d+$/.test(id)) {
+    return Response.json({ error: "Invalid application id" }, { status: 400 });
+  }
 
   let body: unknown;
   try {

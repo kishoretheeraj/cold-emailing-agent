@@ -47,6 +47,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // approve_application's own already-approved guard. reset_approval is the recovery path for
   // exactly this case; it's guarded server-side to only clear a still-ready_to_submit row, so
   // calling it here can never un-approve a row that actually went on to submit successfully.
+  // I5: reset_approval's own result must be checked (and the call itself guarded) same as
+  // res.text() just below -- if reset_approval fails silently, the row is left stuck approved
+  // with nobody the wiser; if the RPC call itself throws (plausible here, we're already in a
+  // network-failure code path), an unguarded await would let that throw escape this catch
+  // block and turn the intended 502-with-detail into a generic 500. Never let a reset_approval
+  // failure prevent the original 502 response from reaching the client.
+  async function tryResetApproval() {
+    try {
+      const { error } = await supabase.rpc("reset_approval", { p_id: Number(id) });
+      if (error) {
+        console.error(`reset_approval failed for application ${id}: ${error.message}`);
+      }
+    } catch (err) {
+      console.error(`reset_approval threw for application ${id}: ${String(err)}`);
+    }
+  }
+
   let res: Response;
   try {
     res = await fetch(
@@ -63,7 +80,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
     );
   } catch (err) {
-    await supabase.rpc("reset_approval", { p_id: Number(id) });
+    await tryResetApproval();
     return Response.json(
       { error: "Failed to trigger submit workflow", detail: String(err) },
       { status: 502 }
@@ -79,7 +96,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     } catch {
       detail = "";
     }
-    await supabase.rpc("reset_approval", { p_id: Number(id) });
+    await tryResetApproval();
     return Response.json(
       { error: "Failed to trigger submit workflow", detail },
       { status: 502 }

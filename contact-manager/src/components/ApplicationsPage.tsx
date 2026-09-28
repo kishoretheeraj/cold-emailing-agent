@@ -146,8 +146,14 @@ export function ApplicationsPage() {
     setSelectedApplication(updated);
   };
 
-  const POLL_INTERVAL_MS = 5000;
-  const POLL_TIMEOUT_MS = 90000;
+  // C2: apply_agent_submit.yml's own budget is `timeout-minutes: 15` -- and before it ever gets
+  // to launching a browser and driving an LLM-based form fill, it has to checkout, set up
+  // Python, `pip install -r requirements-apply.txt`, and `playwright install --with-deps
+  // chromium`. A 90s poll timeout meant this branch showed "still processing" on every
+  // submission, success or failure, since neither terminal state was reachable that fast in
+  // practice. 16 minutes gives a small margin over the workflow's own 15-minute budget.
+  const POLL_INTERVAL_MS = 15000;
+  const POLL_TIMEOUT_MS = 16 * 60 * 1000;
 
   const stopPolling = (id: string) => {
     setSubmittingIds((cur) => {
@@ -379,9 +385,15 @@ export function ApplicationsPage() {
                         <span className="text-fg-dim text-xs flex items-center gap-1">
                           <Loader2 className="size-3 animate-spin" /> Submitting...
                         </span>
-                      ) : blockedReasons[app.id] ? (
+                      ) : blockedReasons[app.id] ?? app.apply_blocked_reason ? (
+                        // C1: blockedReasons is only populated by THIS tab's own polling --
+                        // a row blocked in a previous session (submit failed, page refreshed,
+                        // browser closed) would never show Try again without also falling back
+                        // to the row's own apply_blocked_reason from the API.
                         <div className="flex flex-col gap-1">
-                          <span className="text-red-400 text-xs">{blockedReasons[app.id]}</span>
+                          <span className="text-red-400 text-xs">
+                            {blockedReasons[app.id] ?? app.apply_blocked_reason}
+                          </span>
                           <button
                             type="button"
                             onClick={() => handleTryAgain(app.id)}
