@@ -45,7 +45,7 @@ from db import (
 )
 from gmail import (
     create_gmail_label_if_not_exists, find_sent_for_thread,
-    find_sent_by_subject, find_sent_by_thread_id,
+    find_sent_by_subject, find_sent_by_thread_id, open_sent_mail_session,
 )
 from emailer import _call_claude
 
@@ -72,6 +72,7 @@ def detect_sent_drafts():
     """
     For every contact in a *_drafted stage with a non-null message_id, check
     Sent Mail for evidence the user sent it. Best-effort per contact.
+    Reuses one IMAP Sent Mail session across all contacts when login succeeds.
     """
     contacts = get_drafted_contacts()
     checked = 0
@@ -80,114 +81,139 @@ def detect_sent_drafts():
     via_mid = 0
     via_subject = 0
 
-    for contact in contacts:
-        name       = contact.get("name", "Unknown")
-        company    = contact.get("company", "Unknown")
-        stage      = contact.get("stage", "")
-        message_id = contact.get("message_id")
-        checked += 1
+    # One login for the whole pass — each find_sent_* used to open its own
+    # connection (up to 3 per contact). Fall back to per-call connections if
+    # the shared session cannot be opened.
+    imap = None
+    if any(c.get("message_id") for c in contacts):
+        try:
+            imap = open_sent_mail_session()
+        except Exception as exc:
+            log.warning(f"[SENT-CHECK] | shared IMAP session failed, using per-call: {exc}")
+            imap = None
 
-        if not message_id:
-            log.info(f"[SENT-CHECK] | {name} | {company} | skip: no message_id")
-            continue
+    try:
+        for contact in contacts:
+            name       = contact.get("name", "Unknown")
+            company    = contact.get("company", "Unknown")
+            stage      = contact.get("stage", "")
+            message_id = contact.get("message_id")
+            checked += 1
 
-        mode = "first_touch" if stage in {"first_touch_drafted", "applied_intro_drafted", "networking_drafted"} else "followup"
-
-        since_date = _parse_date(contact.get("last_emailed"))
-        if since_date is None:
-            since_date = date.today() - timedelta(days=60)
-
-        actual_mid = None
-        detection_method = None
-
-        # Priority 1: X-GM-THRID — Gmail's stable thread ID, survives message_id rewrites.
-        if not actual_mid and contact.get("gmail_thread_id"):
-            try:
-                actual_mid = find_sent_by_thread_id(contact["gmail_thread_id"], since_date)
-                if actual_mid:
-                    detection_method = "thrid"
-            except Exception as exc:
-                log.warning(f"[SENT-CHECK] | {name} | {company} | thrid error: {exc}")
-
-        # Priority 2: Message-ID header search.
-        if not actual_mid:
-            try:
-                actual_mid = find_sent_for_thread(message_id, since_date, mode)
-                if actual_mid:
-                    detection_method = "mid"
-            except Exception as exc:
-                log.warning(f"[SENT-CHECK] | {name} | {company} | unexpected error: {exc}")
+            if not message_id:
+                log.info(f"[SENT-CHECK] | {name} | {company} | skip: no message_id")
                 continue
 
-        # Priority 3: subject fragment fallback (first_touch only — last resort).
-        if not actual_mid and mode == "first_touch":
-            original_subject = contact.get("original_subject", "")
-            if original_subject:
-                actual_mid = find_sent_by_subject(original_subject, since_date, contact.get("email", ""))
-                if actual_mid:
-                    detection_method = "subject"
-                    log.warning(
-                        f"[SENT-CHECK] | {name} | {company} | "
-                        f"detected via subject fallback — subject may have been edited before send"
+            mode = "first_touch" if stage in {"first_touch_drafted", "applied_intro_drafted", "networking_drafted"} else "followup"
+
+            since_date = _parse_date(contact.get("last_emailed"))
+            if since_date is None:
+                since_date = date.today() - timedelta(days=60)
+
+            actual_mid = None
+            detection_method = None
+
+            # Priority 1: X-GM-THRID — Gmail's stable thread ID, survives message_id rewrites.
+            if not actual_mid and contact.get("gmail_thread_id"):
+                try:
+                    actual_mid = find_sent_by_thread_id(
+                        contact["gmail_thread_id"], since_date, imap=imap
                     )
+                    if actual_mid:
+                        detection_method = "thrid"
+                except Exception as exc:
+                    log.warning(f"[SENT-CHECK] | {name} | {company} | thrid error: {exc}")
 
-        if not actual_mid:
-            continue
+            # Priority 2: Message-ID header search.
+            if not actual_mid:
+                try:
+                    actual_mid = find_sent_for_thread(
+                        message_id, since_date, mode, imap=imap
+                    )
+                    if actual_mid:
+                        detection_method = "mid"
+                except Exception as exc:
+                    log.warning(f"[SENT-CHECK] | {name} | {company} | unexpected error: {exc}")
+                    continue
 
-        new_stage = DRAFTED_TO_SENT.get(stage)
-        if new_stage is None:
-            log.warning(f"[SENT-CHECK] | {name} | {company} | unknown stage: {stage}")
-            continue
+            # Priority 3: subject fragment fallback (first_touch only — last resort).
+            if not actual_mid and mode == "first_touch":
+                original_subject = contact.get("original_subject", "")
+                if original_subject:
+                    actual_mid = find_sent_by_subject(
+                        original_subject, since_date, contact.get("email", ""),
+                        imap=imap,
+                    )
+                    if actual_mid:
+                        detection_method = "subject"
+                        log.warning(
+                            f"[SENT-CHECK] | {name} | {company} | "
+                            f"detected via subject fallback — subject may have been edited before send"
+                        )
 
-        action = next((a for a, s in NEXT_STAGE.items() if s == stage), None)
-        followup_days = FOLLOWUP_DAYS.get(action) if action else None
-        terminal = stage in TERMINAL_DRAFTED_STAGES
-        clear_fd = terminal and followup_days is None
+            if not actual_mid:
+                continue
 
-        try:
-            update_contact(
-                contact["id"], new_stage,
-                followup_days=followup_days,
-                clear_followup_date=clear_fd,
-            )
-        except Exception as exc:
-            log.warning(f"[SENT-DETECTED] | {name} | {company} | db error: {exc}")
-            continue
+            new_stage = DRAFTED_TO_SENT.get(stage)
+            if new_stage is None:
+                log.warning(f"[SENT-CHECK] | {name} | {company} | unknown stage: {stage}")
+                continue
 
-        new_followup_date = (
-            None if followup_days is None
-            else str(date.today() + timedelta(days=followup_days))
-        )
-        log.info(
-            f"[SENT-DETECTED] | {name} | {company} | "
-            f"{stage} -> {new_stage} | via={detection_method} | followup_date={new_followup_date}"
-        )
-        log_agent_event("sent_detected", contact_id=contact["id"], contact_name=name,
-                        status="success",
-                        metadata={"method": detection_method, "new_stage": new_stage})
+            action = next((a for a, s in NEXT_STAGE.items() if s == stage), None)
+            followup_days = FOLLOWUP_DAYS.get(action) if action else None
+            terminal = stage in TERMINAL_DRAFTED_STAGES
+            clear_fd = terminal and followup_days is None
 
-        # If Gmail rewrote the Message-ID on send, update it so follow-ups thread correctly.
-        if mode == "first_touch" and actual_mid != message_id:
             try:
-                update_message_id(contact["id"], actual_mid)
-                log.info(f"[SENT-DETECTED] | {name} | {company} | message_id updated: {actual_mid}")
+                update_contact(
+                    contact["id"], new_stage,
+                    followup_days=followup_days,
+                    clear_followup_date=clear_fd,
+                )
             except Exception as exc:
-                log.warning(f"[SENT-DETECTED] | {name} | {company} | message_id update failed: {exc}")
+                log.warning(f"[SENT-DETECTED] | {name} | {company} | db error: {exc}")
+                continue
 
-        # Always advance latest_message_id so follow-up N+1's In-Reply-To points
-        # to the most recently sent email rather than the first-touch.
-        try:
-            update_latest_message_id(contact["id"], actual_mid)
-        except Exception as exc:
-            log.warning(f"[SENT-DETECTED] | {name} | {company} | latest_message_id update failed: {exc}")
+            new_followup_date = (
+                None if followup_days is None
+                else str(date.today() + timedelta(days=followup_days))
+            )
+            log.info(
+                f"[SENT-DETECTED] | {name} | {company} | "
+                f"{stage} -> {new_stage} | via={detection_method} | followup_date={new_followup_date}"
+            )
+            log_agent_event("sent_detected", contact_id=contact["id"], contact_name=name,
+                            status="success",
+                            metadata={"method": detection_method, "new_stage": new_stage})
 
-        if detection_method == "thrid":
-            via_thrid += 1
-        elif detection_method == "mid":
-            via_mid += 1
-        elif detection_method == "subject":
-            via_subject += 1
-        flipped += 1
+            # If Gmail rewrote the Message-ID on send, update it so follow-ups thread correctly.
+            if mode == "first_touch" and actual_mid != message_id:
+                try:
+                    update_message_id(contact["id"], actual_mid)
+                    log.info(f"[SENT-DETECTED] | {name} | {company} | message_id updated: {actual_mid}")
+                except Exception as exc:
+                    log.warning(f"[SENT-DETECTED] | {name} | {company} | message_id update failed: {exc}")
+
+            # Always advance latest_message_id so follow-up N+1's In-Reply-To points
+            # to the most recently sent email rather than the first-touch.
+            try:
+                update_latest_message_id(contact["id"], actual_mid)
+            except Exception as exc:
+                log.warning(f"[SENT-DETECTED] | {name} | {company} | latest_message_id update failed: {exc}")
+
+            if detection_method == "thrid":
+                via_thrid += 1
+            elif detection_method == "mid":
+                via_mid += 1
+            elif detection_method == "subject":
+                via_subject += 1
+            flipped += 1
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
 
     log.info(
         f"DONE | sent-detection | checked={checked} flipped={flipped} | "

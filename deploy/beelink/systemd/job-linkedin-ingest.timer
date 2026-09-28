@@ -1,0 +1,18 @@
+[Unit]
+Description=Run LinkedIn discovery a few short times a day, at unpredictable minutes
+
+[Timer]
+# 3 firings/day must match config.CU_LINKEDIN_SESSIONS_PER_DAY. The real safety arithmetic is
+# 3 x worst_case_views_per_session() (30) = 90/day, under config.CU_LINKEDIN_DAILY_VIEW_CAP (100)
+# -- NOT 3 x MAX_POSTINGS_PER_SESSION, which only bounds what gets reported, not what gets
+# looked at (see cu_linkedin.worst_case_views_per_session()). This is a self-imposed ceiling, not
+# derived from LinkedIn's published 500/day figure, which governs profile views, a different
+# resource. Changing the hour list without changing SESSIONS_PER_DAY fails
+# test_timer_firing_count_matches_the_configured_sessions_per_day.
+OnCalendar=09,13,17:00
+# Handles the "avoid predictable timing" goal and the pacing goal at once.
+RandomizedDelaySec=1800
+Persistent=false
+
+[Install]
+WantedBy=timers.target

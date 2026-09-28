@@ -1,4 +1,4 @@
-# Prompt keys (Supabase prompts table — 25 rows)
+# Prompt keys (Supabase prompts table — 26 rows)
 
 Loaded at startup by `db.load_prompts()` → `{key: value}`. Absent keys fall back to
 `config.py` constants; `emailer.py` logs `[WARN] prompt key X not in DB — using fallback`.
@@ -33,5 +33,22 @@ Instruction-level keys (sort_orders 11–18) use `get_tier_instruction()`,
 | `guardrail_company_list` | 63 | Newline-delimited company watchwords for pre-flight check 4 |
 | `voice_dna` | 64 | Writing-style block written by `extract_voice.py`. Optional: absent or blank means no voice block is injected. Injected into first-touch prompts only, and mirrored in `assembleUserMessage.ts`. |
 | `target_roles` | 65 | Newline-delimited role titles `job_discovery.py` filters ATS postings against; empty means match everything |
+| `applicant_eligibility` | 66 | Fixed-answer sensitive questions for `apply_agent.py` — work authorization, visa sponsorship, EEO — never LLM-generated per application |
 
 **Locked:** `/api/extract` prompt is hardcoded — bound to `ExtractedContact` JSON schema.
+
+## `applicant_eligibility` JSON shape
+
+```json
+{
+    "work_authorized_us": "yes|no|unknown|...",
+    "requires_visa_sponsorship": "yes|no|unknown|...",
+    "gender": "...",
+    "race_ethnicity": "...",
+    "disability_status": "...",
+    "veteran_status": "...",
+    "lgbtq_identity": "..."
+}
+```
+
+Fill in via the contact-manager's Prompts page with your real answers. Placeholders (e.g. `"unknown -- fill in via Prompts page"`) are seeded by `scripts/seed_applicant_eligibility.py` and are never LLM-generated.

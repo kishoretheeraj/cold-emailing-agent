@@ -1,0 +1,54 @@
+name: Apply Agent Preview
+
+# Unattended, scheduled -- fills every eligible job_applications row's application form and
+# stops before Submit. Requires playwright's browser binary, which pip alone doesn't install.
+# See docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md.
+
+on:
+  schedule:
+    - cron: '37 12 * * *'   # once daily, off the hour
+  workflow_dispatch: {}
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-apply.txt
+          playwright install --with-deps chromium
+
+      - name: Run apply agent preview pass
+        run: python apply_agent.py --preview
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apply-agent-preview-log-${{ github.run_id }}
+          path: apply_agent.log
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: python notify_failure.py
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

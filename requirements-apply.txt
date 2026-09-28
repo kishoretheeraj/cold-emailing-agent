@@ -1,0 +1,7 @@
+# Apply-agent extras. playwright and browser-use are imported lazily inside apply_agent.py's
+# functions (never at module level), so only the workflows that actually drive a browser need
+# them -- the test suite does not. Also requires `playwright install --with-deps chromium`,
+# a separate system-level step pip cannot do.
+-r requirements.txt
+playwright>=1.47.0
+browser-use>=0.1.0

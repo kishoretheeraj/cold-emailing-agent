@@ -309,118 +309,187 @@ def _ascii_subject_fragment(subject):
     return s.strip()
 
 
-def find_sent_by_subject(subject, since_date, to_email):
+def _parse_message_id_from_fetch(msg_data):
+    if not msg_data or not msg_data[0]:
+        return None
+    raw = msg_data[0][1]
+    if isinstance(raw, bytes):
+        raw = raw.decode(errors="replace")
+    for line in raw.splitlines():
+        if line.lower().startswith("message-id:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def open_sent_mail_session():
+    """
+    Open a logged-in, Sent-Mail-selected IMAP session for reuse across multiple
+    find_sent_* lookups. Caller must logout() in a finally block.
+    """
+    # timeout= so a half-open socket cannot stall a whole monitor pass.
+    imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
+    imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+    imap.select('"[Gmail]/Sent Mail"', readonly=True)
+    return imap
+
+
+def _with_sent_mail(imap, fn):
+    """
+    Run fn(imap) against [Gmail]/Sent Mail. When imap is None, open a fresh
+    connection and logout in finally. When imap is provided (shared session),
+    do not login/select/logout — the caller owns the lifecycle.
+    """
+    owns_imap = imap is None
+    if owns_imap:
+        imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
+    try:
+        if owns_imap:
+            imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            imap.select('"[Gmail]/Sent Mail"', readonly=True)
+        return fn(imap)
+    finally:
+        if owns_imap:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
+def find_sent_by_subject(subject, since_date, to_email, imap=None):
     """
     Fallback: search [Gmail]/Sent Mail by subject + recipient when the Message-ID
     search finds nothing (e.g. Gmail rewrote the draft ID on send).
     Returns the actual Message-ID of the earliest matching sent email, or None.
+    Pass imap= from open_sent_mail_session() to reuse one connection across calls.
     """
     term = _ascii_subject_fragment(subject)
     if not term:
         return None
     since_str = since_date.strftime("%d-%b-%Y")
-    imap = imaplib.IMAP4_SSL("imap.gmail.com")
-    try:
-        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        imap.select('"[Gmail]/Sent Mail"', readonly=True)
-        status, data = imap.search(None, "SINCE", since_str, "TO", to_email, "SUBJECT", f'"{term}"')
+
+    def _search(conn):
+        status, data = conn.search(
+            None, "SINCE", since_str, "TO", to_email, "SUBJECT", f'"{term}"'
+        )
         if status != "OK" or not data[0]:
             log.info(f"[SENT-CHECK-SUBJ] | {term!r} | found=False")
             return None
         nums = data[0].split()
         # Use the earliest result (nums[0]) — most likely the first-touch, not a follow-up.
-        status2, msg_data = imap.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
+        status2, msg_data = conn.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
         actual_mid = None
-        if status2 == "OK" and msg_data and msg_data[0]:
-            raw = msg_data[0][1]
-            if isinstance(raw, bytes):
-                raw = raw.decode(errors="replace")
-            for line in raw.splitlines():
-                if line.lower().startswith("message-id:"):
-                    actual_mid = line.split(":", 1)[1].strip()
-                    break
+        if status2 == "OK":
+            actual_mid = _parse_message_id_from_fetch(msg_data)
         log.info(f"[SENT-CHECK-SUBJ] | {term!r} | found={actual_mid is not None} | mid={actual_mid}")
         return actual_mid
+
+    try:
+        return _with_sent_mail(imap, _search)
     except Exception as exc:
+        if imap is not None:
+            log.warning(
+                f"[SENT-CHECK-SUBJ] | shared IMAP failed, retrying fresh | "
+                f"{term!r} | {exc}"
+            )
+            try:
+                return _with_sent_mail(None, _search)
+            except Exception as exc2:
+                log.warning(f"[SENT-CHECK-SUBJ] | IMAP error | {term!r} | {exc2}")
+                return None
         log.warning(f"[SENT-CHECK-SUBJ] | IMAP error | {term!r} | {exc}")
         return None
-    finally:
-        imap.logout()
 
 
-def find_sent_by_thread_id(gmail_thread_id, since_date):
+def find_sent_by_thread_id(gmail_thread_id, since_date, imap=None):
     """
     Primary sent-detection path: search [Gmail]/Sent Mail by Gmail's X-GM-THRID.
     This survives Gmail rewriting the Message-ID on send. Returns the actual
     Message-ID of the found email, or None.
+    Pass imap= from open_sent_mail_session() to reuse one connection across calls.
     """
     since_str = since_date.strftime("%d-%b-%Y")
-    imap = imaplib.IMAP4_SSL("imap.gmail.com")
-    try:
-        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        imap.select('"[Gmail]/Sent Mail"', readonly=True)
-        status, data = imap.search(None, "X-GM-THRID", str(gmail_thread_id), "SINCE", since_str)
+
+    def _search(conn):
+        status, data = conn.search(
+            None, "X-GM-THRID", str(gmail_thread_id), "SINCE", since_str
+        )
         if status != "OK" or not data[0]:
             log.info(f"[SENT-CHECK-THRID] | {gmail_thread_id} | found=False")
             return None
         nums = data[0].split()
         actual_mid = None
-        status2, msg_data = imap.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
-        if status2 == "OK" and msg_data and msg_data[0]:
-            raw = msg_data[0][1]
-            if isinstance(raw, bytes):
-                raw = raw.decode(errors="replace")
-            for line in raw.splitlines():
-                if line.lower().startswith("message-id:"):
-                    actual_mid = line.split(":", 1)[1].strip()
-                    break
-        log.info(f"[SENT-CHECK-THRID] | {gmail_thread_id} | found={actual_mid is not None} | mid={actual_mid}")
+        status2, msg_data = conn.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
+        if status2 == "OK":
+            actual_mid = _parse_message_id_from_fetch(msg_data)
+        log.info(
+            f"[SENT-CHECK-THRID] | {gmail_thread_id} | "
+            f"found={actual_mid is not None} | mid={actual_mid}"
+        )
         return actual_mid
+
+    try:
+        return _with_sent_mail(imap, _search)
     except Exception as exc:
+        if imap is not None:
+            log.warning(
+                f"[SENT-CHECK-THRID] | shared IMAP failed, retrying fresh | "
+                f"{gmail_thread_id} | {exc}"
+            )
+            try:
+                return _with_sent_mail(None, _search)
+            except Exception as exc2:
+                log.warning(f"[SENT-CHECK-THRID] | IMAP error | {gmail_thread_id} | {exc2}")
+                return None
         log.warning(f"[SENT-CHECK-THRID] | IMAP error | {gmail_thread_id} | {exc}")
         return None
-    finally:
-        imap.logout()
 
 
-def find_sent_for_thread(message_id, since_date, mode):
+def find_sent_for_thread(message_id, since_date, mode, imap=None):
     """
     Returns the actual Message-ID of the found sent email, or None if not found.
     Searches [Gmail]/Sent Mail for a message with the given Message-ID (first_touch)
     or In-Reply-To (followup), on or after since_date. The returned ID may differ
     from message_id if Gmail rewrote it when the draft was sent.
+    Pass imap= from open_sent_mail_session() to reuse one connection across calls.
     """
     since_str = since_date.strftime("%d-%b-%Y")
     header = "Message-ID" if mode == "first_touch" else "In-Reply-To"
-    imap = imaplib.IMAP4_SSL("imap.gmail.com")
-    try:
-        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        imap.select('"[Gmail]/Sent Mail"', readonly=True)
+
+    def _search(conn):
         # message_id contains angle brackets (<abc@gmail.com>) which are IMAP
         # special chars — must be double-quoted so the server parses them correctly.
-        status, data = imap.search(None, "SINCE", since_str, "HEADER", header, f'"{message_id}"')
+        status, data = conn.search(
+            None, "SINCE", since_str, "HEADER", header, f'"{message_id}"'
+        )
         if status != "OK" or not data[0]:
             log.info(f"[SENT-CHECK] | {message_id} | {mode} | found=False")
             return None
         nums = data[0].split()
         # Fetch the actual Message-ID — Gmail may rewrite it when sending a draft.
         actual_mid = message_id
-        status2, msg_data = imap.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
-        if status2 == "OK" and msg_data and msg_data[0]:
-            raw = msg_data[0][1]
-            if isinstance(raw, bytes):
-                raw = raw.decode(errors="replace")
-            for line in raw.splitlines():
-                if line.lower().startswith("message-id:"):
-                    actual_mid = line.split(":", 1)[1].strip()
-                    break
+        status2, msg_data = conn.fetch(nums[0], "(BODY[HEADER.FIELDS (MESSAGE-ID)])")
+        if status2 == "OK":
+            parsed = _parse_message_id_from_fetch(msg_data)
+            if parsed:
+                actual_mid = parsed
         log.info(f"[SENT-CHECK] | {message_id} | {mode} | found=True | actual={actual_mid}")
         return actual_mid
+
+    try:
+        return _with_sent_mail(imap, _search)
     except Exception as exc:
+        if imap is not None:
+            log.warning(
+                f"[SENT-CHECK] | shared IMAP failed, retrying fresh | "
+                f"{message_id} | {exc}"
+            )
+            try:
+                return _with_sent_mail(None, _search)
+            except Exception as exc2:
+                log.warning(f"[SENT-CHECK] | IMAP error | {message_id} | {exc2}")
+                return None
         log.warning(f"[SENT-CHECK] | IMAP error | {message_id} | {exc}")
         return None
-    finally:
-        imap.logout()
 
 
 # ── Recent sent mail (voice extraction) ────────────────────────────────────────

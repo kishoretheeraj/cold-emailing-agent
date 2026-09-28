@@ -45,7 +45,7 @@ jobs:
           cache: "pip"
 
       - name: Install Python dependencies
-        run: pip install -r requirements-dev.txt   # pulls in requirements.txt + pytest/pytest-mock
+        run: pip install -r requirements-dev.txt   # -> requirements-jobs.txt (base + sentence-transformers, which job_pick.py imports at module level) + pytest/pytest-mock
 
       - name: Set up Node
         uses: actions/setup-node@v4

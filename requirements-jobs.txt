@@ -1,0 +1,6 @@
+# Job-scoring extras. sentence-transformers (-> torch, ~hundreds of MB) is imported at
+# module level by job_pick.py, so anything that imports job_pick needs this -- but nothing
+# else does. Kept out of requirements.txt so daily_agent.yml and especially monitor.yml
+# (~50 runs/day) don't install torch on every run.
+-r requirements.txt
+sentence-transformers>=3.0.0

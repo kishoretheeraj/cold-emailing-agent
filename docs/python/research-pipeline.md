@@ -13,7 +13,9 @@ critic retry.
    search queries, person-first (every query includes the company name to
    disambiguate). Returns JSON array. Hard-capped at `RESEARCH_MAX_QUERIES=5`,
    each query truncated to `RESEARCH_MAX_QUERY_LEN=80` chars.
-3. **Tavily execution** — `search_depth="basic"`, `max_results=5` per query,
+3. **Tavily execution** — queries run concurrently (up to `RESEARCH_TAVILY_WORKERS`,
+   default 5) via a thread pool; results are re-ordered to match the input query
+   list. Each search uses `search_depth="basic"`, `max_results=5`,
    `include_raw_content=True` (full page text alongside snippets).
    Per-query failures skip silently. If query gen returns `[]`, the hardcoded
    fallback `"{company} news 2026"` fires.

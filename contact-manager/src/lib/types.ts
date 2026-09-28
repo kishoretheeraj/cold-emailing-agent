@@ -229,6 +229,7 @@ export function filtersEqual(
 
 export type JobApplicationStage =
   | "saved"
+  | "ready_to_submit"
   | "applied"
   | "phone_screen"
   | "onsite"
@@ -239,6 +240,7 @@ export type JobApplicationStage =
 
 export const JOB_APPLICATION_STAGES: JobApplicationStage[] = [
   "saved",
+  "ready_to_submit",
   "applied",
   "phone_screen",
   "onsite",
@@ -250,6 +252,7 @@ export const JOB_APPLICATION_STAGES: JobApplicationStage[] = [
 
 export const JOB_APPLICATION_STAGE_LABELS: Record<JobApplicationStage, string> = {
   saved: "Saved",
+  ready_to_submit: "Ready to submit",
   applied: "Applied",
   phone_screen: "Phone screen",
   onsite: "Onsite",
@@ -257,6 +260,15 @@ export const JOB_APPLICATION_STAGE_LABELS: Record<JobApplicationStage, string> =
   rejected: "Rejected",
   withdrawn: "Withdrawn",
   accepted: "Accepted",
+};
+
+export type JobApplicationPickVerdict = "strong" | "maybe" | "no";
+
+export type JobApplicationApplyPreview = {
+  platform: string;
+  field_values: Record<string, string>;
+  eligibility_answers: Record<string, string>;
+  screening_answers: Record<string, string>;
 };
 
 export type JobApplication = {
@@ -270,6 +282,13 @@ export type JobApplication = {
   applied_date: string | null;
   notes: string | null;
   posting_snapshot: Record<string, unknown> | null;
+  resume_file_ref: string | null;
+  cover_letter_file_ref: string | null;
+  pick_verdict: JobApplicationPickVerdict | null;
+  pick_score: number | null;
+  pick_reasoning: string | null;
+  apply_preview: JobApplicationApplyPreview | null;
+  apply_blocked_reason: string | null;
   created_at: string;
   updated_at: string;
 };

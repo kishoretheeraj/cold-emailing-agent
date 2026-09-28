@@ -1,6 +1,7 @@
 """Tests for monitor.detect_sent_drafts — auto-flips *_drafted to *_sent."""
 
 from datetime import date, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -8,6 +9,14 @@ import monitor
 
 
 MID = "<mid@mail.gmail.com>"
+
+
+@pytest.fixture(autouse=True)
+def _shared_imap_session(mocker):
+    """detect_sent_drafts opens one Sent Mail session; keep tests offline."""
+    fake = MagicMock(name="shared_imap")
+    mocker.patch.object(monitor, "open_sent_mail_session", return_value=fake)
+    return fake
 
 
 def _contact(**overrides):
@@ -310,3 +319,33 @@ def test_latest_message_id_not_updated_when_not_detected(mocker):
     monitor.detect_sent_drafts()
 
     update_latest.assert_not_called()
+
+
+def test_shared_imap_session_opened_once_and_logged_out(mocker, _shared_imap_session):
+    """One shared Sent Mail session covers the whole pass, then logout."""
+    contacts = [
+        _contact(id=1, name="A"),
+        _contact(id=2, name="B"),
+        _contact(id=3, name="C"),
+    ]
+    mocker.patch.object(monitor, "get_drafted_contacts", return_value=contacts)
+    find_mid = mocker.patch.object(monitor, "find_sent_for_thread", return_value=None)
+    open_fn = monitor.open_sent_mail_session
+
+    monitor.detect_sent_drafts()
+
+    open_fn.assert_called_once()
+    _shared_imap_session.logout.assert_called_once()
+    assert find_mid.call_count == 3
+    for call in find_mid.call_args_list:
+        assert call.kwargs.get("imap") is _shared_imap_session
+
+
+def test_no_message_ids_skips_shared_imap_open(mocker):
+    mocker.patch.object(monitor, "get_drafted_contacts",
+                        return_value=[_contact(message_id=None)])
+    open_fn = mocker.patch.object(monitor, "open_sent_mail_session")
+
+    monitor.detect_sent_drafts()
+
+    open_fn.assert_not_called()

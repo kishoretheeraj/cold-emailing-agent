@@ -1,0 +1,24 @@
+# Virtual X display for slot %i. 1280x800 is chosen so screenshots stay under the Computer Use
+# toolset's pixel limit and need no scaling -- see cu_linkedin.py's X11 section.
+[Unit]
+Description=Xvfb virtual display :%i
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+User=jobagent
+Group=jobagent
+ExecStart=/usr/bin/Xvfb :%i -screen 0 1280x800x24 -nolisten tcp
+Restart=always
+RestartSec=2
+RuntimeMaxSec=infinity
+Environment=APPLY_AGENT_ARMED=
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/job-agent
+
+[Install]
+WantedBy=multi-user.target

@@ -84,6 +84,16 @@ export function ApplicationsPage() {
     }
   };
 
+  const handleApprove = async (id: string) => {
+    try {
+      const res = await fetch(`/api/applications/${id}/submit`, { method: "POST" });
+      if (!res.ok) throw new Error("request failed");
+      toast.success("Submission triggered -- check back shortly");
+    } catch {
+      toast.error("Could not trigger submission");
+    }
+  };
+
   return (
     <div className="p-6 flex flex-col gap-6">
       <h1 className="text-lg font-medium text-fg">Applications</h1>
@@ -137,6 +147,9 @@ export function ApplicationsPage() {
               <th className="py-2 pr-4">Role</th>
               <th className="py-2 pr-4">Stage</th>
               <th className="py-2 pr-4">Applied</th>
+              <th className="py-2 pr-4">Pick</th>
+              <th className="py-2 pr-4">Blocked</th>
+              <th className="py-2 pr-4">Preview / Submit</th>
             </tr>
           </thead>
           <tbody>
@@ -162,6 +175,30 @@ export function ApplicationsPage() {
                   </Select>
                 </td>
                 <td className="py-2 pr-4 text-fg-dim">{app.applied_date ?? <Badge>Not yet</Badge>}</td>
+                <td className="py-2 pr-4">
+                  {app.pick_verdict ? <Badge>{app.pick_verdict}</Badge> : <span className="text-fg-dim">—</span>}
+                </td>
+                <td className="py-2 pr-4 text-fg-dim">
+                  {app.apply_blocked_reason ?? "—"}
+                </td>
+                <td className="py-2 pr-4">
+                  {app.stage === "ready_to_submit" && app.apply_preview ? (
+                    <div className="flex flex-col gap-1">
+                      <span className="text-fg-dim text-xs">
+                        {Object.entries(app.apply_preview.screening_answers).length} screening answer(s)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleApprove(app.id)}
+                        className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
+                      >
+                        Approve & Submit
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-fg-dim">—</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

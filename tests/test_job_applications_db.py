@@ -188,3 +188,37 @@ def test_record_resume_usage_starts_from_zero_when_no_prior_usage(fake_client):
     assert updated["resume_tokens_input"] == 200
     assert updated["resume_tokens_output"] == 100
     assert updated["resume_cost_usd"] == pytest.approx(0.002100)
+
+
+def test_get_unscored_saved_applications_filters_correctly(fake_client):
+    fake_client.table.return_value.select.return_value.eq.return_value.is_.return_value.order.return_value.execute.return_value.data = [
+        {"id": 1, "stage": "saved", "pick_verdict": None}
+    ]
+    result = db.get_unscored_saved_applications()
+    fake_client.table.assert_called_with("job_applications")
+    assert result == [{"id": 1, "stage": "saved", "pick_verdict": None}]
+
+
+def test_set_pick_verdict_writes_all_three_fields(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.set_pick_verdict(1, "strong", 0.62, "Title and skills overlap heavily.")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["pick_verdict"] == "strong"
+    assert updated["pick_score"] == 0.62
+    assert updated["pick_reasoning"] == "Title and skills overlap heavily."
+
+
+def test_set_apply_preview_sets_preview_and_stage(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.set_apply_preview(1, {"name": "Kishore"})
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["apply_preview"] == {"name": "Kishore"}
+    assert updated["stage"] == "ready_to_submit"
+
+
+def test_set_apply_blocked_sets_reason_without_changing_stage(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.set_apply_blocked(1, "Workday -- permanently excluded")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["apply_blocked_reason"] == "Workday -- permanently excluded"
+    assert "stage" not in updated
