@@ -4,4 +4,11 @@
 # a separate system-level step pip cannot do.
 -r requirements.txt
 playwright>=1.47.0
-browser-use>=0.1.0
+# Merge review 2026-09-28, finding 2: the old floor pin (browser-use>=0.1.0) let a fresh install
+# silently grab whatever the latest release was -- confirmed live that this library's API has
+# changed incompatibly multiple times between 0.1.x and the current 0.13.x line (constructor
+# args, llm interface, async-only run()). _browser_use_agent_run in apply_agent.py is written
+# and tested against this exact version; bumping it requires re-verifying that function against
+# the new release's real API, not just relaxing this pin.
+browser-use==0.1.40
+langchain-anthropic==0.3.3

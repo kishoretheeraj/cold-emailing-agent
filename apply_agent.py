@@ -13,6 +13,7 @@ import re
 
 import ats_fillers
 import ats_platform
+import candidate_profile
 import config
 import db
 from emailer import _call_claude
@@ -56,6 +57,12 @@ Question: {question}
 Candidate facts: {profile_summary}
 """
 
+# Merge review 2026-09-28, finding 3: a missing/empty candidate profile used to still get an
+# LLM-generated answer, grounded in nothing but the job's own role title -- exactly what the
+# prompt above claims never to do. Flag it for the human reviewing apply_preview instead of
+# calling Claude with no real facts to ground an answer in.
+_NO_PROFILE_ANSWER = "NEEDS HUMAN REVIEW -- no candidate profile text available to ground an answer in."
+
 
 def _generate_screening_answers(page, job):
     """Finds on-page screening questions and generates grounded answers via Claude --
@@ -69,14 +76,23 @@ def _generate_screening_answers(page, job):
     except Exception:
         return answers
 
+    # Merge review 2026-09-28, finding 3: this used to pass job.get("role", "") as
+    # profile_summary -- a posting titled "Senior Product Manager" was presented back to the LLM
+    # as the candidate's own facts. candidate_profile.profile_text() is the same real
+    # experience/projects text job_pick.py's fit judge is grounded in.
+    profile_summary = candidate_profile.profile_text()
+
     for el in question_elements:
         try:
             question_text = el.inner_text()
         except Exception:
             continue
+        if not profile_summary.strip():
+            answers[question_text] = _NO_PROFILE_ANSWER
+            continue
         try:
             answer = _call_claude(
-                _SCREENING_PROMPT.format(question=question_text, profile_summary=job.get("role", "")),
+                _SCREENING_PROMPT.format(question=question_text, profile_summary=profile_summary),
                 module="apply_agent", action="screening_question", contact_id=None,
             )
             answers[question_text] = answer
@@ -242,17 +258,37 @@ def _attach_resume_and_cover_letter(page, job):
 _OPEN_SESSIONS = {}
 
 
+# _launch_page opens Chromium with a local CDP debugging port so browser-use's own async
+# Browser (see _browser_use_agent_run) can attach to the exact same running browser/tab that
+# this synchronous Playwright page drives -- browser-use 0.1.x has no way to accept an existing
+# playwright.sync_api.Page object directly, only a CDP URL (see merge review 2026-09-28, finding
+# 2). Keyed the same way as _OPEN_SESSIONS.
+_CDP_PORTS = {}
+
+
+def _free_local_port():
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def _launch_page(job_url):
     from playwright.sync_api import sync_playwright
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=True)
+    debug_port = _free_local_port()
+    browser = playwright.chromium.launch(
+        headless=True, args=[f"--remote-debugging-port={debug_port}"]
+    )
     page = browser.new_page()
     page.goto(job_url)
     _OPEN_SESSIONS[id(page)] = (browser, playwright)
+    _CDP_PORTS[id(page)] = debug_port
     return page
 
 
 def _close_page(page):
+    _CDP_PORTS.pop(id(page), None)
     browser, playwright = _OPEN_SESSIONS.pop(id(page), (None, None))
     for label, target in (("page", page), ("browser", browser), ("playwright", playwright)):
         closer = getattr(target, "stop" if label == "playwright" else "close", None)
@@ -265,26 +301,66 @@ def _close_page(page):
 
 
 def _browser_use_agent_run(task_description, page):
-    from browser_use import Agent
-    from browser_use.llm import ChatAnthropic
+    # Verified against the real installed browser-use==0.1.40 API (2026-09-28, merge review
+    # finding 2) -- the version pinned in requirements-apply.txt. That release has no
+    # browser_use.llm module (llm= takes a langchain BaseChatModel), no page= constructor arg
+    # (only browser=/browser_context=), and Agent.run() is async-only (no run_sync()). All three
+    # were previously wrong here and silently broke every generic-ATS fill.
+    import asyncio
 
-    agent = Agent(task=task_description, llm=ChatAnthropic(model=config.JOB_PICK_MODEL), page=page)
-    return agent.run_sync()
+    from browser_use import Agent, Browser, BrowserConfig
+    from langchain_anthropic import ChatAnthropic
+
+    debug_port = _CDP_PORTS.get(id(page))
+    if debug_port is None:
+        raise RuntimeError(
+            "no CDP debugging port recorded for this page -- it wasn't opened via _launch_page"
+        )
+
+    # _force_keep_browser_alive=True: this Browser wraps a CDP *client connection* to the same
+    # Chromium process _launch_page already launched and _close_page already owns the lifecycle
+    # of. Without this, agent_browser.close() below would tear down the real browser out from
+    # under the rest of _process_one_preview()/submit(), which keep using `page` afterward
+    # (resume attach, screening/eligibility fill).
+    agent_browser = Browser(
+        config=BrowserConfig(cdp_url=f"http://localhost:{debug_port}", _force_keep_browser_alive=True)
+    )
+    try:
+        agent = Agent(
+            task=task_description,
+            llm=ChatAnthropic(model=config.JOB_PICK_MODEL),
+            browser=agent_browser,
+        )
+        history = asyncio.run(agent.run())
+    finally:
+        asyncio.run(agent_browser.close())
+
+    # Merge review 2026-09-28, finding 2: browser-use agents don't raise on a failed task -- they
+    # just stop and report failure via the returned history. Silently treating that the same as
+    # success is exactly how a row could reach ready_to_submit with an unfilled form. Raise so
+    # the caller's existing failure-handling (set_apply_blocked in run_preview()/submit()) does
+    # its job instead of this being swallowed one level down.
+    if not history.is_successful() or history.has_errors():
+        raise RuntimeError(f"browser-use did not complete the task: {history.errors()}")
+    return history
 
 
 def _fill_generic_via_browser_use(page, job, field_values):
-    # Task-string build failure (missing field_values key) or a browser-use library failure both
-    # degrade to a warning here -- same best-effort posture as the labeling calls.
-    try:
-        task = (
-            f"Fill in this job application form with: name={field_values['name']}, "
-            f"email={field_values['email']}, phone={field_values['phone']}, "
-            f"location={field_values['location']}, linkedin={field_values['linkedin']}. "
-            f"Do not click any Submit or Apply button."
-        )
-        _browser_use_agent_run(task, page)
-    except Exception as exc:
-        log.warning(f"[APPLY-AGENT] | {job.get('company')} | browser-use failed: {exc}")
+    # Merge review 2026-09-28, finding 2: this used to catch and swallow every failure here
+    # (a missing field_values key, or any browser-use failure), so _process_one_preview() always
+    # proceeded to mark the row ready_to_submit even when the generic fill produced an empty
+    # form. Building the task string can still fail on a genuinely missing key -- that's a
+    # programming error in _standard_field_values, not a best-effort external-service failure --
+    # so it's allowed to raise too. run_preview()'s per-job try/except and submit()'s own
+    # exception handler already call db.set_apply_blocked on any exception from this function;
+    # letting the failure propagate is what makes that existing safety net actually reachable.
+    task = (
+        f"Fill in this job application form with: name={field_values['name']}, "
+        f"email={field_values['email']}, phone={field_values['phone']}, "
+        f"location={field_values['location']}, linkedin={field_values['linkedin']}. "
+        f"Do not click any Submit or Apply button."
+    )
+    _browser_use_agent_run(task, page)
 
 
 # ── Preview pass ───────────────────────────────────────────────────────────────
