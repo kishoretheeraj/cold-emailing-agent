@@ -158,4 +158,22 @@ test.describe("Applications page", () => {
     await expect(page.getByText(/watching for it to land/i)).toBeVisible();
     await page.screenshot({ path: "tests/e2e/screenshots/18-applications-confirm-modal.png" });
   });
+
+  test("shows an attention banner when a source is blocked", async ({ page }) => {
+    await page.route("**/api/system-health", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          health: [
+            { source: "cu_linkedin", status: "blocked", ran_at: new Date().toISOString(),
+              failure_reason: "CAPTCHA_OR_CHALLENGE: needs a human at the VNC console for display slot 0" },
+          ],
+        }),
+      });
+    });
+    await page.goto("/applications");
+    await expect(page.getByText(/needs a human at the VNC console/i)).toBeVisible();
+    await page.screenshot({ path: "tests/e2e/screenshots/18-applications-health-attention.png" });
+  });
 });

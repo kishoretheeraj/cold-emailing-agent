@@ -188,6 +188,9 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string, opts?: RequestInit) => {
+      if (typeof url === "string" && url.includes("/system-health")) {
+        return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+      }
       if (typeof url === "string" && url.includes("/files")) {
         return Promise.resolve({
           ok: true,
@@ -546,6 +549,16 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
     await waitFor(() => {
       const raw = sessionStorage.getItem("applications_submitting_ids");
       expect(raw ? (JSON.parse(raw) as string[]) : []).toContain("5");
+    });
+  });
+});
+
+describe("ApplicationsPage -- system health strip (U13/U14)", () => {
+  it("fetches system health on mount", async () => {
+    render(<ApplicationsPage />);
+    await screen.findByText("Acme");
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/system-health");
     });
   });
 });

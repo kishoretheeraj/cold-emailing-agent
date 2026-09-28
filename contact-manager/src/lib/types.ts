@@ -297,3 +297,10 @@ export type JobApplication = {
   created_at: string;
   updated_at: string;
 };
+
+export type SystemHealthRow = {
+  source: string;
+  status: string;
+  ran_at: string;
+  failure_reason: string | null;
+};
