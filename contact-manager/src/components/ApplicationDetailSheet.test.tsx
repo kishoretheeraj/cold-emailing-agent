@@ -271,6 +271,52 @@ describe("ApplicationDetailSheet -- apply preview (U3/U11)", () => {
     expect(screen.getByDisplayValue("Because I love the product.")).toBeInTheDocument();
     expect(screen.queryByDisplayValue("Because of the mission.")).not.toBeInTheDocument();
   });
+
+  // Merge review 2026-09-28, finding 1: once approved_at is set, apply_agent.py's submit() can
+  // read this row's apply_preview at any point during the approval-to-submission window, so an
+  // edit made after approval either changes what gets sent under an approval granted for
+  // different answers, or silently diverges the UI from what was actually submitted. The PATCH
+  // route now rejects apply_preview writes on an approved row (409); the sheet locks the editor
+  // up front instead of letting the user type an edit that gets discarded.
+  it("locks the answer editor and hides Save changes once the application is approved", () => {
+    render(
+      <ApplicationDetailSheet
+        application={{ ...appWithAnswers, approved_at: "2026-09-28T00:00:00Z" }}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText(/already been approved|approved and its answers are locked/i)).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Because of the mission.")).toBeDisabled();
+    expect(screen.getByDisplayValue("Yes")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /save changes/i })).not.toBeInTheDocument();
+  });
+
+  it("surfaces the server's 409 message if a save is somehow attempted on an approved row", async () => {
+    const { toast } = await import("sonner");
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string, opts?: RequestInit) => {
+      if (opts?.method === "PATCH") {
+        return Promise.resolve({
+          ok: false,
+          json: async () => ({
+            error: "Cannot edit apply_preview: this application has already been approved",
+          }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ application: {} }) } as Response);
+    });
+
+    // Exercise handleSaveAnswers directly via an unlocked render, since the locked UI hides the
+    // button entirely -- this asserts the fetch-error-handling path itself.
+    const user = userEvent.setup();
+    render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/already been approved/i)
+      );
+    });
+  });
 });
 
 describe("ApplicationDetailSheet -- pick and cost sections (U6/U9/U15)", () => {

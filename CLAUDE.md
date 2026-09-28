@@ -1196,12 +1196,21 @@ calls `db.set_apply_blocked(job_id, str(exc))` before re-raising, mirroring
 `run_preview()`/`_process_one_preview()`'s own log-then-record pattern for the preview pass. Without
 this, a failed submit left the row `approved_at`-set/`stage='ready_to_submit'` forever with no UI
 path to recover -- `apply_blocked_reason` is what `ApplicationsPage.tsx`'s "Try again" button (which
-calls `reset_approval` via `POST /api/applications/[id]/reset-approval`) keys off of. The
-`reset_approval` RPC itself only clears `approved_at` -- `POST /api/applications/[id]/reset-approval`
-also clears `apply_blocked_reason` on the row directly (a plain anon-permitted column UPDATE, no new
-RPC needed) right after the RPC succeeds. Without that second clear, "Try again" would keep reading
-a non-null `apply_blocked_reason` forever after every reset and never show Approve & Submit again --
-the same dead-end this whole feature exists to close, just moved one step later.
+calls `reset_approval` via `POST /api/applications/[id]/reset-approval`) keys off of.
+
+**Fixed since (merge review, 2026-09-28, finding 6)**: `reset_approval` originally cleared only
+`approved_at`, with `POST /api/applications/[id]/reset-approval` performing a second, separate
+anon-permitted column `UPDATE` to clear `apply_blocked_reason` right after the RPC succeeded. If
+that second write failed, the route still returned 200 (best-effort, non-blocking by design), but
+the row stayed visibly blocked forever -- and, contrary to the route's own comment at the time, a
+second "Try again" tap could not actually retry the clear: it re-called the RPC first, which now
+failed its own `approved_at IS NOT NULL` guard (no longer true after the first call already
+cleared it), so execution never reached the cleanup update at all. Migration
+`20260928000000_reset_approval_also_clears_blocked_reason.sql` moved both clears into the RPC's
+one guarded `UPDATE` (`CREATE OR REPLACE FUNCTION`, safe to reapply against the already-shipped
+`20260925000000` migration -- grants and `SECURITY DEFINER`/`search_path` hardening carry over
+unchanged). The route now does nothing but call the RPC; a reset either clears both fields or
+clears neither, with no partial-failure window and no separate write for the route to lose.
 
 **Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`

@@ -36,12 +36,27 @@ export function ApplicationsPage() {
   const [sourceFilter, setSourceFilter] = useState<string>("__all__");
 
   const SUBMITTING_IDS_STORAGE_KEY = "applications_submitting_ids";
+  const TIMED_OUT_IDS_STORAGE_KEY = "applications_timed_out_ids";
 
   const [confirmingApplication, setConfirmingApplication] = useState<JobApplication | null>(null);
   const [approveLoading, setApproveLoading] = useState(false);
   const [submittingIds, setSubmittingIds] = useState<Set<string>>(() => {
     try {
       const raw = sessionStorage.getItem(SUBMITTING_IDS_STORAGE_KEY);
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  // Merge review 2026-09-28, finding 5: a poll timeout doesn't mean the underlying GitHub
+  // Actions run is dead -- it may still be installing dependencies or genuinely running. Rather
+  // than silently dropping back to "Approve & Submit" (which just 409s against the still-set
+  // approved_at with no explanation), a timed-out id moves here: a distinct, persisted "may
+  // still be running" state offering an explicit re-check and an explicit reset, instead of
+  // either pretending nothing happened or auto-resetting while a run could still be active.
+  const [timedOutIds, setTimedOutIds] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem(TIMED_OUT_IDS_STORAGE_KEY);
       return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
     } catch {
       return new Set();
@@ -60,6 +75,14 @@ export function ApplicationsPage() {
       // sessionStorage unavailable
     }
   }, [submittingIds]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(TIMED_OUT_IDS_STORAGE_KEY, JSON.stringify([...timedOutIds]));
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [timedOutIds]);
 
   useEffect(() => {
     return () => {
@@ -164,37 +187,82 @@ export function ApplicationsPage() {
     delete pollTimers.current[id];
   };
 
+  // Shared by the recurring poll tick and the timed-out state's manual "Check now" -- one fetch,
+  // one interpretation of the row's status. Returns "pending" (still no terminal state observed,
+  // including on a fetch error -- best-effort) so callers decide what to do next: a tick
+  // schedules another poll, a manual check re-arms active polling.
+  const checkApplicationStatus = async (id: string): Promise<"applied" | "blocked" | "pending"> => {
+    try {
+      const res = await fetch(`/api/applications/${id}`);
+      const data = await res.json();
+      const app: { stage?: string; apply_blocked_reason?: string | null } | undefined =
+        data.application;
+      if (app?.stage === "applied") {
+        toast.success("Application submitted");
+        load(stageFilter, sourceFilter);
+        return "applied";
+      }
+      if (app?.apply_blocked_reason) {
+        setBlockedReasons((cur) => ({ ...cur, [id]: app.apply_blocked_reason as string }));
+        toast.error("Submission failed -- see the row for details");
+        return "blocked";
+      }
+    } catch {
+      // best-effort; caller treats this the same as still-pending
+    }
+    return "pending";
+  };
+
   const pollForCompletion = (id: string) => {
     const startedAt = Date.now();
     const tick = async () => {
       if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
         stopPolling(id);
-        toast.error("Still processing -- check back in a bit");
+        // finding 5: a timeout is not evidence of failure -- the GitHub Actions run may still be
+        // installing dependencies or genuinely mid-fill. Surface a distinct, recoverable state
+        // instead of silently reverting to "Approve & Submit".
+        setTimedOutIds((cur) => new Set(cur).add(id));
+        toast.error("Still processing after 16 minutes -- check status or reset to try again");
         return;
       }
-      try {
-        const res = await fetch(`/api/applications/${id}`);
-        const data = await res.json();
-        const app: { stage?: string; apply_blocked_reason?: string | null } | undefined =
-          data.application;
-        if (app?.stage === "applied") {
-          stopPolling(id);
-          toast.success("Application submitted");
-          load(stageFilter, sourceFilter);
-          return;
-        }
-        if (app?.apply_blocked_reason) {
-          stopPolling(id);
-          setBlockedReasons((cur) => ({ ...cur, [id]: app.apply_blocked_reason as string }));
-          toast.error("Submission failed -- see the row for details");
-          return;
-        }
-      } catch {
-        // best-effort poll; retry on the next tick
+      const status = await checkApplicationStatus(id);
+      if (status !== "pending") {
+        stopPolling(id);
+        return;
       }
       pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
     };
     pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+  };
+
+  // finding 4: submittingIds is restored from sessionStorage on mount, but nothing previously
+  // resumed the actual poll timer for those ids -- the row rendered "Submitting..." forever with
+  // no way to observe success, failure, or a timeout. Guarded by pollTimers.current so this never
+  // double-starts a poll that doApprove already kicked off in the same render pass.
+  useEffect(() => {
+    submittingIds.forEach((id) => {
+      if (!pollTimers.current[id]) {
+        pollForCompletion(id);
+      }
+    });
+    // Mount-only: resumes whatever sessionStorage restored into the initial submittingIds state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // finding 5: manual recovery from the timed-out state -- one fresh check rather than either
+  // assuming success/failure or blindly resetting approval while a run may still be active.
+  const handleCheckNow = async (id: string) => {
+    const status = await checkApplicationStatus(id);
+    setTimedOutIds((cur) => {
+      const next = new Set(cur);
+      next.delete(id);
+      return next;
+    });
+    if (status === "pending") {
+      // Still no terminal state -- resume active polling instead of leaving it in limbo.
+      setSubmittingIds((cur) => new Set(cur).add(id));
+      pollForCompletion(id);
+    }
   };
 
   const doApprove = async () => {
@@ -234,6 +302,14 @@ export function ApplicationsPage() {
       setBlockedReasons((cur) => {
         const next = { ...cur };
         delete next[id];
+        return next;
+      });
+      // finding 5: the timed-out state also offers a reset (the row may genuinely be dead, not
+      // just slow) -- clear it here too so a reset from either state converges on the same
+      // "Approve & Submit" outcome once the row reloads.
+      setTimedOutIds((cur) => {
+        const next = new Set(cur);
+        next.delete(id);
         return next;
       });
       load(stageFilter, sourceFilter);
@@ -385,6 +461,28 @@ export function ApplicationsPage() {
                         <span className="text-fg-dim text-xs flex items-center gap-1">
                           <Loader2 className="size-3 animate-spin" /> Submitting...
                         </span>
+                      ) : timedOutIds.has(app.id) ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="text-amber-400 text-xs">
+                            Taking longer than expected -- may still be running
+                          </span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleCheckNow(app.id)}
+                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                            >
+                              Check now
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleTryAgain(app.id)}
+                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                            >
+                              Reset approval
+                            </button>
+                          </div>
+                        </div>
                       ) : blockedReasons[app.id] ?? app.apply_blocked_reason ? (
                         // C1: blockedReasons is only populated by THIS tab's own polling --
                         // a row blocked in a previous session (submit failed, page refreshed,

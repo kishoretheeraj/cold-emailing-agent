@@ -564,7 +564,11 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
     vi.useRealTimers();
   });
 
-  it("still shows the ambiguous timeout message when polling exceeds the timeout with no resolution either way", async () => {
+  // Merge review 2026-09-28, finding 5: a timeout used to just drop the row back to plain
+  // "Approve & Submit" with a generic toast and no persisted state -- indistinguishable from a
+  // row that was never submitted, even though approved_at is still set and a re-click would
+  // 409. It now moves into a distinct, recoverable "may still be running" state instead.
+  it("shows a distinct 'may still be running' state (not plain Approve & Submit) when polling exceeds the timeout with no resolution either way", async () => {
     vi.useFakeTimers();
     await openModalAndConfirmSubmit();
 
@@ -585,7 +589,173 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
       await vi.advanceTimersByTimeAsync(17 * 60 * 1000 + 30000);
     });
 
-    expect(toastErrorMock).toHaveBeenCalledWith("Still processing -- check back in a bit");
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "Still processing after 16 minutes -- check status or reset to try again"
+    );
+    expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
+    // Not the plain Approve & Submit button -- that would silently invite a re-click that just
+    // 409s against the still-set approved_at with no explanation.
+    expect(screen.queryByRole("button", { name: /^approve & submit$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /check now/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reset approval/i })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("persists the timed-out state to sessionStorage so a refresh doesn't silently re-offer Approve & Submit", async () => {
+    vi.useFakeTimers();
+    await openModalAndConfirmSubmit();
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "ready_to_submit", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(17 * 60 * 1000 + 30000);
+    });
+
+    const raw = sessionStorage.getItem("applications_timed_out_ids");
+    expect(raw ? (JSON.parse(raw) as string[]) : []).toContain("5");
+    vi.useRealTimers();
+  });
+
+  it("'Check now' re-checks status once and clears the timed-out state on a terminal result", async () => {
+    vi.useFakeTimers();
+    await openModalAndConfirmSubmit();
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "ready_to_submit", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(17 * 60 * 1000 + 30000);
+    });
+    expect(screen.getByRole("button", { name: /check now/i })).toBeInTheDocument();
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "applied", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    });
+    await flushMicrotasks();
+
+    expect(toastSuccessMock).toHaveBeenCalledWith("Application submitted");
+    const raw = sessionStorage.getItem("applications_timed_out_ids");
+    expect(raw ? (JSON.parse(raw) as string[]) : []).not.toContain("5");
+    vi.useRealTimers();
+  });
+
+  it("reset approval also clears the timed-out state (not just a blocked reason)", async () => {
+    vi.useFakeTimers();
+    await openModalAndConfirmSubmit();
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "ready_to_submit", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(17 * 60 * 1000 + 30000);
+    });
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string, opts?: RequestInit) => {
+      if (typeof url === "string" && url === "/api/applications/5/reset-approval" && opts?.method === "POST") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /reset approval/i }));
+    });
+    await flushMicrotasks();
+
+    const raw = sessionStorage.getItem("applications_timed_out_ids");
+    expect(raw ? (JSON.parse(raw) as string[]) : []).not.toContain("5");
+    vi.useRealTimers();
+  });
+
+  // Merge review 2026-09-28, finding 4: submittingIds reloaded from sessionStorage on mount, but
+  // only doApprove() ever started a poll timer -- a restored id rendered "Submitting..." forever
+  // with no timer resuming underneath it. The review's own reproduction calls out that this
+  // needs an actual unmount/remount, not only a sessionStorage-write assertion (that only proves
+  // the write happened, not that anything reads it back on mount).
+  it("resumes polling for an id restored from sessionStorage on a fresh mount (finding 4)", async () => {
+    sessionStorage.setItem("applications_submitting_ids", JSON.stringify(["5"]));
+    vi.useFakeTimers();
+
+    render(<ApplicationsPage />);
+    await flushMicrotasks();
+    expect(screen.getByText(/submitting/i)).toBeInTheDocument();
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "applied", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+
+    expect(toastSuccessMock).toHaveBeenCalledWith("Application submitted");
+    vi.useRealTimers();
+  });
+
+  it("resumes polling after an actual unmount/remount cycle, not only after the initial mount", async () => {
+    vi.useFakeTimers();
+    const { unmount } = render(<ApplicationsPage />);
+    await flushMicrotasks();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /approve & submit/i }));
+    });
+    const modal = screen.getByTestId("confirm-content");
+    await act(async () => {
+      fireEvent.click(within(modal).getByRole("button", { name: /approve & submit/i }));
+    });
+    await flushMicrotasks();
+    expect(screen.getByText(/submitting/i)).toBeInTheDocument();
+
+    // Simulate a full page refresh: unmount (which clears this instance's in-memory
+    // pollTimers ref) and mount a fresh component instance, the way a real navigation would.
+    unmount();
+    render(<ApplicationsPage />);
+    await flushMicrotasks();
+    expect(screen.getByText(/submitting/i)).toBeInTheDocument();
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce((url: string) => {
+      if (typeof url === "string" && url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ application: { id: "5", stage: "applied", apply_blocked_reason: null } }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+
+    expect(toastSuccessMock).toHaveBeenCalledWith("Application submitted");
     vi.useRealTimers();
   });
 

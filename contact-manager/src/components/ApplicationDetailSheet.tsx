@@ -59,11 +59,13 @@ function AnswerEditor({
   answers,
   multiline,
   onChange,
+  disabled = false,
 }: {
   title: string;
   answers: Record<string, string>;
   multiline: boolean;
   onChange: (key: string, value: string) => void;
+  disabled?: boolean;
 }) {
   const entries = Object.entries(answers);
   if (entries.length === 0) {
@@ -84,7 +86,8 @@ function AnswerEditor({
             <textarea
               value={value}
               onChange={(e) => onChange(question, e.target.value)}
-              className="px-2 py-1 bg-surface-2 border border-border rounded-md text-sm text-fg min-h-[60px]"
+              disabled={disabled}
+              className="px-2 py-1 bg-surface-2 border border-border rounded-md text-sm text-fg min-h-[60px] disabled:opacity-50"
             />
           </label>
         ) : (
@@ -93,7 +96,8 @@ function AnswerEditor({
             <input
               value={value}
               onChange={(e) => onChange(question, e.target.value)}
-              className="px-2 py-1 bg-surface-2 border border-border rounded-md text-sm text-fg"
+              disabled={disabled}
+              className="px-2 py-1 bg-surface-2 border border-border rounded-md text-sm text-fg disabled:opacity-50"
             />
           </label>
         )
@@ -137,20 +141,32 @@ export function ApplicationDetailSheet({
           },
         }),
       });
-      if (!res.ok) throw new Error("request failed");
       const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "request failed");
       toast.success("Answers saved");
       // I7: without this, a successful save updates the database but the table's answer
       // count and a re-opened/re-rendered sheet both keep showing the pre-edit data --
       // defeating U11's entire point (the human's edit should be what actually gets
       // submitted, and they should be able to SEE that it was saved).
       if (data.application) onSaved?.(data.application as JobApplication);
-    } catch {
-      toast.error("Could not save answers");
+    } catch (err) {
+      // finding 1: once approved_at is set the PATCH route now rejects the write with a 409
+      // and a specific message -- surface it instead of a generic failure toast, since this is
+      // an expected, explainable outcome (the application was approved elsewhere, e.g. another
+      // tab) rather than a transient error.
+      toast.error(err instanceof Error ? err.message : "Could not save answers");
     } finally {
       setSavingAnswers(false);
     }
   };
+
+  // finding 1: once approved_at is set, apply_agent.py's submit() may read this row's
+  // apply_preview at any point during the GitHub Actions workflow run. Editing answers after
+  // that point either changes what gets submitted under an approval granted for different
+  // answers, or (if the worker already read the row) silently diverges the UI from what was
+  // actually sent. The PATCH route enforces this server-side; disabling the editor here means
+  // the user sees why up front instead of typing an edit that a 409 then discards.
+  const isApproved = Boolean(application?.approved_at);
 
   useEffect(() => {
     if (!application) {
@@ -288,26 +304,36 @@ export function ApplicationDetailSheet({
                           ))}
                         </div>
                       </div>
+                      {isApproved ? (
+                        <p className="text-xs text-amber-400">
+                          This application has been approved and its answers are locked --
+                          reset approval to edit them again.
+                        </p>
+                      ) : null}
                       <AnswerEditor
                         title="Eligibility answers"
                         answers={eligibilityAnswers}
                         multiline={false}
                         onChange={(k, v) => setEligibilityAnswers((cur) => ({ ...cur, [k]: v }))}
+                        disabled={isApproved}
                       />
                       <AnswerEditor
                         title="Screening answers"
                         answers={screeningAnswers}
                         multiline={true}
                         onChange={(k, v) => setScreeningAnswers((cur) => ({ ...cur, [k]: v }))}
+                        disabled={isApproved}
                       />
-                      <button
-                        type="button"
-                        onClick={handleSaveAnswers}
-                        disabled={savingAnswers}
-                        className="px-3 py-2 bg-indigo-600 text-white rounded-md text-sm w-fit disabled:opacity-50"
-                      >
-                        {savingAnswers ? "Saving..." : "Save changes"}
-                      </button>
+                      {!isApproved && (
+                        <button
+                          type="button"
+                          onClick={handleSaveAnswers}
+                          disabled={savingAnswers}
+                          className="px-3 py-2 bg-indigo-600 text-white rounded-md text-sm w-fit disabled:opacity-50"
+                        >
+                          {savingAnswers ? "Saving..." : "Save changes"}
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <p className="text-fg-dim text-sm">No application preview yet.</p>
