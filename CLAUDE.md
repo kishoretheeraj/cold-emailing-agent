@@ -1196,7 +1196,12 @@ calls `db.set_apply_blocked(job_id, str(exc))` before re-raising, mirroring
 `run_preview()`/`_process_one_preview()`'s own log-then-record pattern for the preview pass. Without
 this, a failed submit left the row `approved_at`-set/`stage='ready_to_submit'` forever with no UI
 path to recover -- `apply_blocked_reason` is what `ApplicationsPage.tsx`'s "Try again" button (which
-calls `reset_approval` via `POST /api/applications/[id]/reset-approval`) keys off of.
+calls `reset_approval` via `POST /api/applications/[id]/reset-approval`) keys off of. The
+`reset_approval` RPC itself only clears `approved_at` -- `POST /api/applications/[id]/reset-approval`
+also clears `apply_blocked_reason` on the row directly (a plain anon-permitted column UPDATE, no new
+RPC needed) right after the RPC succeeds. Without that second clear, "Try again" would keep reading
+a non-null `apply_blocked_reason` forever after every reset and never show Approve & Submit again --
+the same dead-end this whole feature exists to close, just moved one step later.
 
 **Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
