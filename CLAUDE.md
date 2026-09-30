@@ -1258,6 +1258,23 @@ path.
 
 Design record: docs/superpowers/specs/2026-09-05-email-verification-preflight-design.md.
 
+**Fixed since (merge review, 2026-09-28, findings 7 and 8):** the syntax regex's local-part
+character class was narrower at the first character than the rest, rejecting any address
+starting with an underscore (`_team@...`) and rejecting apostrophes anywhere (`o'connor@...`)
+-- both valid RFC 5322 atext characters -- and had no adjacency constraint, so
+`alice..smith@...` (an empty atom between two dots) matched. Since `"invalid"` is the only
+status that blocks a draft, a false-syntax-invalid meant a real contact could silently never
+receive a first-touch email, every run, forever. Replaced with a pattern implementing RFC 5322
+section 3.2.3's atext set and section 3.4.1's dot-atom-text grammar for the local part's
+unquoted form. Separately, `_check_domain` treated any successful MX resolution as `"valid"`
+without inspecting the record, so a domain publishing an RFC 7505 "null MX" (exactly one
+record, preference 0, exchange `"."` -- the domain's own explicit declaration that it accepts
+no mail) read as valid instead of `"invalid"`, defeating the gate for exactly the
+conclusively-undeliverable domains it exists to catch. Both are covered with regression tests
+using real objects rather than mocks standing in for them: syntax cases covering the reported
+punctuation and dot-placement bugs, and a null-MX case built from a real dnspython `MX` rdata
+parsed from `"0 ."`.
+
 See docs/python/reply-pipeline.md for reply detection invariants and reply_drafter.py details.
 
 See docs/python/db-schema.md for table schemas, new columns, reply stages, new db.py functions, and new config.py constants.
