@@ -162,6 +162,36 @@ def test_generate_screening_answers_grounds_answer_in_call_claude(mocker):
     assert result == {"Why do you want this role?": "Grounded answer text."}
 
 
+# Merge review 2026-09-28, finding 3: this used to pass job.get("role", "") as profile_summary --
+# a posting titled "Senior Product Manager" was presented back to the LLM as the candidate's own
+# facts, so it could never produce the "real, factual experience" answers the prompt promises.
+def test_generate_screening_answers_grounds_the_prompt_in_the_real_candidate_profile_not_the_job_role(mocker):
+    page = MagicMock()
+    page.get_by_text.return_value.all.return_value = [MagicMock(inner_text=lambda: "Why do you want this role?")]
+    call_claude_mock = mocker.patch("apply_agent._call_claude", return_value="Grounded answer text.")
+    mocker.patch("apply_agent.candidate_profile.profile_text", return_value="Associate PM at Protium Finance.")
+    job = {"company": "Acme", "role": "Senior Product Manager"}
+
+    apply_agent._generate_screening_answers(page, job)
+
+    prompt = call_claude_mock.call_args[0][0]
+    assert "Associate PM at Protium Finance." in prompt
+    assert "profile_summary" not in prompt  # format() must have substituted the placeholder
+
+
+def test_generate_screening_answers_flags_for_human_review_when_no_profile_text_available(mocker):
+    page = MagicMock()
+    page.get_by_text.return_value.all.return_value = [MagicMock(inner_text=lambda: "Why do you want this role?")]
+    call_claude_mock = mocker.patch("apply_agent._call_claude")
+    mocker.patch("apply_agent.candidate_profile.profile_text", return_value="")
+    job = {"company": "Acme", "role": "PM"}
+
+    result = apply_agent._generate_screening_answers(page, job)
+
+    assert result == {"Why do you want this role?": apply_agent._NO_PROFILE_ANSWER}
+    call_claude_mock.assert_not_called()
+
+
 # ── _set_field_by_label: the shared dropdown/radio/text fallback chain ──────────
 
 def test_set_field_by_label_selects_a_dropdown_option(mocker):
@@ -381,23 +411,128 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
     assert preview_arg["eligibility_answers"] == {"work_authorized_us": "Yes"}
 
 
-def test_fill_generic_via_browser_use_never_raises_on_library_failure(mocker):
+# Merge review 2026-09-28, finding 2: _fill_generic_via_browser_use used to catch and swallow
+# every failure (a missing field_values key, or any browser-use failure), so
+# _process_one_preview() always proceeded to db.set_apply_preview() and stage='ready_to_submit'
+# even when the generic fill produced a blank form -- a human could approve and submit an
+# incomplete application with no warning. It must now propagate, so the existing per-row
+# try/except in run_preview() (and submit()'s own handler) can call db.set_apply_blocked
+# instead of this being silently absorbed one level down.
+def test_fill_generic_via_browser_use_propagates_a_missing_field_values_key(mocker):
+    page = MagicMock()
+    run_mock = mocker.patch("apply_agent._browser_use_agent_run")
+    with pytest.raises(KeyError):
+        apply_agent._fill_generic_via_browser_use(page, {"company": "Acme"}, {"name": "Kishore"})
+    run_mock.assert_not_called()
+
+
+def test_fill_generic_via_browser_use_propagates_a_browser_use_failure(mocker):
     page = MagicMock()
     mocker.patch("apply_agent._browser_use_agent_run", side_effect=RuntimeError("browser-use crashed"))
-    apply_agent._fill_generic_via_browser_use(page, {"company": "Acme"}, {"name": "Kishore"})  # must not raise
-
-
-def test_fill_generic_via_browser_use_never_raises_when_library_call_itself_fails(mocker):
-    """Additive test (not from the brief's verbatim three) -- exercises the _browser_use_agent_run
-    failure path with a complete field_values dict, since a missing key now raises before that
-    call is ever reached (see test above)."""
-    page = MagicMock()
-    run_mock = mocker.patch("apply_agent._browser_use_agent_run", side_effect=RuntimeError("browser-use crashed"))
     field_values = {"name": "Kishore", "email": "k@example.com", "phone": "555", "location": "NH", "linkedin": "li"}
 
-    apply_agent._fill_generic_via_browser_use(page, {"company": "Acme"}, field_values)  # must not raise
+    with pytest.raises(RuntimeError, match="browser-use crashed"):
+        apply_agent._fill_generic_via_browser_use(page, {"company": "Acme"}, field_values)
 
-    run_mock.assert_called_once()
+
+def test_run_preview_blocks_the_row_when_the_generic_browser_use_fill_fails(mocker):
+    # The gap the finding-2 fix closes: a browser-use failure now actually reaches
+    # db.set_apply_blocked via run_preview()'s existing per-row exception handler, and the row
+    # is never marked ready_to_submit.
+    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+        {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://careers.acme.com/apply/1",
+         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
+    ])
+    mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
+    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._browser_use_agent_run", side_effect=RuntimeError("browser-use did not complete"))
+    set_preview_mock = mocker.patch("apply_agent.db.set_apply_preview")
+    set_blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
+
+    apply_agent.run_preview()  # must not raise -- run_preview's own per-row isolation catches it
+
+    set_preview_mock.assert_not_called()
+    set_blocked_mock.assert_called_once()
+    assert set_blocked_mock.call_args[0][0] == 1
+    assert "browser-use did not complete" in set_blocked_mock.call_args[0][1]
+
+
+# Merge review 2026-09-28, finding 2: verified against the real installed browser-use==0.1.40
+# API (requirements-apply.txt) -- the pinned version had no browser_use.llm module, no page=
+# constructor arg, and an async-only Agent.run(), all three silently wrong in the code this
+# adapter replaces. This smoke test constructs the REAL browser_use.Browser/BrowserConfig/Agent
+# objects (proving the adapter's constructor kwargs -- cdp_url, _force_keep_browser_alive,
+# browser=, llm= -- are real fields on this installed version) instead of mocking
+# apply_agent._browser_use_agent_run itself away, which is exactly the kind of mock that let the
+# original page=/run_sync() mismatch ship undetected. Only the two calls that would need a real
+# browser/network (Agent.run, Browser.close) are stubbed. Skips if browser-use/langchain-anthropic
+# aren't installed -- same lazy-import posture as the rest of this module; the base test
+# environment doesn't include requirements-apply.txt.
+def test_browser_use_agent_run_adapter_smoke_test(mocker):
+    browser_use = pytest.importorskip("browser_use")
+    pytest.importorskip("langchain_anthropic")
+
+    page = MagicMock()
+    apply_agent._CDP_PORTS[id(page)] = 65432
+
+    fake_history = MagicMock()
+    fake_history.is_successful.return_value = True
+    fake_history.has_errors.return_value = False
+
+    async def fake_run(self):
+        return fake_history
+
+    async def fake_close(self):
+        return None
+
+    mocker.patch.object(browser_use.Agent, "run", fake_run)
+    mocker.patch.object(browser_use.Browser, "close", fake_close)
+
+    try:
+        result = apply_agent._browser_use_agent_run("fill the form", page)
+    finally:
+        apply_agent._CDP_PORTS.pop(id(page), None)
+
+    assert result is fake_history
+
+
+def test_browser_use_agent_run_raises_when_history_reports_failure(mocker):
+    browser_use = pytest.importorskip("browser_use")
+    pytest.importorskip("langchain_anthropic")
+
+    page = MagicMock()
+    apply_agent._CDP_PORTS[id(page)] = 65433
+
+    fake_history = MagicMock()
+    fake_history.is_successful.return_value = False
+    fake_history.has_errors.return_value = True
+    fake_history.errors.return_value = ["could not find a submit-adjacent form field"]
+
+    async def fake_run(self):
+        return fake_history
+
+    async def fake_close(self):
+        return None
+
+    mocker.patch.object(browser_use.Agent, "run", fake_run)
+    mocker.patch.object(browser_use.Browser, "close", fake_close)
+
+    try:
+        with pytest.raises(RuntimeError, match="did not complete"):
+            apply_agent._browser_use_agent_run("fill the form", page)
+    finally:
+        apply_agent._CDP_PORTS.pop(id(page), None)
+
+
+def test_browser_use_agent_run_raises_when_no_cdp_port_recorded(mocker):
+    pytest.importorskip("browser_use")
+    pytest.importorskip("langchain_anthropic")
+
+    page = MagicMock()
+    apply_agent._CDP_PORTS.pop(id(page), None)
+
+    with pytest.raises(RuntimeError, match="CDP"):
+        apply_agent._browser_use_agent_run("fill the form", page)
 
 
 import os
@@ -634,6 +769,7 @@ def test_process_one_preview_closes_the_page_even_when_filling_raises(mocker):
 def test_close_page_tears_down_browser_and_driver():
     page, browser, playwright = MagicMock(), MagicMock(), MagicMock()
     apply_agent._OPEN_SESSIONS[id(page)] = (browser, playwright)
+    apply_agent._CDP_PORTS[id(page)] = 54321
 
     apply_agent._close_page(page)
 
@@ -641,9 +777,36 @@ def test_close_page_tears_down_browser_and_driver():
     browser.close.assert_called_once()
     playwright.stop.assert_called_once()
     assert id(page) not in apply_agent._OPEN_SESSIONS
+    # finding 2: _CDP_PORTS mirrors _OPEN_SESSIONS' lifecycle -- a page torn down here must not
+    # leave a stale port entry another (unrelated, future) page's id could collide with.
+    assert id(page) not in apply_agent._CDP_PORTS
 
 
 def test_close_page_never_raises_when_teardown_fails():
     page = MagicMock()
     page.close.side_effect = RuntimeError("already closed")
     apply_agent._close_page(page)  # must not raise
+
+
+def test_launch_page_records_a_cdp_debugging_port_for_the_page(mocker):
+    # finding 2: _browser_use_agent_run bridges to the real browser-use library via a CDP URL,
+    # not a page= constructor arg (that field doesn't exist on the installed 0.1.40 API) -- this
+    # is the wiring that makes _CDP_PORTS.get(id(page)) resolvable later. Requires the real
+    # playwright package (requirements-apply.txt) to patch playwright.sync_api.sync_playwright
+    # at all -- skips if it isn't installed, same lazy-import posture as the rest of this module.
+    pytest.importorskip("playwright")
+    playwright_mock = MagicMock()
+    sync_playwright_mock = MagicMock()
+    sync_playwright_mock.return_value.start.return_value = playwright_mock
+    mocker.patch("playwright.sync_api.sync_playwright", sync_playwright_mock)
+    mocker.patch("apply_agent._free_local_port", return_value=54321)
+    fake_page = MagicMock()
+    playwright_mock.chromium.launch.return_value.new_page.return_value = fake_page
+
+    page = apply_agent._launch_page("https://careers.acme.com/apply/1")
+
+    assert page is fake_page
+    launch_kwargs = playwright_mock.chromium.launch.call_args.kwargs
+    assert launch_kwargs["args"] == ["--remote-debugging-port=54321"]
+    assert apply_agent._CDP_PORTS[id(fake_page)] == 54321
+    apply_agent._close_page(fake_page)

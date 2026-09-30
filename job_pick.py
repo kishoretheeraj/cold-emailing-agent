@@ -10,10 +10,10 @@ docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md).
 
 import json
 import logging
-from pathlib import Path
 
 from sentence_transformers import SentenceTransformer
 
+import candidate_profile
 import config
 import db
 import resume_agent
@@ -22,8 +22,6 @@ from emailer import _call_claude
 log = logging.getLogger(__name__)
 
 _model = None
-_profile_text_cache = None
-_MASTER_DATA_PATH = Path(__file__).resolve().parent / "resume" / "data" / "master.json"
 
 
 # ── Stage 1: structured filters ─────────────────────────────────────────────────
@@ -60,23 +58,13 @@ def _embedding_similarity(job_description, profile_text):
 
 
 def _profile_text():
-    # Real profile text from resume/data/master.json and metrics.json, cached at module level.
-    global _profile_text_cache
-    if _profile_text_cache is None:
-        with open(_MASTER_DATA_PATH) as f:
-            master = json.load(f)
-        with open(_MASTER_DATA_PATH.parent / "metrics.json") as f:
-            metrics_by_id = {m["id"]: m["text"] for m in json.load(f)}
-
-        parts = []
-        for role in master.get("roles", []):
-            parts.append(f"{role.get('title', '')} at {role.get('company', '')}")
-            parts += [metrics_by_id[bid] for bid in role.get("bullet_ids", []) if bid in metrics_by_id]
-        for project_name, project in master.get("projects", {}).items():
-            parts.append(project_name)
-            parts += [metrics_by_id[bid] for bid in project.get("bullet_ids", []) if bid in metrics_by_id]
-        _profile_text_cache = " ".join(parts)
-    return _profile_text_cache
+    # Delegates to the shared candidate_profile module (merge review 2026-09-28, finding 3) --
+    # apply_agent.py's screening-answer prompt needs the same real candidate facts this judge
+    # uses, and duplicating the master.json/metrics.json parsing in both files risked the two
+    # copies drifting. Kept as a thin wrapper (rather than replacing every call site here with
+    # candidate_profile.profile_text() directly) so this module's own tests and mocks
+    # (job_pick._profile_text) don't need to change.
+    return candidate_profile.profile_text()
 
 
 # ── Stage 3: coarse LLM judge ─────────────────────────────────────────────────────
@@ -85,12 +73,18 @@ _JUDGE_PROMPT = """You are screening one job posting against a candidate's real 
 Respond with ONLY a JSON object, no other text: {{"verdict": "strong"|"maybe"|"no", "reasoning": "<one sentence>"}}
 
 Use "strong" only when this is a clear, direct fit worth spending money to generate a tailored
-resume for. Use "maybe" for a plausible but uncertain fit. Use "no" for anything else. Be
-conservative -- a missed "maybe" costs nothing, a wrong "strong" costs real money.
+resume for, AND the candidate profile below actually supports it -- do not call a job "strong"
+based on the posting alone if the candidate's real experience doesn't back it up. Use "maybe"
+for a plausible but uncertain fit. Use "no" for anything else. Be conservative -- a missed
+"maybe" costs nothing, a wrong "strong" costs real money.
 
 Job: {company} -- {role}
 Description: {description}
+
+Candidate profile: {profile_text}
 """
+
+_NO_PROFILE_REASONING = "no candidate profile text available to judge fit against -- needs human review"
 
 
 def _strip_json_fence(text):
@@ -102,11 +96,20 @@ def _strip_json_fence(text):
     return stripped.strip()
 
 
-def _llm_judge(job):
+def _llm_judge(job, profile_text):
+    # Merge review 2026-09-28, finding 3: this used to ask for a fit verdict against "a real
+    # candidate" while supplying only the employer/role/description -- profile_text (the same
+    # real candidate facts _embedding_similarity already uses) is now part of the prompt, and a
+    # missing/empty profile degrades to "maybe" (visible, human-reviewable) rather than letting
+    # the LLM either fabricate unsupported fit or silently auto-trigger real resume spend on a
+    # "strong" it had no grounds for.
+    if not profile_text.strip():
+        return {"verdict": "maybe", "reasoning": _NO_PROFILE_REASONING}
     prompt = _JUDGE_PROMPT.format(
         company=job.get("company", "Unknown"),
         role=job.get("role", "Unknown"),
         description=(job.get("posting_snapshot") or {}).get("description", ""),
+        profile_text=profile_text,
     )
     try:
         raw = _call_claude(prompt, model=config.JOB_PICK_MODEL, module="job_pick", action="judge")
@@ -125,12 +128,13 @@ def score_job(job):
     if not _passes_structured_filters(job):
         return {"verdict": "no", "score": None, "reasoning": "structured filter: title/keyword mismatch"}
 
+    profile_text = _profile_text()
     description = (job.get("posting_snapshot") or {}).get("description", job.get("role", ""))
-    score = _embedding_similarity(description, _profile_text())
+    score = _embedding_similarity(description, profile_text)
     if score < config.JOB_PICK_EMBEDDING_THRESHOLD:
         return {"verdict": "no", "score": score, "reasoning": "embedding similarity below threshold"}
 
-    verdict = _llm_judge(job)
+    verdict = _llm_judge(job, profile_text)
     return {"verdict": verdict["verdict"], "score": score, "reasoning": verdict["reasoning"]}
 
 
