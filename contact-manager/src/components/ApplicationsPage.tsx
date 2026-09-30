@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
 import {
@@ -10,12 +10,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { Loader2 } from "lucide-react";
+import { ApplicationDetailSheet } from "@/components/ApplicationDetailSheet";
+import { SystemHealthStrip } from "@/components/SystemHealthStrip";
+import { pickVerdictVariant } from "@/lib/applicationBadges";
 import {
   JOB_APPLICATION_STAGES,
   JOB_APPLICATION_STAGE_LABELS,
   type JobApplication,
   type JobApplicationStage,
 } from "@/lib/types";
+
+const SOURCE_OPTIONS = ["linkedin", "ats_scan", "jobright", "manual"] as const;
 
 export function ApplicationsPage() {
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -24,10 +31,73 @@ export function ApplicationsPage() {
   const [role, setRole] = useState("");
   const [jobUrl, setJobUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [selectedApplication, setSelectedApplication] = useState<JobApplication | null>(null);
+  const [stageFilter, setStageFilter] = useState<string>("__all__");
+  const [sourceFilter, setSourceFilter] = useState<string>("__all__");
 
-  const load = async () => {
+  const SUBMITTING_IDS_STORAGE_KEY = "applications_submitting_ids";
+  const TIMED_OUT_IDS_STORAGE_KEY = "applications_timed_out_ids";
+
+  const [confirmingApplication, setConfirmingApplication] = useState<JobApplication | null>(null);
+  const [approveLoading, setApproveLoading] = useState(false);
+  const [submittingIds, setSubmittingIds] = useState<Set<string>>(() => {
     try {
-      const res = await fetch("/api/applications");
+      const raw = sessionStorage.getItem(SUBMITTING_IDS_STORAGE_KEY);
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  // Merge review 2026-09-28, finding 5: a poll timeout doesn't mean the underlying GitHub
+  // Actions run is dead -- it may still be installing dependencies or genuinely running. Rather
+  // than silently dropping back to "Approve & Submit" (which just 409s against the still-set
+  // approved_at with no explanation), a timed-out id moves here: a distinct, persisted "may
+  // still be running" state offering an explicit re-check and an explicit reset, instead of
+  // either pretending nothing happened or auto-resetting while a run could still be active.
+  const [timedOutIds, setTimedOutIds] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem(TIMED_OUT_IDS_STORAGE_KEY);
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  // Keyed the same way as submittingIds: id -> the row's last-known apply_blocked_reason once
+  // polling observes one, so the UI can show a specific failure and a Try again action instead
+  // of leaving the row looking stuck until the 90s timeout.
+  const [blockedReasons, setBlockedReasons] = useState<Record<string, string>>({});
+  const pollTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SUBMITTING_IDS_STORAGE_KEY, JSON.stringify([...submittingIds]));
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [submittingIds]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(TIMED_OUT_IDS_STORAGE_KEY, JSON.stringify([...timedOutIds]));
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [timedOutIds]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(pollTimers.current).forEach(clearTimeout);
+    };
+  }, []);
+
+  const load = async (stage: string = stageFilter, source: string = sourceFilter) => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (stage !== "__all__") params.set("stage", stage);
+      if (source !== "__all__") params.set("source", source);
+      const qs = params.toString();
+      const res = await fetch(`/api/applications${qs ? `?${qs}` : ""}`);
       const data = await res.json();
       setApplications(data.applications ?? []);
     } catch {
@@ -35,6 +105,16 @@ export function ApplicationsPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleStageFilterChange = (v: string) => {
+    setStageFilter(v);
+    load(v, sourceFilter);
+  };
+
+  const handleSourceFilterChange = (v: string) => {
+    setSourceFilter(v);
+    load(stageFilter, v);
   };
 
   useEffect(() => {
@@ -84,19 +164,165 @@ export function ApplicationsPage() {
     }
   };
 
-  const handleApprove = async (id: string) => {
+  const handleApplicationSaved = (updated: JobApplication) => {
+    setApplications((cur) => cur.map((a) => (a.id === updated.id ? updated : a)));
+    setSelectedApplication(updated);
+  };
+
+  // C2: apply_agent_submit.yml's own budget is `timeout-minutes: 15` -- and before it ever gets
+  // to launching a browser and driving an LLM-based form fill, it has to checkout, set up
+  // Python, `pip install -r requirements-apply.txt`, and `playwright install --with-deps
+  // chromium`. A 90s poll timeout meant this branch showed "still processing" on every
+  // submission, success or failure, since neither terminal state was reachable that fast in
+  // practice. 16 minutes gives a small margin over the workflow's own 15-minute budget.
+  const POLL_INTERVAL_MS = 15000;
+  const POLL_TIMEOUT_MS = 16 * 60 * 1000;
+
+  const stopPolling = (id: string) => {
+    setSubmittingIds((cur) => {
+      const next = new Set(cur);
+      next.delete(id);
+      return next;
+    });
+    delete pollTimers.current[id];
+  };
+
+  // Shared by the recurring poll tick and the timed-out state's manual "Check now" -- one fetch,
+  // one interpretation of the row's status. Returns "pending" (still no terminal state observed,
+  // including on a fetch error -- best-effort) so callers decide what to do next: a tick
+  // schedules another poll, a manual check re-arms active polling.
+  const checkApplicationStatus = async (id: string): Promise<"applied" | "blocked" | "pending"> => {
     try {
-      const res = await fetch(`/api/applications/${id}/submit`, { method: "POST" });
-      if (!res.ok) throw new Error("request failed");
-      toast.success("Submission triggered -- check back shortly");
+      const res = await fetch(`/api/applications/${id}`);
+      const data = await res.json();
+      const app: { stage?: string; apply_blocked_reason?: string | null } | undefined =
+        data.application;
+      if (app?.stage === "applied") {
+        toast.success("Application submitted");
+        load(stageFilter, sourceFilter);
+        return "applied";
+      }
+      if (app?.apply_blocked_reason) {
+        setBlockedReasons((cur) => ({ ...cur, [id]: app.apply_blocked_reason as string }));
+        toast.error("Submission failed -- see the row for details");
+        return "blocked";
+      }
     } catch {
-      toast.error("Could not trigger submission");
+      // best-effort; caller treats this the same as still-pending
+    }
+    return "pending";
+  };
+
+  const pollForCompletion = (id: string) => {
+    const startedAt = Date.now();
+    const tick = async () => {
+      if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+        stopPolling(id);
+        // finding 5: a timeout is not evidence of failure -- the GitHub Actions run may still be
+        // installing dependencies or genuinely mid-fill. Surface a distinct, recoverable state
+        // instead of silently reverting to "Approve & Submit".
+        setTimedOutIds((cur) => new Set(cur).add(id));
+        toast.error("Still processing after 16 minutes -- check status or reset to try again");
+        return;
+      }
+      const status = await checkApplicationStatus(id);
+      if (status !== "pending") {
+        stopPolling(id);
+        return;
+      }
+      pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+    };
+    pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+  };
+
+  // finding 4: submittingIds is restored from sessionStorage on mount, but nothing previously
+  // resumed the actual poll timer for those ids -- the row rendered "Submitting..." forever with
+  // no way to observe success, failure, or a timeout. Guarded by pollTimers.current so this never
+  // double-starts a poll that doApprove already kicked off in the same render pass.
+  useEffect(() => {
+    submittingIds.forEach((id) => {
+      if (!pollTimers.current[id]) {
+        pollForCompletion(id);
+      }
+    });
+    // Mount-only: resumes whatever sessionStorage restored into the initial submittingIds state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // finding 5: manual recovery from the timed-out state -- one fresh check rather than either
+  // assuming success/failure or blindly resetting approval while a run may still be active.
+  const handleCheckNow = async (id: string) => {
+    const status = await checkApplicationStatus(id);
+    setTimedOutIds((cur) => {
+      const next = new Set(cur);
+      next.delete(id);
+      return next;
+    });
+    if (status === "pending") {
+      // Still no terminal state -- resume active polling instead of leaving it in limbo.
+      setSubmittingIds((cur) => new Set(cur).add(id));
+      pollForCompletion(id);
+    }
+  };
+
+  const doApprove = async () => {
+    if (!confirmingApplication) return;
+    const app = confirmingApplication;
+    setApproveLoading(true);
+    try {
+      const res = await fetch(`/api/applications/${app.id}/submit`, { method: "POST" });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || "request failed");
+      }
+      toast.success("Submission triggered -- watching for it to land");
+      setBlockedReasons((cur) => {
+        const next = { ...cur };
+        delete next[app.id];
+        return next;
+      });
+      setSubmittingIds((cur) => new Set(cur).add(app.id));
+      pollForCompletion(app.id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not trigger submission");
+    } finally {
+      setApproveLoading(false);
+      setConfirmingApplication(null);
+    }
+  };
+
+  // I8: a row that ends up here still has approved_at set (the dispatch itself succeeded;
+  // apply_agent.py failed downstream, inside the workflow) -- re-clicking Approve & Submit
+  // directly would just 409 against approve_application's own already-approved guard. Clear it
+  // via Task 1's reset_approval RPC first, then the row is a normal candidate for Approve again.
+  const handleTryAgain = async (id: string) => {
+    try {
+      const res = await fetch(`/api/applications/${id}/reset-approval`, { method: "POST" });
+      if (!res.ok) throw new Error("request failed");
+      setBlockedReasons((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      // finding 5: the timed-out state also offers a reset (the row may genuinely be dead, not
+      // just slow) -- clear it here too so a reset from either state converges on the same
+      // "Approve & Submit" outcome once the row reloads.
+      setTimedOutIds((cur) => {
+        const next = new Set(cur);
+        next.delete(id);
+        return next;
+      });
+      load(stageFilter, sourceFilter);
+    } catch {
+      toast.error("Could not reset -- try again in a moment");
     }
   };
 
   return (
     <div className="p-6 flex flex-col gap-6">
       <h1 className="text-lg font-medium text-fg">Applications</h1>
+
+      <SystemHealthStrip />
 
       <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-sm text-fg-muted">
@@ -135,6 +361,41 @@ export function ApplicationsPage() {
         </button>
       </form>
 
+      <div className="flex gap-3">
+        <label data-testid="stage-filter" className="flex flex-col gap-1 text-sm text-fg-muted">
+          Stage
+          <Select value={stageFilter} onValueChange={handleStageFilterChange}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All stages</SelectItem>
+              {JOB_APPLICATION_STAGES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {JOB_APPLICATION_STAGE_LABELS[s]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+        <label data-testid="source-filter" className="flex flex-col gap-1 text-sm text-fg-muted">
+          Source
+          <Select value={sourceFilter} onValueChange={handleSourceFilterChange}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All sources</SelectItem>
+              {SOURCE_OPTIONS.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+      </div>
+
       {loading ? (
         <p className="text-sm text-fg-dim">Loading...</p>
       ) : applications.length === 0 ? (
@@ -149,7 +410,10 @@ export function ApplicationsPage() {
               <th className="py-2 pr-4">Applied</th>
               <th className="py-2 pr-4">Pick</th>
               <th className="py-2 pr-4">Blocked</th>
+              <th className="py-2 pr-4">Source</th>
+              <th className="py-2 pr-4">Filed via</th>
               <th className="py-2 pr-4">Preview / Submit</th>
+              <th className="py-2 pr-4">Details</th>
             </tr>
           </thead>
           <tbody>
@@ -176,34 +440,118 @@ export function ApplicationsPage() {
                 </td>
                 <td className="py-2 pr-4 text-fg-dim">{app.applied_date ?? <Badge>Not yet</Badge>}</td>
                 <td className="py-2 pr-4">
-                  {app.pick_verdict ? <Badge>{app.pick_verdict}</Badge> : <span className="text-fg-dim">—</span>}
+                  {app.pick_verdict ? (
+                    <Badge variant={pickVerdictVariant(app.pick_verdict)}>{app.pick_verdict}</Badge>
+                  ) : (
+                    <span className="text-fg-dim">—</span>
+                  )}
                 </td>
                 <td className="py-2 pr-4 text-fg-dim">
                   {app.apply_blocked_reason ?? "—"}
                 </td>
+                <td className="py-2 pr-4 text-fg-dim">{app.source ?? "—"}</td>
+                <td className="py-2 pr-4 text-fg-dim">{app.source_channel ?? "—"}</td>
                 <td className="py-2 pr-4">
                   {app.stage === "ready_to_submit" && app.apply_preview ? (
                     <div className="flex flex-col gap-1">
                       <span className="text-fg-dim text-xs">
                         {Object.entries(app.apply_preview.screening_answers).length} screening answer(s)
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => handleApprove(app.id)}
-                        className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
-                      >
-                        Approve & Submit
-                      </button>
+                      {submittingIds.has(app.id) ? (
+                        <span className="text-fg-dim text-xs flex items-center gap-1">
+                          <Loader2 className="size-3 animate-spin" /> Submitting...
+                        </span>
+                      ) : timedOutIds.has(app.id) ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="text-amber-400 text-xs">
+                            Taking longer than expected -- may still be running
+                          </span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleCheckNow(app.id)}
+                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                            >
+                              Check now
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleTryAgain(app.id)}
+                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                            >
+                              Reset approval
+                            </button>
+                          </div>
+                        </div>
+                      ) : blockedReasons[app.id] ?? app.apply_blocked_reason ? (
+                        // C1: blockedReasons is only populated by THIS tab's own polling --
+                        // a row blocked in a previous session (submit failed, page refreshed,
+                        // browser closed) would never show Try again without also falling back
+                        // to the row's own apply_blocked_reason from the API.
+                        <div className="flex flex-col gap-1">
+                          <span className="text-red-400 text-xs">
+                            {blockedReasons[app.id] ?? app.apply_blocked_reason}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleTryAgain(app.id)}
+                            className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                          >
+                            Try again
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingApplication(app)}
+                          className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
+                        >
+                          Approve & Submit
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <span className="text-fg-dim">—</span>
                   )}
+                </td>
+                <td className="py-2 pr-4">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedApplication(app)}
+                    className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg"
+                  >
+                    View
+                  </button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+
+      <ApplicationDetailSheet
+        application={selectedApplication}
+        onClose={() => setSelectedApplication(null)}
+        onSaved={handleApplicationSaved}
+      />
+
+      <ConfirmModal
+        open={confirmingApplication !== null}
+        title="Submit this application?"
+        body={
+          confirmingApplication ? (
+            <p>
+              This will submit a real application to <strong>{confirmingApplication.company}</strong>{" "}
+              for <strong>{confirmingApplication.role}</strong>. This cannot be undone.
+            </p>
+          ) : null
+        }
+        confirmLabel="Approve & Submit"
+        confirmVariant="primary"
+        onConfirm={doApprove}
+        onCancel={() => setConfirmingApplication(null)}
+        loading={approveLoading}
+      />
     </div>
   );
 }

@@ -278,17 +278,33 @@ export type JobApplication = {
   role: string;
   job_url: string | null;
   source: string | null;
+  source_channel: string | null;
   stage: JobApplicationStage;
   applied_date: string | null;
   notes: string | null;
   posting_snapshot: Record<string, unknown> | null;
   resume_file_ref: string | null;
   cover_letter_file_ref: string | null;
+  resume_cost_usd: number | null;
+  resume_tokens_input: number | null;
+  resume_tokens_output: number | null;
   pick_verdict: JobApplicationPickVerdict | null;
   pick_score: number | null;
   pick_reasoning: string | null;
   apply_preview: JobApplicationApplyPreview | null;
   apply_blocked_reason: string | null;
+  approved_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type SystemHealthRow = {
+  source: string;
+  status: string;
+  ran_at: string;
+  failure_reason: string | null;
+  // M7: root CLAUDE.md's own health-strip write-up says a reader "should treat the `errors`
+  // count, not just `status`, as the wedged-box signal" -- a run can report status='success'
+  // while still having logged per-row errors along the way.
+  errors: number | null;
 };

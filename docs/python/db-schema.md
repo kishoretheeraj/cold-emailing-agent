@@ -37,6 +37,25 @@
 
 **`agent_runs`** gains `source TEXT DEFAULT 'agent'` — values: `'agent'` (daily agent.py run) or `'monitor'` (monitor.py run). `monitor.run()` calls `record_run(source='monitor')` at the end of every cycle.
 
+**Added 2026-09-25 (Beelink M2, U14 -- health strip signal):** `agent_runs.status`'s CHECK
+constraint is widened to allow a third value, `'blocked'`, alongside `'success'`/`'failure'`
+(migration `20260925000001_widen_agent_runs_status_and_add_health_view.sql`, discovered via
+`pg_constraint` rather than a hardcoded constraint name -- this schema has drifted from
+`setup_supabase.sql` before). `cu_linkedin.py`'s `run()` records `status='blocked'` (with a
+`failure_reason` of `"CAPTCHA_OR_CHALLENGE: ..."`) when a session hits a CAPTCHA or login
+challenge and needs a human at the VNC console, instead of falling through to the ordinary
+error-count-based `'success'`/`'failure'` branch -- without this, a wedged session was
+indistinguishable from a normal run via `status` alone. The same migration adds a read-only view,
+`agent_runs_latest_by_source` (`SELECT DISTINCT ON (source) ... ORDER BY source, ran_at DESC`,
+`WITH (security_invoker = true)`, `GRANT SELECT ... TO anon`), returning one row per distinct
+`source` currently present in `agent_runs` (confirmed live at migration time: `jobright`,
+`monitor`, `visa_match`; `cu_linkedin` and others join the set as they accumulate rows) --
+Task 9's `/api/system-health` route queries it directly. A
+view rather than a windowed "recent rows" query, because low-frequency sources (`visa_ingest_lca`/
+`visa_ingest_uscis` run quarterly) would drop out of any practically-sized recent window, and a
+missing chip on the health strip reads as "healthy" -- the exact failure this view exists to
+prevent.
+
 **`research_cache`** gains `queries_generated INT` and `brief_reliable BOOLEAN` — populated by `db.set_research_cache()`. Allows querying which contacts had no reliable brief without unpacking `brief_json`.
 
 **`prompts_history`** — append-only audit log of every prompt value change. Populated automatically via a Supabase BEFORE UPDATE trigger on the `prompts` table (no application code needed). Columns: `id`, `key`, `old_value`, `new_value`, `changed_at`.
@@ -327,6 +346,27 @@ CREATE TABLE job_applications (
   that row. `db.record_resume_usage(application_id, tokens_input, tokens_output, cost_usd)` reads
   the current totals and adds to them (not atomic -- acceptable for this manual, single-user CLI).
   Written by `resume_agent._track_usage()` after every `_call_claude()` call.
+- **Added 2026-09-25 (Beelink M2, `approved_at` -- the third leg of the ARMED submit gate):**
+  `approved_at TIMESTAMPTZ NULL`. This column can **only ever be set** via the
+  `approve_application(p_id BIGINT)` Postgres RPC (`SECURITY DEFINER`), and **only ever cleared**
+  via the companion `reset_approval(p_id BIGINT)` RPC (also `SECURITY DEFINER`, guarded to a
+  still-`ready_to_submit` row so it can never un-approve an already-submitted one) -- never a
+  direct column write. `apply_agent.py`'s `submit()` requires it truthy (alongside
+  `stage='ready_to_submit'` and a non-null `apply_preview`) before it will ever click Submit.
+  **Column-allowlist rule, load-bearing for any future schema change:** the anon role's
+  table-level `UPDATE` and `INSERT` on `job_applications` are revoked and re-granted on a column
+  list derived *dynamically* from `information_schema.columns` at migration time (not
+  hand-enumerated), excluding `approved_at`. A new column added to `job_applications` needs no
+  manual edit to this grant (it's picked up automatically) -- but any future migration that ALSO
+  touches `UPDATE`/`INSERT` grants on this table **must run after**
+  `20260925000000_add_approved_at_and_approve_application_rpc.sql`, or it will re-grant a blanket
+  table-level privilege and silently reopen `approved_at` to direct anon writes. No RLS is used
+  for this (or any table in this repo) -- see `docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md`'s
+  Global Constraints for why a column-grant approach was chosen instead.
+- `db.record_submission(application_id, source_channel, applied_date)` (Beelink M2): the one
+  atomic update `apply_agent.py`'s `submit()` uses on a real successful submission -- sets
+  `stage='applied'` plus `source_channel`/`applied_date` together, since a partial failure between
+  two separate calls would leave the row `applied` with neither field recorded, or vice versa.
 
 ## api_usage_log (system-wide cost tracking, added 2026-08-29)
 

@@ -46,6 +46,10 @@ src/
 │   ├── api/preview-draft/route.ts
 │   ├── api/applications/route.ts
 │   ├── api/applications/[id]/route.ts
+│   ├── api/applications/[id]/files/route.ts
+│   ├── api/applications/[id]/submit/route.ts
+│   ├── api/applications/[id]/reset-approval/route.ts
+│   ├── api/system-health/route.ts
 │   ├── applications/page.tsx
 │   ├── import/page.tsx
 │   ├── lab/page.tsx
@@ -88,6 +92,8 @@ src/
 │   ├── LabPromptEditor.tsx
 │   ├── LabPreviewPanel.tsx
 │   ├── ApplicationsPage.tsx
+│   ├── ApplicationDetailSheet.tsx
+│   ├── SystemHealthStrip.tsx
 │   └── Field.tsx
 └── lib/
     ├── supabase.ts
@@ -162,38 +168,94 @@ when paused. "Run Agent" is disabled while `scope !== "none"`.
 
 ### `/api/applications` and `/api/applications/[id]` — job application tracking
 
-**GET `/api/applications`** — optional `?stage=<stage>` query param. Returns
-`{ applications: JobApplication[] }`, newest first.
+**GET `/api/applications`** — optional `?stage=<stage>` and `?source=<source>` query params
+(combinable). Returns `{ applications: JobApplication[] }`, newest first.
 
 **POST `/api/applications`** — body: `{ company: string, role: string, job_url?, source?,
 contact_id?: string, applied_date?, notes? }`. `company`/`role` required (400 if missing).
 Returns `{ application: JobApplication }` (201) or `{ error }` (400/500).
 
-**PATCH `/api/applications/[id]`** — body: `{ stage?: JobApplicationStage, notes?: string }`.
-Validates `stage` against `JOB_APPLICATION_STAGES` (400 if invalid or if no valid field is
-given). Returns `{ application: JobApplication }` or `{ error }` (400/500). This is the
-app's first dynamic (`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js
-16's route handler convention.
+**PATCH `/api/applications/[id]`** — body: `{ stage?: JobApplicationStage, notes?: string,
+apply_preview?: JobApplicationApplyPreview }`. Validates `stage` against
+`JOB_APPLICATION_STAGES` (400 if invalid) and `apply_preview` for shape (an object with
+`platform`, `field_values`, `eligibility_answers`, `screening_answers`; 400 with an
+`"apply_preview must be..."` message if malformed). 400 if no valid field is given. Returns
+`{ application: JobApplication }` or `{ error }` (400/500). This is the app's first dynamic
+(`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js 16's route handler
+convention.
 
-**POST `/api/applications/[id]/submit`** — no body. Fires a `workflow_dispatch` on
-`apply_agent_submit.yml` (`ref: "main"`, `inputs: { application_id: id }`) using
-`GITHUB_DISPATCH_TOKEN` (a Vercel-hosted env var, not a GitHub Actions secret — this route
-runs on Vercel and calls GitHub's REST API directly; `gh secret list` will never show it).
-Mirrors the existing `/api/trigger-agent` route's exact dispatch shape. Returns `{ ok: true }`
-(200) or `{ error }` (502 if the GitHub dispatch call itself fails). This is the **only** way
-a real job-application submission can be triggered — see root `CLAUDE.md`'s "Auto-apply agent"
-section for the full `APPLY_AGENT_ARMED` safety design this route is one link in.
+**POST `/api/applications/[id]/submit`** — no body. Calls the `approve_application` Postgres
+RPC (`supabase.rpc("approve_application", { p_id })`) before dispatching — this is a
+`SECURITY DEFINER` function and the only way `approved_at` can ever be set, since the anon
+key's table-level UPDATE grant excludes that column. If the RPC rejects the row (wrong stage,
+missing `apply_preview`, etc.), returns `409` with the RPC's error message and never
+dispatches. On success, fires a `workflow_dispatch` on `apply_agent_submit.yml`
+(`ref: "main"`, `inputs: { application_id: id }`) using `GITHUB_DISPATCH_TOKEN` (a
+Vercel-hosted env var, not a GitHub Actions secret — this route runs on Vercel and calls
+GitHub's REST API directly; `gh secret list` will never show it). Mirrors the existing
+`/api/trigger-agent` route's exact dispatch shape. If the dispatch itself fails (a non-ok
+response, or the `fetch` call throwing), calls the `reset_approval` RPC to clear
+`approved_at` before returning `502` — otherwise the row would stay permanently approved
+with no role able to clear that column. Returns `{ ok: true }` (200) on success. This is the
+**only** way a real job-application submission can be triggered — see root `CLAUDE.md`'s
+"Auto-apply agent" section for the full `APPLY_AGENT_ARMED` safety design this route is one
+link in.
 
 `ApplicationsPage.tsx` (rendered at `/applications`) fetches the list on mount, adds new
 applications via a form, and changes `stage` inline via a `Select` with optimistic update
 (reverts and toasts on failure) — same pattern as the contacts side sheet's stage/tier
-changes. Three additional columns surface the Phase 2.5 auto-apply pipeline, all populated by
-Python-side jobs (`job_pick.py`, `apply_agent.py`) rather than this app: **Pick** — a `Badge`
-showing `pick_verdict` (`strong`/`maybe`/`no`, or `—` if not yet scored); **Blocked** —
-`apply_blocked_reason` text (or `—`), covering Workday/aggregator exclusions and any field the
-filler couldn't confidently handle; **Preview / Submit** — for `stage='ready_to_submit'` rows
-with `apply_preview` set, shows a screening-answer count and an "Approve & Submit" button that
-calls the route above.
+changes. Stage and Source filter `Select`s (`data-testid="stage-filter"` /
+`"source-filter"`) above the table refetch via `?stage=`/`?source=` query params (combinable)
+whenever either changes. Additional columns surface the Phase 2.5 auto-apply pipeline, all
+populated by Python-side jobs (`job_pick.py`, `apply_agent.py`, `job_discovery.py`) rather
+than this app: **Pick** — a `Badge` showing `pick_verdict` (`strong`/`maybe`/`no`, or `—` if
+not yet scored); **Blocked** — `apply_blocked_reason` text (or `—`), covering
+Workday/aggregator exclusions and any field the filler couldn't confidently handle;
+**Source** — `source` text (or `—`); **Filed via** — `source_channel` text (or `—`);
+**Preview / Submit** — for `stage='ready_to_submit'` rows with `apply_preview` set, shows a
+screening-answer count and an "Approve & Submit" button that calls the route above. A
+**Details** column's "View" button opens `ApplicationDetailSheet.tsx` (Vaul side sheet, same
+primitive as the contacts sheet) via `selectedApplication` state.
+
+**GET `/api/applications/[id]/files`** — no body. Reads `resume_file_ref` /
+`cover_letter_file_ref` from the row and, for each present ref, calls
+`supabase.storage.from("resumes").createSignedUrl(path, 300)`. Returns
+`{ resume_url, resume_error, cover_letter_url, cover_letter_error }` — a missing ref yields
+`url: null, error: false`; a signing failure yields `url: null, error: true` (I11: these two
+states must never be conflated, since a resume may genuinely exist even when signing fails
+transiently). 400 for a non-numeric id, 500 on a Supabase read error.
+
+`ApplicationDetailSheet.tsx` fetches `/api/applications/[id]/files` on open (keyed on
+`application?.id` only, not the whole object, so an in-place `apply_preview` edit doesn't
+re-trigger the fetch) and renders: the `job_url` link, every present `posting_snapshot` text
+field (`description`, `responsibilities`, `qualifications`, `benefits`, `location` — an
+array-valued field renders as a `<ul>` of separate `<li>` items, not a flattened string, since
+`job_discovery.py`/`jobright.py` can store some fields as string lists), and the resume/cover
+letter as inline `<iframe>`s fed by the signed URLs (PDFs render natively — no viewer
+dependency needed).
+
+**GET `/api/system-health`** — no body. Reads the `agent_runs_latest_by_source` view (a
+`DISTINCT ON (source)` view, `security_invoker`, explicit column list — see migration
+`20260925000001`) and returns `{ health: SystemHealthRow[] }`, one row per `agent_runs`
+source, ordered by `source`. 500 on a Supabase error. `SystemHealthStrip.tsx` (rendered at
+the top of `ApplicationsPage.tsx`, above the Applications heading's form) fetches this on
+mount and renders one chip per known source (`agent`, `monitor`, `cu_linkedin`, `jobright`,
+`visa_ingest_lca`, `visa_ingest_uscis` — `KNOWN_SOURCES` in the component; a source reporting
+rows outside this list still gets a chip via a fallback, so a stale allowlist never hides a
+real source), showing `never ran` for a known source with zero reported rows rather than
+silently omitting it. Each chip's `ran_at` is compared against a per-source staleness
+threshold (`SOURCE_MAX_AGE_MINUTES`) and renders amber, not the dim default, once stale. A
+failed fetch renders an explicit "Couldn't load system health" error state rather than
+looking identical to "nothing to show". Any source whose latest run has `status='blocked'`
+(a CAPTCHA/human-needed pause — amber, not the red used for `failure`) additionally renders
+an attention banner above the chips; it links to `NEXT_PUBLIC_BEELINK_VNC_URL` when that env
+var is set, or degrades to plain attention text (never hiding the signal) when unset. This is
+the UI replacement for the GHA red-X failure signal as the system moves runners to Beelink.
+`NEXT_PUBLIC_BEELINK_VNC_URL` is documented in `.env.example`
+(gitignored like every other `.env*` file in this repo, so it exists locally but is not
+tracked in git) and must still be set in the real Vercel deployment once the Beelink box has
+a known, reachable LAN/Tailscale address — until then the banner's no-link fallback text is
+expected, not a bug.
 
 ### Gmail API routes (Phase 0 — bulk-send infrastructure)
 
@@ -321,7 +383,16 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 77** (vitest: 633 across 41 files, playwright: 77).
+- **Current test count: 81** (vitest: 713 across 47 files, playwright: 81). Beelink M2 Task 9
+  (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
+  plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
+  and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more
+  vitest cases to existing files, no new files, no new playwright cases (C1's frontend fallback,
+  C2's timeout, I5's reset_approval error handling, M4/M6/M7/M9's SystemHealthStrip and PATCH
+  route fixes, and a post-review follow-up fixing reset-approval to also clear
+  `apply_blocked_reason` so Try again's recovery loop actually completes). The vitest count still
+  includes pre-existing drift from before Beelink M2 Task 6 (that task only added 5 vitest cases
+  to existing files) -- the gap between the two counts has still not been audited.
 - **Network interception**: use `mockSupabase(page)` from `tests/e2e/helpers.ts` in
   `beforeEach`. This installs `page.route()` handlers that intercept Supabase REST calls
   and return fixture data. Does NOT require env var changes or clearing `.next/cache`.
@@ -367,7 +438,9 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
   ```
   Running `vercel deploy --prod` from inside `contact-manager/` still fails (path resolves to
   `contact-manager/contact-manager`); always run from repo root.
-- Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+- Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+  `NEXT_PUBLIC_BEELINK_VNC_URL` (optional — M2/U14, see `/api/system-health` above; not yet
+  set in the real deployment, pending a known Beelink LAN/Tailscale address).
 - Env vars (server-only): `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
 - `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.

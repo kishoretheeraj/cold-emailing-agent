@@ -12,10 +12,12 @@ function getClient() {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const stage = searchParams.get("stage");
+  const source = searchParams.get("source");
   try {
     const supabase = getClient();
     let query = supabase.from("job_applications").select("*");
     if (stage) query = query.eq("stage", stage);
+    if (source) query = query.eq("source", source);
     const { data, error } = await query.order("created_at", { ascending: false });
     if (error) throw error;
     return Response.json({ applications: data ?? [] });

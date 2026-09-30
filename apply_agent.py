@@ -10,6 +10,7 @@ docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md.
 import json
 import logging
 import re
+from datetime import date
 
 import ats_fillers
 import ats_platform
@@ -455,58 +456,83 @@ def submit(job_id):
     # The ARMED gate proves a human tapped *something*; this proves they approved *this row*.
     # Without it, any id reaching the workflow gets submitted -- a stale id, a mistyped manual
     # workflow_dispatch, or a row that was never previewed (no eligibility answers, no screening
-    # answers, possibly no resume) would go to a real employer.
-    if job.get("stage") != "ready_to_submit" or not job.get("apply_preview"):
+    # answers, possibly no resume) would go to a real employer. approved_at (Task 1) closes the
+    # last gap: it can only ever be set via the approve_application RPC, which a human actually
+    # tapping "Approve & Submit" in the UI triggers -- so this is the one condition here that
+    # can't be satisfied by a stale id or a mistyped manual workflow_dispatch alone.
+    if (
+        job.get("stage") != "ready_to_submit"
+        or not job.get("apply_preview")
+        or not job.get("approved_at")
+    ):
         raise ValueError(
             f"submit() called on an unapproved row: id={job_id} | stage={job.get('stage')} | "
-            f"has_preview={bool(job.get('apply_preview'))}"
+            f"has_preview={bool(job.get('apply_preview'))} | "
+            f"approved={bool(job.get('approved_at'))}"
         )
 
     platform = ats_platform.classify(job.get("job_url"))
-    if platform in ("workday", "aggregator"):
-        raise ValueError(f"submit() called on a permanently-excluded platform: {platform}")
-    page = _launch_page(job.get("job_url"))
+    # C1: everything below this line runs only once the row has already cleared the
+    # approval guard above -- i.e. a human really did tap "Approve & Submit" for this row.
+    # Any exception past this point (permanently-excluded platform, an unhandled Playwright
+    # error, a failed post-click confirmation, ...) used to propagate straight to __main__ and
+    # kill the process with apply_blocked_reason never written -- leaving the row stuck
+    # approved forever with no UI path to recover (see ApplicationsPage.tsx's Try again
+    # button, which depends on this field). Mirrors run_preview()/_process_one_preview()'s own
+    # log-then-record pattern, but re-raises instead of swallowing -- submit() is a single-row
+    # armed action, not a batch, so it must still fail loudly.
     try:
-        field_values = _standard_field_values(job)
+        if platform in ("workday", "aggregator"):
+            raise ValueError(f"submit() called on a permanently-excluded platform: {platform}")
+        page = _launch_page(job.get("job_url"))
+        try:
+            field_values = _standard_field_values(job)
 
-        if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
-            {"greenhouse": ats_fillers.fill_greenhouse,
-             "ashby": ats_fillers.fill_ashby,
-             "lever": ats_fillers.fill_lever}[platform](page, field_values)
-        else:
-            # generic-platform fill runs an LLM browser agent against the real page before the
-            # ARMED gate below -- restrained only by the task-string instruction not to click
-            # Submit, not a hard guarantee. See the Phase 2.5 review notes.
-            _fill_generic_via_browser_use(page, job, field_values)
+            if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
+                {"greenhouse": ats_fillers.fill_greenhouse,
+                 "ashby": ats_fillers.fill_ashby,
+                 "lever": ats_fillers.fill_lever}[platform](page, field_values)
+            else:
+                # generic-platform fill runs an LLM browser agent against the real page before
+                # the ARMED gate below -- restrained only by the task-string instruction not to
+                # click Submit, not a hard guarantee. See the Phase 2.5 review notes.
+                _fill_generic_via_browser_use(page, job, field_values)
 
-        _attach_resume_and_cover_letter(page, job)
-        # Reuse the stored preview's answers verbatim -- never regenerate here. The human
-        # approved what's in apply_preview when they tapped "Approve & Submit"; a fresh
-        # Claude call at submit time could produce a different answer than the one they saw,
-        # and any screening/eligibility question the preview pass couldn't fill would
-        # otherwise go out blank instead of being retried from the same known values.
-        preview = job.get("apply_preview") or {}
-        _fill_screening_questions(page, preview.get("screening_answers"))
-        _fill_eligibility_answers(page, preview.get("eligibility_answers"))
+            _attach_resume_and_cover_letter(page, job)
+            # Reuse the stored preview's answers verbatim -- never regenerate here. The human
+            # approved what's in apply_preview when they tapped "Approve & Submit"; a fresh
+            # Claude call at submit time could produce a different answer than the one they saw,
+            # and any screening/eligibility question the preview pass couldn't fill would
+            # otherwise go out blank instead of being retried from the same known values.
+            preview = job.get("apply_preview") or {}
+            _fill_screening_questions(page, preview.get("screening_answers"))
+            _fill_eligibility_answers(page, preview.get("eligibility_answers"))
 
-        if os.environ.get("APPLY_AGENT_ARMED") != "1":
-            log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
-            return
+            if os.environ.get("APPLY_AGENT_ARMED") != "1":
+                log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
+                return
 
-        page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
-        # The click succeeding is not proof the application landed -- a client-side validation
-        # error commonly leaves the button's own click handler a no-op with the form still on
-        # screen. Do not advance the stage until the site itself confirms it.
-        if not _submission_confirmed(page):
-            raise RuntimeError(
-                f"submit() clicked Submit for job_id={job_id} ({job.get('company')}) but found "
-                f"no confirmation on the page afterward -- treating this as a failed submission "
-                f"and leaving the stage unchanged so a human can investigate before any retry."
-            )
-        db.update_job_application_stage(job_id, "applied")
-        log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
-    finally:
-        _close_page(page)
+            page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
+            # The click succeeding is not proof the application landed -- a client-side validation
+            # error commonly leaves the button's own click handler a no-op with the form still on
+            # screen. Do not advance the stage until the site itself confirms it.
+            if not _submission_confirmed(page):
+                raise RuntimeError(
+                    f"submit() clicked Submit for job_id={job_id} ({job.get('company')}) but found "
+                    f"no confirmation on the page afterward -- treating this as a failed submission "
+                    f"and leaving the stage unchanged so a human can investigate before any retry."
+                )
+            db.record_submission(job_id, platform, date.today().isoformat())
+            log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
+        finally:
+            _close_page(page)
+    except Exception as exc:
+        log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | error: {exc}")
+        try:
+            db.set_apply_blocked(job_id, str(exc))
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":
