@@ -41,6 +41,7 @@ resume_lint.py
 resume_build.py
 resume_scrub.py
 resume/
+candidate_profile.py
 usage_tracking.py
 supabase/migrations/
 deploy/beelink/
@@ -1171,14 +1172,64 @@ not only free text. **`applicant_eligibility`'s stored JSON shape is unchanged**
 `{internal_key: value}`, edited live via the contact-manager's Prompts page) -- only how those
 keys get translated to page labels changed, so no live-data migration was needed.
 
-**Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
-detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
-assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
-live-smoke-test pass; a resume/cover-letter attach failure is silently swallowed even in the
-armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None of
-these are safety gaps -- the two ARMED/approval gates above are the actual safety boundary, and
-everything upstream of them degrading just means the *preview* is incomplete, not that an
-unapproved submission could happen.
+**Fixed since (merge review, 2026-09-28, findings 2 and 3):**
+
+- **Finding 2 -- the generic browser-use adapter.** `_fill_generic_via_browser_use` used to
+  assume an API (`browser_use.llm.ChatAnthropic`, an `Agent(page=...)` constructor arg,
+  `agent.run_sync()`) that doesn't exist on the pinned, installed `browser-use==0.1.40`
+  (verified live against the real package: no `browser_use.llm` module, no `page=` kwarg,
+  `Agent.run()` is async-only) -- and caught the resulting failure, so the preview pass still
+  wrote `stage='ready_to_submit'` with a blank generic-ATS fill. `requirements-apply.txt` now
+  pins `browser-use==0.1.40` exactly (was `>=0.1.0`, a floor pin that would let a fresh install
+  silently grab whatever the latest release is -- confirmed live that the library's constructor
+  API has changed incompatibly multiple times since). `_launch_page` now launches Chromium with
+  a local CDP debugging port; `_browser_use_agent_run` connects browser-use's own
+  `Browser(BrowserConfig(cdp_url=..., _force_keep_browser_alive=True))` to that same running
+  browser/tab (0.1.x's `Agent` takes `browser=`/`browser_context=`, not an existing
+  `playwright.sync_api.Page` object) and drives it via `asyncio.run(agent.run())`.
+  `_force_keep_browser_alive=True` is load-bearing: without it, browser-use's own cleanup would
+  tear down the real Chromium process out from under `_process_one_preview()`'s/`submit()`'s
+  later steps (resume attach, screening/eligibility fill), which keep using the same `page`
+  afterward. browser-use agents don't raise on a failed task -- they report failure via the
+  returned `AgentHistoryList` (`is_successful()`/`has_errors()`) -- so
+  `_browser_use_agent_run` now raises when the history reports anything but a clean success,
+  and `_fill_generic_via_browser_use` no longer swallows any failure (a missing `field_values`
+  key included); both `run_preview()`'s per-row handler and `submit()`'s own handler already
+  called `db.set_apply_blocked` on any exception, so letting the failure propagate is what
+  makes that existing safety net reachable for this path. `tests/test_apply_agent.py` now
+  includes a smoke test that constructs the *real* `browser_use.Browser`/`BrowserConfig`/`Agent`
+  objects (only `Agent.run`/`Browser.close` are stubbed) rather than mocking the whole adapter
+  function away, so a future constructor-signature drift fails a test instead of shipping
+  silently again. **Still unverified**: whether the LLM-driven fill actually completes a real
+  ATS form correctly -- that needs a live smoke-test pass against a real generic-platform
+  posting, same as the original "still not fixed" note below used to say. The fix here closes
+  the *silent-failure* safety gap (an unfilled form could reach `ready_to_submit` unnoticed);
+  it does not itself prove the fill logic works end-to-end.
+- **Finding 3 -- candidate-grounded prompts.** `_generate_screening_answers` used to pass
+  `job.get("role", "")` as `profile_summary` -- a posting titled "Senior Product Manager" was
+  presented back to Claude as the candidate's own facts, so it could never produce the
+  "real, factual experience" answers the prompt promises. `job_pick.py`'s `_llm_judge` similarly
+  asked for a fit verdict against "a real candidate" while supplying only the
+  employer/role/description; `_profile_text()` was computed (for the embedding stage) but never
+  reached this prompt. Both now use the same real candidate facts, extracted into a new shared,
+  dependency-free `candidate_profile.py` (`profile_text()`, the same `resume/data/master.json` +
+  `metrics.json` parsing `job_pick._profile_text()` used to own directly -- kept as a thin
+  wrapper there for test-surface compatibility). Deliberately its own module, not something
+  `apply_agent.py` imports from `job_pick.py`: `job_pick.py` imports `sentence_transformers` at
+  module level (see Module layout above), and importing it from `apply_agent.py` would drag that
+  heavy dependency into `requirements-apply.txt`'s lighter workflows for no reason.
+  When `candidate_profile.profile_text()` is empty, `_generate_screening_answers` now stores a
+  `NEEDS HUMAN REVIEW` sentinel instead of calling Claude with nothing to ground an answer in,
+  and `_llm_judge` degrades to `"maybe"` (visible, human-reviewable -- not a silent `"no"`,
+  and never an unsupported `"strong"` that would zero-tap real resume spend) instead of judging
+  fit with no candidate evidence at all.
+
+**Known follow-up, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
+detail): a resume/cover-letter attach failure is silently swallowed even in the armed-submit
+path; `source_channel`/`applied_date` aren't written on a successful submit. Neither is a safety
+gap -- the two ARMED/approval gates above are the actual safety boundary, and everything
+upstream of them degrading just means the *preview* is incomplete, not that an unapproved
+submission could happen.
 
 ## System-wide Claude API cost tracking
 
