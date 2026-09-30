@@ -36,22 +36,45 @@ def test_embedding_similarity_orthogonal_vectors_score_zero(mocker):
 def test_llm_judge_parses_verdict_and_reasoning(mocker):
     mocker.patch("job_pick._call_claude",
                  return_value='{"verdict": "strong", "reasoning": "Direct title and skill match."}')
-    result = job_pick._llm_judge({"company": "Acme", "role": "PM", "posting_snapshot": {"description": "..."}})
+    result = job_pick._llm_judge(
+        {"company": "Acme", "role": "PM", "posting_snapshot": {"description": "..."}}, "Associate PM at Protium."
+    )
     assert result == {"verdict": "strong", "reasoning": "Direct title and skill match."}
 
 
 def test_llm_judge_strips_json_fence(mocker):
     mocker.patch("job_pick._call_claude",
                  return_value='```json\n{"verdict": "no", "reasoning": "Wrong seniority."}\n```')
-    result = job_pick._llm_judge({"company": "Acme", "role": "PM", "posting_snapshot": {}})
+    result = job_pick._llm_judge({"company": "Acme", "role": "PM", "posting_snapshot": {}}, "Associate PM at Protium.")
     assert result["verdict"] == "no"
 
 
 def test_llm_judge_never_raises_on_malformed_json(mocker):
     mocker.patch("job_pick._call_claude", return_value="not json at all")
-    result = job_pick._llm_judge({"company": "Acme", "role": "PM", "posting_snapshot": {}})
+    result = job_pick._llm_judge({"company": "Acme", "role": "PM", "posting_snapshot": {}}, "Associate PM at Protium.")
     assert result["verdict"] == "no"
     assert "parse" in result["reasoning"].lower()
+
+
+# Merge review 2026-09-28, finding 3: the judge prompt used to ask for a fit verdict against "a
+# real candidate" while supplying only the employer/role/description -- no candidate facts ever
+# reached this prompt, even though _profile_text() (used for the embedding stage) had them.
+def test_llm_judge_grounds_the_prompt_in_the_real_candidate_profile(mocker):
+    call_claude_mock = mocker.patch(
+        "job_pick._call_claude", return_value='{"verdict": "strong", "reasoning": "Good fit."}'
+    )
+    job_pick._llm_judge({"company": "Acme", "role": "PM", "posting_snapshot": {"description": "..."}}, "Associate PM at Protium Finance.")
+
+    prompt = call_claude_mock.call_args[0][0]
+    assert "Associate PM at Protium Finance." in prompt
+
+
+def test_llm_judge_degrades_to_maybe_when_no_profile_text_available(mocker):
+    call_claude_mock = mocker.patch("job_pick._call_claude")
+    result = job_pick._llm_judge({"company": "Acme", "role": "PM", "posting_snapshot": {}}, "")
+    assert result["verdict"] == "maybe"
+    assert "review" in result["reasoning"].lower()
+    call_claude_mock.assert_not_called()
 
 
 # ── score_job: orchestration ─────────────────────────────────────────────────────

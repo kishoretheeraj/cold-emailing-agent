@@ -535,11 +535,15 @@ _CAPTCHA_SENTINEL = "CAPTCHA_OR_CHALLENGE"
 
 def run():
     """Run one paced LinkedIn discovery session and persist what it found. Never raises past
-    this boundary -- but DOES return the total error count (0 on a clean, disabled, or paused
-    run) so __main__ can turn a failed session into a nonzero process exit. record_run's own DB
-    'failure' status is a separate, best-effort signal for the UI; without a nonzero exit code
-    here, systemd's OnFailure= on job-linkedin-ingest.service could never fire, since the
-    process itself always exited 0 even after an unhandled exception was caught and logged."""
+    this boundary -- but DOES return the total error count (0 on a clean, disabled, paused, or
+    CAPTCHA-blocked run) so __main__ can turn a failed session into a nonzero process exit.
+    record_run's own DB status is a separate, best-effort signal for the UI; without a nonzero
+    exit code here, systemd's OnFailure= on job-linkedin-ingest.service could never fire, since
+    the process itself always exited 0 even after an unhandled exception was caught and logged.
+    A CAPTCHA block is a deliberate stop, not a failure requiring a nonzero exit code on its
+    own -- it still returns whatever error count had already accumulated before the block was
+    hit, same as every other path, just via its own early return so record_run is called
+    exactly once for this path (not once here and once more at the function's normal end)."""
     start = time.time()
     saved = skipped = errors = 0
 
@@ -563,8 +567,23 @@ def run():
         errors += session_errors
         if _CAPTCHA_SENTINEL in (text or ""):
             # Never solved, never bypassed, never retried with a workaround: a human VNCs in.
+            # status='blocked' (not 'success') is the real, DB-visible signal M2's health strip
+            # and attention badge key off of -- without it, a blocked session looks identical
+            # to a clean run with saved=0 in agent_runs.
             log.warning("[CU-LINKEDIN] | CAPTCHA or login challenge -- needs a human at the VNC "
                         "console for display slot 0")
+            try:
+                db.record_run("blocked", saved, skipped, errors, round(time.time() - start),
+                              failure_reason="CAPTCHA_OR_CHALLENGE: needs a human at the VNC "
+                                             "console for display slot 0",
+                              source="cu_linkedin")
+            except Exception as exc:
+                log.warning(f"[CU-LINKEDIN] | record_run failed: {exc}")
+            # M10: every other exit path (including the unexpected-error one just below) ends
+            # with a DONE summary line -- this early return must too, so a blocked run's log
+            # always has a terminal summary line to grep for, not just the WARNING above.
+            log.info(f"[CU-LINKEDIN] | DONE | saved={saved} | skipped={skipped} | errors={errors} | blocked=true")
+            return errors
         else:
             postings = extract_postings(text)
             log.info(f"[CU-LINKEDIN] | extracted={len(postings)}")

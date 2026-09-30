@@ -1,10 +1,11 @@
 export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
-
-const JOB_APPLICATION_STAGES = [
-  "saved", "applied", "phone_screen", "onsite", "offer", "rejected", "withdrawn", "accepted",
-] as const;
+import {
+  JOB_APPLICATION_STAGES,
+  type JobApplicationStage,
+  type JobApplicationApplyPreview,
+} from "@/lib/types";
 
 function getClient() {
   return createClient(
@@ -13,8 +14,41 @@ function getClient() {
   );
 }
 
+function isValidApplyPreview(v: unknown): v is JobApplicationApplyPreview {
+  if (typeof v !== "object" || v === null) return false;
+  const p = v as Record<string, unknown>;
+  return (
+    typeof p.platform === "string" &&
+    typeof p.field_values === "object" && p.field_values !== null &&
+    typeof p.eligibility_answers === "object" && p.eligibility_answers !== null &&
+    typeof p.screening_answers === "object" && p.screening_answers !== null
+  );
+}
+
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  if (!/^\d+$/.test(id)) {
+    return Response.json({ error: "Invalid application id" }, { status: 400 });
+  }
+  try {
+    const supabase = getClient();
+    const { data, error } = await supabase
+      .from("job_applications")
+      .select("*")
+      .eq("id", Number(id))
+      .single();
+    if (error) throw error;
+    return Response.json({ application: data });
+  } catch (err) {
+    return Response.json({ error: String(err) }, { status: 500 });
+  }
+}
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!/^\d+$/.test(id)) {
+    return Response.json({ error: "Invalid application id" }, { status: 400 });
+  }
 
   let body: unknown;
   try {
@@ -30,7 +64,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const updates: Record<string, unknown> = {};
 
   if ("stage" in b) {
-    if (!JOB_APPLICATION_STAGES.includes(b.stage as (typeof JOB_APPLICATION_STAGES)[number])) {
+    if (!JOB_APPLICATION_STAGES.includes(b.stage as JobApplicationStage)) {
       return Response.json(
         { error: `stage must be one of: ${JOB_APPLICATION_STAGES.join(", ")}` },
         { status: 400 }
@@ -41,14 +75,70 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if ("notes" in b && typeof b.notes === "string") {
     updates.notes = b.notes;
   }
+  if ("apply_preview" in b) {
+    if (!isValidApplyPreview(b.apply_preview)) {
+      return Response.json(
+        {
+          error:
+            "apply_preview must be an object with platform, field_values, eligibility_answers, screening_answers",
+        },
+        { status: 400 }
+      );
+    }
+    updates.apply_preview = b.apply_preview;
+  }
 
   if (Object.keys(updates).length === 0) {
     return Response.json({ error: "no valid fields to update" }, { status: 400 });
   }
   updates.updated_at = new Date().toISOString();
 
+  const editingApplyPreview = "apply_preview" in updates;
+
   try {
     const supabase = getClient();
+
+    // Merge review 2026-09-28, finding 1: once approved_at is set, apply_agent.py's submit()
+    // can read the row (and start filling a real form) at any point during the GitHub Actions
+    // workflow's several-minute dependency install -- a plain unconditional UPDATE here let an
+    // edit made during that window change the answers sent under an approval that was granted
+    // for a different set of answers. Reject any apply_preview write once the row is approved,
+    // enforced atomically at the database level (not check-then-act, which would leave a race
+    // window between reading approved_at and writing the update) via a conditional WHERE clause.
+    // stage-only edits (e.g. manually marking an approved row withdrawn) are not gated by this --
+    // only a payload that touches apply_preview is.
+    if (editingApplyPreview) {
+      const query = supabase
+        .from("job_applications")
+        .update(updates)
+        .eq("id", Number(id))
+        .is("approved_at", null)
+        .select()
+        .single();
+      const { data, error } = await query;
+      if (error) {
+        if (error.code === "PGRST116") {
+          // Zero rows matched the guarded WHERE clause -- either the id doesn't exist, or it
+          // does and approved_at is already set. Disambiguate with a follow-up read so a
+          // genuine 404 isn't misreported as a 409, and vice versa.
+          const { data: existing } = await supabase
+            .from("job_applications")
+            .select("id")
+            .eq("id", Number(id))
+            .maybeSingle();
+          if (!existing) {
+            return Response.json({ error: "Application not found" }, { status: 404 });
+          }
+          return Response.json(
+            { error: "Cannot edit apply_preview: this application has already been approved" },
+            { status: 409 }
+          );
+        }
+        throw error;
+      }
+      return Response.json({ application: data });
+    }
+
     const { data, error } = await supabase
       .from("job_applications")
       .update(updates)

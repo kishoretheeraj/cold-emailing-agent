@@ -42,6 +42,7 @@ resume_lint.py
 resume_build.py
 resume_scrub.py
 resume/
+candidate_profile.py
 usage_tracking.py
 supabase/migrations/
 deploy/beelink/
@@ -506,7 +507,7 @@ regardless of whether the script actually uses Claude/Gmail.
 `agent_runs` is a separate table (not `contacts`) that records every run:
 
 ```
-id, ran_at, status ('success'|'failure'), drafted, skipped, errors,
+id, ran_at, status ('success'|'failure'|'blocked'), drafted, skipped, errors,
 elapsed_seconds, failure_reason (TEXT, nullable)
 ```
 
@@ -1098,23 +1099,38 @@ attribute-patching). `submit()` also hard-blocks Workday/aggregator platforms th
 rather than swallowing it -- there's no batch to protect on a single-row armed submit, and a
 silent failure there would leave the UI showing "ready to submit" when nothing actually happened.
 
-**There are TWO gates, not one, and they answer different questions.** `APPLY_AGENT_ARMED` proves
-*a human tapped something*; it says nothing about **which** row. The second gate, at the top of
-`submit()` before any browser launch, is what proves they approved *this* row:
+**There are THREE conditions in the row-approval gate, not two, and they answer different
+questions from `APPLY_AGENT_ARMED`.** `APPLY_AGENT_ARMED` proves *a human tapped something*; it
+says nothing about **which** row. The gate at the top of `submit()`, before any browser launch,
+is what proves they approved *this* row -- `approved_at` (M2's Task 1) is the third leg, added
+after `stage`/`apply_preview` proved insufficient on their own:
 
 ```python
-if job.get("stage") != "ready_to_submit" or not job.get("apply_preview"):
+if (
+    job.get("stage") != "ready_to_submit"
+    or not job.get("apply_preview")
+    or not job.get("approved_at")
+):
     raise ValueError(...)
 ```
 
 Without it, any id that reaches the workflow gets submitted -- a stale id from a re-ordered list, a
 mistyped manual `workflow_dispatch`, or a `stage='saved'` row that was never previewed (no
-eligibility answers, no screening answers, possibly no resume) would go to a real employer. Neither
-the API route nor the workflow validates that the row is approved, so **this check is the only
-thing enforcing it** -- do not remove or weaken it, and keep it before `_launch_page`. Note it is
-*not* double-submit protection: `submit()` clicks and then writes `stage='applied'`, so if the
-click lands and the Supabase write fails, the row stays `ready_to_submit` and a re-dispatch would
-file a second real application. Belt-and-braces for that gap lives in the follow-up list, not here.
+eligibility answers, no screening answers, possibly no resume) would go to a real employer.
+`approved_at` specifically closes the gap `stage`/`apply_preview` alone left open: it can only ever
+be set via the `approve_application` `SECURITY DEFINER` RPC, which only fires from a human actually
+tapping "Approve & Submit" in the UI (`POST /api/applications/[id]/submit`) -- the anon key's own
+table-level UPDATE/INSERT grant on `job_applications` excludes that column (migration
+`20260925000000`). There are now effectively **three** independent things enforcing approval, not
+one: the RPC's own guard (`stage`/`apply_preview`/`approved_at IS NULL`, checked server-side before
+`approved_at` is ever set), this `submit()` guard (`stage`/`apply_preview`/`approved_at` truthy,
+checked again before any browser launch), and the fact that both must independently hold for a row
+to reach a real Submit click. This is defense in depth, not redundancy -- do not remove or weaken
+either check, and keep this one before `_launch_page`. Note it is *not* double-submit protection:
+if the Submit click lands but the confirmation check or `db.record_submission` write fails, the row
+stays `ready_to_submit` (now with `apply_blocked_reason` set -- see the failed-submit note below)
+and a re-dispatch would file a second real application. Belt-and-braces for that gap lives in the
+follow-up list, not here.
 
 Defense in depth around the same id: `POST /api/applications/[id]/submit` rejects any non-numeric
 id with a 400 before dispatching, and `apply_agent_submit.yml` passes it through `env:` rather than
@@ -1172,14 +1188,98 @@ not only free text. **`applicant_eligibility`'s stored JSON shape is unchanged**
 `{internal_key: value}`, edited live via the contact-manager's Prompts page) -- only how those
 keys get translated to page labels changed, so no live-data migration was needed.
 
+**Fixed since (Beelink M2 final review, 2026-09-28)**: `db.record_submission(job_id, platform,
+applied_date)` now writes `stage='applied'`, `source_channel`, and `applied_date` atomically in
+one update on a successful submit -- this closes what used to be a known follow-up here
+(`source_channel`/`applied_date` not written on a successful submit). Also new: any exception
+`submit()` raises after the approval guard above has already passed (a permanently-excluded
+platform reached anyway, an unhandled Playwright error, a failed post-click confirmation, ...) now
+calls `db.set_apply_blocked(job_id, str(exc))` before re-raising, mirroring
+`run_preview()`/`_process_one_preview()`'s own log-then-record pattern for the preview pass. Without
+this, a failed submit left the row `approved_at`-set/`stage='ready_to_submit'` forever with no UI
+path to recover -- `apply_blocked_reason` is what `ApplicationsPage.tsx`'s "Try again" button (which
+calls `reset_approval` via `POST /api/applications/[id]/reset-approval`) keys off of.
+
+**Fixed since (merge review, 2026-09-28, finding 6)**: `reset_approval` originally cleared only
+`approved_at`, with `POST /api/applications/[id]/reset-approval` performing a second, separate
+anon-permitted column `UPDATE` to clear `apply_blocked_reason` right after the RPC succeeded. If
+that second write failed, the route still returned 200 (best-effort, non-blocking by design), but
+the row stayed visibly blocked forever -- and, contrary to the route's own comment at the time, a
+second "Try again" tap could not actually retry the clear: it re-called the RPC first, which now
+failed its own `approved_at IS NOT NULL` guard (no longer true after the first call already
+cleared it), so execution never reached the cleanup update at all. Migration
+`20260928000000_reset_approval_also_clears_blocked_reason.sql` moved both clears into the RPC's
+one guarded `UPDATE` (`CREATE OR REPLACE FUNCTION`, safe to reapply against the already-shipped
+`20260925000000` migration -- grants and `SECURITY DEFINER`/`search_path` hardening carry over
+unchanged). The route now does nothing but call the RPC; a reset either clears both fields or
+clears neither, with no partial-failure window and no separate write for the route to lose.
+
 **Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
 assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
 live-smoke-test pass; a resume/cover-letter attach failure is silently swallowed even in the
-armed-submit path; `source_channel`/`applied_date` aren't written on a successful submit. None of
-these are safety gaps -- the two ARMED/approval gates above are the actual safety boundary, and
-everything upstream of them degrading just means the *preview* is incomplete, not that an
-unapproved submission could happen.
+armed-submit path. None of these are safety gaps -- the two ARMED/approval gates above are the
+actual safety boundary, and everything upstream of them degrading just means the *preview* is
+incomplete, not that an unapproved submission could happen.
+
+**Fixed since (merge review, 2026-09-28, findings 2 and 3):**
+
+- **Finding 2 -- the generic browser-use adapter.** `_fill_generic_via_browser_use` used to
+  assume an API (`browser_use.llm.ChatAnthropic`, an `Agent(page=...)` constructor arg,
+  `agent.run_sync()`) that doesn't exist on the pinned, installed `browser-use==0.1.40`
+  (verified live against the real package: no `browser_use.llm` module, no `page=` kwarg,
+  `Agent.run()` is async-only) -- and caught the resulting failure, so the preview pass still
+  wrote `stage='ready_to_submit'` with a blank generic-ATS fill. `requirements-apply.txt` now
+  pins `browser-use==0.1.40` exactly (was `>=0.1.0`, a floor pin that would let a fresh install
+  silently grab whatever the latest release is -- confirmed live that the library's constructor
+  API has changed incompatibly multiple times since). `_launch_page` now launches Chromium with
+  a local CDP debugging port; `_browser_use_agent_run` connects browser-use's own
+  `Browser(BrowserConfig(cdp_url=..., _force_keep_browser_alive=True))` to that same running
+  browser/tab (0.1.x's `Agent` takes `browser=`/`browser_context=`, not an existing
+  `playwright.sync_api.Page` object) and drives it via `asyncio.run(agent.run())`.
+  `_force_keep_browser_alive=True` is load-bearing: without it, browser-use's own cleanup would
+  tear down the real Chromium process out from under `_process_one_preview()`'s/`submit()`'s
+  later steps (resume attach, screening/eligibility fill), which keep using the same `page`
+  afterward. browser-use agents don't raise on a failed task -- they report failure via the
+  returned `AgentHistoryList` (`is_successful()`/`has_errors()`) -- so
+  `_browser_use_agent_run` now raises when the history reports anything but a clean success,
+  and `_fill_generic_via_browser_use` no longer swallows any failure (a missing `field_values`
+  key included); both `run_preview()`'s per-row handler and `submit()`'s own handler already
+  called `db.set_apply_blocked` on any exception, so letting the failure propagate is what
+  makes that existing safety net reachable for this path. `tests/test_apply_agent.py` now
+  includes a smoke test that constructs the *real* `browser_use.Browser`/`BrowserConfig`/`Agent`
+  objects (only `Agent.run`/`Browser.close` are stubbed) rather than mocking the whole adapter
+  function away, so a future constructor-signature drift fails a test instead of shipping
+  silently again. **Still unverified**: whether the LLM-driven fill actually completes a real
+  ATS form correctly -- that needs a live smoke-test pass against a real generic-platform
+  posting, same as the original "still not fixed" note below used to say. The fix here closes
+  the *silent-failure* safety gap (an unfilled form could reach `ready_to_submit` unnoticed);
+  it does not itself prove the fill logic works end-to-end.
+- **Finding 3 -- candidate-grounded prompts.** `_generate_screening_answers` used to pass
+  `job.get("role", "")` as `profile_summary` -- a posting titled "Senior Product Manager" was
+  presented back to Claude as the candidate's own facts, so it could never produce the
+  "real, factual experience" answers the prompt promises. `job_pick.py`'s `_llm_judge` similarly
+  asked for a fit verdict against "a real candidate" while supplying only the
+  employer/role/description; `_profile_text()` was computed (for the embedding stage) but never
+  reached this prompt. Both now use the same real candidate facts, extracted into a new shared,
+  dependency-free `candidate_profile.py` (`profile_text()`, the same `resume/data/master.json` +
+  `metrics.json` parsing `job_pick._profile_text()` used to own directly -- kept as a thin
+  wrapper there for test-surface compatibility). Deliberately its own module, not something
+  `apply_agent.py` imports from `job_pick.py`: `job_pick.py` imports `sentence_transformers` at
+  module level (see Module layout above), and importing it from `apply_agent.py` would drag that
+  heavy dependency into `requirements-apply.txt`'s lighter workflows for no reason.
+  When `candidate_profile.profile_text()` is empty, `_generate_screening_answers` now stores a
+  `NEEDS HUMAN REVIEW` sentinel instead of calling Claude with nothing to ground an answer in,
+  and `_llm_judge` degrades to `"maybe"` (visible, human-reviewable -- not a silent `"no"`,
+  and never an unsupported `"strong"` that would zero-tap real resume spend) instead of judging
+  fit with no candidate evidence at all.
+
+**Known follow-up, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
+detail): a resume/cover-letter attach failure is silently swallowed even in the armed-submit
+path; `source_channel`/`applied_date` aren't written on a successful submit. Neither is a safety
+gap -- the two ARMED/approval gates above are the actual safety boundary, and everything
+upstream of them degrading just means the *preview* is incomplete, not that an unapproved
+submission could happen.
 
 ## System-wide Claude API cost tracking
 
