@@ -9,6 +9,8 @@ import {
   type ReplyStatus,
   JOB_APPLICATION_STAGES,
   JOB_APPLICATION_STAGE_LABELS,
+  AUTOMATION_STATUSES,
+  AUTOMATION_STATUS_LABELS,
 } from "./types";
 
 describe("stage and status enums", () => {
@@ -108,6 +110,19 @@ describe("JOB_APPLICATION_STAGES", () => {
   it("every stage has a label", () => {
     for (const stage of JOB_APPLICATION_STAGES) {
       expect(JOB_APPLICATION_STAGE_LABELS[stage]).toBeTruthy();
+    }
+  });
+});
+
+describe("AUTOMATION_STATUSES", () => {
+  it("has 11 unique entries", () => {
+    expect(AUTOMATION_STATUSES).toHaveLength(11);
+    expect(new Set(AUTOMATION_STATUSES).size).toBe(11);
+  });
+
+  it("every status has a label", () => {
+    for (const status of AUTOMATION_STATUSES) {
+      expect(AUTOMATION_STATUS_LABELS[status]).toBeTruthy();
     }
   });
 });

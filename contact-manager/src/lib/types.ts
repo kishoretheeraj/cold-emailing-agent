@@ -262,6 +262,49 @@ export const JOB_APPLICATION_STAGE_LABELS: Record<JobApplicationStage, string> =
   accepted: "Accepted",
 };
 
+// Execution lifecycle, separate from the recruiting `stage` above. Mirrors the migration's
+// CHECK constraint on job_applications.automation_status.
+export type AutomationStatus =
+  | "idle"
+  | "preparing"
+  | "needs_input"
+  | "ready_for_review"
+  | "approved"
+  | "submitting"
+  | "submitted"
+  | "needs_confirmation"
+  | "failed_retryable"
+  | "failed_terminal"
+  | "unsupported";
+
+export const AUTOMATION_STATUSES: AutomationStatus[] = [
+  "idle",
+  "preparing",
+  "needs_input",
+  "ready_for_review",
+  "approved",
+  "submitting",
+  "submitted",
+  "needs_confirmation",
+  "failed_retryable",
+  "failed_terminal",
+  "unsupported",
+];
+
+export const AUTOMATION_STATUS_LABELS: Record<AutomationStatus, string> = {
+  idle: "Idle",
+  preparing: "Preparing",
+  needs_input: "Needs your input",
+  ready_for_review: "Ready for review",
+  approved: "Approved / queued",
+  submitting: "Submitting",
+  submitted: "Submitted",
+  needs_confirmation: "Needs confirmation",
+  failed_retryable: "Failed (retryable)",
+  failed_terminal: "Failed",
+  unsupported: "Unsupported",
+};
+
 export type JobApplicationPickVerdict = "strong" | "maybe" | "no";
 
 export type JobApplicationApplyPreview = {
@@ -294,6 +337,9 @@ export type JobApplication = {
   apply_preview: JobApplicationApplyPreview | null;
   apply_blocked_reason: string | null;
   approved_at: string | null;
+  automation_status: AutomationStatus;
+  preview_revision_hash: string | null;
+  approved_revision_hash: string | null;
   created_at: string;
   updated_at: string;
 };
