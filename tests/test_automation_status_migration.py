@@ -60,3 +60,16 @@ def test_every_rpc_revokes_public_and_grants_anon():
                 "resolve_confirmation(BIGINT, BOOLEAN)"):
         assert f"REVOKE EXECUTE ON FUNCTION {sig} FROM PUBLIC" in SQL_NO_COMMENTS
         assert f"GRANT  EXECUTE ON FUNCTION {sig} TO anon" in SQL_NO_COMMENTS
+
+
+import config
+
+
+def test_config_statuses_match_migration_check_constraint():
+    m = re.search(r"automation_status IN \(([^)]*)\)", SQL_NO_COMMENTS)
+    assert sorted(re.findall(r"'([a-z_]+)'", m.group(1))) == sorted(config.AUTOMATION_STATUSES)
+
+
+def test_lease_stale_threshold_exceeds_submit_workflow_timeout():
+    # apply_agent_submit.yml has timeout-minutes: 15 -- a live submit must never look stale.
+    assert config.APPLY_AGENT_LEASE_STALE_SECONDS > 15 * 60
