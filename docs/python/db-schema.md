@@ -356,13 +356,35 @@ CREATE TABLE job_applications (
   **Column-allowlist rule, load-bearing for any future schema change:** the anon role's
   table-level `UPDATE` and `INSERT` on `job_applications` are revoked and re-granted on a column
   list derived *dynamically* from `information_schema.columns` at migration time (not
-  hand-enumerated), excluding `approved_at`. A new column added to `job_applications` needs no
-  manual edit to this grant (it's picked up automatically) -- but any future migration that ALSO
+  hand-enumerated), excluding `approved_at`. **Correction (2026-10-01):** the list was computed once, at that migration's run time, so a column added later
+  has NO anon privilege and needs its own explicit `GRANT UPDATE/INSERT (col)` (migration `20261001000000`
+  does this for the three lifecycle columns below). Any future migration that ALSO
   touches `UPDATE`/`INSERT` grants on this table **must run after**
   `20260925000000_add_approved_at_and_approve_application_rpc.sql`, or it will re-grant a blanket
   table-level privilege and silently reopen `approved_at` to direct anon writes. No RLS is used
   for this (or any table in this repo) -- see `docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md`'s
   Global Constraints for why a column-grant approach was chosen instead.
+- **Execution lifecycle columns (migration `20261001000000`, 2026-10-01):**
+  `automation_status TEXT NOT NULL DEFAULT 'idle'` (CHECK over `idle`, `preparing`, `needs_input`,
+  `ready_for_review`, `approved`, `submitting`, `submitted`, `needs_confirmation`, `failed_retryable`,
+  `failed_terminal`, `unsupported`), `preview_revision_hash TEXT`, `approved_revision_hash TEXT`,
+  `worker_lease_id UUID`, `worker_heartbeat_at TIMESTAMPTZ`. Backfill mapped existing rows from
+  `stage`/`approved_at`/`apply_blocked_reason` (prod dry-run: 442 `idle`, 1 `ready_for_review`).
+  Anon is granted UPDATE/INSERT on `automation_status`, `worker_lease_id`, `worker_heartbeat_at` only; never on
+  the two hash columns or `approved_at`.
+- **Trigger `trg_job_applications_preview_revision_hash`** (`BEFORE INSERT OR UPDATE`): recomputes
+  `preview_revision_hash` = sha256 hex of `apply_preview::text | resume_file_ref | cover_letter_file_ref` on
+  every write, so it cannot be forged and any preview edit invalidates a prior approval.
+- **RPCs (all `SECURITY DEFINER`, `search_path = public, pg_temp`, EXECUTE to anon only):**
+  `approve_application(p_id BIGINT, p_revision_hash TEXT)` (needs `ready_for_review`, hash equal to the
+  current `preview_revision_hash`; sets `approved_revision_hash`, status `approved`; the old 1-arg overload is
+  dropped), `reset_approval(p_id BIGINT)` (only `approved`/`failed_retryable` with no lease; refuses
+  `needs_confirmation`), `resolve_confirmation(p_id BIGINT, p_submitted BOOLEAN)` (only from
+  `needs_confirmation` with no lease: `true` goes to `submitted`/`applied`, `false` back to
+  `ready_for_review` with approval cleared).
+- Accessors in `db.py`: `claim_application`, `heartbeat_application`, `release_application`,
+  `set_automation_status`, `recover_stale_leases`; `record_submission` takes an optional `lease_id`.
+  Tests: `tests/test_application_leases_db.py`, `tests/test_automation_status_migration.py`.
 - `db.record_submission(application_id, source_channel, applied_date)` (Beelink M2): the one
   atomic update `apply_agent.py`'s `submit()` uses on a real successful submission -- sets
   `stage='applied'` plus `source_channel`/`applied_date` together, since a partial failure between

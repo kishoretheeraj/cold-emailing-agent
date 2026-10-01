@@ -1,6 +1,6 @@
 # Automation Status, Revision-Bound Approval, and Worker Leases Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Give `job_applications` an execution lifecycle (`automation_status`) separate from the recruiting `stage`. Bind approval to an immutable preview revision hash. Add atomic worker leases with stale-lease recovery. Make a crash or ambiguity after the Submit click land in `needs_confirmation`, which can never be blindly retried, instead of today's "Try again" path that can file a duplicate real application.
 
@@ -65,7 +65,7 @@ Task 6 edits the strategic plan so it uses these names.
 - Produces (DB): columns `automation_status TEXT NOT NULL DEFAULT 'idle'` (CHECK over the 11 statuses above), `preview_revision_hash TEXT`, `approved_revision_hash TEXT`, `worker_lease_id UUID`, `worker_heartbeat_at TIMESTAMPTZ`.
 - Produces (RPC): `approve_application(p_id BIGINT, p_revision_hash TEXT)`, `reset_approval(p_id BIGINT)`, `resolve_confirmation(p_id BIGINT, p_submitted BOOLEAN)`.
 
-- [ ] **Step 1: Write the failing static test**
+- [x] **Step 1: Write the failing static test**
 
 ```python
 """Static checks over the automation_status migration. There is no live DB in the test suite;
@@ -132,11 +132,11 @@ def test_every_rpc_revokes_public_and_grants_anon():
         assert f"GRANT  EXECUTE ON FUNCTION {sig} TO anon" in SQL_NO_COMMENTS
 ```
 
-- [ ] **Step 2: Run it and confirm it fails** (file not found)
+- [x] **Step 2: Run it and confirm it fails** (file not found)
 
 Run: `/Users/kishoretheeraj/Documents/cold-email-agent/.venv/bin/python -m pytest tests/test_automation_status_migration.py -v`
 
-- [ ] **Step 3: Write the migration**
+- [x] **Step 3: Write the migration**
 
 ```sql
 -- Application reliability plan, packaging item 2 (docs/superpowers/plans/2026-10-01-automation-status-and-leases.md).
@@ -329,9 +329,9 @@ GRANT  EXECUTE ON FUNCTION resolve_confirmation(BIGINT, BOOLEAN) TO anon;
 
 Before writing, confirm `job_applications.updated_at` exists (`grep -n updated_at supabase/migrations/20260826000000_create_job_applications.sql`). If it doesn't, drop the two `updated_at = now()` lines.
 
-- [ ] **Step 4: Run the test; expect PASS**
+- [x] **Step 4: Run the test; expect PASS**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add supabase/migrations/20261001000000_add_automation_status_and_revision_binding.sql tests/test_automation_status_migration.py
@@ -349,7 +349,7 @@ git commit -m "feat(db): automation_status, trigger-owned preview revision hash,
 **Interfaces:**
 - Produces: `config.AUTOMATION_STATUSES` (tuple of the 11 strings in the vocabulary table, in table order), `config.APPLY_AGENT_LEASE_STALE_SECONDS = 1800`, `config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES = ("idle", "failed_retryable")`.
 
-- [ ] **Step 1: Append the failing test**
+- [x] **Step 1: Append the failing test**
 
 ```python
 import config
@@ -365,10 +365,10 @@ def test_lease_stale_threshold_exceeds_submit_workflow_timeout():
     assert config.APPLY_AGENT_LEASE_STALE_SECONDS > 15 * 60
 ```
 
-- [ ] **Step 2: Run it; expect FAIL** (AttributeError)
-- [ ] **Step 3: Add the constants with a one-line comment each** (the stale-lease comment must say *why* 1800: it exceeds the submit workflow's 15-minute timeout and the per-row preview budget, so only a dead worker's lease goes stale)
-- [ ] **Step 4: Run it; expect PASS**
-- [ ] **Step 5: Commit** `git add config.py tests/test_automation_status_migration.py` with message `feat(config): automation status vocabulary and lease staleness threshold`
+- [x] **Step 2: Run it; expect FAIL** (AttributeError)
+- [x] **Step 3: Add the constants with a one-line comment each** (the stale-lease comment must say *why* 1800: it exceeds the submit workflow's 15-minute timeout and the per-row preview budget, so only a dead worker's lease goes stale)
+- [x] **Step 4: Run it; expect PASS**
+- [x] **Step 5: Commit** `git add config.py tests/test_automation_status_migration.py` with message `feat(config): automation status vocabulary and lease staleness threshold`
 
 ---
 
@@ -389,7 +389,7 @@ def test_lease_stale_threshold_exceeds_submit_workflow_timeout():
   - `record_submission(application_id, source_channel, applied_date, lease_id=None)`. Unchanged single update, plus `automation_status='submitted'` and cleared lease columns. When `lease_id` is given, also `.eq("worker_lease_id", lease_id)`.
   - Every one raises `ValueError` if a passed status is not in `config.AUTOMATION_STATUSES`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Tests for db.py's application worker lease accessors."""
@@ -515,11 +515,11 @@ The mock chains above assume this query shape. If the implementation's builder o
 - `recover_stale_leases` selects with `.select("id,automation_status,worker_lease_id").not_.is_("worker_lease_id", "null").lt("worker_heartbeat_at", cutoff)`.
 - Its per-row update is `.update(...).eq("id", id).eq("worker_lease_id", old_lease).lt("worker_heartbeat_at", cutoff)`, so a heartbeat that lands between the select and the update makes the update match zero rows.
 
-- [ ] **Step 2: Run them; expect FAIL**
+- [x] **Step 2: Run them; expect FAIL**
 
 Run: `/Users/kishoretheeraj/Documents/cold-email-agent/.venv/bin/python -m pytest tests/test_application_leases_db.py -v`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # ── Application worker leases ──────────────────────────────────────────────────
@@ -633,8 +633,8 @@ def record_submission(application_id, source_channel, applied_date, lease_id=Non
     return result.data[0] if result.data else None
 ```
 
-- [ ] **Step 4: Run the new file and `tests/test_job_applications_db.py`; expect PASS.** If an existing `record_submission` test asserts the exact payload, update it to include the new keys rather than weakening it.
-- [ ] **Step 5: Commit** `git add db.py tests/test_application_leases_db.py tests/test_job_applications_db.py` with message `feat(db): atomic application leases with stale-lease recovery`
+- [x] **Step 4: Run the new file and `tests/test_job_applications_db.py`; expect PASS.** If an existing `record_submission` test asserts the exact payload, update it to include the new keys rather than weakening it.
+- [x] **Step 5: Commit** `git add db.py tests/test_application_leases_db.py tests/test_job_applications_db.py` with message `feat(db): atomic application leases with stale-lease recovery`
 
 ---
 
@@ -664,7 +664,7 @@ def record_submission(application_id, source_channel, applied_date, lease_id=Non
     9. `db.record_submission(job_id, platform, date, lease_id=lease)`.
     10. On any exception after the claim: `to_status = "needs_confirmation" if clicked else "failed_retryable"`, then `db.release_application(job_id, lease, to_status, {"apply_blocked_reason": str(exc)})` inside its own try/except, then re-raise. Remove the old `db.set_apply_blocked` from that handler; the release carries the reason.
 
-- [ ] **Step 1: Write the failing tests** (add to `tests/test_apply_agent.py`; reuse its existing fixtures/mocks for `_launch_page`, `ats_fillers`, `db`. Read that file's top first to match its helper names.)
+- [x] **Step 1: Write the failing tests** (add to `tests/test_apply_agent.py`; reuse its existing fixtures/mocks for `_launch_page`, `ats_fillers`, `db`. Read that file's top first to match its helper names.)
 
 ```python
 @pytest.fixture
@@ -796,16 +796,16 @@ def test_run_preview_ignores_rows_not_in_eligible_statuses(mocker):
 
 Also update every existing submit and preview test in that file that asserts `db.set_apply_preview` or `db.set_apply_blocked` on a post-claim path. They should now assert `release_application`. Keep the armed and unarmed gate tests, adjusted to the new flow. **Do not delete any existing gate test.** If a test checks one of the three original conditions, keep it and make its fixture pass the new conditions.
 
-- [ ] **Step 2: Run; expect the new tests to FAIL**
+- [x] **Step 2: Run; expect the new tests to FAIL**
 
 Run: `/Users/kishoretheeraj/Documents/cold-email-agent/.venv/bin/python -m pytest tests/test_apply_agent.py -v`
 
-- [ ] **Step 3: Implement per the Interfaces block above.** The `clicked = True` assignment sits on the line directly above `page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()`, with a comment: *from here on the site may have the application -- any failure is needs_confirmation, never retryable.* Keep the existing docstring and ARMED comments. Update the C1 comment block to describe the release-with-status behavior instead of `set_apply_blocked`.
-- [ ] **Step 4: Run the full Python suite; expect PASS**
+- [x] **Step 3: Implement per the Interfaces block above.** The `clicked = True` assignment sits on the line directly above `page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()`, with a comment: *from here on the site may have the application -- any failure is needs_confirmation, never retryable.* Keep the existing docstring and ARMED comments. Update the C1 comment block to describe the release-with-status behavior instead of `set_apply_blocked`.
+- [x] **Step 4: Run the full Python suite; expect PASS**
 
 Run: `/Users/kishoretheeraj/Documents/cold-email-agent/.venv/bin/python -m pytest -q`
 
-- [ ] **Step 5: Commit** `git add apply_agent.py tests/test_apply_agent.py` with message `feat(apply): lease-held preview/submit; post-click failures become needs_confirmation`
+- [x] **Step 5: Commit** `git add apply_agent.py tests/test_apply_agent.py` with message `feat(apply): lease-held preview/submit; post-click failures become needs_confirmation`
 
 ---
 
@@ -845,7 +845,7 @@ Behavior:
    - The blocked-reason branch's "Try again" button renders **only** when `app.automation_status === "failed_retryable" || app.automation_status === "approved"`. Otherwise only the reason text shows. The timed-out branch's "Reset approval" button keeps working, and the RPC refuses unsafe states server-side (409 becomes the existing error toast).
    - In the blocked-reason column (the `{app.apply_blocked_reason ?? "—"}` cell), render `<Badge>{AUTOMATION_STATUS_LABELS[app.automation_status]}</Badge>` above the reason whenever `automation_status` is set and not `"idle"`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
   - `types.test.ts`: `AUTOMATION_STATUSES` has 11 unique entries and every entry has a label.
   - Submit route:
     - A missing body gives 400.
@@ -861,10 +861,10 @@ Behavior:
     3. Clicking "It went through" POSTs `{submitted:true}` to `/api/applications/<id>/resolve-confirmation`.
     4. A `failed_retryable` row with a reason renders "Try again".
     5. A row with a reason but `automation_status: "submitting"` renders no "Try again".
-- [ ] **Step 2: Run; expect FAIL** with `cd contact-manager && npx vitest run src/lib/types.test.ts src/app/api/applications src/components/ApplicationsPage.test.tsx`
-- [ ] **Step 3: Implement**
-- [ ] **Step 4: Run all of vitest (`npx vitest run`), `npx tsc --noEmit`, and `npx eslint src`; then `npx playwright test tests/e2e/18-applications.spec.ts`.** If an e2e mock fixture lacks `automation_status`/`preview_revision_hash`, add them (`"ready_for_review"` and a 64-char hex string) so the approve flow still passes. Do **not** commit regenerated screenshot PNGs. Restore them with `git checkout -- contact-manager/tests/e2e/screenshots`.
-- [ ] **Step 5: Commit** the exact modified/created TS files with message `feat(ui): revision-bound approval, needs_confirmation resolution, automation status badges`
+- [x] **Step 2: Run; expect FAIL** with `cd contact-manager && npx vitest run src/lib/types.test.ts src/app/api/applications src/components/ApplicationsPage.test.tsx`
+- [x] **Step 3: Implement**
+- [x] **Step 4: Run all of vitest (`npx vitest run`), `npx tsc --noEmit`, and `npx eslint src`; then `npx playwright test tests/e2e/18-applications.spec.ts`.** If an e2e mock fixture lacks `automation_status`/`preview_revision_hash`, add them (`"ready_for_review"` and a 64-char hex string) so the approve flow still passes. Do **not** commit regenerated screenshot PNGs. Restore them with `git checkout -- contact-manager/tests/e2e/screenshots`.
+- [x] **Step 5: Commit** the exact modified/created TS files with message `feat(ui): revision-bound approval, needs_confirmation resolution, automation status badges`
 
 ---
 
@@ -876,7 +876,7 @@ Behavior:
 - Modify: `docs/superpowers/plans/2026-09-28-application-reliability-plan.md`
 - Memory: `/Users/kishoretheeraj/.claude/projects/-Users-kishoretheeraj-Documents-cold-email-agent/memory/project-application-reliability-plan.md` + `MEMORY.md` line
 
-- [ ] **Step 1: CLAUDE.md.** Add a concise `**Execution lifecycle (automation_status, 2026-10-01)**` paragraph to the Auto-apply section covering:
+- [x] **Step 1: CLAUDE.md.** Add a concise `**Execution lifecycle (automation_status, 2026-10-01)**` paragraph to the Auto-apply section covering:
   - The vocabulary table, by name only.
   - `stage` is still dual-written; `automation_status` is the gate.
   - The trigger owns `preview_revision_hash`, and `approved_revision_hash` is RPC-only. Neither is anon-granted.
@@ -888,13 +888,13 @@ Behavior:
   - Any new `job_applications` column an anon writer needs requires an explicit `GRANT UPDATE/INSERT (col)`. Correct the earlier claim.
 
   Add `tests/test_application_leases_db.py` and `tests/test_automation_status_migration.py` to the Tests list. Update the "three conditions" text to say the gate now also checks `automation_status`/hash equality on a re-read after the claim.
-- [ ] **Step 2: db-schema.md.** Add the five columns, the trigger, the three RPCs, and the grant correction.
-- [ ] **Step 3: Strategic plan.**
+- [x] **Step 2: db-schema.md.** Add the five columns, the trigger, the three RPCs, and the grant correction.
+- [x] **Step 3: Strategic plan.**
   - In §4, replace the old execution-state list with the canonical vocabulary and the name mapping.
   - Mark §8 item 2 **Shipped (2026-10-01)**, linking this plan.
   - In Phase 1's first two bullets, note what shipped.
-- [ ] **Step 4: Memory.** Update `project-application-reliability-plan.md`: item 2 is implemented, plus the non-obvious lessons (the grant-comment falsehood, the overload drop, the `clicked` boundary). Update its `MEMORY.md` line.
-- [ ] **Step 5: Commit** `git add CLAUDE.md docs/python/db-schema.md docs/superpowers/plans/2026-09-28-application-reliability-plan.md docs/superpowers/plans/2026-10-01-automation-status-and-leases.md` with message `docs: automation_status lifecycle, revision-bound approval, leases`
+- [x] **Step 4: Memory.** Update `project-application-reliability-plan.md`: item 2 is implemented, plus the non-obvious lessons (the grant-comment falsehood, the overload drop, the `clicked` boundary). Update its `MEMORY.md` line.
+- [x] **Step 5: Commit** `git add CLAUDE.md docs/python/db-schema.md docs/superpowers/plans/2026-09-28-application-reliability-plan.md docs/superpowers/plans/2026-10-01-automation-status-and-leases.md` with message `docs: automation_status lifecycle, revision-bound approval, leases`
 
 ---
 
