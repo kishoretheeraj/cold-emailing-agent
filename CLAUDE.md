@@ -1128,11 +1128,10 @@ one: the RPC's own guard (`stage`/`apply_preview`/`approved_at IS NULL`, checked
 `approved_at` is ever set), this `submit()` guard (`stage`/`apply_preview`/`approved_at` truthy,
 checked again before any browser launch), and the fact that both must independently hold for a row
 to reach a real Submit click. This is defense in depth, not redundancy -- do not remove or weaken
-either check, and keep this one before `_launch_page`. Note it is *not* double-submit protection:
-if the Submit click lands but the confirmation check or `db.record_submission` write fails, the row
-stays `ready_to_submit` (now with `apply_blocked_reason` set -- see the failed-submit note below)
-and a re-dispatch would file a second real application. Belt-and-braces for that gap lives in the
-follow-up list, not here.
+either check, and keep this one before `_launch_page`. This gate alone is *not* double-submit
+protection; that comes from the 2026-10-01 lifecycle below: a failure after the Submit click lands
+in `needs_confirmation`, which `reset_approval` refuses, so the row cannot be re-approved and
+re-dispatched until a human resolves it via `resolve_confirmation`.
 
 Defense in depth around the same id: `POST /api/applications/[id]/submit` rejects any non-numeric
 id with a 400 before dispatching, and `apply_agent_submit.yml` passes it through `env:` rather than
