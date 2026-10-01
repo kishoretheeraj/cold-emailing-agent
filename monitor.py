@@ -35,13 +35,14 @@ log = logging.getLogger(__name__)
 from agent import DRAFTED_TO_SENT, NEXT_STAGE, _parse_date
 from config import (
     FOLLOWUP_DAYS, GMAIL_ADDRESS, GMAIL_APP_PASSWORD,
-    REPLY_CLASSIFICATION_MODEL, REPLY_CLASSIFICATION_DEFAULT,
+    REPLY_CLASSIFICATION_MODEL, REPLY_CLASSIFICATION_DEFAULT, APPLY_AGENT_LEASE_STALE_SECONDS,
 )
 from constants import TERMINAL_DRAFTED_STAGES
 from db import (
     get_drafted_contacts, get_sent_contacts, update_contact, update_reply_status,
     log_agent_event, update_classifier_status, insert_email_message, load_prompts,
     get_pause_scope, update_message_id, update_latest_message_id, record_run,
+    recover_stale_leases,
 )
 from gmail import (
     create_gmail_label_if_not_exists, find_sent_for_thread,
@@ -549,6 +550,14 @@ def run():
     if scope == "all":
         log.info("PAUSED | monitor is paused — exiting without scanning")
         return
+
+    # Best-effort: frees a wedged 'submitting'/'preparing' lease between apply runs.
+    try:
+        n = recover_stale_leases(APPLY_AGENT_LEASE_STALE_SECONDS)
+        if n:
+            log.info(f"[MONITOR] recovered {n} stale application lease(s)")
+    except Exception as exc:
+        log.warning(f"[MONITOR] stale-lease recovery failed: {exc}")
 
     prompts = {}
     try:

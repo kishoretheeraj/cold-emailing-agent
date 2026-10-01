@@ -571,6 +571,15 @@ JOB_PICK_EMBEDDING_THRESHOLD = 0.35
 JOB_PICK_MODEL = EMAIL_MODEL
 
 APPLY_AGENT_HAND_MAPPED_PLATFORMS = ("greenhouse", "ashby", "lever")
+# Execution lifecycle on job_applications.automation_status; must match the migration's CHECK constraint.
+AUTOMATION_STATUSES = (
+    "idle", "preparing", "needs_input", "ready_for_review", "approved", "submitting",
+    "submitted", "needs_confirmation", "failed_retryable", "failed_terminal", "unsupported",
+)
+# 1800s exceeds the submit workflow's 15-minute timeout and the per-row preview budget, so only a dead worker's lease goes stale.
+APPLY_AGENT_LEASE_STALE_SECONDS = 1800
+# Statuses a preview worker may claim a saved row from.
+APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES = ("idle", "failed_retryable")
 APPLY_AGENT_AGGREGATOR_DOMAINS = (
     "indeed.com",
     "ziprecruiter.com",

@@ -19,6 +19,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "Invalid application id" }, { status: 400 });
   }
 
+  // The hash of the preview revision the human was shown. approve_application binds approval
+  // to it, so a preview edited between page render and this tap is refused (409) instead of
+  // being approved unseen.
+  const body = await req.json().catch(() => null);
+  const revisionHash = body?.revision_hash;
+  if (typeof revisionHash !== "string" || !/^[0-9a-f]{64}$/.test(revisionHash)) {
+    return Response.json({ error: "revision_hash is required" }, { status: 400 });
+  }
+
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   if (!token) {
     return Response.json(
@@ -35,7 +44,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Postgres exception -- the error comes back on the `error` field of the resolved value, so
   // it must be checked explicitly here, not caught with try/catch.
   const supabase = getClient();
-  const { error: rpcError } = await supabase.rpc("approve_application", { p_id: Number(id) });
+  const { error: rpcError } = await supabase.rpc("approve_application", {
+    p_id: Number(id),
+    p_revision_hash: revisionHash,
+  });
   if (rpcError) {
     return Response.json({ error: rpcError.message }, { status: 409 });
   }

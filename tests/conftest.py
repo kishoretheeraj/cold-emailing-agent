@@ -23,3 +23,22 @@ os.environ.setdefault("TAVILY_API_KEY", "test-tavily-key")
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_real_lease_recovery_in_monitor(request):
+    # monitor.run() calls recover_stale_leases best-effort; unmocked, it would hit the fake
+    # Supabase URL and sit in db._retry's backoff sleeps for every run() test.
+    if "monitor" not in request.module.__name__ and "paused" not in request.module.__name__:
+        yield
+        return
+    import monitor
+    original = monitor.recover_stale_leases
+    monitor.recover_stale_leases = lambda *a, **k: 0
+    try:
+        yield
+    finally:
+        monitor.recover_stale_leases = original
