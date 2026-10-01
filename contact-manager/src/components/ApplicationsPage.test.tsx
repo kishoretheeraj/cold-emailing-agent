@@ -948,6 +948,67 @@ describe("ApplicationsPage -- automation_status gating (needs_confirmation, Revi
     expect(within(row).getAllByText(/stale reason/i).length).toBeGreaterThan(0);
   });
 
+  it.each([
+    ["idle", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["preparing", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["needs_input", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["ready_for_review", { approve: true, tryAgain: false, reset: false, resolve: false }],
+    ["approved", { approve: false, tryAgain: false, reset: true, resolve: false }],
+    ["submitting", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["submitted", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["needs_confirmation", { approve: false, tryAgain: false, reset: false, resolve: true }],
+    ["failed_retryable", { approve: false, tryAgain: true, reset: false, resolve: false }],
+    ["failed_terminal", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["unsupported", { approve: false, tryAgain: false, reset: false, resolve: false }],
+  ])("action buttons for automation_status=%s", async (status, want) => {
+    stubList([{ ...readyApplication, id: "20", company: "Matrix Co", automation_status: status, apply_blocked_reason: "some reason" }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Matrix Co");
+    const row = screen.getByText("Matrix Co").closest("tr") as HTMLElement;
+    const has = (n: RegExp) => within(row).queryByRole("button", { name: n }) !== null;
+    expect(has(/^approve & submit$/i)).toBe(want.approve);
+    expect(has(/^try again$/i)).toBe(want.tryAgain);
+    expect(has(/^reset approval$/i)).toBe(want.reset);
+    expect(has(/it went through/i)).toBe(want.resolve);
+  });
+
+  it("ready_for_review with a stale reason shows it dim above Approve & Submit, no Try again", async () => {
+    stubList([{ ...readyApplication, id: "21", company: "Stale Co", automation_status: "ready_for_review", apply_blocked_reason: "old failure" }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Stale Co");
+    const row = screen.getByText("Stale Co").closest("tr") as HTMLElement;
+    expect(within(row).getAllByText(/old failure/i).length).toBeGreaterThan(0);
+    expect(within(row).getByRole("button", { name: /^approve & submit$/i })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  it("Try again clears the polled live status so the reloaded row's status shows", async () => {
+    let listCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/system-health")) {
+          return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+        }
+        if (!opts || opts.method === undefined) {
+          listCalls++;
+          const status = listCalls === 1 ? "failed_retryable" : "ready_for_review";
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ applications: [{ ...readyApplication, id: "22", company: "Live Co", automation_status: status, apply_blocked_reason: listCalls === 1 ? "boom" : null }] }),
+          } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      })
+    );
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Live Co");
+    await user.click(screen.getByRole("button", { name: /^try again$/i }));
+    const row = screen.getByText("Live Co").closest("tr") as HTMLElement;
+    await waitFor(() => expect(within(row).getByText("Ready for review")).toBeInTheDocument());
+  });
+
   it("renders an automation status badge for a non-idle row, and none for idle", async () => {
     stubList([
       { ...readyApplication, id: "10", company: "Badge Co", automation_status: "approved", apply_blocked_reason: null },

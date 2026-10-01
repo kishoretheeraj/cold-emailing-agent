@@ -107,30 +107,44 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     // window between reading approved_at and writing the update) via a conditional WHERE clause.
     // stage-only edits (e.g. manually marking an approved row withdrawn) are not gated by this --
     // only a payload that touches apply_preview is.
-    if (editingApplyPreview) {
-      const query = supabase
+    // Automation-status lifecycle: a preview/submit worker overwrites stage/apply_preview when it
+    // releases its lease, so a human edit of either must also be conditional on no live lease
+    // (worker_lease_id IS NULL), enforced atomically in the WHERE clause. notes-only stays
+    // unconditional -- no worker writes it.
+    if (editingApplyPreview || "stage" in updates) {
+      let query = supabase
         .from("job_applications")
         .update(updates)
         .eq("id", Number(id))
-        .is("approved_at", null)
-        .select()
-        .single();
-      const { data, error } = await query;
+        .is("worker_lease_id", null);
+      if (editingApplyPreview) query = query.is("approved_at", null);
+      const { data, error } = await query.select().single();
       if (error) {
         if (error.code === "PGRST116") {
-          // Zero rows matched the guarded WHERE clause -- either the id doesn't exist, or it
-          // does and approved_at is already set. Disambiguate with a follow-up read so a
-          // genuine 404 isn't misreported as a 409, and vice versa.
+          // Zero rows matched -- disambiguate missing / leased / approved so each gets the
+          // right status instead of a misleading 409 or 404.
           const { data: existing } = await supabase
             .from("job_applications")
-            .select("id")
+            .select("id, approved_at, worker_lease_id")
             .eq("id", Number(id))
             .maybeSingle();
           if (!existing) {
             return Response.json({ error: "Application not found" }, { status: 404 });
           }
+          if (existing.worker_lease_id) {
+            return Response.json(
+              { error: "A worker is currently processing this application -- try again shortly" },
+              { status: 409 }
+            );
+          }
+          if (editingApplyPreview && existing.approved_at) {
+            return Response.json(
+              { error: "Cannot edit apply_preview: this application has already been approved" },
+              { status: 409 }
+            );
+          }
           return Response.json(
-            { error: "Cannot edit apply_preview: this application has already been approved" },
+            { error: "Application changed while saving -- try again" },
             { status: 409 }
           );
         }

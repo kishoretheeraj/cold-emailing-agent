@@ -351,6 +351,11 @@ export function ApplicationsPage() {
         next.delete(id);
         return next;
       });
+      setLiveStatuses((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
       load(stageFilter, sourceFilter);
     } catch {
       toast.error("Could not reset -- try again in a moment");
@@ -584,34 +589,58 @@ export function ApplicationsPage() {
                             </button>
                           </div>
                         </div>
-                      ) : blockedReasons[app.id] ?? app.apply_blocked_reason ? (
-                        // C1: blockedReasons is only populated by THIS tab's own polling --
-                        // a row blocked in a previous session (submit failed, page refreshed,
-                        // browser closed) would never show Try again without also falling back
-                        // to the row's own apply_blocked_reason from the API.
+                      ) : automationStatus === "ready_for_review" ? (
+                        <div className="flex flex-col gap-1">
+                          {(blockedReasons[app.id] ?? app.apply_blocked_reason) && (
+                            <span className="text-fg-dim text-xs">
+                              {blockedReasons[app.id] ?? app.apply_blocked_reason}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingApplication(app)}
+                            className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
+                          >
+                            Approve & Submit
+                          </button>
+                        </div>
+                      ) : automationStatus === "failed_retryable" ? (
                         <div className="flex flex-col gap-1">
                           <span className="text-red-400 text-xs">
                             {blockedReasons[app.id] ?? app.apply_blocked_reason}
                           </span>
-                          {(automationStatus === "failed_retryable" ||
-                            automationStatus === "approved") && (
-                            <button
-                              type="button"
-                              onClick={() => handleTryAgain(app.id)}
-                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
-                            >
-                              Try again
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleTryAgain(app.id)}
+                            className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                          >
+                            Try again
+                          </button>
                         </div>
+                      ) : automationStatus === "approved" ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="text-amber-400 text-xs">
+                            Approved -- queued for submission
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleTryAgain(app.id)}
+                            className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                          >
+                            Reset approval
+                          </button>
+                        </div>
+                      ) : automationStatus === "preparing" || automationStatus === "submitting" ? (
+                        <span className="text-fg-dim text-xs flex items-center gap-1">
+                          <Loader2 className="size-3 animate-spin" /> In progress --{" "}
+                          {AUTOMATION_STATUS_LABELS[automationStatus]}
+                        </span>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmingApplication(app)}
-                          className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
-                        >
-                          Approve & Submit
-                        </button>
+                        (blockedReasons[app.id] ?? app.apply_blocked_reason) && (
+                          <span className="text-fg-dim text-xs">
+                            {blockedReasons[app.id] ?? app.apply_blocked_reason}
+                          </span>
+                        )
                       )}
                     </div>
                   ) : (

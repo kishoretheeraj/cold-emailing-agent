@@ -30,7 +30,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockSingle.mockResolvedValue({ data: { id: "1", stage: "onsite" }, error: null });
   mockSelect.mockReturnValue({ single: mockSingle });
-  mockIs.mockReturnValue({ select: mockSelect });
+  mockIs.mockReturnValue({ select: mockSelect, is: mockIs });
   mockEq.mockReturnValue({ select: mockSelect, is: mockIs });
   mockUpdate.mockReturnValue({ eq: mockEq });
   mockMaybeSingle.mockResolvedValue({ data: { id: "1" }, error: null });
@@ -123,7 +123,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
   // disambiguates that into a 409 (row exists but is approved) rather than a generic 500.
   it("rejects an apply_preview edit once the row is approved (409, not the generic 500 path)", async () => {
     mockSingle.mockResolvedValue({ data: null, error: { code: "PGRST116", message: "no rows" } });
-    mockMaybeSingle.mockResolvedValue({ data: { id: "1" }, error: null });
+    mockMaybeSingle.mockResolvedValue({ data: { id: "1", approved_at: "2026-10-01T00:00:00Z", worker_lease_id: null }, error: null });
     const req = new Request("http://test", {
       method: "PATCH",
       body: JSON.stringify({ apply_preview: validPreview }),
@@ -145,12 +145,47 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("does not gate a stage-only edit on approved_at (e.g. marking an approved row withdrawn)", async () => {
+  it("does not gate a stage-only edit on approved_at (e.g. marking an approved row withdrawn), only on no worker lease", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", stage: "withdrawn" }, error: null });
     const req = new Request("http://test", {
       method: "PATCH",
       body: JSON.stringify({ stage: "withdrawn" }),
     });
+    const res = await PATCH(req, params("1"));
+    expect(res.status).toBe(200);
+    expect(mockIs).toHaveBeenCalledWith("worker_lease_id", null);
+    expect(mockIs).not.toHaveBeenCalledWith("approved_at", null);
+  });
+
+  it("apply_preview edit is conditional on both approved_at and worker_lease_id being NULL", async () => {
+    const req = new Request("http://test", {
+      method: "PATCH",
+      body: JSON.stringify({ apply_preview: validPreview }),
+    });
+    await PATCH(req, params("1"));
+    expect(mockIs).toHaveBeenCalledWith("approved_at", null);
+    expect(mockIs).toHaveBeenCalledWith("worker_lease_id", null);
+  });
+
+  it("returns 409 'worker is currently processing' when a worker lease blocks a stage edit", async () => {
+    mockSingle.mockResolvedValue({ data: null, error: { code: "PGRST116", message: "no rows" } });
+    mockMaybeSingle.mockResolvedValue({ data: { id: "1", approved_at: null, worker_lease_id: "lease-1" }, error: null });
+    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "withdrawn" }) });
+    const res = await PATCH(req, params("1"));
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/worker is currently processing/i);
+  });
+
+  it("returns 404 when a stage edit matches zero rows and the row is missing", async () => {
+    mockSingle.mockResolvedValue({ data: null, error: { code: "PGRST116", message: "no rows" } });
+    mockMaybeSingle.mockResolvedValue({ data: null, error: null });
+    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "withdrawn" }) });
+    const res = await PATCH(req, params("999"));
+    expect(res.status).toBe(404);
+  });
+
+  it("a notes-only PATCH stays unconditional", async () => {
+    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ notes: "hi" }) });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(200);
     expect(mockIs).not.toHaveBeenCalled();
