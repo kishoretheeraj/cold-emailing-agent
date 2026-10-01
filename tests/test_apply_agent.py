@@ -429,6 +429,31 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
     assert preview_arg["eligibility_answers"] == {"work_authorized_us": "Yes"}
 
 
+def test_process_one_preview_returns_lost_when_release_returns_none(mocker):
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._generate_screening_answers", return_value={})
+    mocker.patch("apply_agent._fill_screening_questions")
+    mocker.patch("apply_agent._fill_eligibility_answers")
+    mocker.patch("apply_agent.db.load_prompts", return_value={})
+    mocker.patch("apply_agent.db.release_application", return_value=None)
+    job = {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x"}
+    assert apply_agent._process_one_preview(job) == "lost"
+
+
+def test_run_preview_counts_lost_as_error_not_filled(mocker, caplog):
+    rows = [{"id": 1, "stage": "saved", "resume_file_ref": "r", "cover_letter_file_ref": "c",
+             "automation_status": "idle"}]
+    mocker.patch.object(apply_agent.db, "recover_stale_leases", return_value=0)
+    mocker.patch.object(apply_agent.db, "get_job_applications", return_value=rows)
+    mocker.patch.object(apply_agent, "_process_one_preview", return_value="lost")
+    with caplog.at_level("INFO"):
+        apply_agent.run_preview()
+    assert "filled=0" in caplog.text and "errors=1" in caplog.text
+
+
 # Merge review 2026-09-28, finding 2: _fill_generic_via_browser_use used to catch and swallow
 # every failure (a missing field_values key, or any browser-use failure), so
 # _process_one_preview() always proceeded to db.set_apply_preview() and stage='ready_to_submit'
@@ -720,7 +745,7 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value=platform)
     launch_mock = mocker.patch("apply_agent._launch_page")
-    blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
+    blocked_mock = mocker.patch("apply_agent.db.set_automation_status")
 
     with pytest.raises(ValueError, match="permanently-excluded"):
         apply_agent.submit(1)
@@ -731,7 +756,8 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
     # submit failure.
     blocked_mock.assert_called_once()
     assert blocked_mock.call_args[0][0] == 1
-    assert "permanently-excluded" in blocked_mock.call_args[0][1]
+    assert blocked_mock.call_args[0][1] == "unsupported"
+    assert "permanently-excluded" in blocked_mock.call_args[0][2]
 
 
 # ── The approval guard: ARMED proves a human tapped, this proves they tapped THIS row ──

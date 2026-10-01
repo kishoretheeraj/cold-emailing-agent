@@ -1289,13 +1289,23 @@ leases older than `config.APPLY_AGENT_LEASE_STALE_SECONDS` (1800) and maps a sta
 `.click()` call onward (including a failed `record_submission` after a confirmed submit) lands in
 `needs_confirmation`; only pre-click failures go to `failed_retryable`. A `record_submission` that returns
 `None` (lease already recovered as stale) only logs a warning. `submit()` raises on the excluded-platform
-check before claiming (status stays `approved`). `reset_approval` refuses `needs_confirmation`/`submitting`/
+check before claiming (status becomes `unsupported`). `reset_approval` refuses `needs_confirmation`/`submitting`/
 `submitted` (the site may already have the application; a reset would reopen Approve & Submit to a
 duplicate), and `resolve_confirmation(p_id, p_submitted)` (via `POST /api/applications/[id]/resolve-confirmation`)
 is the only human path out of `needs_confirmation`. **Any new `job_applications` column an anon writer needs
 requires an explicit `GRANT UPDATE/INSERT (col)`**: migration `20260925000000` computed its column grant list
 once at run time, so its claim that a new column "needs no manual edit" was wrong (a later-added column has
-no anon privilege). Plan: docs/superpowers/plans/2026-10-01-automation-status-and-leases.md.
+no anon privilege). **Whole-branch review fixes (2026-10-01)**: (A) the hash also covers a new
+`documents_version` column (anon-writable: bumping it only invalidates an approval), written as a fresh uuid
+by `db.set_resume_files` on every build, because `--build` re-uploads to fixed storage paths so the file refs
+alone never change on a rebuild. (B) `monitor.run()` calls `db.recover_stale_leases` (best-effort, after the
+pause check) so a wedged `submitting` row is freed between apply runs. (C) `reset_approval` no longer requires
+`approved_at IS NOT NULL`, so a `failed_retryable` row without it is not a dead end (still refuses
+`needs_confirmation`/`submitting`/`submitted`). (E) `submit()`'s excluded-platform branch writes
+`automation_status='unsupported'` (still before the claim). The preview pass treats a `None` from
+`release_application` as a lost lease (`"lost"`, counted as an error). Known limitation:
+automation_status/worker_lease_id/documents_version are anon-writable (every writer shares the public anon key, no RLS by design), so the lifecycle can be forged or wedged by anyone holding that key; it cannot produce an unapproved submission because approved_at/approved_revision_hash stay RPC-only and preview_revision_hash is trigger-owned. Moving lifecycle writes behind SECURITY DEFINER RPCs is a follow-up.
+Plan: docs/superpowers/plans/2026-10-01-automation-status-and-leases.md.
 
 **Known follow-up, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): a resume/cover-letter attach failure is silently swallowed even in the armed-submit

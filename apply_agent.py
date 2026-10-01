@@ -339,8 +339,8 @@ def _browser_use_agent_run(task_description, page):
     # Merge review 2026-09-28, finding 2: browser-use agents don't raise on a failed task -- they
     # just stop and report failure via the returned history. Silently treating that the same as
     # success is exactly how a row could reach ready_to_submit with an unfilled form. Raise so
-    # the caller's existing failure-handling (set_apply_blocked in run_preview()/submit()) does
-    # its job instead of this being swallowed one level down.
+    # the caller's existing failure-handling (release_application to failed_retryable in the
+    # preview pass, failed_retryable/needs_confirmation in submit()) does its job instead of this being swallowed one level down.
     if not history.is_successful() or history.has_errors():
         raise RuntimeError(f"browser-use did not complete the task: {history.errors()}")
     return history
@@ -352,9 +352,9 @@ def _fill_generic_via_browser_use(page, job, field_values):
     # proceeded to mark the row ready_to_submit even when the generic fill produced an empty
     # form. Building the task string can still fail on a genuinely missing key -- that's a
     # programming error in _standard_field_values, not a best-effort external-service failure --
-    # so it's allowed to raise too. run_preview()'s per-job try/except and submit()'s own
-    # exception handler already call db.set_apply_blocked on any exception from this function;
-    # letting the failure propagate is what makes that existing safety net actually reachable.
+    # so it's allowed to raise too. The preview pass's and submit()'s own
+    # exception handlers already release the lease (failed_retryable / needs_confirmation) on
+    # any exception from this function; letting the failure propagate is what makes that existing safety net actually reachable.
     task = (
         f"Fill in this job application form with: name={field_values['name']}, "
         f"email={field_values['email']}, phone={field_values['phone']}, "
@@ -412,10 +412,14 @@ def _process_one_preview(job):
                 "eligibility_answers": eligibility_answers,
                 "screening_answers": screening_answers,
             }
-            db.release_application(
+            released = db.release_application(
                 job_id, lease, "ready_for_review",
                 {"apply_preview": preview, "stage": "ready_to_submit", "apply_blocked_reason": None},
             )
+            if released is None:
+                log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded "
+                            f"(row was recovered by lease recovery)")
+                return "lost"
             return "filled"
         finally:
             _close_page(page)
@@ -446,6 +450,8 @@ def run_preview():
                 blocked += 1
             elif status == "skipped":
                 skipped += 1
+            elif status == "lost":
+                errors += 1
             else:
                 filled += 1
         except Exception as exc:
@@ -483,7 +489,7 @@ def submit(job_id):
         reason = f"submit() called on a permanently-excluded platform: {platform}"
         log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | error: {reason}")
         try:
-            db.set_apply_blocked(job_id, reason)
+            db.set_automation_status(job_id, "unsupported", reason)
         except Exception:
             pass
         raise ValueError(reason)

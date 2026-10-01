@@ -623,6 +623,8 @@ def set_pick_verdict(application_id, verdict, score, reasoning):
     return result.data[0] if result.data else None
 
 
+# The preview pass now writes apply_preview via release_application (under its lease); this
+# unleased writer is kept for compatibility.
 def set_apply_preview(application_id, preview):
     """Write apply_agent.py --preview's filled values and flip the row to ready_to_submit."""
     result = _retry(lambda: get_client().table("job_applications")
@@ -741,7 +743,9 @@ def set_resume_strategy(application_id, strategy):
 
 def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref=None, resume_variant=None):
     """Write built-file references onto a job_applications row after a successful build."""
-    payload = {"updated_at": datetime.utcnow().isoformat()}
+    # Fixed storage paths mean refs alone don't change on a rebuild; a fresh version changes the
+    # trigger-owned preview hash, so a rebuild after approval invalidates it.
+    payload = {"updated_at": datetime.utcnow().isoformat(), "documents_version": str(uuid.uuid4())}
     if resume_file_ref is not None:
         payload["resume_file_ref"] = resume_file_ref
     if cover_letter_file_ref is not None:

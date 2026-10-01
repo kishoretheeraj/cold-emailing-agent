@@ -368,22 +368,22 @@ CREATE TABLE job_applications (
   `automation_status TEXT NOT NULL DEFAULT 'idle'` (CHECK over `idle`, `preparing`, `needs_input`,
   `ready_for_review`, `approved`, `submitting`, `submitted`, `needs_confirmation`, `failed_retryable`,
   `failed_terminal`, `unsupported`), `preview_revision_hash TEXT`, `approved_revision_hash TEXT`,
-  `worker_lease_id UUID`, `worker_heartbeat_at TIMESTAMPTZ`. Backfill mapped existing rows from
+  `worker_lease_id UUID`, `worker_heartbeat_at TIMESTAMPTZ`, `documents_version TEXT` (fresh uuid written by `db.set_resume_files` each build; hashed in so a rebuild invalidates approval). Backfill mapped existing rows from
   `stage`/`approved_at`/`apply_blocked_reason` (prod dry-run: 442 `idle`, 1 `ready_for_review`).
-  Anon is granted UPDATE/INSERT on `automation_status`, `worker_lease_id`, `worker_heartbeat_at` only; never on
+  Anon is granted UPDATE/INSERT on `automation_status`, `worker_lease_id`, `worker_heartbeat_at`, `documents_version` only; never on
   the two hash columns or `approved_at`.
 - **Trigger `trg_job_applications_preview_revision_hash`** (`BEFORE INSERT OR UPDATE`): recomputes
-  `preview_revision_hash` = sha256 hex of `apply_preview::text | resume_file_ref | cover_letter_file_ref` on
+  `preview_revision_hash` = sha256 hex of `apply_preview::text | resume_file_ref | cover_letter_file_ref | documents_version` on
   every write, so it cannot be forged and any preview edit invalidates a prior approval.
 - **RPCs (all `SECURITY DEFINER`, `search_path = public, pg_temp`, EXECUTE to anon only):**
   `approve_application(p_id BIGINT, p_revision_hash TEXT)` (needs `ready_for_review`, hash equal to the
   current `preview_revision_hash`; sets `approved_revision_hash`, status `approved`; the old 1-arg overload is
-  dropped), `reset_approval(p_id BIGINT)` (only `approved`/`failed_retryable` with no lease; refuses
+  dropped), `reset_approval(p_id BIGINT)` (only `approved`/`failed_retryable` with no lease, `approved_at` may be NULL; refuses
   `needs_confirmation`), `resolve_confirmation(p_id BIGINT, p_submitted BOOLEAN)` (only from
   `needs_confirmation` with no lease: `true` goes to `submitted`/`applied`, `false` back to
   `ready_for_review` with approval cleared).
 - Accessors in `db.py`: `claim_application`, `heartbeat_application`, `release_application`,
-  `set_automation_status`, `recover_stale_leases`; `record_submission` takes an optional `lease_id`.
+  `set_automation_status`, `recover_stale_leases` (also called best-effort from `monitor.run()`); `record_submission` takes an optional `lease_id`.
   Tests: `tests/test_application_leases_db.py`, `tests/test_automation_status_migration.py`.
 - `db.record_submission(application_id, source_channel, applied_date)` (Beelink M2): the one
   atomic update `apply_agent.py`'s `submit()` uses on a real successful submission -- sets

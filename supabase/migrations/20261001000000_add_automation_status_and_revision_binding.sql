@@ -26,7 +26,8 @@ ALTER TABLE job_applications
   ADD COLUMN IF NOT EXISTS preview_revision_hash TEXT,
   ADD COLUMN IF NOT EXISTS approved_revision_hash TEXT,
   ADD COLUMN IF NOT EXISTS worker_lease_id UUID,
-  ADD COLUMN IF NOT EXISTS worker_heartbeat_at TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS worker_heartbeat_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS documents_version TEXT;
 
 ALTER TABLE job_applications DROP CONSTRAINT IF EXISTS job_applications_automation_status_check;
 ALTER TABLE job_applications
@@ -37,7 +38,10 @@ ALTER TABLE job_applications
 
 -- ── Preview revision hash (trigger-owned) ──────────────────────────────────────
 
-CREATE OR REPLACE FUNCTION job_application_preview_revision_hash(p_preview JSONB, p_resume TEXT, p_cover TEXT)
+-- documents_version: resume_agent.py --build re-uploads to FIXED storage paths, so a rebuild after
+-- approval leaves the file refs (and thus a refs-only hash) unchanged. db.set_resume_files writes a
+-- fresh uuid here on every build, which is hashed in, so a rebuild invalidates any approval.
+CREATE OR REPLACE FUNCTION job_application_preview_revision_hash(p_preview JSONB, p_resume TEXT, p_cover TEXT, p_docs_version TEXT)
 RETURNS TEXT
 LANGUAGE sql
 IMMUTABLE
@@ -45,7 +49,7 @@ AS $$
   SELECT CASE
     WHEN p_preview IS NULL THEN NULL
     -- jsonb::text is canonical (keys sorted, whitespace normalized), so equal previews hash equal
-    ELSE encode(sha256(convert_to(p_preview::text || '|' || coalesce(p_resume, '') || '|' || coalesce(p_cover, ''), 'UTF8')), 'hex')
+    ELSE encode(sha256(convert_to(p_preview::text || '|' || coalesce(p_resume, '') || '|' || coalesce(p_cover, '') || '|' || coalesce(p_docs_version, ''), 'UTF8')), 'hex')
   END
 $$;
 
@@ -54,7 +58,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  NEW.preview_revision_hash := job_application_preview_revision_hash(NEW.apply_preview, NEW.resume_file_ref, NEW.cover_letter_file_ref);
+  NEW.preview_revision_hash := job_application_preview_revision_hash(NEW.apply_preview, NEW.resume_file_ref, NEW.cover_letter_file_ref, NEW.documents_version);
   RETURN NEW;
 END;
 $$;
@@ -73,6 +77,7 @@ UPDATE job_applications SET automation_status = CASE
   WHEN stage = 'ready_to_submit' THEN 'ready_for_review'
   WHEN stage = 'saved' AND (apply_blocked_reason LIKE 'workday%' OR apply_blocked_reason LIKE 'aggregator%') THEN 'unsupported'
   WHEN stage = 'saved' AND apply_blocked_reason IS NOT NULL THEN 'failed_retryable'
+  WHEN approved_at IS NOT NULL AND stage NOT IN ('saved', 'ready_to_submit') THEN 'submitted'
   ELSE 'idle'
 END;
 
@@ -83,8 +88,10 @@ WHERE approved_at IS NOT NULL AND automation_status IN ('approved', 'failed_retr
 
 -- ── Anon column grants (see GRANTS note above) ─────────────────────────────────
 
-GRANT UPDATE (automation_status, worker_lease_id, worker_heartbeat_at) ON job_applications TO anon;
-GRANT INSERT (automation_status, worker_lease_id, worker_heartbeat_at) ON job_applications TO anon;
+-- documents_version is anon-writable on purpose: bumping it only ever CHANGES preview_revision_hash,
+-- which invalidates an approval (the safe direction). It can never create or preserve one.
+GRANT UPDATE (automation_status, worker_lease_id, worker_heartbeat_at, documents_version) ON job_applications TO anon;
+GRANT INSERT (automation_status, worker_lease_id, worker_heartbeat_at, documents_version) ON job_applications TO anon;
 
 -- ── RPCs ───────────────────────────────────────────────────────────────────────
 
@@ -116,6 +123,7 @@ BEGIN
 END;
 $$;
 
+-- approved_at may be NULL here (a failed_retryable row can lack it); it must still be resettable.
 -- Only pre-click states can be reset. needs_confirmation/submitting/submitted are deliberately
 -- excluded: the site may already have the application, and resetting would re-open the
 -- Approve & Submit path to a duplicate real submission. Those resolve via resolve_confirmation.
@@ -133,7 +141,6 @@ BEGIN
       automation_status = 'ready_for_review'
   WHERE id = p_id
     AND stage = 'ready_to_submit'
-    AND approved_at IS NOT NULL
     AND automation_status IN ('approved', 'failed_retryable')
     AND worker_lease_id IS NULL;
 

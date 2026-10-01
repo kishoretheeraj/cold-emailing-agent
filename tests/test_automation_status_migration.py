@@ -28,7 +28,7 @@ def test_anon_grants_cover_lifecycle_columns_but_never_hash_columns():
                         SQL_NO_COMMENTS)
     assert grants, "explicit column grants to anon are required"
     granted = {c.strip() for g in grants for c in g.split(",")}
-    assert {"automation_status", "worker_lease_id", "worker_heartbeat_at"} <= granted
+    assert {"automation_status", "worker_lease_id", "worker_heartbeat_at", "documents_version"} <= granted
     assert "preview_revision_hash" not in granted
     assert "approved_revision_hash" not in granted
     assert "approved_at" not in granted
@@ -73,3 +73,23 @@ def test_config_statuses_match_migration_check_constraint():
 def test_lease_stale_threshold_exceeds_submit_workflow_timeout():
     # apply_agent_submit.yml has timeout-minutes: 15 -- a live submit must never look stale.
     assert config.APPLY_AGENT_LEASE_STALE_SECONDS > 15 * 60
+
+
+def test_hash_includes_documents_version_and_trigger_passes_it():
+    fn = SQL_NO_COMMENTS.split("FUNCTION job_application_preview_revision_hash(")[1].split("$$;")[0]
+    assert "p_docs_version TEXT" in fn
+    assert "coalesce(p_docs_version, '')" in fn
+    assert "NEW.documents_version)" in SQL_NO_COMMENTS
+
+
+def test_documents_version_column_added():
+    assert "ADD COLUMN IF NOT EXISTS documents_version TEXT" in SQL_NO_COMMENTS
+
+
+def test_reset_approval_does_not_require_approved_at():
+    body = SQL_NO_COMMENTS.split("FUNCTION reset_approval(p_id BIGINT)")[1].split("$$;")[0]
+    assert "approved_at IS NOT NULL" not in body
+
+
+def test_backfill_marks_approved_post_submit_rows_submitted():
+    assert "WHEN approved_at IS NOT NULL AND stage NOT IN ('saved', 'ready_to_submit') THEN 'submitted'" in SQL_NO_COMMENTS
