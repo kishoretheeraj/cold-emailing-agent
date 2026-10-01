@@ -881,6 +881,7 @@ def test_run_batch_poll_backs_off(mocker):
     contact = _build_contact()
     mocker.patch("agent.get_all_contacts", return_value=[contact])
     mocker.patch("agent.load_prompts", return_value={})
+    mocker.patch("agent.email_verify.verify", return_value=EmailVerifyResult("valid", None))
     mocker.patch("agent.get_pause_scope", return_value="none")
     mocker.patch("agent.record_run")
     mocker.patch("agent.create_draft", return_value=DraftResult("<mid@gmail.com>", None, 1))

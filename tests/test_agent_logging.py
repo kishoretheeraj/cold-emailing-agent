@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+from email_verify import EmailVerifyResult
 import emailer
 import reply_drafter
 from gmail import DraftResult
@@ -45,6 +46,7 @@ def _build_contact(**overrides):
 def _mock_batch_pipeline(mocker, contact, action, subject, body,
                          finalize_side_effect=None):
     """Wire up the batch pipeline so run() calls _execute_draft once."""
+    mocker.patch("agent.email_verify.verify", return_value=EmailVerifyResult("valid", None))
     mock_prepare = mocker.patch("agent.prepare_email", return_value=("prompt", "system", {}))
     mock_finalize = mocker.patch(
         "agent.finalize_email",

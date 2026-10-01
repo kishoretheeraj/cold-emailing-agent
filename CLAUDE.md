@@ -1214,14 +1214,6 @@ one guarded `UPDATE` (`CREATE OR REPLACE FUNCTION`, safe to reapply against the 
 unchanged). The route now does nothing but call the RPC; a reset either clears both fields or
 clears neither, with no partial-failure window and no separate write for the route to lose.
 
-**Known follow-ups, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
-detail): `browser-use`'s real installed API doesn't match what `_fill_generic_via_browser_use`
-assumes, so the generic-ATS fill path fails safely but doesn't actually work yet -- needs a human
-live-smoke-test pass; a resume/cover-letter attach failure is silently swallowed even in the
-armed-submit path. None of these are safety gaps -- the two ARMED/approval gates above are the
-actual safety boundary, and everything upstream of them degrading just means the *preview* is
-incomplete, not that an unapproved submission could happen.
-
 **Fixed since (merge review, 2026-09-28, findings 2 and 3):**
 
 - **Finding 2 -- the generic browser-use adapter.** `_fill_generic_via_browser_use` used to
@@ -1276,8 +1268,7 @@ incomplete, not that an unapproved submission could happen.
 
 **Known follow-up, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): a resume/cover-letter attach failure is silently swallowed even in the armed-submit
-path; `source_channel`/`applied_date` aren't written on a successful submit. Neither is a safety
-gap -- the two ARMED/approval gates above are the actual safety boundary, and everything
+path. It is not a safety gap -- the two ARMED/approval gates above are the actual safety boundary, and everything
 upstream of them degrading just means the *preview* is incomplete, not that an unapproved
 submission could happen.
 
