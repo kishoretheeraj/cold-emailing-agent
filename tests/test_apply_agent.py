@@ -9,6 +9,17 @@ import pytest
 import apply_agent
 
 
+@pytest.fixture(autouse=True)
+def _lease_defaults(mocker):
+    # Lease plumbing is db-backed; default every test to a successful claim, no stale leases, and
+    # inert heartbeat/release so no test can reach a real Supabase client.
+    mocker.patch("apply_agent.db.recover_stale_leases", return_value=0)
+    mocker.patch("apply_agent.db.claim_application", return_value="lease-1")
+    mocker.patch("apply_agent.db.heartbeat_application")
+    mocker.patch("apply_agent.db.release_application")
+    mocker.patch("apply_agent.db.set_automation_status")
+
+
 def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
     mocker.patch("apply_agent.db.get_job_applications", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
@@ -20,7 +31,7 @@ def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
-    set_preview_mock = mocker.patch("apply_agent.db.set_apply_preview")
+    set_preview_mock = mocker.patch("apply_agent.db.release_application")
 
     apply_agent.run_preview()
 
@@ -35,13 +46,14 @@ def test_run_preview_blocks_workday_without_attempting_a_fill(mocker):
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="workday")
     launch_mock = mocker.patch("apply_agent._launch_page")
-    set_blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
+    set_blocked_mock = mocker.patch("apply_agent.db.set_automation_status")
 
     apply_agent.run_preview()
 
     launch_mock.assert_not_called()
     set_blocked_mock.assert_called_once()
-    assert "workday" in set_blocked_mock.call_args[0][1].lower()
+    assert set_blocked_mock.call_args[0][1] == "unsupported"
+    assert "workday" in set_blocked_mock.call_args[0][2].lower()
 
 
 def test_run_preview_blocks_aggregator_links(mocker):
@@ -51,12 +63,13 @@ def test_run_preview_blocks_aggregator_links(mocker):
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="aggregator")
     launch_mock = mocker.patch("apply_agent._launch_page")
-    set_blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
+    set_blocked_mock = mocker.patch("apply_agent.db.set_automation_status")
 
     apply_agent.run_preview()
 
     launch_mock.assert_not_called()
     set_blocked_mock.assert_called_once()
+    assert set_blocked_mock.call_args[0][1] == "unsupported"
 
 
 def test_run_preview_routes_generic_to_browser_use(mocker):
@@ -70,7 +83,7 @@ def test_run_preview_routes_generic_to_browser_use(mocker):
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
-    mocker.patch("apply_agent.db.set_apply_preview")
+    mocker.patch("apply_agent.db.release_application")
 
     apply_agent.run_preview()
 
@@ -105,12 +118,16 @@ def test_run_preview_isolates_one_row_failure_from_the_rest(mocker):
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
-    set_preview_mock = mocker.patch("apply_agent.db.set_apply_preview")
+    set_preview_mock = mocker.patch("apply_agent.db.release_application")
 
     apply_agent.run_preview()  # must not raise
 
-    set_preview_mock.assert_called_once()
-    assert set_preview_mock.call_args[0][0] == 2
+    # row 1 failed (released failed_retryable); row 2 reached ready_for_review
+    ready = [c for c in set_preview_mock.call_args_list if c[0][2] == "ready_for_review"]
+    assert len(ready) == 1
+    assert ready[0][0][0] == 2
+    failed = [c for c in set_preview_mock.call_args_list if c[0][2] == "failed_retryable"]
+    assert [c[0][0] for c in failed] == [1]
 
 
 def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
@@ -126,8 +143,8 @@ def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
-    mocker.patch("apply_agent.db.set_apply_preview")
-    mocker.patch("apply_agent.db.set_apply_blocked")
+    mocker.patch("apply_agent.db.release_application")
+    mocker.patch("apply_agent.db.set_automation_status")
 
     with caplog.at_level("INFO"):
         apply_agent.run_preview()
@@ -398,7 +415,7 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
         "applicant_eligibility": '{"work_authorized_us": "Yes"}'
     })
     fill_eligibility_mock = mocker.patch("apply_agent._fill_eligibility_answers")
-    set_preview_mock = mocker.patch("apply_agent.db.set_apply_preview")
+    set_preview_mock = mocker.patch("apply_agent.db.release_application")
 
     apply_agent._process_one_preview(
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x"}
@@ -406,7 +423,8 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
 
     fill_screening_mock.assert_called_once_with(page, generated)
     fill_eligibility_mock.assert_called_once_with(page, {"work_authorized_us": "Yes"})
-    preview_arg = set_preview_mock.call_args[0][1]
+    assert set_preview_mock.call_args[0][2] == "ready_for_review"
+    preview_arg = set_preview_mock.call_args[0][3]["apply_preview"]
     assert preview_arg["screening_answers"] == generated
     assert preview_arg["eligibility_answers"] == {"work_authorized_us": "Yes"}
 
@@ -446,15 +464,14 @@ def test_run_preview_blocks_the_row_when_the_generic_browser_use_fill_fails(mock
     mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
     mocker.patch("apply_agent._launch_page", return_value=MagicMock())
     mocker.patch("apply_agent._browser_use_agent_run", side_effect=RuntimeError("browser-use did not complete"))
-    set_preview_mock = mocker.patch("apply_agent.db.set_apply_preview")
-    set_blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
+    release_mock = mocker.patch("apply_agent.db.release_application")
 
     apply_agent.run_preview()  # must not raise -- run_preview's own per-row isolation catches it
 
-    set_preview_mock.assert_not_called()
-    set_blocked_mock.assert_called_once()
-    assert set_blocked_mock.call_args[0][0] == 1
-    assert "browser-use did not complete" in set_blocked_mock.call_args[0][1]
+    release_mock.assert_called_once()
+    assert release_mock.call_args[0][0] == 1
+    assert release_mock.call_args[0][2] == "failed_retryable"
+    assert "browser-use did not complete" in release_mock.call_args[0][3]["apply_blocked_reason"]
 
 
 # Merge review 2026-09-28, finding 2: verified against the real installed browser-use==0.1.40
@@ -547,6 +564,7 @@ def test_submit_does_not_click_submit_when_not_armed(mocker):
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
         "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
         "approved_at": "2026-09-20T00:00:00Z",
+        "automation_status": "submitting", "preview_revision_hash": "h1", "approved_revision_hash": "h1",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -568,6 +586,7 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
         "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
         "approved_at": "2026-09-20T00:00:00Z",
+        "automation_status": "submitting", "preview_revision_hash": "h1", "approved_revision_hash": "h1",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -578,13 +597,13 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
     fake_date = mocker.patch("apply_agent.date")
     fake_date.today.return_value.isoformat.return_value = "2026-09-24"
     record_submission_mock = mocker.patch("apply_agent.db.record_submission")
-    mocker.patch("apply_agent.db.set_apply_preview")
+    mocker.patch("apply_agent.db.release_application")
 
     apply_agent.submit(1)
 
     page.get_by_role.assert_called_with("button", name=apply_agent._SUBMIT_BUTTON_NAME)
     page.get_by_role.return_value.click.assert_called_once()
-    record_submission_mock.assert_called_once_with(1, "greenhouse", "2026-09-24")
+    record_submission_mock.assert_called_once_with(1, "greenhouse", "2026-09-24", lease_id="lease-1")
 
 
 def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(mocker):
@@ -598,6 +617,7 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
         "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf",
         "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
         "approved_at": "2026-09-20T00:00:00Z",
+        "automation_status": "submitting", "preview_revision_hash": "h1", "approved_revision_hash": "h1",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -606,7 +626,7 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent._submission_confirmed", return_value=False)
     record_submission_mock = mocker.patch("apply_agent.db.record_submission")
-    blocked_mock = mocker.patch("apply_agent.db.set_apply_blocked")
+    blocked_mock = mocker.patch("apply_agent.db.release_application")
 
     with pytest.raises(RuntimeError, match="no confirmation"):
         apply_agent.submit(1)
@@ -618,7 +638,8 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
     # path to recover (ApplicationsPage.tsx's Try again button depends on this field).
     blocked_mock.assert_called_once()
     assert blocked_mock.call_args[0][0] == 1
-    assert "no confirmation" in blocked_mock.call_args[0][1]
+    assert blocked_mock.call_args[0][2] == "needs_confirmation"
+    assert "no confirmation" in blocked_mock.call_args[0][3]["apply_blocked_reason"]
 
 
 def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_regenerated(mocker):
@@ -638,6 +659,7 @@ def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_rege
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
         "stage": "ready_to_submit", "apply_preview": stored_preview,
         "approved_at": "2026-09-20T00:00:00Z",
+        "automation_status": "submitting", "preview_revision_hash": "h1", "approved_revision_hash": "h1",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
@@ -666,6 +688,7 @@ def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
             "resume_file_ref": "r.pdf", "cover_letter_file_ref": "cl.pdf",
             "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse"},
             "approved_at": "2026-09-20T00:00:00Z",
+            "automation_status": "submitting", "preview_revision_hash": "h1", "approved_revision_hash": "h1",
         })
         mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
         page = MagicMock()
@@ -693,6 +716,7 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
         "id": 1, "company": "Acme", "role": "PM", "job_url": "https://example.com/job/1",
         "stage": "ready_to_submit", "apply_preview": {"platform": platform},
         "approved_at": "2026-09-20T00:00:00Z",
+        "automation_status": "submitting", "preview_revision_hash": "h1", "approved_revision_hash": "h1",
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value=platform)
     launch_mock = mocker.patch("apply_agent._launch_page")
@@ -810,3 +834,149 @@ def test_launch_page_records_a_cdp_debugging_port_for_the_page(mocker):
     assert launch_kwargs["args"] == ["--remote-debugging-port=54321"]
     assert apply_agent._CDP_PORTS[id(fake_page)] == 54321
     apply_agent._close_page(fake_page)
+
+
+# ── Leases, revision-bound approval, and the clicked boundary ──────────────────
+
+@pytest.fixture
+def approved_job():
+    return {"id": 9, "company": "Acme", "job_url": "https://boards.greenhouse.io/acme/jobs/1",
+            "stage": "ready_to_submit", "apply_preview": {"platform": "greenhouse",
+            "field_values": {}, "screening_answers": {}, "eligibility_answers": {}},
+            "approved_at": "2026-10-01T00:00:00Z", "automation_status": "submitting",
+            "preview_revision_hash": "h1", "approved_revision_hash": "h1",
+            "resume_file_ref": "r", "cover_letter_file_ref": "c"}
+
+
+def _arm_submit(mocker, job, confirmed=True, click_raises=None):
+    mocker.patch.dict("os.environ", {"APPLY_AGENT_ARMED": "1"})
+    mocker.patch.object(apply_agent.db, "recover_stale_leases", return_value=0)
+    mocker.patch.object(apply_agent.db, "get_job_application", return_value=job)
+    mocker.patch.object(apply_agent.db, "claim_application", return_value="lease-1")
+    release = mocker.patch.object(apply_agent.db, "release_application")
+    record = mocker.patch.object(apply_agent.db, "record_submission")
+    page = MagicMock()
+    if click_raises:
+        page.get_by_role.return_value.click.side_effect = click_raises
+    mocker.patch.object(apply_agent, "_launch_page", return_value=page)
+    mocker.patch.object(apply_agent, "_close_page")
+    mocker.patch.object(apply_agent.ats_fillers, "fill_greenhouse")
+    mocker.patch.object(apply_agent, "_attach_resume_and_cover_letter")
+    mocker.patch.object(apply_agent, "_fill_screening_questions")
+    mocker.patch.object(apply_agent, "_fill_eligibility_answers")
+    mocker.patch.object(apply_agent, "_submission_confirmed", return_value=confirmed)
+    return page, release, record
+
+
+def test_submit_happy_path_records_with_lease(mocker, approved_job):
+    page, release, record = _arm_submit(mocker, approved_job)
+    apply_agent.submit(9)
+    record.assert_called_once()
+    assert record.call_args.kwargs.get("lease_id") == "lease-1"
+    release.assert_not_called()
+
+
+@pytest.mark.parametrize("confirmed,click_raises", [
+    (False, None),                              # clicked, no confirmation on page
+    (True, RuntimeError("navigation crashed")), # exception raised by .click() itself
+])
+def test_any_failure_from_the_click_onward_is_needs_confirmation(mocker, approved_job, confirmed, click_raises):
+    _, release, _ = _arm_submit(mocker, approved_job, confirmed=confirmed, click_raises=click_raises)
+    with pytest.raises(Exception):
+        apply_agent.submit(9)
+    assert release.call_args[0][2] == "needs_confirmation"
+
+
+def test_record_submission_failure_after_confirmed_click_is_needs_confirmation(mocker, approved_job):
+    _, release, record = _arm_submit(mocker, approved_job)
+    record.side_effect = RuntimeError("supabase down")
+    with pytest.raises(RuntimeError):
+        apply_agent.submit(9)
+    assert release.call_args[0][2] == "needs_confirmation"
+
+
+def test_record_submission_returning_none_logs_stale_lease_warning_without_raising(mocker, approved_job, caplog):
+    _, release, record = _arm_submit(mocker, approved_job)
+    record.return_value = None
+    with caplog.at_level("WARNING"):
+        apply_agent.submit(9)
+    assert any("needs_confirmation by lease recovery" in r.message for r in caplog.records)
+    release.assert_not_called()
+
+
+def test_failure_before_click_is_failed_retryable(mocker, approved_job):
+    _, release, _ = _arm_submit(mocker, approved_job)
+    apply_agent.ats_fillers.fill_greenhouse.side_effect = RuntimeError("selector missing")
+    with pytest.raises(RuntimeError):
+        apply_agent.submit(9)
+    assert release.call_args[0][2] == "failed_retryable"
+
+
+def test_release_failure_does_not_mask_the_original_exception(mocker, approved_job):
+    _, release, _ = _arm_submit(mocker, approved_job, click_raises=RuntimeError("original"))
+    release.side_effect = RuntimeError("release also failed")
+    with pytest.raises(RuntimeError, match="original"):
+        apply_agent.submit(9)
+
+
+def test_unarmed_submit_releases_back_to_approved_without_clicking(mocker, approved_job):
+    page, release, record = _arm_submit(mocker, approved_job)
+    mocker.patch.dict("os.environ", {"APPLY_AGENT_ARMED": ""})
+    apply_agent.submit(9)
+    page.get_by_role.return_value.click.assert_not_called()
+    assert release.call_args[0][2] == "approved"
+    record.assert_not_called()
+
+
+def test_unclaimable_row_raises_and_never_launches_browser(mocker, approved_job):
+    _arm_submit(mocker, approved_job)
+    apply_agent.db.claim_application.return_value = None
+    with pytest.raises(ValueError):
+        apply_agent.submit(9)
+    apply_agent._launch_page.assert_not_called()
+    apply_agent.db.release_application.assert_not_called()
+
+
+@pytest.mark.parametrize("override", [
+    {"approved_revision_hash": "stale"},       # preview edited after approval
+    {"approved_revision_hash": None},
+    {"automation_status": "approved"},         # re-read shows we don't actually hold it
+    {"approved_at": None},
+    {"apply_preview": None},
+    {"stage": "saved"},
+])
+def test_gate_on_reread_row_blocks_before_browser(mocker, approved_job, override):
+    _, release, _ = _arm_submit(mocker, {**approved_job, **override})
+    with pytest.raises(ValueError):
+        apply_agent.submit(9)
+    apply_agent._launch_page.assert_not_called()
+    assert release.call_args[0][2] == "failed_retryable"
+
+
+def test_preview_skips_rows_another_worker_claimed(mocker):
+    job = {"id": 3, "job_url": "https://boards.greenhouse.io/x/jobs/1", "automation_status": "idle",
+           "resume_file_ref": "r", "cover_letter_file_ref": "c", "stage": "saved"}
+    mocker.patch.object(apply_agent.db, "claim_application", return_value=None)
+    launch = mocker.patch.object(apply_agent, "_launch_page")
+    assert apply_agent._process_one_preview(job) == "skipped"
+    launch.assert_not_called()
+
+
+def test_preview_marks_workday_unsupported_without_claiming(mocker):
+    job = {"id": 3, "job_url": "https://acme.wd5.myworkdayjobs.com/x", "stage": "saved"}
+    status = mocker.patch.object(apply_agent.db, "set_automation_status")
+    claim = mocker.patch.object(apply_agent.db, "claim_application")
+    assert apply_agent._process_one_preview(job) == "blocked"
+    assert status.call_args[0][1] == "unsupported"
+    claim.assert_not_called()
+
+
+def test_run_preview_ignores_rows_not_in_eligible_statuses(mocker):
+    rows = [{"id": i, "stage": "saved", "resume_file_ref": "r", "cover_letter_file_ref": "c",
+             "automation_status": s} for i, s in enumerate(
+             ["idle", "failed_retryable", "unsupported", "ready_for_review", "preparing"])]
+    mocker.patch.object(apply_agent.db, "recover_stale_leases", return_value=0)
+    mocker.patch.object(apply_agent.db, "get_job_applications", return_value=rows)
+    proc = mocker.patch.object(apply_agent, "_process_one_preview", return_value="filled")
+    apply_agent.run_preview()
+    assert [c.args[0]["id"] for c in proc.call_args_list] == [0, 1]
