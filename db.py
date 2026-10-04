@@ -704,6 +704,21 @@ def mark_unsupported(application_id, reason):
         "p_id": application_id, "p_reason": reason})))
 
 
+def get_applications_needing_confirmation():
+    """Unleased rows whose Submit click may have landed but was never confirmed on the page."""
+    result = _retry(lambda: get_client().table("job_applications")
+                    .select("id,company,role,apply_blocked_reason,submit_attempted_at,approved_at,updated_at,apply_preview")
+                    .eq("automation_status", "needs_confirmation")
+                    .is_("worker_lease_id", "null").execute())
+    return result.data or []
+
+
+def record_receipt_evidence(application_id, evidence):
+    """needs_confirmation -> submitted on Gmail receipt evidence. The RPC refuses any other source state."""
+    return bool(_retry(lambda: _rpc("record_receipt_evidence", {
+        "p_id": application_id, "p_evidence": evidence})))
+
+
 def recover_stale_leases(stale_after_seconds):
     """Release leases whose heartbeat is stale. The RPC decides the target: a stale 'submitting'
     lease past the click boundary becomes needs_confirmation, never retryable."""

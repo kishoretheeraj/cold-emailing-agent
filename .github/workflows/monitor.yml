@@ -36,6 +36,8 @@ jobs:
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
           GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+          RECEIPT_IMAP_ADDRESS: ${{ secrets.RECEIPT_IMAP_ADDRESS }}
+          RECEIPT_IMAP_APP_PASSWORD: ${{ secrets.RECEIPT_IMAP_APP_PASSWORD }}
 
       - name: Upload log artifact
         if: always()

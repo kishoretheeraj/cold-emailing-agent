@@ -661,3 +661,12 @@ CU_LINKEDIN_SCREENSHOT_HISTORY = 3
 # comparable open-source computer-use implementations.
 CU_LINKEDIN_MOUSE_STEPS = 4
 CU_LINKEDIN_MAX_WAIT_SECONDS = 300
+
+
+# ── Application receipt mailbox (submission reconciler) ────────────────────────
+
+# Optional, like JOBRIGHT_*. This is the mailbox application forms are filled with, which is NOT
+# GMAIL_ADDRESS (the outreach mailbox). Unset means submission_reconciler.run() logs a SKIP and
+# does nothing -- no IMAP, no escalation.
+RECEIPT_IMAP_ADDRESS = os.environ.get("RECEIPT_IMAP_ADDRESS")
+RECEIPT_IMAP_APP_PASSWORD = os.environ.get("RECEIPT_IMAP_APP_PASSWORD")

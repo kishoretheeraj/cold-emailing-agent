@@ -560,3 +560,89 @@ def _plain_text_from_message(msg):
     if payload:
         return payload.decode(errors="replace").strip()
     return ""
+
+
+# ── Receipt mailbox scan (submission reconciler) ───────────────────────────────
+
+_RECEIPT_HEADER_FIELDS = "FROM SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES"
+_RECEIPT_BODY_CHARS = 4000
+
+
+def _fetch_raw(imap, num, spec):
+    status, data = imap.fetch(num, spec)
+    if status != "OK" or not data:
+        return None
+    for part in data:
+        if isinstance(part, tuple) and isinstance(part[1], bytes):
+            return part[1]
+    return None
+
+
+def _receipt_body_text(raw):
+    import email as email_mod
+    import email.policy
+    msg = email_mod.message_from_bytes(raw, policy=email.policy.default)
+    part = msg.get_body(preferencelist=("plain", "html"))
+    if part is None:
+        return ""
+    text = part.get_content()
+    if part.get_content_type() == "text/html":
+        text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    return re.sub(r"\s+", " ", text).strip()[:_RECEIPT_BODY_CHARS]
+
+
+def fetch_inbox_since(since_date, address, password, want_body=None):
+    """
+    Scan "[Gmail]/All Mail" of the receipt mailbox (not GMAIL_ADDRESS) since `since_date`,
+    excluding mail from the mailbox's own address. Read-only, BODY.PEEK throughout so nothing is
+    marked read. Returns [{num, message_id, from, subject, date (aware UTC), is_reply[, body]}];
+    a message with an unparseable date is skipped. `want_body(msg)` gates the body fetch.
+    Raises on connection/search failure -- the caller (the reconciler) owns the degrade.
+    """
+    import email as email_mod
+    import email.policy
+    from datetime import timezone
+    from email.utils import parsedate_to_datetime
+
+    imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
+    try:
+        imap.login(address, password)
+        imap.select('"[Gmail]/All Mail"', readonly=True)
+        status, data = imap.search(
+            None, "SINCE", since_date.strftime("%d-%b-%Y"), "NOT", "FROM", f'"{address}"')
+        if status != "OK" or not data or not data[0]:
+            return []
+        out = []
+        for num in data[0].split():
+            raw = _fetch_raw(imap, num, f"(BODY.PEEK[HEADER.FIELDS ({_RECEIPT_HEADER_FIELDS})])")
+            if raw is None:
+                continue
+            hdr = email_mod.message_from_bytes(raw, policy=email.policy.default)
+            try:
+                when = parsedate_to_datetime(str(hdr.get("Date", "")))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+                when = when.astimezone(timezone.utc)
+            except Exception:
+                continue
+            subject = str(hdr.get("Subject", "") or "")
+            msg = {
+                "num": num,
+                "message_id": str(hdr.get("Message-ID", "") or "").strip(),
+                "from": str(hdr.get("From", "") or ""),
+                "subject": subject,
+                "date": when,
+                "is_reply": bool(hdr.get("In-Reply-To") or hdr.get("References")
+                                 or subject.strip().lower().startswith("re:")),
+            }
+            if want_body is not None and want_body(msg):
+                body_raw = _fetch_raw(imap, num, "(BODY.PEEK[])")
+                if body_raw is not None:
+                    msg["body"] = _receipt_body_text(body_raw)
+            out.append(msg)
+        return out
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass

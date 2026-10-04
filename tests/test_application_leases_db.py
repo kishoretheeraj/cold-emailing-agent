@@ -165,3 +165,20 @@ def test_lifecycle_wrappers_never_write_the_table_directly(fake_client):
     db.recover_stale_leases(1800)
     fake_client.table.return_value.update.assert_not_called()
     assert not hasattr(db, "set_automation_status")
+
+
+def test_record_receipt_evidence_calls_rpc(fake_client):
+    _rpc_returns(fake_client, True)
+    ev = {"source": "gmail_receipt", "message_id": "<m@x>"}
+    assert db.record_receipt_evidence(7, ev) is True
+    fake_client.rpc.assert_called_once_with("record_receipt_evidence", {"p_id": 7, "p_evidence": ev})
+
+
+def test_get_applications_needing_confirmation_filters_unleased_rows(fake_client):
+    q = fake_client.table.return_value.select.return_value.eq.return_value.is_.return_value
+    q.execute.return_value.data = [{"id": 1}]
+    assert db.get_applications_needing_confirmation() == [{"id": 1}]
+    fake_client.table.return_value.select.return_value.eq.assert_called_once_with(
+        "automation_status", "needs_confirmation")
+    fake_client.table.return_value.select.return_value.eq.return_value.is_.assert_called_once_with(
+        "worker_lease_id", "null")
