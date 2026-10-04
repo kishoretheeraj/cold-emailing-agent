@@ -900,13 +900,13 @@ Behavior:
 
 ### Task 7: Deploy and live verification (controller, not a subagent)
 
-- [ ] **Step 1:** Run the full suites: pytest, vitest, tsc, and the applications e2e spec.
-- [ ] **Step 2:** Push the branch and open a PR. Run a whole-branch review and fix any findings.
-- [ ] **Step 3:** Merge. Then, from the main checkout, run `supabase db push` and the Vercel prod deploy back to back.
-- [ ] **Step 4: Live SQL verification** (`supabase db query`), all inside `BEGIN; ... ROLLBACK;`:
+- [ ] **Step 1:** Run the full suites: pytest, vitest, tsc, and the applications e2e spec. <!-- blocked: needs user merge of PR #11 -->
+- [ ] **Step 2:** Push the branch and open a PR. Run a whole-branch review and fix any findings. <!-- blocked: needs user merge of PR #11 -->
+- [ ] **Step 3:** Merge. Then, from the main checkout, run `supabase db push` and the Vercel prod deploy back to back. <!-- blocked: needs user merge of PR #11 -->
+- [ ] **Step 4: Live SQL verification** (`supabase db query`), all inside `BEGIN; ... ROLLBACK;`: <!-- blocked: needs user merge of PR #11 -->
   - `SELECT oid::regprocedure FROM pg_proc WHERE proname IN ('approve_application','reset_approval','resolve_confirmation');` should return exactly one row each, with `approve_application(bigint,text)`.
   - `SELECT c, has_column_privilege('anon','job_applications',c,'UPDATE') FROM unnest(ARRAY['automation_status','worker_lease_id','worker_heartbeat_at','preview_revision_hash','approved_revision_hash','approved_at']) c;` should give true, true, true, false, false, false.
   - `SET LOCAL ROLE anon; UPDATE job_applications SET approved_revision_hash='x' WHERE id=<the ready row>;` should fail with permission denied.
   - `SET LOCAL ROLE anon; UPDATE job_applications SET apply_preview = apply_preview || '{"_probe":1}' WHERE id=<ready row> RETURNING preview_revision_hash;` should return a hash different from the pre-update value.
   - `SELECT automation_status, count(*) FROM job_applications GROUP BY 1;` should show 442 idle and 1 ready_for_review.
-- [ ] **Step 5:** In the browser, open `/applications` on the prod deployment. Confirm the ready row shows the "Ready for review" badge and an "Approve & Submit" button. **Do not click Approve.** That would dispatch a real submission.
+- [ ] **Step 5:** In the browser, open `/applications` on the prod deployment. Confirm the ready row shows the "Ready for review" badge and an "Approve & Submit" button. **Do not click Approve.** That would dispatch a real submission. <!-- blocked: needs user merge of PR #11 -->

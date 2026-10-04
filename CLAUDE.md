@@ -496,7 +496,7 @@ which workflows consequently pay for it.
 `ANTHROPIC_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `SUPABASE_URL`,
 `SUPABASE_ANON_KEY`, plus (`daily_agent.yml` only) `TAVILY_API_KEY`,
 `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
-`monitor.yml` does **not** receive `TAVILY_API_KEY` — monitor never imports
+`monitor.yml` additionally receives the soft-optional `RECEIPT_IMAP_ADDRESS`/`RECEIPT_IMAP_APP_PASSWORD` (Gmail-receipt reconciler). It does **not** receive `TAVILY_API_KEY` — monitor never imports
 `research`. Any new script that imports `db.py` needs at minimum
 `SUPABASE_URL`/`SUPABASE_ANON_KEY` plus the other three core secrets, since
 `config.py` reads all five via hard `os.environ[...]` lookups at import time
@@ -1192,7 +1192,7 @@ not only free text. **`applicant_eligibility`'s stored JSON shape is unchanged**
 `{internal_key: value}`, edited live via the contact-manager's Prompts page) -- only how those
 keys get translated to page labels changed, so no live-data migration was needed.
 
-**Fixed since (Beelink M2 final review, 2026-09-28)**: `db.record_submission(job_id, platform,
+**Fixed since (Beelink M2 final review, 2026-09-28)** (historical -- as of 2026-10-04 both writes below are lease-bound RPCs: `db.record_submission(job_id, lease, platform, applied_date)` and `db.release_application(job_id, lease, to_status, reason)`; see "Execution lifecycle"): `db.record_submission(job_id, platform,
 applied_date)` now writes `stage='applied'`, `source_channel`, and `applied_date` atomically in
 one update on a successful submit -- this closes what used to be a known follow-up here
 (`source_channel`/`applied_date` not written on a successful submit). Also new: any exception
@@ -1317,8 +1317,10 @@ authorization: `renew_submission_lease` stamps `submit_attempted_at` right befor
 turn a possibly-submitted row back into a retryable one. `recover_stale_leases` floors its cutoff at 1800s in SQL
 (an anon call with 0 cannot steal live leases) and maps `submitting` without `submit_attempted_at` (no click
 happened) to `failed_retryable`. `documents_version`/`apply_preview`/`stage`/`apply_blocked_reason` stay
-anon-writable (changes only invalidate approval via the trigger-owned hash). Functional checks:
-`supabase/tests/lifecycle_rpcs_dryrun.sql` (run inside BEGIN/ROLLBACK against the linked DB, migration prepended).
+anon-writable (changes only invalidate approval via the trigger-owned hash). Email signup is open on this project (anyone can mint an
+`authenticated` JWT), so migration `20261004000001` makes `authenticated`'s job_applications privileges exactly
+anon's -- before it, authenticated could write `approved_revision_hash` and re-forge an approval. Functional checks:
+`supabase/tests/lifecycle_rpcs_dryrun.sql`, `supabase/tests/authenticated_mirrors_anon_dryrun.sql` (run inside BEGIN/ROLLBACK against the linked DB, migration prepended).
 
 **Form-drift check**: `apply_agent._form_signature(page)` = sha256 over the sorted, normalized identifiers
 (`name` > `aria-label` > label text > placeholder, never `id` -- framework ids change per load; captcha fields

@@ -121,3 +121,10 @@ def test_receipt_evidence_requires_message_id():
 
 def test_record_submission_writes_page_confirmation_evidence():
     assert "'page_confirmation'" in _body("record_submission")
+
+
+def test_authenticated_mirrors_anon_on_job_applications():
+    sql = (Path(__file__).resolve().parent.parent / "supabase" / "migrations" / "20261004000001_authenticated_mirrors_anon_on_job_applications.sql").read_text()
+    # Signup is open, so authenticated must never hold more than anon (approval-hash forgery).
+    assert "REVOKE ALL ON job_applications FROM authenticated" in sql
+    assert "grantee = 'anon'" in sql and "TO authenticated" in sql
