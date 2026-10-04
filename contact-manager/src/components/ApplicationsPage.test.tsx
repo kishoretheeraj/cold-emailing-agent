@@ -1062,3 +1062,59 @@ describe("ApplicationsPage -- automation_status gating (needs_confirmation, Revi
     vi.useRealTimers();
   });
 });
+
+describe("ApplicationsPage -- needs_input re-prepare and needs_confirmation reason", () => {
+  function stubList(apps: unknown[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/system-health")) {
+          return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+        }
+        if (!opts || opts.method === undefined) {
+          return Promise.resolve({ ok: true, json: async () => ({ applications: apps }) } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      })
+    );
+  }
+
+  it("a needs_input row shows its reason and a Re-prepare button that POSTs requeue-preview", async () => {
+    stubList([{ ...readyApplication, id: "31", company: "Drift Co", automation_status: "needs_input", apply_blocked_reason: "form changed since you reviewed it" }]);
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Drift Co");
+    const row = screen.getByText("Drift Co").closest("tr") as HTMLElement;
+    expect(within(row).getAllByText(/form changed since you reviewed it/i).length).toBeGreaterThan(0);
+    expect(within(row).queryByRole("button", { name: /approve & submit/i })).not.toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: /re-prepare/i }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/applications/31/requeue-preview",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    await waitFor(() => {
+      const listCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([u, o]) => typeof u === "string" && u.startsWith("/api/applications") && !(o as RequestInit | undefined)?.method
+      );
+      expect(listCalls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("a needs_input row with no reason falls back to 'Needs your input'", async () => {
+    stubList([{ ...readyApplication, id: "32", company: "Blank Co", automation_status: "needs_input", apply_blocked_reason: null }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Blank Co");
+    const row = screen.getByText("Blank Co").closest("tr") as HTMLElement;
+    expect(within(row).getAllByText(/needs your input/i).length).toBeGreaterThan(0);
+  });
+
+  it("a needs_confirmation row shows the reconciler's reason above the buttons", async () => {
+    stubList([{ ...readyApplication, id: "33", company: "Recon Co", automation_status: "needs_confirmation", apply_blocked_reason: "No receipt email found after 24h" }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Recon Co");
+    const row = screen.getByText("Recon Co").closest("tr") as HTMLElement;
+    expect(within(row).getAllByText(/no receipt email found/i).length).toBeGreaterThan(0);
+  });
+});

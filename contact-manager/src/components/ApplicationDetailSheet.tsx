@@ -54,6 +54,11 @@ function snapshotValue(
   return null;
 }
 
+const EVIDENCE_SOURCE_LABELS: Record<string, string> = {
+  gmail_receipt: "Confirmation email",
+  page_confirmation: "Confirmation page",
+};
+
 function AnswerEditor({
   title,
   answers,
@@ -254,6 +259,42 @@ export function ApplicationDetailSheet({
                     })}
                   </div>
                 </section>
+
+                {application.submission_evidence && (
+                  <section>
+                    <h3 className="text-sm font-medium text-fg mb-2">Submission evidence</h3>
+                    <div className="flex flex-col gap-1 text-sm text-fg-muted">
+                      <p>
+                        {EVIDENCE_SOURCE_LABELS[application.submission_evidence.source] ??
+                          application.submission_evidence.source}
+                      </p>
+                      {application.submission_evidence.subject && (
+                        <p>
+                          <span className="text-fg-dim">Subject:</span>{" "}
+                          {application.submission_evidence.subject}
+                        </p>
+                      )}
+                      {application.submission_evidence.from && (
+                        <p>
+                          <span className="text-fg-dim">From:</span>{" "}
+                          {application.submission_evidence.from}
+                        </p>
+                      )}
+                      {(application.submission_evidence.date || application.submission_evidence.at) && (
+                        <p>
+                          <span className="text-fg-dim">Date:</span>{" "}
+                          {application.submission_evidence.date ?? application.submission_evidence.at}
+                        </p>
+                      )}
+                      {application.submission_evidence.message_id && (
+                        <p className="break-all">
+                          <span className="text-fg-dim">Message id:</span>{" "}
+                          {application.submission_evidence.message_id}
+                        </p>
+                      )}
+                    </div>
+                  </section>
+                )}
 
                 <section>
                   <h3 className="text-sm font-medium text-fg mb-2">Resume</h3>

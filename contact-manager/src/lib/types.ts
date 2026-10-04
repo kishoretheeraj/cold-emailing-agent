@@ -314,6 +314,15 @@ export type JobApplicationApplyPreview = {
   screening_answers: Record<string, string>;
 };
 
+export type SubmissionEvidence = {
+  source: string;
+  message_id?: string;
+  from?: string;
+  subject?: string;
+  date?: string;
+  at?: string;
+};
+
 export type JobApplication = {
   id: string;
   contact_id: string | null;
@@ -340,6 +349,9 @@ export type JobApplication = {
   automation_status: AutomationStatus;
   preview_revision_hash: string | null;
   approved_revision_hash: string | null;
+  form_signature?: string | null;
+  submit_attempted_at?: string | null;
+  submission_evidence?: SubmissionEvidence | null;
   created_at: string;
   updated_at: string;
 };
