@@ -339,8 +339,8 @@ def _browser_use_agent_run(task_description, page):
     # Merge review 2026-09-28, finding 2: browser-use agents don't raise on a failed task -- they
     # just stop and report failure via the returned history. Silently treating that the same as
     # success is exactly how a row could reach ready_to_submit with an unfilled form. Raise so
-    # the caller's existing failure-handling (set_apply_blocked in run_preview()/submit()) does
-    # its job instead of this being swallowed one level down.
+    # the caller's existing failure-handling (release_application to failed_retryable in the
+    # preview pass, failed_retryable/needs_confirmation in submit()) does its job instead of this being swallowed one level down.
     if not history.is_successful() or history.has_errors():
         raise RuntimeError(f"browser-use did not complete the task: {history.errors()}")
     return history
@@ -352,9 +352,9 @@ def _fill_generic_via_browser_use(page, job, field_values):
     # proceeded to mark the row ready_to_submit even when the generic fill produced an empty
     # form. Building the task string can still fail on a genuinely missing key -- that's a
     # programming error in _standard_field_values, not a best-effort external-service failure --
-    # so it's allowed to raise too. run_preview()'s per-job try/except and submit()'s own
-    # exception handler already call db.set_apply_blocked on any exception from this function;
-    # letting the failure propagate is what makes that existing safety net actually reachable.
+    # so it's allowed to raise too. The preview pass's and submit()'s own
+    # exception handlers already release the lease (failed_retryable / needs_confirmation) on
+    # any exception from this function; letting the failure propagate is what makes that existing safety net actually reachable.
     task = (
         f"Fill in this job application form with: name={field_values['name']}, "
         f"email={field_values['email']}, phone={field_values['phone']}, "
@@ -371,47 +371,76 @@ def _process_one_preview(job):
     platform = ats_platform.classify(job.get("job_url"))
 
     if platform == "workday":
-        db.set_apply_blocked(job_id, "workday -- permanently excluded, see spec's Rejected section")
+        db.set_automation_status(job_id, "unsupported", "workday -- permanently excluded, see spec's Rejected section")
         return "blocked"
     if platform == "aggregator":
-        db.set_apply_blocked(job_id, "aggregator/listing link, not a real application page")
+        db.set_automation_status(job_id, "unsupported", "aggregator/listing link, not a real application page")
         return "blocked"
 
-    page = _launch_page(job.get("job_url"))
+    lease = db.claim_application(
+        job_id, tuple(config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES), "preparing"
+    )
+    if lease is None:
+        log.info(f"[APPLY-PREVIEW] | {job.get('company')} | skipped: row not claimable (another worker holds it)")
+        return "skipped"
+
     try:
-        field_values = _standard_field_values(job)
+        page = _launch_page(job.get("job_url"))
+        try:
+            db.heartbeat_application(job_id, lease)
+            field_values = _standard_field_values(job)
 
-        if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
-            {"greenhouse": ats_fillers.fill_greenhouse,
-             "ashby": ats_fillers.fill_ashby,
-             "lever": ats_fillers.fill_lever}[platform](page, field_values)
-        else:
-            _fill_generic_via_browser_use(page, job, field_values)
+            if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
+                {"greenhouse": ats_fillers.fill_greenhouse,
+                 "ashby": ats_fillers.fill_ashby,
+                 "lever": ats_fillers.fill_lever}[platform](page, field_values)
+            else:
+                _fill_generic_via_browser_use(page, job, field_values)
+            db.heartbeat_application(job_id, lease)
 
-        _attach_resume_and_cover_letter(page, job)
-        screening_answers = _generate_screening_answers(page, job)
-        _fill_screening_questions(page, screening_answers)
-        eligibility_answers = _eligibility_answers()
-        _fill_eligibility_answers(page, eligibility_answers)
+            _attach_resume_and_cover_letter(page, job)
+            db.heartbeat_application(job_id, lease)
+            screening_answers = _generate_screening_answers(page, job)
+            _fill_screening_questions(page, screening_answers)
+            db.heartbeat_application(job_id, lease)
+            eligibility_answers = _eligibility_answers()
+            _fill_eligibility_answers(page, eligibility_answers)
 
-        preview = {
-            "platform": platform,
-            "field_values": field_values,
-            "eligibility_answers": eligibility_answers,
-            "screening_answers": screening_answers,
-        }
-        db.set_apply_preview(job_id, preview)
-        return "filled"
-    finally:
-        _close_page(page)
+            preview = {
+                "platform": platform,
+                "field_values": field_values,
+                "eligibility_answers": eligibility_answers,
+                "screening_answers": screening_answers,
+            }
+            released = db.release_application(
+                job_id, lease, "ready_for_review",
+                {"apply_preview": preview, "stage": "ready_to_submit", "apply_blocked_reason": None},
+            )
+            if released is None:
+                log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded "
+                            f"(row was recovered by lease recovery)")
+                return "lost"
+            return "filled"
+        finally:
+            _close_page(page)
+    except Exception as exc:
+        try:
+            db.release_application(job_id, lease, "failed_retryable",
+                                   {"apply_blocked_reason": f"preview pass error: {exc}"})
+        except Exception:
+            pass
+        raise
 
 
 def run_preview():
+    db.recover_stale_leases(config.APPLY_AGENT_LEASE_STALE_SECONDS)
     jobs = [j for j in db.get_job_applications(stage="saved")
-            if j.get("resume_file_ref") and j.get("cover_letter_file_ref")]
+            if j.get("resume_file_ref") and j.get("cover_letter_file_ref")
+            and j.get("automation_status", "idle") in config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES]
     log.info(f"[APPLY-PREVIEW] | START | eligible_jobs={len(jobs)}")
     filled = 0
     blocked = 0
+    skipped = 0
     errors = 0
 
     for job in jobs:
@@ -419,17 +448,17 @@ def run_preview():
             status = _process_one_preview(job)
             if status == "blocked":
                 blocked += 1
+            elif status == "skipped":
+                skipped += 1
+            elif status == "lost":
+                errors += 1
             else:
                 filled += 1
         except Exception as exc:
             log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | error: {exc}")
-            try:
-                db.set_apply_blocked(job["id"], f"preview pass error: {exc}")
-            except Exception:
-                pass
             errors += 1
 
-    log.info(f"[APPLY-PREVIEW] | DONE | filled={filled} | blocked={blocked} | errors={errors}")
+    log.info(f"[APPLY-PREVIEW] | DONE | filled={filled} | blocked={blocked} | skipped={skipped} | errors={errors}")
 
 
 # ── Submit pass ────────────────────────────────────────────────────────────────
@@ -449,41 +478,71 @@ def submit(job_id):
     docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md."""
     import os
 
+    db.recover_stale_leases(config.APPLY_AGENT_LEASE_STALE_SECONDS)
+
     job = db.get_job_application(job_id)
     if not job:
         raise ValueError(f"submit() called on a nonexistent job_applications row: id={job_id}")
 
-    # The ARMED gate proves a human tapped *something*; this proves they approved *this row*.
-    # Without it, any id reaching the workflow gets submitted -- a stale id, a mistyped manual
-    # workflow_dispatch, or a row that was never previewed (no eligibility answers, no screening
-    # answers, possibly no resume) would go to a real employer. approved_at (Task 1) closes the
-    # last gap: it can only ever be set via the approve_application RPC, which a human actually
-    # tapping "Approve & Submit" in the UI triggers -- so this is the one condition here that
-    # can't be satisfied by a stale id or a mistyped manual workflow_dispatch alone.
-    if (
-        job.get("stage") != "ready_to_submit"
-        or not job.get("apply_preview")
-        or not job.get("approved_at")
-    ):
+    platform = ats_platform.classify(job.get("job_url"))
+    if platform in ("workday", "aggregator"):
+        reason = f"submit() called on a permanently-excluded platform: {platform}"
+        log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | error: {reason}")
+        try:
+            db.set_automation_status(job_id, "unsupported", reason)
+        except Exception:
+            pass
+        raise ValueError(reason)
+
+    lease = db.claim_application(job_id, ("approved",), "submitting")
+    if lease is None:
         raise ValueError(
-            f"submit() called on an unapproved row: id={job_id} | stage={job.get('stage')} | "
-            f"has_preview={bool(job.get('apply_preview'))} | "
-            f"approved={bool(job.get('approved_at'))}"
+            f"submit() could not claim job_id={job_id}: row is not in automation_status 'approved' "
+            f"or another worker holds it"
         )
 
-    platform = ats_platform.classify(job.get("job_url"))
-    # C1: everything below this line runs only once the row has already cleared the
-    # approval guard above -- i.e. a human really did tap "Approve & Submit" for this row.
-    # Any exception past this point (permanently-excluded platform, an unhandled Playwright
-    # error, a failed post-click confirmation, ...) used to propagate straight to __main__ and
-    # kill the process with apply_blocked_reason never written -- leaving the row stuck
-    # approved forever with no UI path to recover (see ApplicationsPage.tsx's Try again
-    # button, which depends on this field). Mirrors run_preview()/_process_one_preview()'s own
-    # log-then-record pattern, but re-raises instead of swallowing -- submit() is a single-row
-    # armed action, not a batch, so it must still fail loudly.
+    # True from the line before the Submit click onward: the site may have the application, so any
+    # failure after that is needs_confirmation (never auto-retryable), not failed_retryable.
+    clicked = False
+    # C1: everything below runs only once this worker holds the lease. Any exception past this
+    # point releases the row with a status and reason (so ApplicationsPage.tsx can show it) and
+    # re-raises -- submit() is a single-row armed action, not a batch, so it must still fail loudly.
     try:
-        if platform in ("workday", "aggregator"):
-            raise ValueError(f"submit() called on a permanently-excluded platform: {platform}")
+        # Re-read after the claim: the gate must judge the row we now hold, not the pre-claim copy.
+        job = db.get_job_application(job_id)
+        if not job:
+            raise ValueError(f"submit() row vanished after claim: id={job_id}")
+
+        # The ARMED gate proves a human tapped *something*; this proves they approved *this row*.
+        # Without it, any id reaching the workflow gets submitted -- a stale id, a mistyped manual
+        # workflow_dispatch, or a row that was never previewed (no eligibility answers, no screening
+        # answers, possibly no resume) would go to a real employer. approved_at (Task 1) closes the
+        # last gap: it can only ever be set via the approve_application RPC, which a human actually
+        # tapping "Approve & Submit" in the UI triggers -- so this is the one condition here that
+        # can't be satisfied by a stale id or a mistyped manual workflow_dispatch alone.
+        if (
+            job.get("stage") != "ready_to_submit"
+            or not job.get("apply_preview")
+            or not job.get("approved_at")
+        ):
+            raise ValueError(
+                f"submit() called on an unapproved row: id={job_id} | stage={job.get('stage')} | "
+                f"has_preview={bool(job.get('apply_preview'))} | "
+                f"approved={bool(job.get('approved_at'))}"
+            )
+        # Added conditions: we really hold the lease, and the human approved the exact revision
+        # that is about to be submitted (the DB trigger owns preview_revision_hash).
+        if (
+            job.get("automation_status") != "submitting"
+            or not job.get("approved_revision_hash")
+            or job.get("approved_revision_hash") != job.get("preview_revision_hash")
+        ):
+            raise ValueError(
+                f"submit() approval does not match the current preview: id={job_id} | "
+                f"automation_status={job.get('automation_status')} | "
+                f"hash_match={job.get('approved_revision_hash') == job.get('preview_revision_hash')}"
+            )
+
         page = _launch_page(job.get("job_url"))
         try:
             field_values = _standard_field_values(job)
@@ -497,6 +556,7 @@ def submit(job_id):
                 # the ARMED gate below -- restrained only by the task-string instruction not to
                 # click Submit, not a hard guarantee. See the Phase 2.5 review notes.
                 _fill_generic_via_browser_use(page, job, field_values)
+            db.heartbeat_application(job_id, lease)
 
             _attach_resume_and_cover_letter(page, job)
             # Reuse the stored preview's answers verbatim -- never regenerate here. The human
@@ -507,11 +567,21 @@ def submit(job_id):
             preview = job.get("apply_preview") or {}
             _fill_screening_questions(page, preview.get("screening_answers"))
             _fill_eligibility_answers(page, preview.get("eligibility_answers"))
+            db.heartbeat_application(job_id, lease)
 
             if os.environ.get("APPLY_AGENT_ARMED") != "1":
                 log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
+                db.release_application(job_id, lease, "approved")
                 return
 
+            # Filling may take minutes. A lease recovered during that time, or a document
+            # rebuild invalidating the revision, must stop this worker before the external
+            # action. Best-effort progress heartbeats cannot establish that permission.
+            if not db.renew_submission_lease(job_id, lease, job["approved_revision_hash"]):
+                raise RuntimeError("Submit stopped: worker lease or approved revision changed during preparation")
+
+            # from here on the site may have the application -- any failure is needs_confirmation, never retryable.
+            clicked = True
             page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
             # The click succeeding is not proof the application landed -- a client-side validation
             # error commonly leaves the button's own click handler a no-op with the form still on
@@ -522,14 +592,21 @@ def submit(job_id):
                     f"no confirmation on the page afterward -- treating this as a failed submission "
                     f"and leaving the stage unchanged so a human can investigate before any retry."
                 )
-            db.record_submission(job_id, platform, date.today().isoformat())
-            log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
+            recorded = db.record_submission(job_id, platform, date.today().isoformat(), lease_id=lease)
+            if recorded is None:
+                log.warning(
+                    f"[APPLY-SUBMIT] | {job.get('company')} | submission confirmed but our lease was "
+                    f"already recovered as stale -- row was already moved to needs_confirmation by lease recovery"
+                )
+            else:
+                log.info(f"[APPLY-SUBMIT] | {job.get('company')} | submitted")
         finally:
             _close_page(page)
     except Exception as exc:
-        log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | error: {exc}")
+        log.warning(f"[APPLY-SUBMIT] | {job.get('company') if job else job_id} | error: {exc}")
+        to_status = "needs_confirmation" if clicked else "failed_retryable"
         try:
-            db.set_apply_blocked(job_id, str(exc))
+            db.release_application(job_id, lease, to_status, {"apply_blocked_reason": str(exc)})
         except Exception:
             pass
         raise

@@ -86,3 +86,25 @@ def test_monitor_run_paused_agent_only_does_not_stop_monitor(mocker):
     mocker.patch.object(monitor, "record_run")
     monitor.run()
     mock_detect_sent.assert_called_once()
+
+
+def test_monitor_run_recovers_stale_leases_once_and_survives_failure(mocker):
+    import monitor
+    mocker.patch.object(monitor, "get_pause_scope", return_value="none")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
+    rec = mocker.patch.object(monitor, "recover_stale_leases", side_effect=Exception("db down"))
+    detect = mocker.patch("monitor.detect_sent_drafts")
+    mocker.patch("monitor.detect_replies", return_value=[])
+    mocker.patch("monitor._draft_reply_responses")
+    mocker.patch.object(monitor, "record_run")
+    monitor.run()
+    rec.assert_called_once()
+    detect.assert_called_once()
+
+
+def test_monitor_run_paused_all_skips_lease_recovery(mocker):
+    import monitor
+    mocker.patch.object(monitor, "get_pause_scope", return_value="all")
+    rec = mocker.patch.object(monitor, "recover_stale_leases")
+    monitor.run()
+    rec.assert_not_called()

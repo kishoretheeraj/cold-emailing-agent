@@ -559,6 +559,8 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_visa_match_new.py` — parametrized never-raises sweep for the daily matcher, plus per-company failure isolation.
 - `tests/test_ingest_form_d.py` — Form D date/amount parsing, the `YES`/`NO` primary-issuer flag, both pooled-fund exclusion signals, latest-filing-wins aggregation, link discovery across both observed SEC path prefixes, download-and-extract round trips (nested/flat zip layouts, missing-table raises), `match_funding_to_company`'s exact-match-only gating (including the live-discovered token-subset false-positive regression), `fold_issuer`'s alias-group canonicalization, `run()`'s never-creates-a-company_intel-row governance test, per-company error isolation, and a malformed-quarter never-raises sweep.
 - `tests/test_decision_context.py` — `emailer.hash_prompt_set` determinism, key-order independence, `{}`/`None` handling, unserializable values.
+- `tests/test_application_leases_db.py` — `db.py`'s lease accessors (`claim_application`, `heartbeat_application`, `release_application`, `recover_stale_leases`, `record_submission`), including the lost-claim-response re-read and the stale-`submitting` to `needs_confirmation` mapping.
+- `tests/test_automation_status_migration.py` — static assertions over the automation_status migration's SQL text (status CHECK, old-overload drop, anon grants never covering the hash columns or `approved_at`, trigger, RPC guards); there is no live DB in the test suite.
 - `tests/test_engagement_report.py` — the report's `db.py` accessors (following `test_db_draft_history.py`'s mock pattern), the contact join, distinct-contact grouping, NULL-renders-as-"unknown", small-`n` rate suppression, and a malformed-row never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
@@ -1099,7 +1101,7 @@ attribute-patching). `submit()` also hard-blocks Workday/aggregator platforms th
 rather than swallowing it -- there's no batch to protect on a single-row armed submit, and a
 silent failure there would leave the UI showing "ready to submit" when nothing actually happened.
 
-**There are THREE conditions in the row-approval gate, not two, and they answer different
+**There are THREE base conditions in the row-approval gate (plus the automation_status/hash checks added 2026-10-01, see "Execution lifecycle" below), and they answer different
 questions from `APPLY_AGENT_ARMED`.** `APPLY_AGENT_ARMED` proves *a human tapped something*; it
 says nothing about **which** row. The gate at the top of `submit()`, before any browser launch,
 is what proves they approved *this* row -- `approved_at` (M2's Task 1) is the third leg, added
@@ -1126,11 +1128,10 @@ one: the RPC's own guard (`stage`/`apply_preview`/`approved_at IS NULL`, checked
 `approved_at` is ever set), this `submit()` guard (`stage`/`apply_preview`/`approved_at` truthy,
 checked again before any browser launch), and the fact that both must independently hold for a row
 to reach a real Submit click. This is defense in depth, not redundancy -- do not remove or weaken
-either check, and keep this one before `_launch_page`. Note it is *not* double-submit protection:
-if the Submit click lands but the confirmation check or `db.record_submission` write fails, the row
-stays `ready_to_submit` (now with `apply_blocked_reason` set -- see the failed-submit note below)
-and a re-dispatch would file a second real application. Belt-and-braces for that gap lives in the
-follow-up list, not here.
+either check, and keep this one before `_launch_page`. This gate alone is *not* double-submit
+protection; that comes from the 2026-10-01 lifecycle below: a failure after the Submit click lands
+in `needs_confirmation`, which `reset_approval` refuses, so the row cannot be re-approved and
+re-dispatched until a human resolves it via `resolve_confirmation`.
 
 Defense in depth around the same id: `POST /api/applications/[id]/submit` rejects any non-numeric
 id with a 400 before dispatching, and `apply_agent_submit.yml` passes it through `env:` rather than
@@ -1265,6 +1266,46 @@ clears neither, with no partial-failure window and no separate write for the rou
   and `_llm_judge` degrades to `"maybe"` (visible, human-reviewable -- not a silent `"no"`,
   and never an unsupported `"strong"` that would zero-tap real resume spend) instead of judging
   fit with no candidate evidence at all.
+
+**Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
+`20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:
+`idle`, `preparing`, `needs_input`, `ready_for_review`, `approved`, `submitting`, `submitted`,
+`needs_confirmation`, `failed_retryable`, `failed_terminal`, `unsupported` (`config.AUTOMATION_STATUSES`,
+mirrored by the migration's CHECK). `stage` is unrenamed and still dual-written (`ready_to_submit` on
+preview, `applied` on submit); `automation_status` is the gate. `submit()` keeps the three conditions above
+verbatim and now also claims the row under a lease and, on a re-read after the claim, requires
+`automation_status` and `approved_revision_hash == preview_revision_hash`. `preview_revision_hash` is
+written only by a `BEFORE INSERT OR UPDATE` trigger (from `apply_preview` + resume/cover-letter refs), so
+no role can forge it; `approved_revision_hash` is written only by `approve_application(p_id, p_revision_hash)`.
+Neither is anon-granted. Approval is bound to the hash the UI rendered: if the preview changed between
+page render and the tap, the RPC refuses (409), never binding to a revision the human didn't see. The old
+1-arg `approve_application(BIGINT)` is explicitly `DROP`ped (a `CREATE OR REPLACE` with a new arg list makes
+an overload that PostgREST would keep routing to). Leases (`db.claim_application` / `heartbeat_application` /
+`release_application`): the lease UUID is generated locally and the conditional claim UPDATE is **never**
+wrapped in `db._retry` (a retry after a lost response matches zero rows and the worker would think it lost);
+on empty or exception the claim re-reads and compares `worker_lease_id`. `db.recover_stale_leases` frees
+leases older than `config.APPLY_AGENT_LEASE_STALE_SECONDS` (1800) and maps a stale `submitting` to
+`needs_confirmation`, never `failed_retryable`. The `clicked` boundary in `submit()`: any exception from the
+`.click()` call onward (including a failed `record_submission` after a confirmed submit) lands in
+`needs_confirmation`; only pre-click failures go to `failed_retryable`. A `record_submission` that returns
+`None` (lease already recovered as stale) only logs a warning. `submit()` raises on the excluded-platform
+check before claiming (status becomes `unsupported`). `reset_approval` refuses `needs_confirmation`/`submitting`/
+`submitted` (the site may already have the application; a reset would reopen Approve & Submit to a
+duplicate), and `resolve_confirmation(p_id, p_submitted)` (via `POST /api/applications/[id]/resolve-confirmation`)
+is the only human path out of `needs_confirmation`. **Any new `job_applications` column an anon writer needs
+requires an explicit `GRANT UPDATE/INSERT (col)`**: migration `20260925000000` computed its column grant list
+once at run time, so its claim that a new column "needs no manual edit" was wrong (a later-added column has
+no anon privilege). **Whole-branch review fixes (2026-10-01)**: (A) the hash also covers a new
+`documents_version` column (anon-writable: bumping it only invalidates an approval), written as a fresh uuid
+by `db.set_resume_files` on every build, because `--build` re-uploads to fixed storage paths so the file refs
+alone never change on a rebuild. (B) `monitor.run()` calls `db.recover_stale_leases` (best-effort, after the
+pause check) so a wedged `submitting` row is freed between apply runs. (C) `reset_approval` no longer requires
+`approved_at IS NOT NULL`, so a `failed_retryable` row without it is not a dead end (still refuses
+`needs_confirmation`/`submitting`/`submitted`). (E) `submit()`'s excluded-platform branch writes
+`automation_status='unsupported'` (still before the claim). The preview pass treats a `None` from
+`release_application` as a lost lease (`"lost"`, counted as an error). Known limitation:
+automation_status/worker_lease_id/documents_version are anon-writable (every writer shares the public anon key, no RLS by design), so the lifecycle can be forged or wedged by anyone holding that key; it cannot produce an unapproved submission because approved_at/approved_revision_hash stay RPC-only and preview_revision_hash is trigger-owned. Moving lifecycle writes behind SECURITY DEFINER RPCs is a follow-up.
+Plan: docs/superpowers/plans/2026-10-01-automation-status-and-leases.md.
 
 **Known follow-up, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
 detail): a resume/cover-letter attach failure is silently swallowed even in the armed-submit

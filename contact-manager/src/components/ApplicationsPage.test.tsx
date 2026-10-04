@@ -178,6 +178,7 @@ const readyApplication = {
   apply_preview: { platform: "ashby", field_values: { name: "Kishore" }, eligibility_answers: {}, screening_answers: { "Why this role?": "Because of the mission." } },
   apply_blocked_reason: null,
   approved_at: null,
+  automation_status: "ready_for_review", preview_revision_hash: "b".repeat(64), approved_revision_hash: null,
   created_at: "2026-08-30T00:00:00Z", updated_at: "2026-08-30T00:00:00Z",
 };
 
@@ -306,6 +307,7 @@ describe("ApplicationsPage -- Try again from a row's own apply_blocked_reason (C
     id: "6",
     company: "Previously Blocked Co",
     apply_blocked_reason: "submit() clicked Submit but found no confirmation on the page afterward",
+    automation_status: "failed_retryable",
   };
 
   beforeEach(() => {
@@ -442,6 +444,58 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
     );
   });
 
+  it("sends the preview_revision_hash from the rendered row in the approve POST body (Review Focus 5)", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Ashby Co");
+    await user.click(screen.getByRole("button", { name: /approve & submit/i }));
+    const modal = await screen.findByTestId("confirm-content");
+    await user.click(within(modal).getByRole("button", { name: /approve & submit/i }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/applications/5/submit",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision_hash: "b".repeat(64) }),
+        })
+      );
+    });
+  });
+
+  it("refuses to approve a row with no preview_revision_hash and never POSTs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/system-health")) {
+          return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+        }
+        if (!opts || opts.method === undefined) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ applications: [{ ...readyApplication, preview_revision_hash: null }] }),
+          } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      })
+    );
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Ashby Co");
+    await user.click(screen.getByRole("button", { name: /approve & submit/i }));
+    const modal = await screen.findByTestId("confirm-content");
+    await user.click(within(modal).getByRole("button", { name: /approve & submit/i }));
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "This preview has no revision hash yet -- reload and try again"
+      );
+    });
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "/api/applications/5/submit",
+      expect.anything()
+    );
+  });
+
   it("submits only after confirming in the modal", async () => {
     const user = userEvent.setup();
     render(<ApplicationsPage />);
@@ -527,6 +581,7 @@ describe("ApplicationsPage -- confirm modal and status polling (U4/U5)", () => {
               id: "5",
               stage: "ready_to_submit",
               apply_blocked_reason: "confirmation element not found after clicking Submit",
+              automation_status: "failed_retryable",
             },
           }),
         } as Response);
@@ -786,5 +841,224 @@ describe("ApplicationsPage -- system health strip (U13/U14)", () => {
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/system-health");
     });
+  });
+});
+
+describe("ApplicationsPage -- automation_status gating (needs_confirmation, Review Focus 1)", () => {
+  function stubList(apps: unknown[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/system-health")) {
+          return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+        }
+        if (!opts || opts.method === undefined) {
+          return Promise.resolve({ ok: true, json: async () => ({ applications: apps }) } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      })
+    );
+  }
+
+  const needsConfirmation = {
+    ...readyApplication,
+    id: "7",
+    company: "Unsure Inc",
+    automation_status: "needs_confirmation",
+    apply_blocked_reason: "submit() raised after the Submit click",
+  };
+
+  it("a needs_confirmation row shows both resolve buttons and neither Approve & Submit nor Try again", async () => {
+    stubList([needsConfirmation]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Unsure Inc");
+    const row = screen.getByText("Unsure Inc").closest("tr") as HTMLElement;
+    expect(within(row).getByText(/submit may have gone through/i)).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /it went through/i })).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /it didn't go through/i })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /approve & submit/i })).not.toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["It went through", true],
+    ["It didn't go through", false],
+  ])("clicking '%s' POSTs submitted=%s to resolve-confirmation and reloads", async (label, submitted) => {
+    stubList([needsConfirmation]);
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Unsure Inc");
+    await user.click(screen.getByRole("button", { name: label }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/applications/7/resolve-confirmation",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ submitted }),
+        })
+      );
+    });
+    // load() refetches the list after a successful resolution.
+    await waitFor(() => {
+      const listCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([u, o]) => typeof u === "string" && u.startsWith("/api/applications") && !(o as RequestInit | undefined)?.method
+      );
+      expect(listCalls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("shows a toast and does not reload when recording the resolution fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/system-health")) {
+          return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+        }
+        if (!opts || opts.method === undefined) {
+          return Promise.resolve({ ok: true, json: async () => ({ applications: [needsConfirmation] }) } as Response);
+        }
+        return Promise.resolve({ ok: false, json: async () => ({ error: "x" }) } as Response);
+      })
+    );
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Unsure Inc");
+    await user.click(screen.getByRole("button", { name: "It went through" }));
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith("Could not record that -- try again");
+    });
+  });
+
+  it("a failed_retryable row with a reason renders Try again", async () => {
+    stubList([{ ...readyApplication, id: "8", company: "Retry Co", automation_status: "failed_retryable", apply_blocked_reason: "boom before click" }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Retry Co");
+    const row = screen.getByText("Retry Co").closest("tr") as HTMLElement;
+    expect(within(row).getByRole("button", { name: /try again/i })).toBeInTheDocument();
+  });
+
+  it("a row with a reason but automation_status=submitting renders no Try again, only the reason text", async () => {
+    stubList([{ ...readyApplication, id: "9", company: "Busy Co", automation_status: "submitting", apply_blocked_reason: "stale reason" }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Busy Co");
+    const row = screen.getByText("Busy Co").closest("tr") as HTMLElement;
+    expect(within(row).queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /approve & submit/i })).not.toBeInTheDocument();
+    expect(within(row).getAllByText(/stale reason/i).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["idle", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["preparing", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["needs_input", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["ready_for_review", { approve: true, tryAgain: false, reset: false, resolve: false }],
+    ["approved", { approve: false, tryAgain: false, reset: true, resolve: false }],
+    ["submitting", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["submitted", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["needs_confirmation", { approve: false, tryAgain: false, reset: false, resolve: true }],
+    ["failed_retryable", { approve: false, tryAgain: true, reset: false, resolve: false }],
+    ["failed_terminal", { approve: false, tryAgain: false, reset: false, resolve: false }],
+    ["unsupported", { approve: false, tryAgain: false, reset: false, resolve: false }],
+  ])("action buttons for automation_status=%s", async (status, want) => {
+    stubList([{ ...readyApplication, id: "20", company: "Matrix Co", automation_status: status, apply_blocked_reason: "some reason" }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Matrix Co");
+    const row = screen.getByText("Matrix Co").closest("tr") as HTMLElement;
+    const has = (n: RegExp) => within(row).queryByRole("button", { name: n }) !== null;
+    expect(has(/^approve & submit$/i)).toBe(want.approve);
+    expect(has(/^try again$/i)).toBe(want.tryAgain);
+    expect(has(/^reset approval$/i)).toBe(want.reset);
+    expect(has(/it went through/i)).toBe(want.resolve);
+  });
+
+  it("ready_for_review with a stale reason shows it dim above Approve & Submit, no Try again", async () => {
+    stubList([{ ...readyApplication, id: "21", company: "Stale Co", automation_status: "ready_for_review", apply_blocked_reason: "old failure" }]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Stale Co");
+    const row = screen.getByText("Stale Co").closest("tr") as HTMLElement;
+    expect(within(row).getAllByText(/old failure/i).length).toBeGreaterThan(0);
+    expect(within(row).getByRole("button", { name: /^approve & submit$/i })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  it("Try again clears the polled live status so the reloaded row's status shows", async () => {
+    let listCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/system-health")) {
+          return Promise.resolve({ ok: true, json: async () => ({ health: [] }) } as Response);
+        }
+        if (!opts || opts.method === undefined) {
+          listCalls++;
+          const status = listCalls === 1 ? "failed_retryable" : "ready_for_review";
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ applications: [{ ...readyApplication, id: "22", company: "Live Co", automation_status: status, apply_blocked_reason: listCalls === 1 ? "boom" : null }] }),
+          } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) } as Response);
+      })
+    );
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Live Co");
+    await user.click(screen.getByRole("button", { name: /^try again$/i }));
+    const row = screen.getByText("Live Co").closest("tr") as HTMLElement;
+    await waitFor(() => expect(within(row).getByText("Ready for review")).toBeInTheDocument());
+  });
+
+  it("renders an automation status badge for a non-idle row, and none for idle", async () => {
+    stubList([
+      { ...readyApplication, id: "10", company: "Badge Co", automation_status: "approved", apply_blocked_reason: null },
+      { ...readyApplication, id: "11", company: "Idle Co", stage: "saved", apply_preview: null, automation_status: "idle", apply_blocked_reason: null },
+    ]);
+    render(<ApplicationsPage />);
+    await screen.findByText("Badge Co");
+    const badgeRow = screen.getByText("Badge Co").closest("tr") as HTMLElement;
+    expect(within(badgeRow).getByText("Approved / queued")).toBeInTheDocument();
+    const idleRow = screen.getByText("Idle Co").closest("tr") as HTMLElement;
+    expect(within(idleRow).queryByText("Idle")).not.toBeInTheDocument();
+  });
+
+  it("polling that observes needs_confirmation stops with the unknown-outcome toast and swaps in the resolve buttons", async () => {
+    vi.useFakeTimers();
+    render(<ApplicationsPage />);
+    for (let i = 0; i < 10; i++) await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /approve & submit/i }));
+    });
+    const modal = screen.getByTestId("confirm-content");
+    await act(async () => {
+      fireEvent.click(within(modal).getByRole("button", { name: /approve & submit/i }));
+    });
+    for (let i = 0; i < 10; i++) await act(async () => { await Promise.resolve(); });
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce((url: string) => {
+      if (url === "/api/applications/5") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            application: {
+              id: "5",
+              stage: "ready_to_submit",
+              automation_status: "needs_confirmation",
+              apply_blocked_reason: "raised after click",
+            },
+          }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ applications: [] }) } as Response);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "Submit outcome unknown -- confirm whether it went through"
+    );
+    expect(screen.getByRole("button", { name: /it went through/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

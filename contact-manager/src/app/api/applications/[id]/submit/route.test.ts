@@ -21,15 +21,21 @@ beforeEach(() => {
   });
 });
 
-function makeRequest(idInPath = "5") {
-  return new Request(`http://localhost/api/applications/${idInPath}/submit`, { method: "POST" });
+const HASH = "a".repeat(64);
+
+function makeRequest(idInPath = "5", body: unknown = { revision_hash: HASH }) {
+  return new Request(`http://localhost/api/applications/${idInPath}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === null ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+  });
 }
 
 describe("POST /api/applications/[id]/submit", () => {
   it("calls the approve_application RPC before dispatching", async () => {
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
     expect(res.status).toBe(200);
-    expect(mockRpc).toHaveBeenCalledWith("approve_application", { p_id: 5 });
+    expect(mockRpc).toHaveBeenCalledWith("approve_application", { p_id: 5, p_revision_hash: HASH });
     expect(global.fetch).toHaveBeenCalled();
     // C3: a successful dispatch must never touch the recovery path.
     expect(mockRpc).not.toHaveBeenCalledWith("reset_approval", expect.anything());
@@ -60,7 +66,7 @@ describe("POST /api/applications/[id]/submit", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, status: 500 } as Response)));
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
     expect(res.status).toBe(502);
-    expect(mockRpc).toHaveBeenCalledWith("approve_application", { p_id: 5 });
+    expect(mockRpc).toHaveBeenCalledWith("approve_application", { p_id: 5, p_revision_hash: HASH });
     expect(mockRpc).toHaveBeenCalledWith("reset_approval", { p_id: 5 });
   });
 
@@ -126,5 +132,33 @@ describe("POST /api/applications/[id]/submit", () => {
     expect(res.status).toBe(500);
     expect(global.fetch).not.toHaveBeenCalled();
     expect(mockRpc).not.toHaveBeenCalled();
+  });
+
+  // Review Focus 5: approval binds to the preview revision the human was shown. A missing or
+  // malformed hash must be rejected before anything is approved or dispatched.
+  it.each([
+    [null, "missing body"],
+    ["not json{", "malformed body"],
+    [{}, "no revision_hash"],
+    [{ revision_hash: "abc" }, "short hash"],
+    [{ revision_hash: "G".repeat(64) }, "non-hex hash"],
+    [{ revision_hash: "A".repeat(64) }, "uppercase hash"],
+    [{ revision_hash: 5 }, "non-string hash"],
+  ])("returns 400 without calling rpc or fetch for %j (%s)", async (body) => {
+    const res = await POST(makeRequest("5", body), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("revision_hash is required");
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 and does not dispatch when the preview changed since it was shown (RPC refuses the stale hash)", async () => {
+    mockRpc.mockResolvedValue({
+      data: null,
+      error: { message: "approve_application: row 5 is not approvable (the preview changed since it was shown)" },
+    });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(409);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

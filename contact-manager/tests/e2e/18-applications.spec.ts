@@ -19,6 +19,7 @@ test.describe("Applications page", () => {
                 resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
                 pick_verdict: null, pick_score: null, pick_reasoning: null,
                 apply_preview: null, apply_blocked_reason: null, approved_at: null,
+                automation_status: "idle", preview_revision_hash: null, approved_revision_hash: null,
                 created_at: "2026-08-26T00:00:00Z", updated_at: "2026-08-26T00:00:00Z" },
               { id: "2", contact_id: null, company: "Ashby Co", role: "PM",
                 job_url: "https://jobs.example/2", source: "jobright", source_channel: null,
@@ -28,6 +29,8 @@ test.describe("Applications page", () => {
                 pick_verdict: "strong", pick_score: 0.9, pick_reasoning: "Great fit.",
                 apply_preview: { platform: "ashby", field_values: {}, eligibility_answers: {}, screening_answers: {} },
                 apply_blocked_reason: null, approved_at: null,
+                automation_status: "ready_for_review", preview_revision_hash: "c".repeat(64),
+                approved_revision_hash: null,
                 created_at: "2026-08-30T00:00:00Z", updated_at: "2026-08-30T00:00:00Z" },
             ],
           }),
@@ -68,6 +71,8 @@ test.describe("Applications page", () => {
       });
     });
     await page.route("**/api/applications/2/submit", async (route) => {
+      // Approval must carry the revision hash of the preview the row rendered.
+      expect(JSON.parse(route.request().postData() ?? "{}")).toEqual({ revision_hash: "c".repeat(64) });
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
     });
     await page.route("**/api/applications/2", async (route) => {

@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 import logging
 import re
 import time
+import uuid
 import supabase._sync.client as _sc
 
 log = logging.getLogger(__name__)
@@ -580,14 +581,21 @@ def update_job_application_stage(application_id, stage):
     return result.data[0] if result.data else None
 
 
-def record_submission(application_id, source_channel, applied_date):
-    """Atomically flip a row to 'applied' and record how/when it was actually filed. Must be
-    ONE update, not stage-then-fields separately -- a partial failure between two calls would
-    leave the row applied with no source_channel/applied_date, or vice versa."""
-    result = _retry(lambda: get_client().table("job_applications")
-                     .update({"stage": "applied", "source_channel": source_channel,
-                              "applied_date": applied_date, "updated_at": datetime.utcnow().isoformat()})
-                     .eq("id", application_id).execute())
+def record_submission(application_id, source_channel, applied_date, lease_id=None):
+    """Atomically flip a row to 'applied'/'submitted' and record how/when it was actually filed.
+    Must be ONE update, not stage-then-fields separately -- a partial failure between two calls
+    would leave the row applied with no source_channel/applied_date, or vice versa."""
+    payload = {"stage": "applied", "automation_status": "submitted", "source_channel": source_channel,
+               "applied_date": applied_date, "worker_lease_id": None, "worker_heartbeat_at": None,
+               "apply_blocked_reason": None, "updated_at": datetime.utcnow().isoformat()}
+
+    def _do():
+        q = get_client().table("job_applications").update(payload).eq("id", application_id)
+        if lease_id is not None:
+            q = q.eq("worker_lease_id", lease_id)
+        return q.execute()
+
+    result = _retry(_do)
     return result.data[0] if result.data else None
 
 
@@ -615,6 +623,8 @@ def set_pick_verdict(application_id, verdict, score, reasoning):
     return result.data[0] if result.data else None
 
 
+# The preview pass now writes apply_preview via release_application (under its lease); this
+# unleased writer is kept for compatibility.
 def set_apply_preview(application_id, preview):
     """Write apply_agent.py --preview's filled values and flip the row to ready_to_submit."""
     result = _retry(lambda: get_client().table("job_applications")
@@ -633,6 +643,115 @@ def set_apply_blocked(application_id, reason):
     return result.data[0] if result.data else None
 
 
+# ── Application worker leases ──────────────────────────────────────────────────
+
+def _check_status(status):
+    if status not in config.AUTOMATION_STATUSES:
+        raise ValueError(f"unknown automation_status: {status}")
+
+
+def claim_application(application_id, from_statuses, to_status):
+    """Atomically move a row from one of from_statuses to to_status under a fresh worker lease.
+    Returns the lease id, or None if the row isn't claimable. Deliberately NOT wrapped in
+    _retry: a retry after a committed-but-unacknowledged claim would match zero rows and
+    report a lost claim -- so on an empty/failed response, re-read and compare lease ids."""
+    for s in (*from_statuses, to_status):
+        _check_status(s)
+    lease_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    payload = {"automation_status": to_status, "worker_lease_id": lease_id,
+               "worker_heartbeat_at": now, "updated_at": now}
+    try:
+        result = (get_client().table("job_applications").update(payload)
+                  .eq("id", application_id).in_("automation_status", list(from_statuses))
+                  .is_("worker_lease_id", "null").execute())
+        if result.data:
+            return lease_id
+    except Exception as exc:
+        log.warning(f"claim_application | {application_id} | claim call failed, re-reading: {exc}")
+    row = _retry(lambda: get_client().table("job_applications").select("worker_lease_id")
+                 .eq("id", application_id).execute())
+    if row.data and row.data[0].get("worker_lease_id") == lease_id:
+        return lease_id
+    return None
+
+
+def heartbeat_application(application_id, lease_id):
+    """Refresh a held lease's heartbeat. Best-effort: never raises."""
+    try:
+        (get_client().table("job_applications")
+         .update({"worker_heartbeat_at": datetime.utcnow().isoformat()})
+         .eq("id", application_id).eq("worker_lease_id", lease_id).execute())
+    except Exception as exc:
+        log.warning(f"heartbeat_application | {application_id} | {exc}")
+
+
+def renew_submission_lease(application_id, lease_id, revision_hash):
+    """Fail closed before Submit unless this worker still owns the approved revision.
+
+    Unlike progress heartbeats, this conditional renewal must succeed. Refreshing the
+    heartbeat in the same update prevents stale-lease recovery from acting on an old
+    heartbeat while we cross the external-submit boundary. Network errors propagate.
+    """
+    if not revision_hash:
+        return False
+    result = _retry(lambda: get_client().table("job_applications")
+                    .update({"worker_heartbeat_at": datetime.utcnow().isoformat()})
+                    .eq("id", application_id).eq("worker_lease_id", lease_id)
+                    .eq("automation_status", "submitting").eq("stage", "ready_to_submit")
+                    .eq("preview_revision_hash", revision_hash)
+                    .eq("approved_revision_hash", revision_hash)
+                    .not_.is_("approved_at", "null").execute())
+    return bool(result.data)
+
+
+def release_application(application_id, lease_id, to_status, fields=None):
+    """Write to_status (plus any extra fields) and drop the lease -- only if we still hold it."""
+    _check_status(to_status)
+    payload = {**(fields or {}), "automation_status": to_status, "worker_lease_id": None,
+               "worker_heartbeat_at": None, "updated_at": datetime.utcnow().isoformat()}
+    result = _retry(lambda: get_client().table("job_applications").update(payload)
+                    .eq("id", application_id).eq("worker_lease_id", lease_id).execute())
+    return result.data[0] if result.data else None
+
+
+def set_automation_status(application_id, status, reason=None):
+    """Unleased status write (e.g. 'unsupported' before any claim)."""
+    _check_status(status)
+    payload = {"automation_status": status, "updated_at": datetime.utcnow().isoformat()}
+    if reason is not None:
+        payload["apply_blocked_reason"] = reason
+    result = _retry(lambda: get_client().table("job_applications").update(payload)
+                    .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
+def recover_stale_leases(stale_after_seconds):
+    """Release leases whose heartbeat is older than the cutoff. A stale 'submitting' lease means
+    a worker died somewhere around the Submit click -- it becomes needs_confirmation, never
+    retryable, because the site may already have the application."""
+    cutoff = (datetime.utcnow() - timedelta(seconds=stale_after_seconds)).isoformat()
+    rows = _retry(lambda: get_client().table("job_applications")
+                  .select("id,automation_status,worker_lease_id")
+                  .not_.is_("worker_lease_id", "null").lt("worker_heartbeat_at", cutoff)
+                  .execute()).data or []
+    recovered = 0
+    for row in rows:
+        held = row.get("automation_status")
+        to_status = "needs_confirmation" if held == "submitting" else "failed_retryable"
+        payload = {"automation_status": to_status, "worker_lease_id": None,
+                   "worker_heartbeat_at": None,
+                   "apply_blocked_reason": f"worker lease expired while {held}; recovered as {to_status}",
+                   "updated_at": datetime.utcnow().isoformat()}
+        result = _retry(lambda: get_client().table("job_applications").update(payload)
+                        .eq("id", row["id"]).eq("worker_lease_id", row["worker_lease_id"])
+                        .lt("worker_heartbeat_at", cutoff).execute())
+        if result.data:
+            recovered += 1
+            log.warning(f"recover_stale_leases | {row['id']} | {held} -> {to_status}")
+    return recovered
+
+
 def set_resume_strategy(application_id, strategy):
     """Write stage-4 strategy output onto a job_applications row. Builds nothing."""
     result = _retry(lambda: get_client().table("job_applications")
@@ -643,7 +762,9 @@ def set_resume_strategy(application_id, strategy):
 
 def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref=None, resume_variant=None):
     """Write built-file references onto a job_applications row after a successful build."""
-    payload = {"updated_at": datetime.utcnow().isoformat()}
+    # Fixed storage paths mean refs alone don't change on a rebuild; a fresh version changes the
+    # trigger-owned preview hash, so a rebuild after approval invalidates it.
+    payload = {"updated_at": datetime.utcnow().isoformat(), "documents_version": str(uuid.uuid4())}
     if resume_file_ref is not None:
         payload["resume_file_ref"] = resume_file_ref
     if cover_letter_file_ref is not None:

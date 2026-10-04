@@ -18,6 +18,8 @@ import { pickVerdictVariant } from "@/lib/applicationBadges";
 import {
   JOB_APPLICATION_STAGES,
   JOB_APPLICATION_STAGE_LABELS,
+  AUTOMATION_STATUS_LABELS,
+  type AutomationStatus,
   type JobApplication,
   type JobApplicationStage,
 } from "@/lib/types";
@@ -66,6 +68,9 @@ export function ApplicationsPage() {
   // polling observes one, so the UI can show a specific failure and a Try again action instead
   // of leaving the row looking stuck until the 90s timeout.
   const [blockedReasons, setBlockedReasons] = useState<Record<string, string>>({});
+  // Polling's last-seen automation_status per id. The list row is stale after a submit attempt,
+  // so Try again / resolve buttons gate on this first and fall back to the row's own value.
+  const [liveStatuses, setLiveStatuses] = useState<Record<string, AutomationStatus>>({});
   const pollTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
@@ -195,14 +200,32 @@ export function ApplicationsPage() {
     try {
       const res = await fetch(`/api/applications/${id}`);
       const data = await res.json();
-      const app: { stage?: string; apply_blocked_reason?: string | null } | undefined =
-        data.application;
+      const app:
+        | {
+            stage?: string;
+            apply_blocked_reason?: string | null;
+            automation_status?: AutomationStatus;
+          }
+        | undefined = data.application;
       if (app?.stage === "applied") {
         toast.success("Application submitted");
         load(stageFilter, sourceFilter);
         return "applied";
       }
+      if (app?.automation_status === "needs_confirmation") {
+        // Checked before the generic blocked branch: the Submit click may have landed, so this
+        // must never read as a plain failure with a retry.
+        const reason = app.apply_blocked_reason ?? "Submit outcome unknown";
+        setBlockedReasons((cur) => ({ ...cur, [id]: reason }));
+        setLiveStatuses((cur) => ({ ...cur, [id]: "needs_confirmation" }));
+        toast.error("Submit outcome unknown -- confirm whether it went through");
+        return "blocked";
+      }
       if (app?.apply_blocked_reason) {
+        if (app.automation_status) {
+          const status = app.automation_status;
+          setLiveStatuses((cur) => ({ ...cur, [id]: status }));
+        }
         setBlockedReasons((cur) => ({ ...cur, [id]: app.apply_blocked_reason as string }));
         toast.error("Submission failed -- see the row for details");
         return "blocked";
@@ -268,15 +291,31 @@ export function ApplicationsPage() {
   const doApprove = async () => {
     if (!confirmingApplication) return;
     const app = confirmingApplication;
+    if (!app.preview_revision_hash) {
+      toast.error("This preview has no revision hash yet -- reload and try again");
+      setConfirmingApplication(null);
+      return;
+    }
     setApproveLoading(true);
     try {
-      const res = await fetch(`/api/applications/${app.id}/submit`, { method: "POST" });
+      // Approval binds to the preview revision rendered in this row; if the preview changed
+      // since, the server refuses (409) instead of approving something the human didn't see.
+      const res = await fetch(`/api/applications/${app.id}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revision_hash: app.preview_revision_hash }),
+      });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
         throw new Error(errBody.error || "request failed");
       }
       toast.success("Submission triggered -- watching for it to land");
       setBlockedReasons((cur) => {
+        const next = { ...cur };
+        delete next[app.id];
+        return next;
+      });
+      setLiveStatuses((cur) => {
         const next = { ...cur };
         delete next[app.id];
         return next;
@@ -312,9 +351,43 @@ export function ApplicationsPage() {
         next.delete(id);
         return next;
       });
+      setLiveStatuses((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
       load(stageFilter, sourceFilter);
     } catch {
       toast.error("Could not reset -- try again in a moment");
+    }
+  };
+
+  const handleResolveConfirmation = async (id: string, submitted: boolean) => {
+    try {
+      const res = await fetch(`/api/applications/${id}/resolve-confirmation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submitted }),
+      });
+      if (!res.ok) throw new Error("request failed");
+      setBlockedReasons((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      setLiveStatuses((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      setTimedOutIds((cur) => {
+        const next = new Set(cur);
+        next.delete(id);
+        return next;
+      });
+      load(stageFilter, sourceFilter);
+    } catch {
+      toast.error("Could not record that -- try again");
     }
   };
 
@@ -417,7 +490,9 @@ export function ApplicationsPage() {
             </tr>
           </thead>
           <tbody>
-            {applications.map((app) => (
+            {applications.map((app) => {
+              const automationStatus = liveStatuses[app.id] ?? app.automation_status;
+              return (
               <tr key={app.id} className="border-b border-border">
                 <td className="py-2 pr-4 text-fg">{app.company}</td>
                 <td className="py-2 pr-4 text-fg-muted">{app.role}</td>
@@ -447,6 +522,11 @@ export function ApplicationsPage() {
                   )}
                 </td>
                 <td className="py-2 pr-4 text-fg-dim">
+                  {automationStatus && automationStatus !== "idle" && (
+                    <div className="mb-1">
+                      <Badge>{AUTOMATION_STATUS_LABELS[automationStatus]}</Badge>
+                    </div>
+                  )}
                   {app.apply_blocked_reason ?? "—"}
                 </td>
                 <td className="py-2 pr-4 text-fg-dim">{app.source ?? "—"}</td>
@@ -483,11 +563,48 @@ export function ApplicationsPage() {
                             </button>
                           </div>
                         </div>
-                      ) : blockedReasons[app.id] ?? app.apply_blocked_reason ? (
-                        // C1: blockedReasons is only populated by THIS tab's own polling --
-                        // a row blocked in a previous session (submit failed, page refreshed,
-                        // browser closed) would never show Try again without also falling back
-                        // to the row's own apply_blocked_reason from the API.
+                      ) : automationStatus === "needs_confirmation" ? (
+                        // The Submit click may have landed. Never offer Approve or Try again
+                        // here -- a retry could file a duplicate real application. Only the
+                        // human's answer moves the row on (resolve_confirmation RPC).
+                        <div className="flex flex-col gap-1">
+                          <span className="text-amber-400 text-xs">
+                            Submit may have gone through -- check the employer portal or your
+                            inbox, then confirm:
+                          </span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleResolveConfirmation(app.id, true)}
+                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                            >
+                              It went through
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleResolveConfirmation(app.id, false)}
+                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                            >
+                              It didn&apos;t go through
+                            </button>
+                          </div>
+                        </div>
+                      ) : automationStatus === "ready_for_review" ? (
+                        <div className="flex flex-col gap-1">
+                          {(blockedReasons[app.id] ?? app.apply_blocked_reason) && (
+                            <span className="text-fg-dim text-xs">
+                              {blockedReasons[app.id] ?? app.apply_blocked_reason}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingApplication(app)}
+                            className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
+                          >
+                            Approve & Submit
+                          </button>
+                        </div>
+                      ) : automationStatus === "failed_retryable" ? (
                         <div className="flex flex-col gap-1">
                           <span className="text-red-400 text-xs">
                             {blockedReasons[app.id] ?? app.apply_blocked_reason}
@@ -500,14 +617,30 @@ export function ApplicationsPage() {
                             Try again
                           </button>
                         </div>
+                      ) : automationStatus === "approved" ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="text-amber-400 text-xs">
+                            Approved -- queued for submission
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleTryAgain(app.id)}
+                            className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                          >
+                            Reset approval
+                          </button>
+                        </div>
+                      ) : automationStatus === "preparing" || automationStatus === "submitting" ? (
+                        <span className="text-fg-dim text-xs flex items-center gap-1">
+                          <Loader2 className="size-3 animate-spin" /> In progress --{" "}
+                          {AUTOMATION_STATUS_LABELS[automationStatus]}
+                        </span>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmingApplication(app)}
-                          className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
-                        >
-                          Approve & Submit
-                        </button>
+                        (blockedReasons[app.id] ?? app.apply_blocked_reason) && (
+                          <span className="text-fg-dim text-xs">
+                            {blockedReasons[app.id] ?? app.apply_blocked_reason}
+                          </span>
+                        )
                       )}
                     </div>
                   ) : (
@@ -524,7 +657,8 @@ export function ApplicationsPage() {
                   </button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       )}

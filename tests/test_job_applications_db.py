@@ -150,6 +150,17 @@ def test_set_resume_files_sets_all_fields_when_provided(fake_client):
     assert updated["resume_variant"] == "v1"
 
 
+def test_set_resume_files_writes_fresh_documents_version_each_call(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    import uuid
+    versions = []
+    for _ in range(2):
+        db.set_resume_files(1, resume_file_ref="r.pdf")
+        versions.append(fake_client.table.return_value.update.call_args[0][0]["documents_version"])
+    assert versions[0] != versions[1]
+    assert str(uuid.UUID(versions[0])) == versions[0]
+
+
 def test_upload_resume_file_calls_storage_and_returns_path(fake_client):
     result = db.upload_resume_file("resumes/1/resume.pdf", b"filebytes", "application/pdf")
     fake_client.storage.from_.assert_called_with(config.RESUME_STORAGE_BUCKET)
