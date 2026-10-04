@@ -78,7 +78,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -561,6 +561,9 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_decision_context.py` — `emailer.hash_prompt_set` determinism, key-order independence, `{}`/`None` handling, unserializable values.
 - `tests/test_application_leases_db.py` — `db.py`'s lease accessors (`claim_application`, `heartbeat_application`, `release_application`, `recover_stale_leases`, `record_submission`), including the lost-claim-response re-read and the stale-`submitting` to `needs_confirmation` mapping.
 - `tests/test_automation_status_migration.py` — static assertions over the automation_status migration's SQL text (status CHECK, old-overload drop, anon grants never covering the hash columns or `approved_at`, trigger, RPC guards); there is no live DB in the test suite.
+- `tests/test_lifecycle_rpcs_migration.py` — static SQL assertions for the 2026-10-04 lifecycle RPCs/grants (functional checks live in `supabase/tests/lifecycle_rpcs_dryrun.sql`).
+- `tests/test_application_leases_db.py` — `db.py` lifecycle RPC wrappers (exact RPC names/params, claim re-read recovery, never `table().update`).
+- `tests/test_submission_reconciler.py` / `tests/test_gmail_inbox_receipts.py` — receipt matching (window, reply skip, ambiguity, escalation) and the read-only All Mail fetch.
 - `tests/test_engagement_report.py` — the report's `db.py` accessors (following `test_db_draft_history.py`'s mock pattern), the contact join, distinct-contact grouping, NULL-renders-as-"unknown", small-`n` rate suppression, and a malformed-row never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
@@ -1303,8 +1306,38 @@ pause check) so a wedged `submitting` row is freed between apply runs. (C) `rese
 `approved_at IS NOT NULL`, so a `failed_retryable` row without it is not a dead end (still refuses
 `needs_confirmation`/`submitting`/`submitted`). (E) `submit()`'s excluded-platform branch writes
 `automation_status='unsupported'` (still before the claim). The preview pass treats a `None` from
-`release_application` as a lost lease (`"lost"`, counted as an error). Known limitation:
-automation_status/worker_lease_id/documents_version are anon-writable (every writer shares the public anon key, no RLS by design), so the lifecycle can be forged or wedged by anyone holding that key; it cannot produce an unapproved submission because approved_at/approved_revision_hash stay RPC-only and preview_revision_hash is trigger-owned. Moving lifecycle writes behind SECURITY DEFINER RPCs is a follow-up.
+`release_application` as a lost lease (`"lost"`, counted as an error). **Lifecycle writes are RPC-only (migration `20261004000000`, 2026-10-04).** Anon and authenticated have no
+UPDATE/INSERT on `automation_status`/`worker_lease_id`/`worker_heartbeat_at`; every transition goes through a
+`SECURITY DEFINER` RPC that enforces the allowed source->target pairs server-side (`claim_application`,
+`heartbeat_application`, `renew_submission_lease`, `complete_preview`, `release_application`, `record_submission`,
+`mark_application_unsupported`, `recover_stale_leases`, `record_receipt_evidence`, `requeue_preview`; `db.py`'s
+wrappers are thin `_rpc()` calls). The lease id is SELECT-able by anon, so it is a concurrency token, not
+authorization: `renew_submission_lease` stamps `submit_attempted_at` right before the click, and once it is set
+`release_application` from `submitting` accepts ONLY `needs_confirmation` -- nobody holding the public key can
+turn a possibly-submitted row back into a retryable one. `recover_stale_leases` floors its cutoff at 1800s in SQL
+(an anon call with 0 cannot steal live leases) and maps `submitting` without `submit_attempted_at` (no click
+happened) to `failed_retryable`. `documents_version`/`apply_preview`/`stage`/`apply_blocked_reason` stay
+anon-writable (changes only invalidate approval via the trigger-owned hash). Functional checks:
+`supabase/tests/lifecycle_rpcs_dryrun.sql` (run inside BEGIN/ROLLBACK against the linked DB, migration prepended).
+
+**Form-drift check**: `apply_agent._form_signature(page)` = sha256 over the sorted, normalized identifiers
+(`name` > `aria-label` > label text > placeholder, never `id` -- framework ids change per load; captcha fields
+skipped) of every fillable field, computed right after page load and before any fill, in BOTH passes. The
+preview stores it via `complete_preview`; `submit()` recomputes it and on mismatch raises `FormChangedError`,
+releasing to `needs_input` (approval cleared, reason "Form changed after approval"); the UI's "Re-prepare"
+button calls `requeue_preview` (`needs_input -> idle`, `stage='saved'`). A NULL stored signature (pre-feature
+rows, or computation failed) skips the check with a warning.
+
+**Gmail-receipt reconciler** (`submission_reconciler.py`, run from `monitor.py` best-effort after lease recovery,
+marker `[RECONCILE]`): matches `needs_confirmation` rows to ATS "thank you for applying" receipts and moves them
+to `submitted` via `record_receipt_evidence` (evidence = message id/from/subject/date, shown in the detail
+sheet). It never retries a submission and never touches any other transition. Receipts go to the address the
+forms are filled with (`kishoretheerajvj@gmail.com`, `apply_agent._standard_field_values`), which is NOT the
+outreach `GMAIL_ADDRESS` -- so it reads soft-optional `RECEIPT_IMAP_ADDRESS`/`RECEIPT_IMAP_APP_PASSWORD`
+(unset -> no-op). Reply-shaped mail is skipped (this inbox has human threads with the same companies), the
+search window is bounded to 72h after the submit attempt, and one receipt matching several pending rows at a
+company is used only when the role disambiguates. After 15 min without a match it prefixes
+`apply_blocked_reason` with "No receipt email found..." once and keeps checking.
 Plan: docs/superpowers/plans/2026-10-01-automation-status-and-leases.md.
 
 **Known follow-up, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full

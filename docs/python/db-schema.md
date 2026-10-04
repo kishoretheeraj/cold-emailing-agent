@@ -372,6 +372,19 @@ CREATE TABLE job_applications (
   `stage`/`approved_at`/`apply_blocked_reason` (prod dry-run: 442 `idle`, 1 `ready_for_review`).
   Anon is granted UPDATE/INSERT on `automation_status`, `worker_lease_id`, `worker_heartbeat_at`, `documents_version` only; never on
   the two hash columns or `approved_at`.
+  **Superseded 2026-10-04 (migration `20261004000000`):** anon/authenticated UPDATE/INSERT on `automation_status`,
+  `worker_lease_id`, `worker_heartbeat_at` revoked -- lifecycle transitions are RPC-only (see below). New columns:
+  `form_signature TEXT` (preview-time sha256 of the form's field identifiers), `submit_attempted_at TIMESTAMPTZ`
+  (stamped by `renew_submission_lease` just before the Submit click; cleared by the submitting claim),
+  `submission_evidence JSONB` (`{source: 'page_confirmation'|'gmail_receipt', message_id?, from?, subject?, date?, at?}`).
+- **Lifecycle RPCs (2026-10-04, `SECURITY DEFINER`, EXECUTE to anon):** `claim_application(p_id, p_lease UUID, p_to)`
+  (`preparing` from idle/failed_retryable at stage saved; `submitting` from approved with matching hashes),
+  `heartbeat_application(p_id, p_lease)`, `renew_submission_lease(p_id, p_lease, p_revision_hash)`,
+  `complete_preview(p_id, p_lease, p_preview, p_form_signature)`, `release_application(p_id, p_lease, p_to, p_reason)`
+  (post-click only -> needs_confirmation), `record_submission(p_id, p_lease, p_source_channel, p_applied_date)`,
+  `mark_application_unsupported(p_id, p_reason)`, `recover_stale_leases(p_stale_seconds)` (floored at 1800),
+  `record_receipt_evidence(p_id, p_evidence)` (needs_confirmation -> submitted, evidence must carry message_id),
+  `requeue_preview(p_id)` (needs_input -> idle).
 - **Trigger `trg_job_applications_preview_revision_hash`** (`BEFORE INSERT OR UPDATE`): recomputes
   `preview_revision_hash` = sha256 hex of `apply_preview::text | resume_file_ref | cover_letter_file_ref | documents_version` on
   every write, so it cannot be forged and any preview edit invalidates a prior approval.
