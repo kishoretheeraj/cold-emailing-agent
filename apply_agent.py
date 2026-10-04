@@ -29,7 +29,7 @@ _MODE_TAGS = {"preview": "[APPLY-PREVIEW]", "submit": "[APPLY-SUBMIT]"}
 def _standard_field_values(job):
     return {
         "name": "Kishore Theeraj Vasudevan Jaya",
-        "email": "kishoretheeraj@gmail.com",
+        "email": "kishoretheerajvj@gmail.com",
         "phone": "+1 603-322-0535",
         "location": "Hanover, NH",
         "linkedin": "linkedin.com/in/kishoretheeraj",

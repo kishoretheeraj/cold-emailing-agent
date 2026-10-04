@@ -1033,3 +1033,8 @@ def test_run_preview_ignores_rows_not_in_eligible_statuses(mocker):
     proc = mocker.patch.object(apply_agent, "_process_one_preview", return_value="filled")
     apply_agent.run_preview()
     assert [c.args[0]["id"] for c in proc.call_args_list] == [0, 1]
+
+
+def test_standard_field_values_uses_application_email():
+    # Receipts land in this mailbox; the reconciler's RECEIPT_IMAP_ADDRESS must match it.
+    assert apply_agent._standard_field_values({})["email"] == "kishoretheerajvj@gmail.com"
