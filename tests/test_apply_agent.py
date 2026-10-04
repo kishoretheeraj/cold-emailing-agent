@@ -16,6 +16,7 @@ def _lease_defaults(mocker):
     mocker.patch("apply_agent.db.recover_stale_leases", return_value=0)
     mocker.patch("apply_agent.db.claim_application", return_value="lease-1")
     mocker.patch("apply_agent.db.heartbeat_application")
+    mocker.patch("apply_agent.db.renew_submission_lease", return_value=True)
     mocker.patch("apply_agent.db.release_application")
     mocker.patch("apply_agent.db.set_automation_status")
 
@@ -900,6 +901,32 @@ def test_submit_happy_path_records_with_lease(mocker, approved_job):
     record.assert_called_once()
     assert record.call_args.kwargs.get("lease_id") == "lease-1"
     release.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [False, RuntimeError("database unavailable")])
+def test_submit_stops_if_final_lease_or_revision_check_fails(mocker, approved_job, failure):
+    page, release, record = _arm_submit(mocker, approved_job)
+    guard = apply_agent.db.renew_submission_lease
+    if isinstance(failure, Exception):
+        guard.side_effect = failure
+    else:
+        guard.return_value = failure
+    with pytest.raises(RuntimeError):
+        apply_agent.submit(9)
+    page.get_by_role.return_value.click.assert_not_called()
+    record.assert_not_called()
+    assert release.call_args[0][2] == "failed_retryable"
+
+
+def test_final_guard_runs_after_filling_and_before_submit(mocker, approved_job):
+    page, _, _ = _arm_submit(mocker, approved_job)
+    events = []
+    apply_agent._fill_eligibility_answers.side_effect = lambda *args: events.append("filled")
+    apply_agent.db.renew_submission_lease.side_effect = lambda *args: events.append("checked") or True
+    page.get_by_role.return_value.click.side_effect = lambda: events.append("clicked")
+    apply_agent.submit(9)
+    assert events == ["filled", "checked", "clicked"]
+    apply_agent.db.renew_submission_lease.assert_called_once_with(9, "lease-1", "h1")
 
 
 @pytest.mark.parametrize("confirmed,click_raises", [

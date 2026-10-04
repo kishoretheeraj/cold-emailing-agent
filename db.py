@@ -686,6 +686,25 @@ def heartbeat_application(application_id, lease_id):
         log.warning(f"heartbeat_application | {application_id} | {exc}")
 
 
+def renew_submission_lease(application_id, lease_id, revision_hash):
+    """Fail closed before Submit unless this worker still owns the approved revision.
+
+    Unlike progress heartbeats, this conditional renewal must succeed. Refreshing the
+    heartbeat in the same update prevents stale-lease recovery from acting on an old
+    heartbeat while we cross the external-submit boundary. Network errors propagate.
+    """
+    if not revision_hash:
+        return False
+    result = _retry(lambda: get_client().table("job_applications")
+                    .update({"worker_heartbeat_at": datetime.utcnow().isoformat()})
+                    .eq("id", application_id).eq("worker_lease_id", lease_id)
+                    .eq("automation_status", "submitting").eq("stage", "ready_to_submit")
+                    .eq("preview_revision_hash", revision_hash)
+                    .eq("approved_revision_hash", revision_hash)
+                    .not_.is_("approved_at", "null").execute())
+    return bool(result.data)
+
+
 def release_application(application_id, lease_id, to_status, fields=None):
     """Write to_status (plus any extra fields) and drop the lease -- only if we still hold it."""
     _check_status(to_status)

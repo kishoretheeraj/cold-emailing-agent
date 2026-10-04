@@ -90,6 +90,45 @@ def test_heartbeat_never_raises(fake_client):
     db.heartbeat_application(7, "lease-1")
 
 
+@pytest.mark.parametrize("changed", [
+    {},
+    {"worker_lease_id": None},
+    {"worker_lease_id": "another-worker"},
+    {"automation_status": "needs_confirmation"},
+    {"stage": "withdrawn"},
+    {"preview_revision_hash": "rebuilt-documents"},
+    {"approved_revision_hash": "another-revision"},
+    {"approved_at": None},
+])
+def test_final_renewal_only_touches_the_owned_approved_revision(fake_client, changed):
+    row = {"id": 7, "worker_lease_id": "lease-1", "automation_status": "submitting",
+           "stage": "ready_to_submit", "preview_revision_hash": "h1",
+           "approved_revision_hash": "h1", "approved_at": "2026-10-01T00:00:00Z",
+           "worker_heartbeat_at": "old", **changed}
+    predicates = []
+    query = MagicMock()
+    query.eq.side_effect = lambda key, value: predicates.append(lambda: row[key] == value) or query
+    query.not_.is_.side_effect = lambda key, value: predicates.append(lambda: row[key] is not None) or query
+    fake_client.table.return_value.update.return_value = query
+
+    def execute():
+        if not all(predicate() for predicate in predicates):
+            return MagicMock(data=[])
+        row.update(fake_client.table.return_value.update.call_args.args[0])
+        return MagicMock(data=[row.copy()])
+
+    query.execute.side_effect = execute
+    assert db.renew_submission_lease(7, "lease-1", "h1") is (not changed)
+    assert (row["worker_heartbeat_at"] != "old") is (not changed)
+
+
+def test_final_renewal_raises_on_database_outage(fake_client, mocker):
+    mocker.patch.object(db.time, "sleep")
+    fake_client.table.side_effect = RuntimeError("database unavailable")
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        db.renew_submission_lease(7, "lease-1", "h1")
+
+
 @pytest.mark.parametrize("held_status,expected", [
     ("submitting", "needs_confirmation"),
     ("preparing", "failed_retryable"),

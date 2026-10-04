@@ -574,6 +574,12 @@ def submit(job_id):
                 db.release_application(job_id, lease, "approved")
                 return
 
+            # Filling may take minutes. A lease recovered during that time, or a document
+            # rebuild invalidating the revision, must stop this worker before the external
+            # action. Best-effort progress heartbeats cannot establish that permission.
+            if not db.renew_submission_lease(job_id, lease, job["approved_revision_hash"]):
+                raise RuntimeError("Submit stopped: worker lease or approved revision changed during preparation")
+
             # from here on the site may have the application -- any failure is needs_confirmation, never retryable.
             clicked = True
             page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
