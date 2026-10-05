@@ -1,7 +1,7 @@
 # Resume generation on the Claude subscription — design
 
-Date: 2026-10-04. Status: design approved in conversation (option 3 for the cover letter); spec
-awaiting review.
+Date: 2026-10-04. Status: design approved in conversation (option 3 for the cover letter); revised 2026-10-04
+after two reviews in `docs/reviews/`; spec awaiting review.
 
 ## Goal
 
@@ -36,10 +36,13 @@ key.
   are no hidden characters"; light editing won't remove it; detection is restricted to eligible
   organizations under EU law. This corrects the Aug 29 Phase 3 spec, which said no such watermark
   was publicly known.
-  - The **resume** contains no Claude-written prose: every bullet is the operator's own text from
-    `resume/data/metrics.json`, and Claude only selects ids, projects, skills (from the governed
-    pool) and order. There is nothing for a statistical watermark to live in.
-  - The **cover letter** is ~270 words of Claude prose and is watermarked. **Decision (option 3):
+  - The **resume's bullets and skills** are the operator's own text (`metrics.json`,
+    `skills.json`); Claude selects ids, projects, skills and order. The one model-written text that
+    renders on the resume is each skills group's 1-4-word label (e.g. "Data & Tools"), now
+    constrained by governance (independent review, finding 6). Too little text for a statistical
+    watermark to be meaningful, but the earlier "no Claude text at all" claim was too strong.
+  - The **cover letter** is ~270 words of Claude prose and may be watermarked (Anthropic describes
+    a phased rollout for older models, so not every model's output is confirmed). **Decision (option 3):
     keep it Claude-written and accept the watermark.** No watermark-removal step is built or
     integrated, and none will be. A paragraph-library or talking-points cover letter remains an
     option for later.
@@ -71,9 +74,12 @@ claude -p --output-format json --tools "" --no-session-persistence
 
 - Prompt goes on stdin (no argv length limit, nothing in `ps`).
 - `cwd` = a fresh empty temp dir; `CLAUDE_CONFIG_DIR` = a fresh empty temp dir. Both removed after.
-- Child env = parent env **minus `ANTHROPIC_API_KEY`** (present via `config.py`'s `load_dotenv()`;
-  if it reaches the CLI, Claude Code bills the API key instead of the subscription), plus
-  `DISABLE_AUTOUPDATER=1`. `CLAUDE_CODE_OAUTH_TOKEN` must be set; missing it raises before spawning.
+- Child env is an **allowlist** (OS basics, locale, proxy/CA vars, `CLAUDE_CODE_OAUTH_TOKEN`),
+  plus `CLAUDE_CONFIG_DIR` and `DISABLE_AUTOUPDATER=1`. Never inherited wholesale: Claude Code
+  prefers `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the
+  Bedrock/Vertex/Foundry switches over the subscription, and app secrets don't belong in the CLI
+  (independent review, finding 2). `CLAUDE_CODE_OAUTH_TOKEN` must be set; missing it raises before
+  spawning. The CLI runs in its own process group so a timeout can't leave children behind.
 - `--system-prompt` *replaces* Claude Code's default agent prompt, so the resume prompts aren't
   framed as a coding session. When no system prompt is given, a short neutral one is used.
 - Timeout `config.CLAUDE_CLI_TIMEOUT_SECONDS` (300). Binary `config.CLAUDE_CLI_PATH` (default
@@ -83,23 +89,34 @@ claude -p --output-format json --tools "" --no-session-persistence
 
 ### `resume_agent.py`
 
-- `_call_claude` dispatches on `config.RESUME_CLAUDE_BACKEND` (`"subscription"` default, `"api"`
-  keeps today's `anthropic` path as a one-line rollback). Both paths run `sanitize`.
+- `_call_claude` dispatches on `config.RESUME_CLAUDE_BACKEND`, read from the
+  `RESUME_CLAUDE_BACKEND` env var and **defaulting to `"api"`** so merging changes nothing. Only
+  `resume-worker.service` sets `subscription`; GitHub Actions opts in by a workflow edit after the
+  worker is proven (staged rollout, independent review finding 3). Both paths run `sanitize`.
 - `_track_usage` passes `billing` through: subscription calls record real tokens and `$0` cost
-  onto `job_applications.resume_*` and `api_usage_log`.
+  onto `job_applications.resume_*` and `api_usage_log`. `billing` records the auth route, not a
+  guarantee: it is only true if paid usage credits are off for the account, which the operator
+  verifies before the worker runs unattended (finding 1).
+- Skills group labels must be 1-4 plain words and pass the attribution scan (finding 6).
 - New attribution scan on generated text (strategy JSON and cover letter): hard-fail on
   `generated with`, `co-authored-by`, `as an ai`, `language model`, `i'm claude`, `i am claude`,
   `noreply@anthropic`, and on a chat preamble or sign-off (a first line starting `here's`/
   `here is`/`sure`/`certainly`/`below is`, or a last line starting `let me know`/`i hope this`).
   "Claude", "Claude Code" and "Anthropic" are allowed: the first two are in the operator's own
   skills/projects, and the third can be the target company.
-- New `--drain` CLI mode: `drain(limit=config.RESUME_WORKER_BATCH)` fetches rows with
-  `pick_verdict='strong' AND resume_file_ref IS NULL AND resume_error IS NULL`, oldest first, runs
-  `propose` (skipped if `resume_strategy` already exists) then `build`, per row in its own
-  `try/except`. A `ClaudeUsageLimitError` stops the drain without marking the row (it retries next
-  run). Any other exception writes `resume_error` (truncated message) so the row isn't retried every
-  run against the subscription window; clearing the column retries it. Returns the error count;
-  `__main__` exits 1 when nonzero so the unit's `OnFailure=` fires.
+- New `--drain` CLI mode: a preflight (token, `claude` binary, `soffice`) runs first and, if it
+  fails, returns without touching any row. Then `drain(limit=config.RESUME_WORKER_BATCH)` fetches
+  rows with `stage='saved' AND pick_verdict='strong' AND resume_file_ref IS NULL AND resume_error IS
+  NULL`, oldest first, checks the deadline, runs `propose` (skipped if `resume_strategy` exists)
+  then `build`, per row. Machine-wide failures (`ClaudeUsageLimitError`, any other
+  `ClaudeSubscriptionError`) stop the run **without marking** the row; per-row content failures
+  write `resume_error` so the row isn't retried every run; clearing the column retries it (finding
+  4). Returns the error count; `__main__` exits 1 when nonzero so the unit's `OnFailure=` fires.
+  Each build works in its own temp directory. No claim/lease protocol (accepted limitation: the
+  timer never overlaps itself; a concurrent manual build of the same row re-versions its documents,
+  which invalidates any approval).
+- `job_pick.py` alarms (exit 1 → the workflow's existing failure notification) when strong rows
+  have waited more than 24h on the subscription backend.
 
 ### `resume_scrub.py`
 

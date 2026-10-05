@@ -10,10 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-04-resume-subscription-transport-design.md`
 
+**Reviews folded in:** `docs/reviews/2026-10-04-resume-subscription-transport-review.md` (finding 1 accepted; 2 and 4 already covered; 3 rejected: `claude` is a native binary on both machines) and `docs/reviews/2026-10-04-resume-subscription-independent-review.md` (findings 1-4 and 6 accepted, 5 partly; see "Known limitations").
+
 ## Global Constraints
 
 - Never pass `--bare` to `claude` (it ignores OAuth; the subscription login would silently not apply).
-- The child process env must never contain `ANTHROPIC_API_KEY` on the subscription path.
+- The child process env is an explicit **allowlist** (OS basics, locale, proxy/CA settings, `CLAUDE_CODE_OAUTH_TOKEN`, plus the two vars the module sets). Never inherited wholesale: no `ANTHROPIC_*` credential/endpoint override, no `CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`, no app secrets.
+- `config.RESUME_CLAUDE_BACKEND` is read from the `RESUME_CLAUDE_BACKEND` env var and **defaults to `"api"`**. Only `resume-worker.service` sets `subscription`; GitHub Actions switches by a deliberate workflow edit in Task 10, after the worker is proven.
+- `billing='subscription'` records the auth route, not a guarantee of no charge. Task 10 requires the operator to verify paid usage credits are off before the worker runs unattended.
 - `CLAUDE_CODE_OAUTH_TOKEN` is never written by code or by an agent; the operator puts it in `/etc/job-agent/claude.env` (root:root 0600) or their own shell. Only `resume-worker.service` loads that file.
 - No watermark-removal step, tool, or prompt is added anywhere (spec, "Verified facts"). The cover letter stays Claude-written (option 3).
 - Allowed attribution words: "Claude", "Claude Code", "Anthropic" (operator's own skills, and a possible target company).
@@ -22,6 +26,11 @@
 - Repo conventions (CLAUDE.md): no type annotations, `# ── Section ──` banners, no docstrings on `_private` helpers, log format `[MARKER] | ... | ...`, every change ships with tests, outbound calls mocked in tests.
 - Migration timestamp `20261005000000` (sorts after PR #11's live `20261004*` migrations).
 - Work on branch `feat/resume-subscription`; open a PR; do not push straight to `main`.
+
+## Known limitations (accepted, not built)
+
+- **No claim/lease on resume builds.** `resume-worker.service` is a oneshot timer job (never overlaps itself) and runs under `PrivateTmp`; a manual `--build` of the same row on the Mac at the same moment would upload twice to the same storage paths, last writer wins, and `set_resume_files` bumps `documents_version`, which invalidates any approval (the safe direction). Single operator; revisit if a second worker host is added.
+- **No per-row retry counter.** Machine-wide failures stop the run without marking rows (Task 6); only per-row content failures set `resume_error`, which the operator clears to retry.
 
 ## Review Focus
 
@@ -48,9 +57,11 @@
 In `config.py`, directly after `RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0`:
 
 ```python
-# Resume generation runs on the operator's Claude subscription through Claude Code's headless
-# mode (claude_subscription.py), not the API key. "api" restores the anthropic-client path.
-RESUME_CLAUDE_BACKEND = "subscription"
+# "subscription": resume generation runs on the operator's Claude subscription through Claude
+# Code's headless mode (claude_subscription.py). "api": the pay-as-you-go anthropic client.
+# Defaults to "api" so merging changes nothing; only resume-worker.service sets "subscription",
+# and GitHub Actions opts in by setting it in jobright_pull.yml once the worker is proven.
+RESUME_CLAUDE_BACKEND = os.environ.get("RESUME_CLAUDE_BACKEND", "api")
 CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH", "claude")
 CLAUDE_CLI_TIMEOUT_SECONDS = 300
 RESUME_WORKER_BATCH = 3
@@ -125,14 +136,26 @@ def test_system_prompt_replaces_the_default(run):
     assert argv[argv.index("--system-prompt") + 1] == "Be terse."
 
 
-def test_child_env_drops_api_key_and_isolates_config(run, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
+def test_child_env_isolates_config_and_keeps_the_token(run, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
     claude_subscription.complete("hi")
     env = run.call_args.kwargs["env"]
-    assert "ANTHROPIC_API_KEY" not in env
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-token"
     assert env["DISABLE_AUTOUPDATER"] == "1"
+    assert env["PATH"] == "/usr/bin" and env["HTTPS_PROXY"] == "http://proxy:3128"
     assert env["CLAUDE_CONFIG_DIR"] != run.call_args.kwargs["cwd"]
+
+
+@pytest.mark.parametrize("var", [
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    "AWS_ACCESS_KEY_ID", "SUPABASE_ANON_KEY", "GMAIL_APP_PASSWORD", "NODE_OPTIONS",
+])
+def test_child_env_never_inherits_a_conflicting_or_secret_variable(run, monkeypatch, var):
+    monkeypatch.setenv(var, "must-not-leak")
+    claude_subscription.complete("hi")
+    assert var not in run.call_args.kwargs["env"]
 
 
 def test_cwd_and_config_dir_are_empty_and_removed(mocker, token):
@@ -177,6 +200,11 @@ def test_nonzero_exit_with_garbage_stdout_raises(mocker, token):
                  return_value=_completed("not json", returncode=1, stderr="boom"))
     with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="boom"):
         claude_subscription.complete("hi")
+
+
+def test_runs_in_its_own_process_group_so_a_timeout_kills_children(run):
+    claude_subscription.complete("hi")
+    assert run.call_args.kwargs["start_new_session"] is True
 
 
 def test_timeout_raises_subscription_error(mocker, token):
@@ -255,8 +283,10 @@ Every call strips all ambient context: an empty working directory and an empty C
 (so no CLAUDE.md, memory, plugins, hooks or keychain login), --strict-mcp-config and
 --setting-sources "" (no MCP servers, no settings), and --tools "" (text only). Measured
 2026-10-04 on the operator's Mac: without these a one-word call loaded ~224K context tokens; with
-them ~6.5K. ANTHROPIC_API_KEY is removed from the child env because Claude Code bills an API key
-in preference to the subscription whenever one is present. Never pass --bare: it ignores OAuth.
+them ~6.5K. The child env is an allowlist (_ENV_ALLOW): Claude Code bills an API key, an alternate auth
+token, a custom endpoint or a cloud provider in preference to the subscription whenever one is
+configured. Never pass --bare: it ignores OAuth. start_new_session puts the CLI in its own process
+group so a timeout can't leave children running.
 
 Auth is CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), which the caller's environment must
 already hold. Raises on every failure -- resume_agent's pipeline is raise-on-failure.
@@ -317,8 +347,17 @@ def _argv(model, system):
     ]
 
 
+# An allowlist, not a denylist: Claude Code honours alternate credentials (ANTHROPIC_API_KEY,
+# ANTHROPIC_AUTH_TOKEN), endpoint overrides (ANTHROPIC_BASE_URL) and provider switches
+# (CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY), any of which would silently route around the
+# subscription. It also keeps this process's app secrets (Supabase, Gmail) out of the CLI.
+_ENV_ALLOW = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "TZ",
+              "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+              "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
 def _child_env(config_dir):
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOW or k.startswith("LC_")}
     env["CLAUDE_CONFIG_DIR"] = config_dir
     env["DISABLE_AUTOUPDATER"] = "1"
     return env
@@ -359,7 +398,7 @@ def complete(prompt, system=None, model=None):
             proc = subprocess.run(
                 _argv(model or config.RESUME_MODEL, system), input=prompt, capture_output=True,
                 text=True, timeout=config.CLAUDE_CLI_TIMEOUT_SECONDS, cwd=workdir,
-                env=_child_env(config_dir),
+                env=_child_env(config_dir), start_new_session=True,
             )
         except subprocess.TimeoutExpired as exc:
             raise ClaudeSubscriptionError(f"claude CLI timed out after {exc.timeout}s") from exc
@@ -665,7 +704,24 @@ def test_lint_cover_letter_flags_chat_preamble_so_build_regenerates(mocker):
 
 (`resume_lint` must be imported at the top of the test file if it isn't already: `import resume_lint`.)
 
-Also add `mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")` as the first line of the existing `test_propose_writes_strategy_to_db` and `test_propose_strips_markdown_json_fence_before_parsing`, since they assert API-priced cost.
+Also add `mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")` as the first line of the existing `test_propose_writes_strategy_to_db` and `test_propose_strips_markdown_json_fence_before_parsing`, since they assert API-priced cost (the default is already `"api"`, but pin it so a developer's shell env can't flip the test).
+
+Skills group labels are the one piece of Claude-written text that renders on the resume (independent review, finding 6). Constrain them in `_check_skills_governance`; append:
+
+```python
+@pytest.mark.parametrize("label,ok", [
+    ("Data & Tools", True),
+    ("Product, Analytics", True),
+    ("AI/ML Platforms", True),
+    ("Strategic Leadership And Vision Setting", False),     # > 4 words
+    ("Tools I'm great at!", False),                          # disallowed characters
+    ("Generated with Claude", False),                        # attribution
+])
+def test_skills_group_labels_are_short_plain_and_unattributed(label, ok):
+    skills = {"spine": ["SQL"], "swap_pool": [], "banned": []}
+    strategy = {"skills_groups": [{"label": label, "skills": ["SQL"]}]}
+    assert (resume_agent._check_skills_governance(skills, strategy) == []) is ok
+```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -742,6 +798,24 @@ def _check_attribution(text):
         violations.append(f"ends with a chat sign-off: {lines[-1][:60]!r}")
     return violations
 ```
+
+In `_check_skills_governance`, inside the `for group in ...` loop before the skills loop, add:
+
+```python
+        label = group.get("label", "")
+        if len(label.split()) > 4 or not _LABEL_CHARS.fullmatch(label):
+            violations.append(f"skills group label {label!r} must be 1-4 plain words")
+        violations += [f"skills group label {label!r}: {v}" for v in _check_attribution(label)]
+```
+
+and next to `_ATTRIBUTION_PHRASES`:
+
+```python
+# Skills group labels are the only model-written text rendered on the resume itself.
+_LABEL_CHARS = re.compile(r"[A-Za-z0-9 &/,+.-]{1,40}")
+```
+
+Also add one line to `_STRATEGY_PROMPT`'s skills instructions: `Each skills group label is 1-4 plain words (letters, digits, & / , + . -), e.g. "Data & Tools".`
 
 In `propose`, right after the `strategy = json.loads(...)` try/except, add:
 
@@ -958,13 +1032,15 @@ def convert_to_pdf(docx_path, output_dir):
 
 `config.RESUME_SOFFICE_TIMEOUT_SECONDS` is 30; a fresh profile adds a few seconds of first-run setup per call. Raise it to 90 in `config.py` and note why in its comment.
 
+Also give each `build()` call its own working directory instead of fixed `/tmp/resume_<id>.docx` / `/tmp/cover_letter_<id>.docx` paths: at the top of `build`, `workdir = tempfile.mkdtemp(prefix=f"resume-{application_id}-")`, use `os.path.join(workdir, "resume.docx")` / `"cover_letter.docx"` and `workdir` as the PDF output dir, and wrap the rest of the function in `try: ... finally: shutil.rmtree(workdir, ignore_errors=True)` (uploads read the files before the `finally` runs). Add `import shutil, tempfile` to `resume_agent.py`. Test: assert `fit_to_one_page` is called with a path outside `/tmp/resume_` and that the directory no longer exists after `build` returns or raises.
+
 - [ ] **Step 9: Run tests, then commit**
 
 Run: `.venv/bin/python -m pytest tests/test_resume_build.py tests/test_resume_agent.py -q`
 Expected: all pass.
 
 ```bash
-git add resume_build.py config.py tests/test_resume_build.py
+git add resume_build.py resume_agent.py config.py tests/test_resume_build.py tests/test_resume_agent.py
 git commit -m "fix(resume): throwaway LibreOffice profile per conversion; fail when no PDF is written"
 ```
 
@@ -1039,10 +1115,27 @@ def _pdf_with_fonts(path, base_fonts):
     return path
 
 
-def test_embedded_font_families_strips_subset_prefix_and_style(tmp_path):
-    path = _pdf_with_fonts(str(tmp_path / "f.pdf"),
-                           ["/BAAAAA+Calibri-Bold", "/CAAAAA+Calibri", "/DAAAAA+Calibri,Italic"])
-    assert resume_scrub.embedded_font_families(path) == {"Calibri"}
+@pytest.mark.parametrize("names", [
+    ["/AAAAAA+Calibri"], ["/BAAAAA+Calibri-Bold"], ["/CAAAAA+Calibri-Italic"],
+    ["/DAAAAA+Calibri-BoldItalic"], ["/EAAAAA+Calibri,Bold"], ["/Calibri"],
+])
+def test_embedded_font_families_normalizes_every_face(tmp_path, names):
+    assert resume_scrub.embedded_font_families(_pdf_with_fonts(str(tmp_path / "f.pdf"), names)) == {"Calibri"}
+
+
+def test_embedded_font_families_finds_fonts_nested_in_form_xobjects(tmp_path):
+    path = str(tmp_path / "n.pdf")
+    pdf = pikepdf.new()
+    pdf.add_blank_page(page_size=(200, 200))
+    font = pdf.make_indirect(pikepdf.Dictionary(
+        Type=pikepdf.Name.Font, Subtype=pikepdf.Name.TrueType, BaseFont=pikepdf.Name("/XYZABC+Carlito")))
+    form = pdf.make_stream(b"")
+    form.Type, form.Subtype = pikepdf.Name.XObject, pikepdf.Name.Form
+    form.BBox = [0, 0, 10, 10]
+    form.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font))
+    pdf.pages[0].Resources = pikepdf.Dictionary(XObject=pikepdf.Dictionary(Fm1=form))
+    pdf.save(path)
+    assert resume_scrub.embedded_font_families(path) == {"Carlito"}
 
 
 def test_check_fonts_flags_libreoffice_substitutes(tmp_path):
@@ -1073,6 +1166,8 @@ def test_build_refuses_to_upload_when_pdf_embeds_a_substitute_font(mocker):
         resume_agent.build(1)
     upload.assert_not_called()
 ```
+
+Add `resume_build.pdf_text(pdf_path)` (pypdf is already imported there for `page_count`): `return "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)`, with a test that builds a one-page PDF via pikepdf and asserts it returns a string. In the `build` test above, also mock `resume_build.pdf_text` → `"Dear team"`; add a second test where it returns `"Dear\u200b team"` and `build` raises `LintFailedError` matching `invisible`.
 
 (If no happy-path `build` test exists, mock in this order: `db.get_job_application` → a row with a valid `resume_strategy`; `resume_agent._load_data` → small dicts; `resume_build.fit_to_one_page` → `("/tmp/r.pdf", "standard")`; `resume_scrub.scrub_pdf_metadata`; `resume_scrub.read_pdf_metadata_text`/`read_pdf_xmp_text` → `""`; `resume_agent._call_claude` → a clean letter; `resume_build.convert_to_pdf` → `"/tmp/c.pdf"`; `resume_build.new_document` → `MagicMock()`; `resume_agent._track_usage` → `0.0`.)
 
@@ -1138,15 +1233,15 @@ def read_pdf_xmp_text(pdf_path):
 
 
 def embedded_font_families(pdf_path):
-    """Font family names embedded on any page, with the 6-letter subset prefix and style suffix
-    ("-Bold", ",Italic") removed: "/BAAAAA+Calibri-Bold" -> "Calibri"."""
+    """Family names of every font object in the file -- page resources, form XObjects, anything
+    nested -- with the 6-letter subset prefix and style suffix ("-Bold", ",Italic") removed:
+    "/BAAAAA+Calibri-Bold" -> "Calibri"."""
     families = set()
     with pikepdf.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            fonts = page.get("/Resources", {}).get("/Font", {})
-            for font in fonts.values():
-                base = str(font.get("/BaseFont", "")).lstrip("/")
-                base = base.split("+", 1)[-1]
+        for obj in pdf.objects:
+            if isinstance(obj, pikepdf.Dictionary) and obj.get("/Type") == pikepdf.Name.Font \
+                    and "/BaseFont" in obj:
+                base = str(obj.BaseFont).lstrip("/").split("+", 1)[-1]
                 families.add(base.split("-")[0].split(",")[0])
     families.discard("")
     return families
@@ -1173,6 +1268,12 @@ def _verify_clean_pdf(pdf_path, label):
     meta_text = resume_scrub.read_pdf_metadata_text(pdf_path) + " " + resume_scrub.read_pdf_xmp_text(pdf_path)
     problems = [f"metadata fingerprint '{fp}'" for fp in resume_scrub.verify_no_fingerprints(meta_text)]
     problems += resume_scrub.check_fonts(pdf_path, allowed={config.RESUME_FONT_NAME})
+    # The rendered text itself, not just what went in: catches invisible characters from stored
+    # strategies or source data, and attribution that slipped past the per-response checks.
+    text = resume_build.pdf_text(pdf_path)
+    if claude_subscription.sanitize(text) != text.replace("\u00a0", " ").replace("\u202f", " "):
+        problems.append("rendered text contains invisible control/format characters")
+    problems += [p for p in _check_attribution(text) if "tool attribution" in p]
     if problems:
         raise LintFailedError(f"{label} PDF is not clean: {problems}")
 ```
@@ -1210,6 +1311,8 @@ git commit -m "fix(resume): scrub no longer stamps pikepdf; check XMP and embedd
 
 - [ ] **Step 1: Write the failing tests**
 
+Every other `drain` test in this step must also start with `mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])` and `mocker.patch.object(resume_agent, "_check_deadline", return_value=True)`; add those two lines to each.
+
 Create `tests/test_db_resume_queue.py`:
 
 ```python
@@ -1231,7 +1334,8 @@ def _client(mocker, data):
 def test_get_strong_applications_without_resume_filters_and_limits(mocker):
     chain = _client(mocker, [{"id": 3}])
     assert db.get_strong_applications_without_resume(2) == [{"id": 3}]
-    chain.eq.assert_called_with("pick_verdict", "strong")
+    eq_calls = {c.args for c in chain.eq.call_args_list}
+    assert ("pick_verdict", "strong") in eq_calls and ("stage", "saved") in eq_calls
     is_calls = {c.args for c in chain.is_.call_args_list}
     assert ("resume_file_ref", "null") in is_calls and ("resume_error", "null") in is_calls
     chain.order.assert_called_with("created_at", desc=False)
@@ -1302,9 +1406,49 @@ def test_drain_survives_a_failing_error_write(mocker):
 
 
 def test_drain_uses_configured_batch_by_default(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
     get = mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[])
     resume_agent.drain()
     get.assert_called_once_with(config.RESUME_WORKER_BATCH)
+
+
+def test_drain_preflight_failure_touches_no_rows(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=["CLAUDE_CODE_OAUTH_TOKEN is not set"])
+    get = mocker.patch.object(db, "get_strong_applications_without_resume")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    get.assert_not_called()
+    set_error.assert_not_called()
+
+
+def test_drain_transport_failure_stops_the_run_without_marking(mocker):
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    propose = mocker.patch.object(resume_agent, "propose",
+                                  side_effect=claude_subscription.ClaudeSubscriptionError("claude CLI failed (exit 1): auth"))
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    propose.assert_called_once_with(1)
+    set_error.assert_not_called()
+
+
+def test_drain_checks_the_deadline_even_when_a_strategy_exists(mocker):
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 4, "company": "A", "resume_strategy": {"x": 1}}])
+    mocker.patch.object(resume_agent, "_check_deadline", return_value=False)
+    build = mocker.patch.object(resume_agent, "build")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    build.assert_not_called()
+    assert "deadline" in set_error.call_args.args[1].lower()
+
+
+def test_worker_preflight_reports_missing_prereqs(mocker, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    mocker.patch("resume_agent.shutil.which", return_value=None)
+    problems = resume_agent._worker_preflight()
+    assert any("CLAUDE_CODE_OAUTH_TOKEN" in p for p in problems)
+    assert any("soffice" in p for p in problems)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1318,10 +1462,11 @@ Expected: FAIL (missing functions).
 
 ```python
 def get_strong_applications_without_resume(limit):
-    """Rows job_pick.py scored 'strong' that have no built resume and no recorded resume_error,
-    oldest first -- the Beelink resume worker's queue (resume_agent.py --drain)."""
+    """Rows at stage='saved' that job_pick.py scored 'strong', with no built resume and no
+    recorded resume_error, oldest first -- the Beelink resume worker's queue
+    (resume_agent.py --drain). Applied/rejected/withdrawn rows are never rebuilt."""
     result = _retry(lambda: get_client().table("job_applications")
-                     .select("*").eq("pick_verdict", "strong")
+                     .select("*").eq("pick_verdict", "strong").eq("stage", "saved")
                      .is_("resume_file_ref", "null").is_("resume_error", "null")
                      .order("created_at", desc=False).limit(limit).execute())
     return result.data or []
@@ -1342,23 +1487,46 @@ def set_resume_error(application_id, message):
 ```python
 # ── Worker (Beelink resume-worker.service) ─────────────────────────────────────────
 
+def _worker_preflight():
+    problems = []
+    if config.RESUME_CLAUDE_BACKEND == "subscription" and not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        problems.append("CLAUDE_CODE_OAUTH_TOKEN is not set")
+    if config.RESUME_CLAUDE_BACKEND == "subscription" and not shutil.which(config.CLAUDE_CLI_PATH):
+        problems.append(f"claude CLI not found at {config.CLAUDE_CLI_PATH}")
+    if not shutil.which("soffice"):
+        problems.append("soffice (LibreOffice) not found")
+    return problems
+
+
 def drain(limit=None):
     """Build resumes for strong-verdict rows that don't have one yet: propose (unless a strategy
-    already exists) then build, one row at a time. A subscription usage limit stops the run
-    without marking anything (retried next run); any other failure is written to resume_error so
-    the row isn't retried against the subscription window every run. Returns the error count."""
+    already exists) then build, one row at a time. Machine-wide problems -- a failed preflight,
+    a usage limit, or any Claude CLI/auth/timeout failure -- stop the run without marking a row,
+    so fixing the machine resumes the queue; a usage limit isn't counted as an error. Per-row
+    content failures (bad strategy, lint, deadline passed, page overflow) are written to
+    resume_error so the row isn't retried every run. Returns the error count."""
+    problems = _worker_preflight()
+    if problems:
+        log.warning(f"[RESUME] | drain | preflight failed, no rows touched: {problems}")
+        return 1
     rows = db.get_strong_applications_without_resume(limit or config.RESUME_WORKER_BATCH)
     log.info(f"[RESUME] | drain | START | rows={len(rows)}")
     built = errors = 0
     for job in rows:
         job_id = job.get("id")
         try:
+            if not _check_deadline(job):
+                raise DeadlinePassedError(f"row {job_id}'s deadline has passed")
             if not job.get("resume_strategy"):
                 propose(job_id)
             build(job_id)
             built += 1
         except claude_subscription.ClaudeUsageLimitError as exc:
             log.warning(f"[RESUME] | {job_id} | {job.get('company')} | usage limit, stopping drain: {exc}")
+            break
+        except claude_subscription.ClaudeSubscriptionError as exc:
+            errors += 1
+            log.warning(f"[RESUME] | {job_id} | {job.get('company')} | Claude CLI failure, stopping drain: {exc}")
             break
         except Exception as exc:
             errors += 1
@@ -1392,7 +1560,7 @@ Replace the `__main__` argparse block:
         sys.exit(1 if drain() else 0)
 ```
 
-Add `import sys` to the stdlib imports.
+Add `import shutil` and `import sys` to the stdlib imports (`shutil` may already be there from Task 4).
 
 Also update the module docstring's Usage block:
 
@@ -1481,6 +1649,8 @@ In `job_pick.py`, add `import config` if absent, and replace the `if result["ver
 
 Initialize `queued = 0` next to `triggered = 0`, and add `| resume_queued={queued}` to the `DONE` log line after `resume_triggered={triggered}`.
 
+Queue-age alarm (independent review, finding 3): at the end of `run()`, when the backend is `subscription`, count strong rows still waiting after `config.RESUME_QUEUE_STALE_HOURS` (new constant, `24`) and return it; `__main__` exits 1 when it's nonzero, so `jobright_pull.yml`'s existing `if: failure()` → `notify_failure.py` step alerts the operator that the Beelink worker isn't consuming. Add `db.count_stale_strong_without_resume(hours)` (same filters as `get_strong_applications_without_resume` plus `.lt("updated_at", <now - hours>)`, `count="exact"`, returns `result.count or 0`). Tests: `run()` returns the stale count on the subscription backend and `0` (no DB call) on `api`; `db.count_stale_strong_without_resume` filters as described. `job_pick.run()` previously returned `None`; check `grep -rn "job_pick.run()" .` for callers that relied on that (none are expected).
+
 Update `run()`'s docstring to: `"""Batch-score unscored job applications. Strong verdicts are queued for the Beelink resume worker (subscription backend) or built immediately (api backend)."""`
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1525,6 +1695,7 @@ def test_resume_worker_runs_drain_as_jobagent_with_its_own_token_file():
     assert "EnvironmentFile=/etc/job-agent/base.env" in unit
     assert "EnvironmentFile=/etc/job-agent/claude.env" in unit
     assert "Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude" in unit
+    assert "Environment=RESUME_CLAUDE_BACKEND=subscription" in unit
     assert "TimeoutStartSec=3600" in unit
     assert "OnFailure=notify-failure@%n.service" in unit
 
@@ -1551,6 +1722,7 @@ def test_provision_installs_worker_prereqs_but_never_enables_the_worker_timer():
     assert "libreoffice-writer-nogui" in code
     assert "claude.ai/install.sh" in code
     assert "/usr/local/share/fonts/calibri" in code
+    assert "fc-match" in code
     assert "enable --now resume-worker" not in code and "enable resume-worker" not in code
 ```
 
@@ -1584,6 +1756,7 @@ EnvironmentFile=/etc/job-agent/base.env
 EnvironmentFile=/etc/job-agent/claude.env
 Environment=HOME=/var/lib/job-agent
 Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
+Environment=RESUME_CLAUDE_BACKEND=subscription
 Environment=APPLY_AGENT_ARMED=
 ExecStart=/opt/job-agent/.venv/bin/python resume_agent.py --drain
 TimeoutStartSec=3600
@@ -1630,11 +1803,12 @@ CLAUDE_CODE_OAUTH_TOKEN=
 # Calibri is the operator's own licensed font (from Microsoft Word on the Mac), copied here by
 # hand. Without it LibreOffice embeds Carlito and resume_agent's font check refuses every build.
 FONT_DIR=/usr/local/share/fonts/calibri
-if [ ! -f "$FONT_DIR/Calibri.ttf" ]; then
-    echo "missing $FONT_DIR/Calibri.ttf -- copy Calibri*.ttf from the Mac (RUNBOOK, top)" >&2
+[ -d "$FONT_DIR" ] && fc-cache -f "$FONT_DIR" >/dev/null
+# fc-match, not a file check: proves fontconfig actually resolves the family LibreOffice will ask for.
+if [ "$(fc-match -f '%{family}' Calibri)" != "Calibri" ]; then
+    echo "fontconfig does not resolve Calibri -- copy Calibri*.ttf from the Mac into $FONT_DIR (RUNBOOK, top)" >&2
     exit 1
 fi
-fc-cache -f "$FONT_DIR" >/dev/null
 ```
 
 3. After the venv block, add:
@@ -1687,22 +1861,25 @@ Add `claude_subscription.py` to the Module layout list (after `candidate_profile
 ```markdown
 **Subscription transport (2026-10-04).** `resume_agent._call_claude` runs on the operator's
 Claude subscription via `claude_subscription.complete()` (`claude -p`), selected by
-`config.RESUME_CLAUDE_BACKEND` (`"subscription"` default, `"api"` = old anthropic-client path).
-Every call strips ambient context (empty cwd + empty `CLAUDE_CONFIG_DIR`, `--strict-mcp-config
---setting-sources ""`, `--tools ""`) -- measured ~224K -> ~6.5K tokens per call -- and removes
-`ANTHROPIC_API_KEY` from the child env (Claude Code bills an API key over the subscription).
+`config.RESUME_CLAUDE_BACKEND` (env var, default `"api"`; `resume-worker.service` sets
+`"subscription"`, and `jobright_pull.yml` opts in after rollout). Every call strips ambient context
+(empty cwd + empty `CLAUDE_CONFIG_DIR`, `--strict-mcp-config --setting-sources ""`, `--tools ""`)
+-- measured ~224K -> ~6.5K tokens per call -- and passes the CLI an env **allowlist** (Claude Code
+prefers an API key, auth token, base URL or cloud provider over the subscription). `$0` on
+`billing='subscription'` rows assumes paid usage credits are off for the account.
 **Never `--bare`**: it ignores OAuth. Auth is `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`).
 Subscription usage is logged with `api_usage_log.billing='subscription'`, `cost_usd=0`.
-`job_pick.py` no longer zero-taps on the subscription backend; strong rows are built by the
+On the subscription backend `job_pick.py` queues instead of zero-tapping (and alarms after 24h); strong rows are built by the
 Beelink's `resume-worker.timer` (`resume_agent.py --drain`, `resume_error` stops retries; a usage
 limit stops the run unmarked). Every Claude response is `sanitize()`d (zero-width/bidi/control
 chars), `_check_attribution` hard-fails tool attribution and chat preambles/sign-offs, the scrub
 deletes the XMP packet and disables pikepdf's editor stamp (it used to write `pikepdf 10.x` as
 Producer on every PDF), and `check_fonts` refuses any embedded font other than
 `RESUME_FONT_NAME` (LibreOffice used to embed Carlito/Caladea/OpenSymbol, on the Mac too) --
-Calibri must be installed where `soffice` sees it. Claude's text is watermarked
-(anthropic.com/news/claude-text-watermark); the resume body is the operator's own
-`metrics.json` text so carries none; the cover letter is Claude-written and does. No
+Calibri must be installed where `soffice` sees it. Claude's text may be watermarked
+(anthropic.com/news/claude-text-watermark); resume bullets/skills are the operator's own text and
+only the 1-4-word skills group labels are model-written (governed); the cover letter is
+Claude-written. No
 watermark-removal step exists or will be added. Spec:
 docs/superpowers/specs/2026-10-04-resume-subscription-transport-design.md.
 ```
@@ -1763,6 +1940,8 @@ EOF
 
 Steps marked **(operator)** need Kishore (browser login, sudo password, signing key, his own fonts). Everything else an agent can run. Record results in the PR description.
 
+**Order matters (independent review, finding 3).** Merging is safe on its own: the backend defaults to `api`, so GitHub Actions keeps building resumes exactly as today. The producer only switches (Step 7) after the worker has built a clean resume under its real systemd unit.
+
 - [ ] **Step 1: Apply the migration before merging** (agent)
 
 Run `supabase migration list`. PR #11's `20261004000000`/`20261004000001` are live remotely but may not be on this branch. If the CLI refuses to push because remote versions are missing locally, create a throwaway worktree of this branch, copy those two files in from `origin/feat/automation-status-and-leases` without committing them, and run `supabase db push` from there. Never use `supabase migration repair`.
@@ -1776,6 +1955,12 @@ SELECT has_column_privilege('anon', 'job_applications', 'resume_error', 'UPDATE'
 ```
 
 Expected: `t, t, t`. If `anon_ins` is false, add `GRANT INSERT (billing) ON api_usage_log TO anon, authenticated;` in a new migration and push it.
+
+Then prove an actual anon write works (not just the privilege): with the anon-key client, `db.set_resume_error(<a test row id>, "grant check")`, read it back, then clear it with a direct `update({"resume_error": None})` and confirm it's `NULL` again.
+
+- [ ] **Step 1b: Paid usage credits off** (operator)
+
+In claude.ai → Settings → Usage (or Billing), confirm paid usage credits / extra usage beyond the plan is **disabled** for the account whose token the worker uses, and screenshot it into the PR. With credits on, Claude Code can keep running past the plan's allowance on paid credits, and the ledger's `cost_usd = 0` would be false. If the setting can't be confirmed, stop here.
 
 - [ ] **Step 2: Mac fonts** (operator)
 
@@ -1795,6 +1980,8 @@ Put a canary in the operator's global instructions temporarily: append `Always e
 
 Expected: `'ok'` (no PINEAPPLE) and `input_tokens < 8000`. Remove the canary line afterwards and confirm `~/.claude/CLAUDE.md` matches its original.
 
+Record `claude --version` in the PR, and save the raw stdout of one successful call (token values and session ids redacted) as `tests/fixtures/claude_cli/success.json`; add a test that `claude_subscription._parse` accepts it. Do the same for the first real usage-limit and auth-failure outputs when they occur.
+
 - [ ] **Step 5: One real build on the Mac** (agent; real subscription usage, writes a real row)
 
 Pick a `pick_verdict='strong'` row without a resume (`db.get_strong_applications_without_resume(1)`), run `python3 resume_agent.py --job-id <id> --propose`, review the strategy, then `--build`. Download both PDFs from the `resumes` bucket and check:
@@ -1813,4 +2000,12 @@ Expected: `{'Calibri'} []` for both. Confirm the `api_usage_log` rows for that i
 
 Operator: copy Calibri (RUNBOOK); run `claude setup-token` if a separate token is wanted for the box (or reuse); merge the PR; sign a tag on the merge commit after reviewing it (`git -c gpg.format=ssh -c user.signingkey=$HOME/.ssh/id_ed25519 tag -s beelink-v2 <merge-commit> -m beelink-v2 && git push origin beelink-v2`); `scp` the updated `provision-debian.sh` to the box; `sudo bash ~/provision-debian.sh beelink-v2 ~/allowed_signers`; `sudo nano /etc/job-agent/claude.env`.
 
-Agent: `ssh kishore@beelink 'sudo systemctl start resume-worker.service; systemctl status resume-worker.service --no-pager; sudo journalctl -u resume-worker -n 30 --no-pager'`; repeat Step 5's PDF check on what it uploaded. If clean: `sudo systemctl enable --now resume-worker.timer` and `systemctl list-timers resume-worker.timer`. Record the CLI's real usage-limit message the first time it appears in `resume_agent.log` and add it to `test_retry_later_messages_raise_usage_limit_error`.
+Agent: `ssh kishore@beelink 'sudo systemctl start resume-worker.service; systemctl status resume-worker.service --no-pager; sudo journalctl -u resume-worker -n 30 --no-pager'`. This is the canary under the real hardened unit (PrivateTmp, ProtectHome, MemoryMax, jobagent). Repeat Step 5's PDF check on what it uploaded. If clean: `sudo systemctl enable --now resume-worker.timer` and `systemctl list-timers resume-worker.timer`. Record the CLI's real usage-limit message the first time it appears in `resume_agent.log` and add it to `test_retry_later_messages_raise_usage_limit_error`.
+
+- [ ] **Step 7: Switch the producer** (agent, after Step 6 is clean)
+
+Add `RESUME_CLAUDE_BACKEND: subscription` to the env of the "Score newly-discovered jobs" step in `.github/workflows/jobright_pull.yml`, commit, push. From the next run on, strong verdicts queue for the Beelink and `job_pick` alarms if any wait more than 24h.
+
+- [ ] **Step 8: Rollback procedure** (document in the PR; run only if needed)
+
+Remove that env line from `jobright_pull.yml` (new strong verdicts build in GitHub Actions again on the API key), then build anything already queued with the API path on the Mac: `RESUME_CLAUDE_BACKEND=api python3 resume_agent.py --drain` (repeat until it reports `rows=0`). Disable the timer on the box: `sudo systemctl disable --now resume-worker.timer`.
