@@ -7,6 +7,7 @@ unattended.
 Usage:
   python3 resume_agent.py --job-id 42 --propose
   python3 resume_agent.py --job-id 42 --build
+  python3 resume_agent.py --drain        # Beelink resume-worker.service: strong rows without a resume
 """
 
 import argparse
@@ -16,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import unicodedata
 
@@ -432,6 +434,60 @@ def run_build(application_id):
     print(f"Cover letter: {result['cover_letter_file_ref']}")
 
 
+# ── Worker (Beelink resume-worker.service) ─────────────────────────────────────────
+
+def _worker_preflight():
+    problems = []
+    if config.RESUME_CLAUDE_BACKEND == "subscription" and not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        problems.append("CLAUDE_CODE_OAUTH_TOKEN is not set")
+    if config.RESUME_CLAUDE_BACKEND == "subscription" and not shutil.which(config.CLAUDE_CLI_PATH):
+        problems.append(f"claude CLI not found at {config.CLAUDE_CLI_PATH}")
+    if not shutil.which("soffice"):
+        problems.append("soffice (LibreOffice) not found")
+    return problems
+
+
+def drain(limit=None):
+    """Build resumes for strong-verdict rows that don't have one yet: propose (unless a strategy
+    already exists) then build, one row at a time. Machine-wide problems -- a failed preflight,
+    a usage limit, or any Claude CLI/auth/timeout failure -- stop the run without marking a row,
+    so fixing the machine resumes the queue; a usage limit isn't counted as an error. Per-row
+    content failures (bad strategy, lint, deadline passed, page overflow) are written to
+    resume_error so the row isn't retried every run. Returns the error count."""
+    problems = _worker_preflight()
+    if problems:
+        log.warning(f"[RESUME] | drain | preflight failed, no rows touched: {problems}")
+        return 1
+    rows = db.get_strong_applications_without_resume(limit or config.RESUME_WORKER_BATCH)
+    log.info(f"[RESUME] | drain | START | rows={len(rows)}")
+    built = errors = 0
+    for job in rows:
+        job_id = job.get("id")
+        try:
+            if not _check_deadline(job):
+                raise DeadlinePassedError(f"row {job_id}'s deadline has passed")
+            if not job.get("resume_strategy"):
+                propose(job_id)
+            build(job_id)
+            built += 1
+        except claude_subscription.ClaudeUsageLimitError as exc:
+            log.warning(f"[RESUME] | {job_id} | {job.get('company')} | usage limit, stopping drain: {exc}")
+            break
+        except claude_subscription.ClaudeSubscriptionError as exc:
+            errors += 1
+            log.warning(f"[RESUME] | {job_id} | {job.get('company')} | Claude CLI failure, stopping drain: {exc}")
+            break
+        except Exception as exc:
+            errors += 1
+            log.warning(f"[RESUME] | {job_id} | {job.get('company')} | drain failed: {exc}")
+            try:
+                db.set_resume_error(job_id, f"{type(exc).__name__}: {exc}")
+            except Exception as write_exc:
+                log.warning(f"[RESUME] | {job_id} | could not record resume_error: {write_exc}")
+    log.info(f"[RESUME] | drain | DONE | built={built} | errors={errors}")
+    return errors
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         filename="resume_agent.log",
@@ -440,13 +496,18 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M",
     )
     parser = argparse.ArgumentParser()
-    parser.add_argument("--job-id", type=int, required=True)
+    parser.add_argument("--job-id", type=int)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--propose", action="store_true")
     mode.add_argument("--build", action="store_true")
+    mode.add_argument("--drain", action="store_true")
     args = parser.parse_args()
+    if (args.propose or args.build) and args.job_id is None:
+        parser.error("--job-id is required with --propose/--build")
 
     if args.propose:
         run_propose(args.job_id)
     elif args.build:
         run_build(args.job_id)
+    elif args.drain:
+        sys.exit(1 if drain() else 0)

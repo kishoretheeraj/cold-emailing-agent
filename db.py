@@ -749,6 +749,27 @@ def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref
     return result.data[0] if result.data else None
 
 
+def get_strong_applications_without_resume(limit):
+    """Rows at stage='saved' that job_pick.py scored 'strong', with no built resume and no
+    recorded resume_error, oldest first -- the Beelink resume worker's queue
+    (resume_agent.py --drain). Applied/rejected/withdrawn rows are never rebuilt."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .select("*").eq("pick_verdict", "strong").eq("stage", "saved")
+                     .is_("resume_file_ref", "null").is_("resume_error", "null")
+                     .order("created_at", desc=False).limit(limit).execute())
+    return result.data or []
+
+
+def set_resume_error(application_id, message):
+    """Record why the resume worker gave up on a row, so it isn't retried every run. Clearing
+    the column re-queues the row."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"resume_error": str(message)[:1000],
+                              "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
 def upload_resume_file(storage_path, file_bytes, content_type):
     """Upload a built file to the resumes Storage bucket. Returns storage_path. Raises on failure --
     unlike the rest of this module's best-effort accessors, a failed upload must not look like success."""

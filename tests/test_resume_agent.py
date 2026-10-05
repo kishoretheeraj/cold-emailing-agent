@@ -525,3 +525,114 @@ def test_skills_group_labels_are_short_plain_and_unattributed(label, ok):
     skills = {"spine": ["SQL"], "swap_pool": [], "banned": []}
     strategy = {"skills_groups": [{"label": label, "skills": ["SQL"]}]}
     assert (resume_agent._check_skills_governance(skills, strategy) == []) is ok
+
+
+# ── drain ──────────────────────────────────────────────────────────────────────
+
+def _drain_ready(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
+    mocker.patch.object(resume_agent, "_check_deadline", return_value=True)
+
+
+def test_drain_runs_propose_then_build_per_row(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B", "resume_strategy": {"x": 1}}])
+    propose = mocker.patch.object(resume_agent, "propose")
+    build = mocker.patch.object(resume_agent, "build")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain(limit=3) == 0
+    propose.assert_called_once_with(1)
+    assert [c.args[0] for c in build.call_args_list] == [1, 2]
+    set_error.assert_not_called()
+
+
+def test_drain_records_error_and_continues(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    mocker.patch.object(resume_agent, "propose", side_effect=[ValueError("bad json"), None])
+    build = mocker.patch.object(resume_agent, "build")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    set_error.assert_called_once()
+    assert set_error.call_args.args[0] == 1 and "bad json" in set_error.call_args.args[1]
+    build.assert_called_once_with(2)
+
+
+def test_drain_marks_deadline_passed_rows(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 5, "company": "A"}])
+    mocker.patch.object(resume_agent, "propose", side_effect=resume_agent.DeadlinePassedError("passed"))
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    set_error.assert_called_once()
+
+
+def test_drain_stops_on_usage_limit_without_marking(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    propose = mocker.patch.object(resume_agent, "propose",
+                                  side_effect=claude_subscription.ClaudeUsageLimitError("usage limit reached"))
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 0
+    propose.assert_called_once_with(1)
+    set_error.assert_not_called()
+
+
+def test_drain_survives_a_failing_error_write(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    mocker.patch.object(resume_agent, "propose", side_effect=ValueError("x"))
+    mocker.patch.object(db, "set_resume_error", side_effect=RuntimeError("db down"))
+    assert resume_agent.drain() == 1
+
+
+def test_drain_uses_configured_batch_by_default(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
+    get = mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[])
+    resume_agent.drain()
+    get.assert_called_once_with(config.RESUME_WORKER_BATCH)
+
+
+def test_drain_preflight_failure_touches_no_rows(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=["CLAUDE_CODE_OAUTH_TOKEN is not set"])
+    get = mocker.patch.object(db, "get_strong_applications_without_resume")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    get.assert_not_called()
+    set_error.assert_not_called()
+
+
+def test_drain_transport_failure_stops_the_run_without_marking(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    propose = mocker.patch.object(resume_agent, "propose",
+                                  side_effect=claude_subscription.ClaudeSubscriptionError("claude CLI failed (exit 1): auth"))
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    propose.assert_called_once_with(1)
+    set_error.assert_not_called()
+
+
+def test_drain_checks_the_deadline_even_when_a_strategy_exists(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 4, "company": "A", "resume_strategy": {"x": 1}}])
+    mocker.patch.object(resume_agent, "_check_deadline", return_value=False)
+    build = mocker.patch.object(resume_agent, "build")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    build.assert_not_called()
+    assert "deadline" in set_error.call_args.args[1].lower()
+
+
+def test_worker_preflight_reports_missing_prereqs(mocker, monkeypatch):
+    monkeypatch.setattr(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    mocker.patch("resume_agent.shutil.which", return_value=None)
+    problems = resume_agent._worker_preflight()
+    assert any("CLAUDE_CODE_OAUTH_TOKEN" in p for p in problems)
+    assert any("soffice" in p for p in problems)
