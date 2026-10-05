@@ -70,7 +70,7 @@ def test_propose_writes_strategy_to_db(mocker):
     log_api_usage.assert_called_once_with(
         module="resume_agent", action="propose", model=config.RESUME_MODEL,
         input_tokens=100, output_tokens=50, cost_usd=pytest.approx(0.001050),
-        contact_id=None, job_application_id=1,
+        contact_id=None, job_application_id=1, billing="api",
     )
 
 
@@ -285,7 +285,7 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     log_api_usage.assert_called_once_with(
         module="resume_agent", action="cover_letter", model=config.RESUME_MODEL,
         input_tokens=100, output_tokens=50, cost_usd=pytest.approx(0.001050),
-        contact_id=None, job_application_id=1,
+        contact_id=None, job_application_id=1, billing="api",
     )
 
 

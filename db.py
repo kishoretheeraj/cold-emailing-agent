@@ -779,7 +779,7 @@ def record_resume_usage(application_id, tokens_input, tokens_output, cost_usd):
 
 
 def log_api_usage(module, action, model, input_tokens, output_tokens, cost_usd,
-                   contact_id=None, job_application_id=None):
+                   contact_id=None, job_application_id=None, billing="api"):
     """Insert one row into the system-wide api_usage_log ledger. Raises on failure -- callers
     (usage_tracking.log_usage) are responsible for the best-effort wrapping, since this accessor
     follows the rest of db.py's pattern of surfacing real failures rather than swallowing them."""
@@ -788,5 +788,9 @@ def log_api_usage(module, action, model, input_tokens, output_tokens, cost_usd,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost_usd,
         "contact_id": contact_id, "job_application_id": job_application_id,
     }
+    # 'api' is the column default: leaving it out keeps every existing writer working even before
+    # migration 20261005000000 lands.
+    if billing != "api":
+        payload["billing"] = billing
     result = _retry(lambda: get_client().table("api_usage_log").insert(payload).execute())
     return result.data[0] if result.data else None

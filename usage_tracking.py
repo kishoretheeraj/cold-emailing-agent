@@ -20,16 +20,19 @@ def calculate_cost(model, input_tokens, output_tokens):
     return input_tokens / 1_000_000 * input_price + output_tokens / 1_000_000 * output_price
 
 
-def log_usage(module, action, model, usage, contact_id=None, job_application_id=None):
+def log_usage(module, action, model, usage, contact_id=None, job_application_id=None, billing="api"):
     """Compute cost and write one api_usage_log row. Best-effort -- never raises, matching this
     repo's enrichment-never-costs-a-draft posture (the caller is mid-generation; a logging or
-    pricing-table gap must not block or fail it)."""
+    pricing-table gap must not block or fail it). billing='subscription' rows record real tokens
+    at $0 -- the subscription, not the API, paid for them."""
     try:
-        cost = calculate_cost(model, usage["input_tokens"], usage["output_tokens"])
+        cost = 0.0 if billing == "subscription" else calculate_cost(
+            model, usage["input_tokens"], usage["output_tokens"])
         db.log_api_usage(
             module=module, action=action, model=model,
             input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"],
             cost_usd=cost, contact_id=contact_id, job_application_id=job_application_id,
+            billing=billing,
         )
     except Exception as exc:
         log.warning(f"[USAGE] | {module} | {action} | log_usage failed: {exc}")
