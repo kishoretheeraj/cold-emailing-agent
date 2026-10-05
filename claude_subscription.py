@@ -39,7 +39,7 @@ class ClaudeUsageLimitError(ClaudeSubscriptionError):
 
 # ── Text hygiene ───────────────────────────────────────────────────────────────
 
-_SPACE_LIKE = {"\xa0": " ", " ": " ", " ": " "}
+_SPACE_LIKE = {"\xa0": " ", "\u202f": " ", "\u2007": " "}
 
 
 def sanitize(text):
@@ -102,9 +102,9 @@ def _parse(proc):
         raise ClaudeSubscriptionError(f"claude CLI failed (exit {proc.returncode}): {detail}")
     u = payload.get("usage") or {}
     usage = {
-        "input_tokens": (u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
-                         + u.get("cache_read_input_tokens", 0)),
-        "output_tokens": u.get("output_tokens", 0),
+        "input_tokens": ((u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+                         + (u.get("cache_read_input_tokens") or 0)),
+        "output_tokens": u.get("output_tokens") or 0,
     }
     return sanitize(payload.get("result") or ""), usage
 
@@ -140,4 +140,9 @@ def complete(prompt, system=None, model=None):
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
         shutil.rmtree(config_dir, ignore_errors=True)
-    return _parse(proc)
+    try:
+        return _parse(proc)
+    except ClaudeSubscriptionError:
+        raise
+    except (TypeError, AttributeError, KeyError, ValueError) as exc:
+        raise ClaudeSubscriptionError(f"unexpected claude CLI output: {exc!r}") from exc

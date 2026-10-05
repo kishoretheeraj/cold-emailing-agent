@@ -195,7 +195,7 @@ def test_ordinary_error_is_not_a_usage_limit(mocker, token):
 
 
 def test_result_text_is_sanitized(mocker, token):
-    fake_popen = FakePopen(_ok_payload(result="Dear​ Ana, hi‮"))
+    fake_popen = FakePopen(_ok_payload(result="Dear\u200b Ana, hi\u202e"))
     mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
     text, _ = claude_subscription.complete("hi")
     assert text == "Dear Ana, hi"
@@ -204,14 +204,32 @@ def test_result_text_is_sanitized(mocker, token):
 # ── sanitize ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("raw,clean", [
-    ("a​b", "ab"),            # zero-width space
-    ("a‍‌b", "ab"),      # zero-width joiner / non-joiner
-    ("﻿start", "start"),      # byte-order mark
-    ("a‮b⁦c", "abc"),    # bidi overrides / isolates
+    ("a\u200bb", "ab"),            # zero-width space
+    ("a\u200d\u200cb", "ab"),      # zero-width joiner / non-joiner
+    ("\ufeffstart", "start"),      # byte-order mark
+    ("a\u202eb\u2066c", "abc"),    # bidi overrides / isolates
     ("co\xadop", "coop"),        # soft hyphen
-    ("a\xa0b c d", "a b c d"),  # non-breaking spaces become plain spaces
+    ("a\xa0b\u202fc\u2007d", "a b c d"),  # non-breaking spaces become plain spaces
     ("line1\nline2\tx", "line1\nline2\tx"),
-    ("café • 50%", "café • 50%"),
+    ("caf\u00e9 \u2022 50%", "caf\u00e9 \u2022 50%"),
 ])
 def test_sanitize(raw, clean):
     assert claude_subscription.sanitize(raw) == clean
+
+
+# ── Transport bugs never mark rows ─────────────────────────────────────────────
+
+def test_null_usage_values_parse_to_ints(mocker, token):
+    payload = json.dumps({"is_error": False, "result": "ok", "usage": {
+        "input_tokens": None, "output_tokens": None,
+        "cache_creation_input_tokens": None, "cache_read_input_tokens": 5}})
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=FakePopen(payload))
+    text, usage = claude_subscription.complete("hi")
+    assert usage == {"input_tokens": 5, "output_tokens": 0}
+
+
+def test_unexpected_parse_exception_surfaces_as_subscription_error(mocker, token):
+    payload = json.dumps({"is_error": False, "result": "ok", "usage": {"input_tokens": "x"}})
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=FakePopen(payload))
+    with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="unexpected"):
+        claude_subscription.complete("hi")

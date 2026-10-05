@@ -219,7 +219,7 @@ def test_resume_worker_runs_drain_as_jobagent_with_its_own_token_file():
     assert "EnvironmentFile=/etc/job-agent/claude.env" in unit
     assert "Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude" in unit
     assert "Environment=RESUME_CLAUDE_BACKEND=subscription" in unit
-    assert "TimeoutStartSec=3600" in unit
+    assert "TimeoutStartSec=7200" in unit
     assert "OnFailure=notify-failure@%n.service" in unit
 
 

@@ -70,9 +70,8 @@ Kishore is new to Linux server administration and learning as he goes.
 - Tailscale, from Tailscale's apt repo
 - Docker CE via `get.docker.com`, which set up Docker's apt repo, including the compose and buildx plugins. `docker run hello-world` verified
 - Claude Code 2.1.289 for `kishore` (native installer, `~/.local/bin/claude`, on PATH for login shells). **Not logged in yet**
-- Claude Code for `jobagent` (resume worker), installed by `provision-debian.sh`
 - Python 3.13.5 (Debian's own; CI uses 3.11)
-- **Not yet installed:** the M1 stack (`jobagent` user, Chrome, Xvfb/x11vnc/noVNC, `/opt/job-agent`). `deploy/beelink/provision-debian.sh` installs it in one sudo run
+- **Not yet installed:** the M1 stack (`jobagent` user, Chrome, Xvfb/x11vnc/noVNC, `/opt/job-agent`) and Claude Code for `jobagent` (resume worker). `deploy/beelink/provision-debian.sh` installs it in one sudo run
 
 ### Config files changed from defaults
 

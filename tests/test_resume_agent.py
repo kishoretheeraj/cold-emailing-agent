@@ -83,6 +83,8 @@ def test_propose_raises_on_malformed_claude_response(mocker):
         "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {},
     })
     mocker.patch.object(resume_agent, "_call_claude", return_value=("not json", _USAGE))
+    mocker.patch.object(db, "record_resume_usage")
+    mocker.patch.object(db, "log_api_usage")
     with pytest.raises(ValueError, match="could not parse strategy"):
         resume_agent.propose(1)
 
@@ -284,6 +286,16 @@ def test_build_refuses_to_upload_when_pdf_embeds_a_substitute_font(mocker):
     upload.assert_not_called()
 
 
+def test_build_uploads_nothing_when_only_the_cover_letter_pdf_fails_verification(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_scrub.check_fonts", side_effect=lambda path, allowed: (
+        ["embedded font 'Carlito' is not allowed"] if path == "/tmp/cl.pdf" else []))
+    upload = mocker.patch.object(db, "upload_resume_file")
+    with pytest.raises(resume_agent.LintFailedError, match="cover letter PDF is not clean"):
+        resume_agent.build(1)
+    upload.assert_not_called()
+
+
 def test_build_refuses_to_upload_when_rendered_text_has_invisible_characters(mocker):
     _mock_happy_build(mocker)
     mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear\u200b team")
@@ -296,9 +308,11 @@ def test_build_refuses_to_upload_when_rendered_text_has_invisible_characters(moc
 def test_build_allows_pypdf_control_characters_in_rendered_text(mocker):
     _mock_happy_build(mocker)
     mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team\r\nBest\x0c")
-    mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    upload = mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
     mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
-    resume_agent.build(1)
+    result = resume_agent.build(1)
+    assert upload.call_count == 2
+    assert result == {"resume_file_ref": "a", "cover_letter_file_ref": "b"}
 
 
 def test_build_refuses_to_upload_when_rendered_text_has_tool_attribution(mocker):
@@ -636,3 +650,80 @@ def test_worker_preflight_reports_missing_prereqs(mocker, monkeypatch):
     problems = resume_agent._worker_preflight()
     assert any("CLAUDE_CODE_OAUTH_TOKEN" in p for p in problems)
     assert any("soffice" in p for p in problems)
+
+
+# ── propose: governance before persisting, usage before validating ─────────────
+
+def _propose_with(mocker, strategy_json):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    mocker.patch.object(db, "get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {}})
+    mocker.patch.object(resume_agent, "_call_claude", return_value=(strategy_json, _USAGE))
+    mocker.patch.object(db, "record_resume_usage")
+    mocker.patch.object(db, "log_api_usage")
+    return mocker.patch.object(db, "set_resume_strategy")
+
+
+@pytest.mark.parametrize("strategy_json", [
+    '{"section_order": ["Experience"], "projects_included": ["A Project That Does Not Exist"]}',
+    '{"section_order": ["Core Competencies"], "projects_included": []}',
+    '{"section_order": ["Experience"], "projects_included": [], '
+    '"skills_groups": [{"label": "Data & Tools", "skills": ["Definitely Not A Skill"]}]}',
+])
+def test_propose_rejects_ungoverned_strategies_without_persisting(mocker, strategy_json):
+    set_strategy = _propose_with(mocker, strategy_json)
+    with pytest.raises(resume_agent.LintFailedError, match="governance"):
+        resume_agent.propose(1)
+    set_strategy.assert_not_called()
+
+
+def test_propose_rejects_a_bad_skills_label_without_persisting(mocker):
+    set_strategy = _propose_with(mocker, '{"section_order": ["Experience"], "projects_included": [], '
+                                         '"skills_groups": [{"label": "one two three four five", "skills": []}]}')
+    with pytest.raises(resume_agent.LintFailedError, match="governance"):
+        resume_agent.propose(1)
+    set_strategy.assert_not_called()
+
+
+def test_propose_records_usage_even_when_the_response_is_unparseable(mocker):
+    _propose_with(mocker, "not json")
+    track = mocker.patch.object(resume_agent, "_track_usage", return_value=0.0)
+    with pytest.raises(ValueError):
+        resume_agent.propose(1)
+    track.assert_called_once_with(1, _USAGE, "propose")
+
+
+# ── _worker_preflight canary ───────────────────────────────────────────────────
+
+def _preflight_env(mocker, monkeypatch, backend="api"):
+    monkeypatch.setattr(config, "RESUME_CLAUDE_BACKEND", backend)
+    mocker.patch("resume_agent.shutil.which", return_value="/usr/bin/soffice")
+    mocker.patch("resume_agent.resume_build.new_document")
+    return mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/canary.pdf")
+
+
+def test_preflight_canary_success_reports_no_problem(mocker, monkeypatch):
+    _preflight_env(mocker, monkeypatch)
+    mocker.patch("resume_agent.resume_scrub.check_fonts", return_value=[])
+    assert resume_agent._worker_preflight() == []
+
+
+def test_preflight_canary_font_violation_is_a_problem(mocker, monkeypatch):
+    _preflight_env(mocker, monkeypatch)
+    mocker.patch("resume_agent.resume_scrub.check_fonts",
+                 return_value=["embedded font 'Carlito' is not allowed"])
+    problems = resume_agent._worker_preflight()
+    assert any("PDF canary failed" in p and "Carlito" in p for p in problems)
+
+
+def test_preflight_canary_conversion_failure_is_a_problem(mocker, monkeypatch):
+    convert = _preflight_env(mocker, monkeypatch)
+    convert.side_effect = RuntimeError("soffice exploded")
+    problems = resume_agent._worker_preflight()
+    assert any("PDF canary failed" in p and "soffice exploded" in p for p in problems)
+
+
+def test_preflight_rejects_an_unknown_backend(mocker, monkeypatch):
+    _preflight_env(mocker, monkeypatch, backend="bogus")
+    mocker.patch("resume_agent.resume_scrub.check_fonts", return_value=[])
+    assert any("RESUME_CLAUDE_BACKEND" in p for p in resume_agent._worker_preflight())

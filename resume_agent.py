@@ -206,6 +206,7 @@ def propose(application_id):
         allowed_sections=", ".join(config.RESUME_ALLOWED_SECTIONS),
     )
     raw, usage = _call_claude(prompt)
+    cost = _track_usage(application_id, usage, "propose")
     try:
         strategy = json.loads(_strip_json_fence(raw))
     except json.JSONDecodeError as exc:
@@ -215,7 +216,16 @@ def propose(application_id):
     if attribution:
         raise LintFailedError(f"strategy contains tool attribution: {attribution}")
 
-    cost = _track_usage(application_id, usage, "propose")
+    problems = [f"unknown section {name!r}" for name in strategy.get("section_order", [])
+                if name not in config.RESUME_ALLOWED_SECTIONS]
+    try:
+        _resolve_master(master, _load_data("metrics.json"), strategy)
+    except ValueError as exc:
+        problems.append(str(exc))
+    problems += _check_skills_governance(skills, strategy)
+    if problems:
+        raise LintFailedError(f"strategy fails governance: {problems}")
+
     db.set_resume_strategy(application_id, strategy)
     log.info(
         f"[RESUME] | {application_id} | {job.get('company')} | strategy proposed | "
@@ -442,8 +452,26 @@ def _worker_preflight():
         problems.append("CLAUDE_CODE_OAUTH_TOKEN is not set")
     if config.RESUME_CLAUDE_BACKEND == "subscription" and not shutil.which(config.CLAUDE_CLI_PATH):
         problems.append(f"claude CLI not found at {config.CLAUDE_CLI_PATH}")
+    if config.RESUME_CLAUDE_BACKEND not in ("api", "subscription"):
+        problems.append(f"unknown RESUME_CLAUDE_BACKEND {config.RESUME_CLAUDE_BACKEND!r}")
     if not shutil.which("soffice"):
         problems.append("soffice (LibreOffice) not found")
+    else:
+        # A box where LibreOffice can't see the resume font would otherwise fail every queued row
+        # after the quota is already spent.
+        try:
+            with tempfile.TemporaryDirectory(prefix="resume-canary-") as tmp:
+                doc = resume_build.new_document()
+                doc.add_paragraph("Canary")
+                doc.add_paragraph("Canary bullet", style="List Bullet")
+                docx_path = os.path.join(tmp, "canary.docx")
+                doc.save(docx_path)
+                pdf_path = resume_build.convert_to_pdf(docx_path, tmp)
+                violations = resume_scrub.check_fonts(pdf_path, {config.RESUME_FONT_NAME})
+            if violations:
+                problems.append(f"PDF canary failed: {violations}")
+        except Exception as exc:
+            problems.append(f"PDF canary failed: {exc}")
     return problems
 
 

@@ -454,8 +454,10 @@ Seven workflows live in `.github/workflows/`:
   `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, "JobRight scheduling").
   Pulls fresh recommendations via `jobright.py`, then runs `job_pick.py` to score
   every newly-saved row through three stages (structured filters, embedding similarity,
-  LLM judge) and mark `strong` verdicts for the Beelink resume worker (zero-tap
-  `resume_agent.py` propose+build only when `RESUME_CLAUDE_BACKEND='api'`) (see `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
+  LLM judge) and queue `strong` verdicts for the Beelink resume worker. Production is still the
+  api/zero-tap path (`resume_agent.py` propose+build in the workflow) until rollout sets
+  `RESUME_CLAUDE_BACKEND: subscription` in this workflow; GitHub Actions has no LibreOffice, so
+  api-backend zero-tap builds there already fail at `soffice` (pre-existing) (see `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
 - **`apply_agent_preview.yml`** (named "Apply Agent Preview") — daily (`37 12 * * *`,
   off the hour), runs `python apply_agent.py --preview` unattended: fills every eligible
   job application's form (Greenhouse/Ashby/Lever hand-mapped, or `browser-use` for
@@ -958,7 +960,7 @@ on the box changes.
 
 ## Resume intelligence (full-fledged buildout, Phase 3)
 
-`resume_agent.py` (manual only, two-command CLI: `--propose` then `--build`) generates a tailored
+`resume_agent.py` (manual CLI: `--propose` then `--build`, plus `--drain` for the Beelink worker) generates a tailored
 resume + cover letter for a specific `job_applications` row, distilled from the user's own 30-session
 corpus spec (`RESUME_AGENT_SPEC.md`). `--propose` runs JD diagnosis/research/strategy and writes
 `job_applications.resume_strategy` (JSONB) -- nothing is built yet. `--build` only proceeds if a
@@ -1063,13 +1065,19 @@ URL or cloud provider over the subscription. A timeout kills the whole process g
 `os.killpg`). **Never `--bare`**: it ignores OAuth. Auth is `CLAUDE_CODE_OAUTH_TOKEN`
 (`claude setup-token`). Rows are logged with `api_usage_log.billing='subscription'`, `cost_usd=0`
 (assumes paid usage credits are off for the account).
-- **Queue, not zero-tap.** On the subscription backend `job_pick.run()` marks `strong` rows and
+- **Queue, not zero-tap.** On the subscription backend `job_pick.run()` writes nothing for `strong` rows (the
+  queue is the row filters: `stage='saved'`, strong verdict, no resume, no `resume_error`) and
   returns a stale count after `RESUME_QUEUE_STALE_HOURS` (24); nonzero fails closed (exit 1). The
   Beelink's `resume-worker.service` + `.timer` runs `resume_agent.py --drain`, the only unit that
   loads `/etc/job-agent/claude.env`. `drain()` runs `_worker_preflight()` first, selects only
   `stage='saved'` rows, checks the deadline per row, and writes content failures to
-  `job_applications.resume_error` (stops retries; clearing re-queues). Any Claude CLI or usage-limit
-  failure stops the run without marking rows.
+  `job_applications.resume_error` (stops retries; clearing `resume_error` re-queues; a strategy-level failure stored
+  before `propose` validated strategies also needs `resume_strategy` cleared, since `drain` skips
+  `propose` when a strategy exists). Any Claude CLI or usage-limit failure, and a missing token, stops
+  the run without marking rows. `_worker_preflight` also builds a canary PDF through LibreOffice and
+  requires `check_fonts` clean (catches a box where Calibri is not visible to `soffice`) and validates
+  `RESUME_CLAUDE_BACKEND`. `propose` runs strategy governance (sections, projects, skills) before
+  `set_resume_strategy` and records usage before validating the response.
 - **Output hygiene.** Every response is `sanitize()`d (zero-width/bidi/control chars);
   `_check_attribution` (word-boundary `_ATTRIBUTION_PATTERNS`) hard-fails tool attribution and chat
   preambles/sign-offs; skills group labels are limited to 1-4 plain words. `_verify_clean_pdf`

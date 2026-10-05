@@ -19,7 +19,7 @@ Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
 Environment=RESUME_CLAUDE_BACKEND=subscription
 Environment=APPLY_AGENT_ARMED=
 ExecStart=/opt/job-agent/.venv/bin/python resume_agent.py --drain
-TimeoutStartSec=3600
+TimeoutStartSec=7200
 MemoryMax=1536M
 NoNewPrivileges=yes
 PrivateTmp=yes
