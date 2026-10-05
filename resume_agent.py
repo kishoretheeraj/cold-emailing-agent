@@ -14,10 +14,12 @@ import datetime
 import json
 import logging
 import os
+import re
 
 import anthropic
 from docx import Document
 
+import claude_subscription
 import config
 import db
 import resume_build
@@ -48,8 +50,14 @@ class LintFailedError(Exception):
 # ── Claude client ────────────────────────────────────────────────────────────────
 
 def _call_claude(prompt, system=None):
-    """Returns (text, usage) -- usage is {"input_tokens": int, "output_tokens": int} from the
-    real API response, consumed by _track_usage to accumulate cost onto job_applications."""
+    """Returns (text, usage) -- usage is {"input_tokens": int, "output_tokens": int}, consumed by
+    _track_usage. config.RESUME_CLAUDE_BACKEND picks the operator's Claude subscription
+    (claude_subscription) or the pay-as-you-go API key ("api", the default)."""
+    backend = config.RESUME_CLAUDE_BACKEND
+    if backend == "subscription":
+        return claude_subscription.complete(prompt, system=system, model=config.RESUME_MODEL)
+    if backend != "api":
+        raise ValueError(f"unknown RESUME_CLAUDE_BACKEND {backend!r} -- use 'subscription' or 'api'")
     kwargs = dict(
         model=config.RESUME_MODEL,
         max_tokens=2000,
@@ -59,7 +67,7 @@ def _call_claude(prompt, system=None):
         kwargs["system"] = system
     resp = _claude.messages.create(**kwargs)
     usage = {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
-    return resp.content[0].text, usage
+    return claude_subscription.sanitize(resp.content[0].text), usage
 
 
 def _calculate_cost(usage):
@@ -70,13 +78,42 @@ def _calculate_cost(usage):
 def _track_usage(application_id, usage, action):
     """Writes to both job_applications' per-application running total (db.record_resume_usage,
     used by the propose/build CLI output) and the system-wide api_usage_log ledger
-    (usage_tracking.log_usage, best-effort -- used by cross-cutting cost analytics)."""
-    cost = _calculate_cost(usage)
+    (usage_tracking.log_usage, best-effort -- used by cross-cutting cost analytics). Subscription
+    calls record real tokens at $0."""
+    billing = "subscription" if config.RESUME_CLAUDE_BACKEND == "subscription" else "api"
+    cost = 0.0 if billing == "subscription" else _calculate_cost(usage)
     db.record_resume_usage(application_id, usage["input_tokens"], usage["output_tokens"], cost)
     usage_tracking.log_usage(
         "resume_agent", action, config.RESUME_MODEL, usage, job_application_id=application_id,
+        billing=billing,
     )
     return cost
+
+
+# ── Attribution scan ─────────────────────────────────────────────────────────────
+# Tool attribution and chat framing that must never reach an employer. "Claude", "Claude Code"
+# and "Anthropic" are deliberately absent: they're in the operator's own skills/projects, and
+# Anthropic can be the target company.
+
+_ATTRIBUTION_PHRASES = (
+    "generated with", "co-authored-by", "as an ai", "as a language model",
+    "i'm claude", "i am claude", "noreply@anthropic",
+)
+_CHAT_PREAMBLE = re.compile(r"^\s*(here's|here is|sure\b|certainly\b|below is)", re.I)
+_CHAT_SIGNOFF = re.compile(r"^\s*(let me know|i hope this)", re.I)
+# Skills group labels are the only model-written text rendered on the resume itself.
+_LABEL_CHARS = re.compile(r"[A-Za-z0-9 &/,+.-]{1,40}")
+
+
+def _check_attribution(text):
+    lowered = text.lower()
+    violations = [f"contains tool attribution '{p}'" for p in _ATTRIBUTION_PHRASES if p in lowered]
+    lines = [line for line in text.splitlines() if line.strip()]
+    if lines and _CHAT_PREAMBLE.match(lines[0]):
+        violations.append(f"starts with a chat preamble: {lines[0][:60]!r}")
+    if lines and _CHAT_SIGNOFF.match(lines[-1]):
+        violations.append(f"ends with a chat sign-off: {lines[-1][:60]!r}")
+    return violations
 
 
 # ── Deadline gate (corpus spec Part 11: Cott/McKinsey lesson) ──────────────────
@@ -124,6 +161,7 @@ Follow this process:
    list above), how to group skills into 2-4 labeled categories (skills must come only from
    the spine/swap_pool above -- never invent a skill and never use a banned one), a one-line
    cover letter angle, and the honest gaps to name rather than hide.
+   Each skills group label is 1-4 plain words (letters, digits, & / , + . -), e.g. "Data & Tools".
 
 Respond with ONLY a JSON object, no other text:
 {{"section_order": [...], "projects_included": [...],
@@ -160,6 +198,10 @@ def propose(application_id):
         strategy = json.loads(_strip_json_fence(raw))
     except json.JSONDecodeError as exc:
         raise ValueError(f"could not parse strategy from Claude's response: {exc}") from exc
+
+    attribution = _check_attribution(json.dumps(strategy))
+    if attribution:
+        raise LintFailedError(f"strategy contains tool attribution: {attribution}")
 
     cost = _track_usage(application_id, usage, "propose")
     db.set_resume_strategy(application_id, strategy)
@@ -251,6 +293,10 @@ def _check_skills_governance(skills_data, strategy):
     banned = set(skills_data.get("banned", []))
     violations = []
     for group in strategy.get("skills_groups", []):
+        label = group.get("label", "")
+        if len(label.split()) > 4 or not _LABEL_CHARS.fullmatch(label):
+            violations.append(f"skills group label {label!r} must be 1-4 plain words")
+        violations += [f"skills group label {label!r}: {v}" for v in _check_attribution(label)]
         for skill in group.get("skills", []):
             if skill in banned:
                 violations.append(f"'{skill}' is banned -- resume/data/skills.json")
@@ -264,6 +310,7 @@ def _lint_cover_letter(cl_text, resume_text):
     violations += resume_lint.check_em_dashes(cl_text)
     violations += resume_lint.check_jargon(cl_text, _load_data("jargon.json"))
     violations += resume_lint.check_cover_letter(cl_text, resume_text)
+    violations += _check_attribution(cl_text)
     return violations
 
 

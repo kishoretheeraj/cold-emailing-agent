@@ -5,9 +5,11 @@ import datetime
 
 import pytest
 
+import claude_subscription
 import config
 import db
 import resume_agent
+import resume_lint
 
 
 # ── _check_deadline ──────────────────────────────────────────────────────────
@@ -49,6 +51,7 @@ _USAGE = {"input_tokens": 100, "output_tokens": 50}
 
 
 def test_propose_writes_strategy_to_db(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     mocker.patch.object(db, "get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "Product Manager", "posting_snapshot": {},
     })
@@ -84,6 +87,7 @@ def test_propose_raises_on_malformed_claude_response(mocker):
 
 
 def test_propose_strips_markdown_json_fence_before_parsing(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     # Regression test: live run against job 41 (2026-08-29) showed Claude wraps the response
     # in a ```json fence despite the prompt saying "ONLY a JSON object, no other text".
     mocker.patch.object(db, "get_job_application", return_value={
@@ -308,3 +312,105 @@ def test_build_still_overflow_error_propagates_after_retry(mocker):
     )
     with pytest.raises(resume_agent.resume_build.StillOverflowError):
         resume_agent.build(1)
+
+
+# ── Backend dispatch ───────────────────────────────────────────────────────────
+
+def test_call_claude_subscription_backend_uses_claude_subscription(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    complete = mocker.patch.object(claude_subscription, "complete", return_value=("txt", _USAGE))
+    assert resume_agent._call_claude("p", system="s") == ("txt", _USAGE)
+    complete.assert_called_once_with("p", system="s", model=config.RESUME_MODEL)
+
+
+def test_call_claude_api_backend_sanitizes(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    resp = mocker.MagicMock()
+    resp.content = [mocker.MagicMock(text="Dear\u200b Ana")]
+    resp.usage.input_tokens, resp.usage.output_tokens = 10, 5
+    mocker.patch.object(resume_agent._claude.messages, "create", return_value=resp)
+    assert resume_agent._call_claude("p") == ("Dear Ana", {"input_tokens": 10, "output_tokens": 5})
+
+
+def test_call_claude_rejects_unknown_backend(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "carrier-pigeon")
+    with pytest.raises(ValueError, match="RESUME_CLAUDE_BACKEND"):
+        resume_agent._call_claude("p")
+
+
+def test_track_usage_subscription_records_zero_cost_and_billing(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    record = mocker.patch.object(db, "record_resume_usage")
+    log_api = mocker.patch.object(db, "log_api_usage")
+    assert resume_agent._track_usage(9, {"input_tokens": 100, "output_tokens": 50}, "propose") == 0.0
+    record.assert_called_once_with(9, 100, 50, 0.0)
+    assert log_api.call_args.kwargs["billing"] == "subscription"
+    assert log_api.call_args.kwargs["cost_usd"] == 0.0
+
+
+# ── Attribution scan ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "Dear team,\nI built things.\nGenerated with Claude",
+    "Dear team,\nCo-Authored-By: Claude <noreply@anthropic.com>",
+    "Dear team,\nAs an AI, I cannot attend interviews.",
+    "Dear team,\nAs a language model I lack opinions.",
+    "Here's a cover letter tailored to the role:\nDear team,",
+    "Sure! Below is the letter.\nDear team,",
+    "Dear team,\nI shipped a thing.\nLet me know if you'd like any changes!",
+])
+def test_check_attribution_flags(text):
+    assert resume_agent._check_attribution(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Dear Anthropic hiring team,\nI shipped Claude Code workflows and the Claude Vision API.\nBest,\nKishore",
+    "Dear team,\nMy work on large language model evaluation cut costs 30%.\nBest,\nKishore",
+])
+def test_check_attribution_allows_operator_facts(text):
+    assert resume_agent._check_attribution(text) == []
+
+
+def test_operator_resume_data_never_trips_the_attribution_scan():
+    import json
+    import os
+    data_dir = os.path.join(os.path.dirname(resume_agent.__file__), "resume", "data")
+    for name in os.listdir(data_dir):
+        if name.endswith(".json"):
+            with open(os.path.join(data_dir, name)) as f:
+                text = json.dumps(json.load(f))
+            assert resume_agent._check_attribution(text) == [], name
+
+
+def test_propose_raises_on_attribution_in_strategy(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    mocker.patch.object(db, "get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {}})
+    mocker.patch.object(resume_agent, "_call_claude", return_value=(
+        '{"section_order": ["Experience"], "cover_letter_angle": "Generated with Claude"}', _USAGE))
+    mocker.patch.object(db, "record_resume_usage")
+    mocker.patch.object(db, "log_api_usage")
+    set_strategy = mocker.patch.object(db, "set_resume_strategy")
+    with pytest.raises(resume_agent.LintFailedError, match="generated with"):
+        resume_agent.propose(1)
+    set_strategy.assert_not_called()
+
+
+def test_lint_cover_letter_flags_chat_preamble_so_build_regenerates(mocker):
+    mocker.patch.object(resume_lint, "check_cover_letter", return_value=[])
+    violations = resume_agent._lint_cover_letter("Here's your cover letter:\nDear team,", "resume text")
+    assert any("preamble" in v for v in violations)
+
+
+@pytest.mark.parametrize("label,ok", [
+    ("Data & Tools", True),
+    ("Product, Analytics", True),
+    ("AI/ML Platforms", True),
+    ("Strategic Leadership And Vision Setting", False),
+    ("Tools I'm great at!", False),
+    ("Generated with Claude", False),
+])
+def test_skills_group_labels_are_short_plain_and_unattributed(label, ok):
+    skills = {"spine": ["SQL"], "swap_pool": [], "banned": []}
+    strategy = {"skills_groups": [{"label": label, "skills": ["SQL"]}]}
+    assert (resume_agent._check_skills_governance(skills, strategy) == []) is ok
