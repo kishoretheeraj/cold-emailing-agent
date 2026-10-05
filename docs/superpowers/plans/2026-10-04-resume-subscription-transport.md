@@ -243,7 +243,7 @@ def test_ordinary_error_is_not_a_usage_limit(mocker, token):
 
 def test_result_text_is_sanitized(mocker, token):
     mocker.patch("claude_subscription.subprocess.run",
-                 return_value=_completed(_ok_payload(result="Dear​ Ana, hi‮")))
+                 return_value=_completed(_ok_payload(result="Dear\u200b Ana,\u00a0hi\u202e")))
     text, _ = claude_subscription.complete("hi")
     assert text == "Dear Ana, hi"
 
@@ -251,12 +251,12 @@ def test_result_text_is_sanitized(mocker, token):
 # ── sanitize ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("raw,clean", [
-    ("a​b", "ab"),            # zero-width space
-    ("a‍‌b", "ab"),      # zero-width joiner / non-joiner
-    ("﻿start", "start"),      # byte-order mark
-    ("a‮b⁦c", "abc"),    # bidi overrides / isolates
-    ("co­op", "coop"),        # soft hyphen
-    ("a b c", "a b c"),  # non-breaking spaces become plain spaces
+    ("a\u200bb", "ab"),            # zero-width space
+    ("a\u200d\u200cb", "ab"),      # zero-width joiner / non-joiner
+    ("\ufeffstart", "start"),      # byte-order mark
+    ("a\u202eb\u2066c", "abc"),    # bidi overrides / isolates
+    ("co\u00adop", "coop"),        # soft hyphen
+    ("a\u00a0b\u202fc", "a b c"),  # non-breaking spaces become plain spaces
     ("line1\nline2\tx", "line1\nline2\tx"),
     ("café • 50%", "café • 50%"),
 ])
@@ -314,7 +314,7 @@ class ClaudeUsageLimitError(ClaudeSubscriptionError):
 
 # ── Text hygiene ───────────────────────────────────────────────────────────────
 
-_SPACE_LIKE = {" ": " ", " ": " ", " ": " "}
+_SPACE_LIKE = {"\u00a0": " ", "\u202f": " ", "\u2007": " "}
 
 
 def sanitize(text):
@@ -624,7 +624,7 @@ def test_call_claude_subscription_backend_uses_claude_subscription(mocker):
 def test_call_claude_api_backend_sanitizes(mocker):
     mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     resp = mocker.MagicMock()
-    resp.content = [mocker.MagicMock(text="Dear​ Ana")]
+    resp.content = [mocker.MagicMock(text="Dear\u200b Ana")]
     resp.usage.input_tokens, resp.usage.output_tokens = 10, 5
     mocker.patch.object(resume_agent._claude.messages, "create", return_value=resp)
     assert resume_agent._call_claude("p") == ("Dear Ana", {"input_tokens": 10, "output_tokens": 5})
