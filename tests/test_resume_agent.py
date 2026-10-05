@@ -203,6 +203,12 @@ def _mock_clean_data(mocker):
     }[name])
 
 
+def _mock_pdf_checks(mocker):
+    mocker.patch("resume_agent.resume_scrub.read_pdf_xmp_text", return_value="")
+    mocker.patch("resume_agent.resume_scrub.check_fonts", return_value=[])
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team")
+
+
 def test_build_raises_when_no_strategy_proposed_yet(mocker):
     mocker.patch.object(db, "get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "resume_strategy": None,
@@ -236,6 +242,7 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     upload = mocker.patch.object(db, "upload_resume_file", side_effect=[
@@ -249,6 +256,56 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     assert result["cover_letter_file_ref"] == "resumes/1/cover_letter.pdf"
     assert upload.call_count == 2
     set_files.assert_called_once()
+
+
+def _mock_happy_build(mocker):
+    mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
+    _mock_clean_data(mocker)
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
+    mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
+    mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
+    mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
+    mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
+    mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
+    mocker.patch("resume_agent.resume_build.new_document")
+    mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
+
+
+def test_build_refuses_to_upload_when_pdf_embeds_a_substitute_font(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_scrub.check_fonts",
+                 return_value=["embedded font 'Carlito' is not allowed"])
+    upload = mocker.patch.object(db, "upload_resume_file")
+    with pytest.raises(resume_agent.LintFailedError, match="Carlito"):
+        resume_agent.build(1)
+    upload.assert_not_called()
+
+
+def test_build_refuses_to_upload_when_rendered_text_has_invisible_characters(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear\u200b team")
+    upload = mocker.patch.object(db, "upload_resume_file")
+    with pytest.raises(resume_agent.LintFailedError, match="invisible"):
+        resume_agent.build(1)
+    upload.assert_not_called()
+
+
+def test_build_allows_pypdf_control_characters_in_rendered_text(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team\r\nBest\x0c")
+    mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
+    resume_agent.build(1)
+
+
+def test_build_refuses_to_upload_when_rendered_text_has_tool_attribution(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Written by I am Claude")
+    with pytest.raises(resume_agent.LintFailedError, match="attribution"):
+        resume_agent.build(1)
 
 
 def _mock_build_pipeline(mocker, fit):
@@ -273,6 +330,7 @@ def test_build_uses_a_per_build_workdir_and_removes_it_on_success(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
@@ -303,6 +361,7 @@ def test_build_raises_on_cover_letter_lint_violation_after_one_retry(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
     mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
     mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
     # Cover letter always contains an em dash -- lint keeps failing across the one retry.
@@ -322,6 +381,7 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     mocker.patch.object(db, "upload_resume_file", side_effect=[
@@ -345,6 +405,7 @@ def test_build_raises_lint_failed_error_when_resume_pdf_metadata_still_has_finge
     mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Producer: LibreOffice 24.2")
+    _mock_pdf_checks(mocker)
     with pytest.raises(resume_agent.LintFailedError, match="fingerprint"):
         resume_agent.build(1)
 

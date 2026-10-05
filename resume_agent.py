@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 
 import anthropic
 
@@ -323,6 +324,21 @@ def _lint_cover_letter(cl_text, resume_text):
     return violations
 
 
+def _verify_clean_pdf(pdf_path, label):
+    meta_text = resume_scrub.read_pdf_metadata_text(pdf_path) + " " + resume_scrub.read_pdf_xmp_text(pdf_path)
+    problems = [f"metadata fingerprint '{fp}'" for fp in resume_scrub.verify_no_fingerprints(meta_text)]
+    problems += resume_scrub.check_fonts(pdf_path, allowed={config.RESUME_FONT_NAME})
+    # The rendered text itself, not just what went in: catches invisible characters from stored
+    # strategies or source data, and attribution that slipped past the per-response checks.
+    text = resume_build.pdf_text(pdf_path)
+    # Cf only: pypdf legitimately emits Cc characters (\r, \x0c) between lines and pages.
+    if any(unicodedata.category(ch) == "Cf" for ch in text):
+        problems.append("rendered text contains invisible control/format characters")
+    problems += [p for p in _check_attribution(text) if "tool attribution" in p]
+    if problems:
+        raise LintFailedError(f"{label} PDF is not clean: {problems}")
+
+
 def build(application_id):
     """Run stages 5-9 (build, humanize/lint, scrub, upload) for a job_applications row that
     already has a proposed resume_strategy. Returns {"resume_file_ref": ..., "cover_letter_file_ref": ...}.
@@ -369,9 +385,7 @@ def build(application_id):
         resume_scrub.scrub_pdf_metadata(
             pdf_path, title=f"{job.get('company')} - Resume", keywords=job.get("role", ""),
         )
-        resume_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(pdf_path))
-        if resume_fingerprints:
-            raise LintFailedError(f"resume PDF metadata still contains fingerprints: {resume_fingerprints}")
+        _verify_clean_pdf(pdf_path, "resume")
 
         cl_prompt = _COVER_LETTER_PROMPT.format(
             company=job.get("company"), role=job.get("role"),
@@ -398,9 +412,7 @@ def build(application_id):
         resume_scrub.scrub_pdf_metadata(
             cl_pdf_path, title=f"{job.get('company')} - Cover Letter", keywords=job.get("role", ""),
         )
-        cl_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(cl_pdf_path))
-        if cl_fingerprints:
-            raise LintFailedError(f"cover letter PDF metadata still contains fingerprints: {cl_fingerprints}")
+        _verify_clean_pdf(cl_pdf_path, "cover letter")
 
         with open(pdf_path, "rb") as f:
             resume_ref = db.upload_resume_file(f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")

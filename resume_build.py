@@ -394,6 +394,10 @@ def page_count(pdf_path):
     return len(PdfReader(pdf_path).pages)
 
 
+def pdf_text(pdf_path):
+    return "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)
+
+
 # ── Fitting ladder (corpus spec Part 13, formatting rungs only -- see Task 9's docstring note) ──
 # _FIT_RUNGS (defined above, alongside _DEFAULT_STYLE) is the real, cumulative implementation:
 # each successive rung tightens header/bullet spacing, margins, and (at the last two rungs) body

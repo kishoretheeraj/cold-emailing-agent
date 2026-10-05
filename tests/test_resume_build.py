@@ -290,3 +290,14 @@ def test_build_docx_output_keeps_the_forced_fonts(tmp_path):
     doc = Document(path)
     for f in _all_rfonts(doc):
         assert f.get(qn("w:ascii")) == config.RESUME_FONT_NAME
+
+
+# ── pdf_text ───────────────────────────────────────────────────────────────────
+
+def test_pdf_text_returns_a_string_for_a_real_pdf(tmp_path):
+    import pikepdf
+    path = str(tmp_path / "t.pdf")
+    pdf = pikepdf.new()
+    pdf.add_blank_page(page_size=(200, 200))
+    pdf.save(path)
+    assert isinstance(resume_build.pdf_text(path), str)
