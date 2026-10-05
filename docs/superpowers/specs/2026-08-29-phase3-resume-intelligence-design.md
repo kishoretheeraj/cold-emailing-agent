@@ -55,6 +55,14 @@ were happening in that ask, and only one of them shipped:
      tool claiming otherwise is most likely either non-functional or is
      silently just doing prose-style editing (em dashes, phrasing cadence)
      under a more dramatic name.
+     **Correction (2026-10-04): this bullet was wrong.** Anthropic announced on
+     2026-08-14 (anthropic.com/news/claude-text-watermark) that Claude's text
+     carries a statistical, SynthID-Text-style watermark: no added characters,
+     survives light editing, removed only by a full rewrite, detectable only by
+     eligible organizations under EU law. The decision itself stands: no
+     watermark-removal step is built or integrated. See
+     `2026-10-04-resume-subscription-transport-design.md` (the resume body is
+     the operator's own `metrics.json` text, so only the cover letter carries it).
    - The corpus spec's own **Stage 7 humanizer pass** already covers the
      legitimate version of "read naturally, not obviously AI-authored" — kill-list
      phrases, em-dash removal, hedge-closer limits. That's prose polish in the
