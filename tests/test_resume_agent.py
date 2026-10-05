@@ -1,6 +1,7 @@
 """Tests for resume_agent.py. All Claude calls and db.py calls are mocked -- no real network,
 no real Supabase, no real credentials."""
 
+import os
 import datetime
 
 import pytest
@@ -235,7 +236,7 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
-    mocker.patch("resume_agent.Document")
+    mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     upload = mocker.patch.object(db, "upload_resume_file", side_effect=[
         "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
@@ -248,6 +249,51 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     assert result["cover_letter_file_ref"] == "resumes/1/cover_letter.pdf"
     assert upload.call_count == 2
     set_files.assert_called_once()
+
+
+def _mock_build_pipeline(mocker, fit):
+    mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
+    _mock_clean_data(mocker)
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
+    mocker.patch("resume_agent.resume_build.fit_to_one_page", side_effect=fit)
+
+
+def test_build_uses_a_per_build_workdir_and_removes_it_on_success(mocker):
+    seen = {}
+
+    def fit(strategy, master, docx_path, out_dir):
+        seen["docx"], seen["dir"] = docx_path, out_dir
+        assert os.path.isdir(out_dir)
+        return ("/tmp/r.pdf", "standard")
+
+    _mock_build_pipeline(mocker, fit)
+    mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
+    mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
+    mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
+    mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    mocker.patch("resume_agent.resume_build.new_document")
+    mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
+    mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
+    resume_agent.build(1)
+    assert not seen["docx"].startswith("/tmp/resume_")
+    assert seen["docx"] == os.path.join(seen["dir"], "resume.docx")
+    assert not os.path.exists(seen["dir"])
+
+
+def test_build_removes_its_workdir_when_it_raises(mocker):
+    seen = {}
+
+    def fit(strategy, master, docx_path, out_dir):
+        seen["dir"] = out_dir
+        raise resume_agent.resume_build.StillOverflowError("too long")
+
+    _mock_build_pipeline(mocker, fit)
+    with pytest.raises(resume_agent.resume_build.StillOverflowError):
+        resume_agent.build(1)
+    assert not os.path.exists(seen["dir"])
 
 
 def test_build_raises_on_cover_letter_lint_violation_after_one_retry(mocker):
@@ -276,7 +322,7 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
-    mocker.patch("resume_agent.Document")
+    mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     mocker.patch.object(db, "upload_resume_file", side_effect=[
         "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",

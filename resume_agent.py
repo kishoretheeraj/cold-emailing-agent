@@ -15,9 +15,10 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 
 import anthropic
-from docx import Document
 
 import claude_subscription
 import config
@@ -351,62 +352,66 @@ def build(application_id):
     if resume_violations:
         raise LintFailedError(f"resume content fails lint: {resume_violations}")
 
-    pdf_path = None
-    for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
-        try:
-            pdf_path, preset_used = resume_build.fit_to_one_page(
-                strategy, master, f"/tmp/resume_{application_id}.docx", "/tmp",
-            )
-            break
-        except resume_build.StillOverflowError:
+    workdir = tempfile.mkdtemp(prefix=f"resume-{application_id}-")
+    try:
+        pdf_path = None
+        for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
+            try:
+                pdf_path, preset_used = resume_build.fit_to_one_page(
+                    strategy, master, os.path.join(workdir, "resume.docx"), workdir,
+                )
+                break
+            except resume_build.StillOverflowError:
+                if attempt >= config.RESUME_MAX_BUILD_RETRIES:
+                    raise
+                log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying once")
+
+        resume_scrub.scrub_pdf_metadata(
+            pdf_path, title=f"{job.get('company')} - Resume", keywords=job.get("role", ""),
+        )
+        resume_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(pdf_path))
+        if resume_fingerprints:
+            raise LintFailedError(f"resume PDF metadata still contains fingerprints: {resume_fingerprints}")
+
+        cl_prompt = _COVER_LETTER_PROMPT.format(
+            company=job.get("company"), role=job.get("role"),
+            angle=strategy.get("cover_letter_angle", ""), gaps=strategy.get("named_gaps", []),
+        )
+
+        cl_text = None
+        for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
+            cl_text, usage = _call_claude(cl_prompt)
+            _track_usage(application_id, usage, "cover_letter")
+            violations = _lint_cover_letter(cl_text, resume_text)
+            if not violations:
+                break
             if attempt >= config.RESUME_MAX_BUILD_RETRIES:
-                raise
-            log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying once")
+                raise LintFailedError(f"cover letter still fails lint after retry: {violations}")
+            log.warning(f"[RESUME] | {application_id} | cover letter lint failed, retrying once: {violations}")
+            cl_prompt = cl_prompt + f"\n\nFix these violations from the previous draft: {violations}"
 
-    resume_scrub.scrub_pdf_metadata(
-        pdf_path, title=f"{job.get('company')} - Resume", keywords=job.get("role", ""),
-    )
-    resume_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(pdf_path))
-    if resume_fingerprints:
-        raise LintFailedError(f"resume PDF metadata still contains fingerprints: {resume_fingerprints}")
+        cl_docx_path = os.path.join(workdir, "cover_letter.docx")
+        cl_doc = resume_build.new_document()
+        cl_doc.add_paragraph(cl_text)
+        cl_doc.save(cl_docx_path)
+        cl_pdf_path = resume_build.convert_to_pdf(cl_docx_path, workdir)
+        resume_scrub.scrub_pdf_metadata(
+            cl_pdf_path, title=f"{job.get('company')} - Cover Letter", keywords=job.get("role", ""),
+        )
+        cl_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(cl_pdf_path))
+        if cl_fingerprints:
+            raise LintFailedError(f"cover letter PDF metadata still contains fingerprints: {cl_fingerprints}")
 
-    cl_prompt = _COVER_LETTER_PROMPT.format(
-        company=job.get("company"), role=job.get("role"),
-        angle=strategy.get("cover_letter_angle", ""), gaps=strategy.get("named_gaps", []),
-    )
+        with open(pdf_path, "rb") as f:
+            resume_ref = db.upload_resume_file(f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
+        with open(cl_pdf_path, "rb") as f:
+            cl_ref = db.upload_resume_file(f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
 
-    cl_text = None
-    for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
-        cl_text, usage = _call_claude(cl_prompt)
-        _track_usage(application_id, usage, "cover_letter")
-        violations = _lint_cover_letter(cl_text, resume_text)
-        if not violations:
-            break
-        if attempt >= config.RESUME_MAX_BUILD_RETRIES:
-            raise LintFailedError(f"cover letter still fails lint after retry: {violations}")
-        log.warning(f"[RESUME] | {application_id} | cover letter lint failed, retrying once: {violations}")
-        cl_prompt = cl_prompt + f"\n\nFix these violations from the previous draft: {violations}"
-
-    cl_docx_path = f"/tmp/cover_letter_{application_id}.docx"
-    cl_doc = Document()
-    cl_doc.add_paragraph(cl_text)
-    cl_doc.save(cl_docx_path)
-    cl_pdf_path = resume_build.convert_to_pdf(cl_docx_path, "/tmp")
-    resume_scrub.scrub_pdf_metadata(
-        cl_pdf_path, title=f"{job.get('company')} - Cover Letter", keywords=job.get("role", ""),
-    )
-    cl_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(cl_pdf_path))
-    if cl_fingerprints:
-        raise LintFailedError(f"cover letter PDF metadata still contains fingerprints: {cl_fingerprints}")
-
-    with open(pdf_path, "rb") as f:
-        resume_ref = db.upload_resume_file(f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
-    with open(cl_pdf_path, "rb") as f:
-        cl_ref = db.upload_resume_file(f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
-
-    db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref)
-    log.info(f"[RESUME] | {application_id} | {job.get('company')} | build complete")
-    return {"resume_file_ref": resume_ref, "cover_letter_file_ref": cl_ref}
+        db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref)
+        log.info(f"[RESUME] | {application_id} | {job.get('company')} | build complete")
+        return {"resume_file_ref": resume_ref, "cover_letter_file_ref": cl_ref}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def run_build(application_id):

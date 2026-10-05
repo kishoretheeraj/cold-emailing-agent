@@ -517,7 +517,8 @@ RULES FOR USING THIS CONTEXT:
 
 RESUME_STORAGE_BUCKET = "resumes"
 RESUME_MODEL = EMAIL_MODEL
-RESUME_SOFFICE_TIMEOUT_SECONDS = 30
+# 90: each conversion starts a fresh throwaway LibreOffice profile, adding first-run setup time.
+RESUME_SOFFICE_TIMEOUT_SECONDS = 90
 RESUME_COVER_LETTER_MAX_WORDS = 300
 # preflight.py's own pattern: one automatic regeneration on a lint failure, then give up loudly.
 RESUME_MAX_BUILD_RETRIES = 1
