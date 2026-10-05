@@ -943,7 +943,7 @@ currently are none, but the docstring promises it) can rely on.
 
 Spec: docs/superpowers/specs/2026-09-17-beelink-24-7-automation-design.md (M1).
 
-The physical box now exists (Debian 13, not the Ubuntu 22.04 `deploy/beelink/RUNBOOK.md` assumes).
+The physical box now exists (Debian 13). `deploy/beelink/provision-debian.sh` provisions it (RUNBOOK.md, top).
 Its source of truth (current state, rules, roadmap) is imported below; keep it current when anything
 on the box changes.
 

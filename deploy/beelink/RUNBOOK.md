@@ -8,8 +8,10 @@ repo's tooling. Work top to bottom; each section is independently re-runnable.
 script, run on the Beelink after a signed tag exists (see `docs/beelink-server.md`):
 
 ```bash
-# Mac: sign and push a deploy tag with your existing SSH key (no GPG, no global config change)
-git -c gpg.format=ssh -c user.signingkey=~/.ssh/id_ed25519.pub tag -s beelink-v1 -m "beelink-v1" && git push origin beelink-v1
+# Mac: review the exact commit you're deploying (`git show --stat <commit>`), then sign THAT commit
+# -- never a bare `tag -s`, which signs whatever HEAD is, and build-continue.yml can push unreviewed
+# commits to main. Uses your existing SSH key: no GPG, no global config change.
+git -c gpg.format=ssh -c user.signingkey=$HOME/.ssh/id_ed25519 tag -s beelink-v1 <commit> -m "beelink-v1" && git push origin beelink-v1
 # Mac: copy the script and the signer list to the box
 scp deploy/beelink/provision-debian.sh deploy/beelink/allowed_signers kishore@beelink:~/
 # Beelink: provision (prompts once for the VNC password), then fill in the secrets
