@@ -362,6 +362,26 @@ export function ApplicationsPage() {
     }
   };
 
+  const handleRequeue = async (id: string) => {
+    try {
+      const res = await fetch(`/api/applications/${id}/requeue-preview`, { method: "POST" });
+      if (!res.ok) throw new Error("request failed");
+      setBlockedReasons((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      setLiveStatuses((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      load(stageFilter, sourceFilter);
+    } catch {
+      toast.error("Could not re-prepare -- try again in a moment");
+    }
+  };
+
   const handleResolveConfirmation = async (id: string, submitted: boolean) => {
     try {
       const res = await fetch(`/api/applications/${id}/resolve-confirmation`, {
@@ -568,6 +588,11 @@ export function ApplicationsPage() {
                         // here -- a retry could file a duplicate real application. Only the
                         // human's answer moves the row on (resolve_confirmation RPC).
                         <div className="flex flex-col gap-1">
+                          {(blockedReasons[app.id] ?? app.apply_blocked_reason) && (
+                            <span className="text-fg-dim text-xs">
+                              {blockedReasons[app.id] ?? app.apply_blocked_reason}
+                            </span>
+                          )}
                           <span className="text-amber-400 text-xs">
                             Submit may have gone through -- check the employer portal or your
                             inbox, then confirm:
@@ -588,6 +613,19 @@ export function ApplicationsPage() {
                               It didn&apos;t go through
                             </button>
                           </div>
+                        </div>
+                      ) : automationStatus === "needs_input" ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="text-amber-400 text-xs">
+                            {blockedReasons[app.id] ?? app.apply_blocked_reason ?? "Needs your input"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRequeue(app.id)}
+                            className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                          >
+                            Re-prepare
+                          </button>
                         </div>
                       ) : automationStatus === "ready_for_review" ? (
                         <div className="flex flex-col gap-1">

@@ -18,7 +18,8 @@ def _lease_defaults(mocker):
     mocker.patch("apply_agent.db.heartbeat_application")
     mocker.patch("apply_agent.db.renew_submission_lease", return_value=True)
     mocker.patch("apply_agent.db.release_application")
-    mocker.patch("apply_agent.db.set_automation_status")
+    mocker.patch("apply_agent.db.mark_unsupported")
+    mocker.patch("apply_agent.db.complete_preview", return_value=True)
 
 
 def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
@@ -28,11 +29,11 @@ def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     fill_mock = mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
-    set_preview_mock = mocker.patch("apply_agent.db.release_application")
+    set_preview_mock = mocker.patch("apply_agent.db.complete_preview", return_value=True)
 
     apply_agent.run_preview()
 
@@ -47,14 +48,13 @@ def test_run_preview_blocks_workday_without_attempting_a_fill(mocker):
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="workday")
     launch_mock = mocker.patch("apply_agent._launch_page")
-    set_blocked_mock = mocker.patch("apply_agent.db.set_automation_status")
+    set_blocked_mock = mocker.patch("apply_agent.db.mark_unsupported")
 
     apply_agent.run_preview()
 
     launch_mock.assert_not_called()
     set_blocked_mock.assert_called_once()
-    assert set_blocked_mock.call_args[0][1] == "unsupported"
-    assert "workday" in set_blocked_mock.call_args[0][2].lower()
+    assert "workday" in set_blocked_mock.call_args[0][1].lower()
 
 
 def test_run_preview_blocks_aggregator_links(mocker):
@@ -64,13 +64,13 @@ def test_run_preview_blocks_aggregator_links(mocker):
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="aggregator")
     launch_mock = mocker.patch("apply_agent._launch_page")
-    set_blocked_mock = mocker.patch("apply_agent.db.set_automation_status")
+    set_blocked_mock = mocker.patch("apply_agent.db.mark_unsupported")
 
     apply_agent.run_preview()
 
     launch_mock.assert_not_called()
     set_blocked_mock.assert_called_once()
-    assert set_blocked_mock.call_args[0][1] == "unsupported"
+    assert "aggregator" in set_blocked_mock.call_args[0][1]
 
 
 def test_run_preview_routes_generic_to_browser_use(mocker):
@@ -79,7 +79,7 @@ def test_run_preview_routes_generic_to_browser_use(mocker):
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     browser_use_mock = mocker.patch("apply_agent._fill_generic_via_browser_use")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
@@ -114,20 +114,19 @@ def test_run_preview_isolates_one_row_failure_from_the_rest(mocker):
          "resume_file_ref": "resumes/2/r.pdf", "cover_letter_file_ref": "resumes/2/cl.pdf"},
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    mocker.patch("apply_agent._launch_page", side_effect=[RuntimeError("browser crashed"), MagicMock()])
+    mocker.patch("apply_agent._launch_page", side_effect=[RuntimeError("browser crashed"), _sig_page(["text:name"])])
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
-    set_preview_mock = mocker.patch("apply_agent.db.release_application")
+    complete_mock = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+    release_mock = mocker.patch("apply_agent.db.release_application")
 
     apply_agent.run_preview()  # must not raise
 
     # row 1 failed (released failed_retryable); row 2 reached ready_for_review
-    ready = [c for c in set_preview_mock.call_args_list if c[0][2] == "ready_for_review"]
-    assert len(ready) == 1
-    assert ready[0][0][0] == 2
-    failed = [c for c in set_preview_mock.call_args_list if c[0][2] == "failed_retryable"]
+    assert [c[0][0] for c in complete_mock.call_args_list] == [2]
+    failed = [c for c in release_mock.call_args_list if c[0][2] == "failed_retryable"]
     assert [c[0][0] for c in failed] == [1]
 
 
@@ -139,13 +138,13 @@ def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
          "resume_file_ref": "resumes/2/r.pdf", "cover_letter_file_ref": "resumes/2/cl.pdf"},
     ])
     mocker.patch("apply_agent.ats_platform.classify", side_effect=["greenhouse", "workday"])
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
     mocker.patch("apply_agent.db.release_application")
-    mocker.patch("apply_agent.db.set_automation_status")
+    mocker.patch("apply_agent.db.mark_unsupported")
 
     with caplog.at_level("INFO"):
         apply_agent.run_preview()
@@ -405,7 +404,7 @@ def test_submission_confirmed_false_when_page_check_raises(mocker):
 
 def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    page = MagicMock()
+    page = _sig_page(["text:name"])
     mocker.patch("apply_agent._launch_page", return_value=page)
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
@@ -416,7 +415,7 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
         "applicant_eligibility": '{"work_authorized_us": "Yes"}'
     })
     fill_eligibility_mock = mocker.patch("apply_agent._fill_eligibility_answers")
-    set_preview_mock = mocker.patch("apply_agent.db.release_application")
+    set_preview_mock = mocker.patch("apply_agent.db.complete_preview", return_value=True)
 
     apply_agent._process_one_preview(
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x"}
@@ -424,22 +423,21 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
 
     fill_screening_mock.assert_called_once_with(page, generated)
     fill_eligibility_mock.assert_called_once_with(page, {"work_authorized_us": "Yes"})
-    assert set_preview_mock.call_args[0][2] == "ready_for_review"
-    preview_arg = set_preview_mock.call_args[0][3]["apply_preview"]
+    preview_arg = set_preview_mock.call_args[0][2]
     assert preview_arg["screening_answers"] == generated
     assert preview_arg["eligibility_answers"] == {"work_authorized_us": "Yes"}
 
 
 def test_process_one_preview_returns_lost_when_release_returns_none(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._fill_screening_questions")
     mocker.patch("apply_agent._fill_eligibility_answers")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
-    mocker.patch("apply_agent.db.release_application", return_value=None)
+    mocker.patch("apply_agent.db.complete_preview", return_value=False)
     job = {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x"}
     assert apply_agent._process_one_preview(job) == "lost"
 
@@ -488,7 +486,7 @@ def test_run_preview_blocks_the_row_when_the_generic_browser_use_fill_fails(mock
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent._browser_use_agent_run", side_effect=RuntimeError("browser-use did not complete"))
     release_mock = mocker.patch("apply_agent.db.release_application")
 
@@ -497,7 +495,7 @@ def test_run_preview_blocks_the_row_when_the_generic_browser_use_fill_fails(mock
     release_mock.assert_called_once()
     assert release_mock.call_args[0][0] == 1
     assert release_mock.call_args[0][2] == "failed_retryable"
-    assert "browser-use did not complete" in release_mock.call_args[0][3]["apply_blocked_reason"]
+    assert "browser-use did not complete" in release_mock.call_args[0][3]
 
 
 # Merge review 2026-09-28, finding 2: verified against the real installed browser-use==0.1.40
@@ -629,7 +627,7 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
 
     page.get_by_role.assert_called_with("button", name=apply_agent._SUBMIT_BUTTON_NAME)
     page.get_by_role.return_value.click.assert_called_once()
-    record_submission_mock.assert_called_once_with(1, "greenhouse", "2026-09-24", lease_id="lease-1")
+    record_submission_mock.assert_called_once_with(1, "lease-1", "greenhouse", "2026-09-24")
 
 
 def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(mocker):
@@ -665,7 +663,7 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
     blocked_mock.assert_called_once()
     assert blocked_mock.call_args[0][0] == 1
     assert blocked_mock.call_args[0][2] == "needs_confirmation"
-    assert "no confirmation" in blocked_mock.call_args[0][3]["apply_blocked_reason"]
+    assert "no confirmation" in blocked_mock.call_args[0][3]
 
 
 def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_regenerated(mocker):
@@ -746,7 +744,7 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
     })
     mocker.patch("apply_agent.ats_platform.classify", return_value=platform)
     launch_mock = mocker.patch("apply_agent._launch_page")
-    blocked_mock = mocker.patch("apply_agent.db.set_automation_status")
+    blocked_mock = mocker.patch("apply_agent.db.mark_unsupported")
 
     with pytest.raises(ValueError, match="permanently-excluded"):
         apply_agent.submit(1)
@@ -757,8 +755,7 @@ def test_submit_raises_on_permanently_excluded_platform(mocker, platform):
     # submit failure.
     blocked_mock.assert_called_once()
     assert blocked_mock.call_args[0][0] == 1
-    assert blocked_mock.call_args[0][1] == "unsupported"
-    assert "permanently-excluded" in blocked_mock.call_args[0][2]
+    assert "permanently-excluded" in blocked_mock.call_args[0][1]
 
 
 # ── The approval guard: ARMED proves a human tapped, this proves they tapped THIS row ──
@@ -806,7 +803,7 @@ def test_submit_raises_on_nonexistent_row(mocker):
 
 def test_process_one_preview_closes_the_page_even_when_filling_raises(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    page = MagicMock()
+    page = _sig_page(["text:name"])
     mocker.patch("apply_agent._launch_page", return_value=page)
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse", side_effect=RuntimeError("boom"))
     close_mock = mocker.patch("apply_agent._close_page")
@@ -899,7 +896,7 @@ def test_submit_happy_path_records_with_lease(mocker, approved_job):
     page, release, record = _arm_submit(mocker, approved_job)
     apply_agent.submit(9)
     record.assert_called_once()
-    assert record.call_args.kwargs.get("lease_id") == "lease-1"
+    assert record.call_args[0][:2] == (9, "lease-1")
     release.assert_not_called()
 
 
@@ -1017,10 +1014,10 @@ def test_preview_skips_rows_another_worker_claimed(mocker):
 
 def test_preview_marks_workday_unsupported_without_claiming(mocker):
     job = {"id": 3, "job_url": "https://acme.wd5.myworkdayjobs.com/x", "stage": "saved"}
-    status = mocker.patch.object(apply_agent.db, "set_automation_status")
+    status = mocker.patch.object(apply_agent.db, "mark_unsupported")
     claim = mocker.patch.object(apply_agent.db, "claim_application")
     assert apply_agent._process_one_preview(job) == "blocked"
-    assert status.call_args[0][1] == "unsupported"
+    assert "workday" in status.call_args[0][1]
     claim.assert_not_called()
 
 
@@ -1033,3 +1030,123 @@ def test_run_preview_ignores_rows_not_in_eligible_statuses(mocker):
     proc = mocker.patch.object(apply_agent, "_process_one_preview", return_value="filled")
     apply_agent.run_preview()
     assert [c.args[0]["id"] for c in proc.call_args_list] == [0, 1]
+
+
+def test_standard_field_values_uses_application_email():
+    # Receipts land in this mailbox; the reconciler's RECEIPT_IMAP_ADDRESS must match it.
+    assert apply_agent._standard_field_values({})["email"] == "kishoretheerajvj@gmail.com"
+
+
+# ── Form signature ─────────────────────────────────────────────────────────────
+
+def _sig_page(idents=None, evaluate_raises=None, wait_raises=None):
+    page = MagicMock()
+    if wait_raises:
+        page.wait_for_selector.side_effect = wait_raises
+    if evaluate_raises:
+        page.evaluate.side_effect = evaluate_raises
+    else:
+        page.evaluate.return_value = idents
+    return page
+
+
+def test_form_signature_waits_for_fields_before_evaluating():
+    page = _sig_page(["text:name"])
+    apply_agent._form_signature(page)
+    page.wait_for_selector.assert_called_once_with("input, select, textarea", timeout=15000)
+
+
+def test_form_signature_ignores_order_case_and_whitespace():
+    a = apply_agent._form_signature(_sig_page(["text:First Name", "email:Email  Address"]))
+    b = apply_agent._form_signature(_sig_page(["email:email address", "text:first   name"]))
+    assert a and a == b
+
+
+def test_form_signature_differs_when_a_field_is_added():
+    a = apply_agent._form_signature(_sig_page(["text:name"]))
+    b = apply_agent._form_signature(_sig_page(["text:name", "text:phone"]))
+    assert a != b
+
+
+def test_form_field_js_never_reads_element_id_and_skips_captcha():
+    js = apply_agent._FORM_FIELDS_JS
+    assert ".id" not in js
+    assert "/captcha/i" in js
+
+
+@pytest.mark.parametrize("page", [
+    _sig_page([]),
+    _sig_page(None),
+    _sig_page(evaluate_raises=RuntimeError("page closed")),
+    _sig_page(wait_raises=RuntimeError("timeout")),
+])
+def test_form_signature_returns_none_when_empty_or_failing(page):
+    assert apply_agent._form_signature(page) is None
+
+
+def test_preview_computes_signature_before_any_fill_and_stores_it(mocker):
+    order = mocker.Mock()
+    page = MagicMock()
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    mocker.patch("apply_agent._launch_page", return_value=page)
+    mocker.patch("apply_agent._form_signature", side_effect=order.sig)
+    order.sig.return_value = "sig-1"
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", side_effect=order.fill)
+    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._generate_screening_answers", return_value={})
+    mocker.patch("apply_agent._fill_screening_questions")
+    mocker.patch("apply_agent._fill_eligibility_answers")
+    mocker.patch("apply_agent.db.load_prompts", return_value={})
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+
+    apply_agent._process_one_preview(
+        {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x"})
+
+    assert [c[0] for c in order.mock_calls[:2]] == ["sig", "fill"]
+    assert complete.call_args[0][3] == "sig-1"
+
+
+def test_submit_form_drift_releases_needs_input_and_never_fills_or_clicks(mocker, approved_job):
+    page, release, record = _arm_submit(mocker, {**approved_job, "form_signature": "old"})
+    mocker.patch.object(apply_agent, "_form_signature", return_value="new")
+    with pytest.raises(apply_agent.FormChangedError):
+        apply_agent.submit(9)
+    apply_agent.ats_fillers.fill_greenhouse.assert_not_called()
+    page.get_by_role.return_value.click.assert_not_called()
+    release.assert_called_once_with(9, "lease-1", "needs_input", "Form changed after approval")
+    record.assert_not_called()
+
+
+def test_submit_without_stored_signature_skips_drift_check_with_warning(mocker, approved_job, caplog):
+    page, release, record = _arm_submit(mocker, {**approved_job, "form_signature": None})
+    sig = mocker.patch.object(apply_agent, "_form_signature")
+    with caplog.at_level("WARNING"):
+        apply_agent.submit(9)
+    sig.assert_not_called()
+    assert any("drift check skipped" in r.message for r in caplog.records)
+    page.get_by_role.return_value.click.assert_called_once()
+
+
+def test_submit_with_matching_signature_proceeds(mocker, approved_job):
+    page, release, record = _arm_submit(mocker, {**approved_job, "form_signature": "same"})
+    mocker.patch.object(apply_agent, "_form_signature", return_value="same")
+    apply_agent.submit(9)
+    page.get_by_role.return_value.click.assert_called_once()
+    record.assert_called_once()
+
+
+def test_new_preview_without_fingerprint_cannot_be_approved(mocker):
+    page = _sig_page([])
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    mocker.patch("apply_agent._launch_page", return_value=page)
+    fill = mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._generate_screening_answers", return_value={})
+    mocker.patch("apply_agent._fill_screening_questions")
+    mocker.patch("apply_agent._fill_eligibility_answers")
+    mocker.patch("apply_agent.db.load_prompts", return_value={})
+    with pytest.raises(ValueError, match="fingerprint"):
+        apply_agent._process_one_preview({"id": 1, "job_url": "https://boards.greenhouse.io/x"})
+    apply_agent.db.complete_preview.assert_not_called()
+    fill.assert_not_called()
+    assert apply_agent.db.release_application.call_args.args[2] == "failed_retryable"

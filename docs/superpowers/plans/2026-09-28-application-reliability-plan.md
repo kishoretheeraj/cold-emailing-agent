@@ -184,7 +184,7 @@ Deliver reviewable changes in this order:
 2. **Shipped (2026-10-01)**, see [2026-10-01-automation-status-and-leases.md](2026-10-01-automation-status-and-leases.md): new `automation_status` column (recruiting `stage` stays unchanged, per §4), `preview_revision_hash`/`approved_revision_hash`, execution state, atomic recovery, and worker ownership.
 3. Domain-scoped session storage, Gmail OTP interception, and takeover/resume UI.
 4. Browser Use repair (shipped, see Phase 0 status), common adapter contract, and a Stagehand-vs-`ats_agent.py` comparison harness — no Skyvern flag; it is dropped from this plan per §1.
-5. Verified form preparation (including the `form_signature` drift check), submission reconciliation (including the Gmail-receipt reconciler), and evidence UI.
+5. Verified form preparation (including the `form_signature` drift check), submission reconciliation (including the Gmail-receipt reconciler), and evidence UI. **Shipped 2026-10-04** (with lifecycle writes moved behind SECURITY DEFINER RPCs): plan `docs/superpowers/plans/2026-10-04-lifecycle-rpcs-and-submission-reconciliation.md`.
 6. Pilot metrics, limits, operational recovery, and deployment configuration (headless-by-default execution).
 
 Each change includes the tests appropriate to its risk. Use real local browser fixtures for authentication and form interaction; controlled fault injection for concurrency/recovery; and supervised live checks for real provider behavior. No additional full-suite runs are needed without new changes or unresolved concerns.

@@ -352,3 +352,43 @@ describe("ApplicationDetailSheet -- pick and cost sections (U6/U9/U15)", () => {
     expect(screen.queryByText("Cost")).not.toBeInTheDocument();
   });
 });
+
+describe("ApplicationDetailSheet -- submission evidence", () => {
+  it("renders a Confirmation email block with subject, from, date and message id", () => {
+    render(
+      <ApplicationDetailSheet
+        application={{
+          ...baseApplication,
+          submission_evidence: {
+            source: "gmail_receipt",
+            message_id: "<abc@mail.example>",
+            from: "no-reply@ashby.example",
+            subject: "Thanks for applying to Ashby Co",
+            date: "2026-10-04",
+          },
+        }}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText(/submission evidence/i)).toBeInTheDocument();
+    expect(screen.getByText("Confirmation email")).toBeInTheDocument();
+    expect(screen.getByText(/Thanks for applying to Ashby Co/)).toBeInTheDocument();
+    expect(screen.getByText(/no-reply@ashby.example/)).toBeInTheDocument();
+    expect(screen.getByText(/<abc@mail.example>/)).toBeInTheDocument();
+  });
+
+  it("labels page_confirmation as Confirmation page", () => {
+    render(
+      <ApplicationDetailSheet
+        application={{ ...baseApplication, submission_evidence: { source: "page_confirmation", at: "2026-10-04T00:00:00Z" } }}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("Confirmation page")).toBeInTheDocument();
+  });
+
+  it("renders no evidence block when submission_evidence is absent", () => {
+    render(<ApplicationDetailSheet application={baseApplication} onClose={() => {}} />);
+    expect(screen.queryByText(/submission evidence/i)).not.toBeInTheDocument();
+  });
+});

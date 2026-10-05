@@ -7,6 +7,7 @@ job's failure never blocks the batch. See
 docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -29,7 +30,7 @@ _MODE_TAGS = {"preview": "[APPLY-PREVIEW]", "submit": "[APPLY-SUBMIT]"}
 def _standard_field_values(job):
     return {
         "name": "Kishore Theeraj Vasudevan Jaya",
-        "email": "kishoretheeraj@gmail.com",
+        "email": "kishoretheerajvj@gmail.com",
         "phone": "+1 603-322-0535",
         "location": "Hanover, NH",
         "linkedin": "linkedin.com/in/kishoretheeraj",
@@ -364,6 +365,45 @@ def _fill_generic_via_browser_use(page, job, field_values):
     _browser_use_agent_run(task, page)
 
 
+# ── Form signature ─────────────────────────────────────────────────────────────
+
+class FormChangedError(Exception):
+    pass
+
+
+# Never reads el.id: SPA frameworks generate ids like ":r3:" that differ on every load.
+_FORM_FIELDS_JS = """() => {
+  const skip = ['hidden', 'submit', 'button', 'reset', 'image'];
+  const out = [];
+  for (const el of document.querySelectorAll('input, select, textarea')) {
+    if (skip.includes((el.type || '').toLowerCase()) || el.disabled) continue;
+    const name = el.name || '';
+    if (/captcha/i.test(name)) continue;
+    const ident = name
+      || el.getAttribute('aria-label')
+      || (el.labels && el.labels[0] && el.labels[0].innerText)
+      || el.placeholder
+      || '';
+    if (!ident.trim()) continue;
+    out.push((el.type || el.tagName.toLowerCase()) + ':' + ident);
+  }
+  return out;
+}"""
+
+
+def _form_signature(page):
+    try:
+        page.wait_for_selector("input, select, textarea", timeout=15000)
+        raw = page.evaluate(_FORM_FIELDS_JS)
+        idents = sorted({re.sub(r"\s+", " ", str(x)).strip().lower() for x in (raw or [])})
+        if not idents:
+            return None
+        return hashlib.sha256(json.dumps(idents).encode()).hexdigest()
+    except Exception as exc:
+        log.warning(f"[APPLY-AGENT] | form signature failed: {exc}")
+        return None
+
+
 # ── Preview pass ───────────────────────────────────────────────────────────────
 
 def _process_one_preview(job):
@@ -371,15 +411,13 @@ def _process_one_preview(job):
     platform = ats_platform.classify(job.get("job_url"))
 
     if platform == "workday":
-        db.set_automation_status(job_id, "unsupported", "workday -- permanently excluded, see spec's Rejected section")
+        db.mark_unsupported(job_id, "workday -- permanently excluded, see spec's Rejected section")
         return "blocked"
     if platform == "aggregator":
-        db.set_automation_status(job_id, "unsupported", "aggregator/listing link, not a real application page")
+        db.mark_unsupported(job_id, "aggregator/listing link, not a real application page")
         return "blocked"
 
-    lease = db.claim_application(
-        job_id, tuple(config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES), "preparing"
-    )
+    lease = db.claim_application(job_id, "preparing")
     if lease is None:
         log.info(f"[APPLY-PREVIEW] | {job.get('company')} | skipped: row not claimable (another worker holds it)")
         return "skipped"
@@ -387,6 +425,9 @@ def _process_one_preview(job):
     try:
         page = _launch_page(job.get("job_url"))
         try:
+            signature = _form_signature(page)
+            if not signature:
+                raise ValueError("Could not fingerprint the application form; preview must be prepared again")
             db.heartbeat_application(job_id, lease)
             field_values = _standard_field_values(job)
 
@@ -412,11 +453,7 @@ def _process_one_preview(job):
                 "eligibility_answers": eligibility_answers,
                 "screening_answers": screening_answers,
             }
-            released = db.release_application(
-                job_id, lease, "ready_for_review",
-                {"apply_preview": preview, "stage": "ready_to_submit", "apply_blocked_reason": None},
-            )
-            if released is None:
+            if not db.complete_preview(job_id, lease, preview, signature):
                 log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded "
                             f"(row was recovered by lease recovery)")
                 return "lost"
@@ -425,8 +462,7 @@ def _process_one_preview(job):
             _close_page(page)
     except Exception as exc:
         try:
-            db.release_application(job_id, lease, "failed_retryable",
-                                   {"apply_blocked_reason": f"preview pass error: {exc}"})
+            db.release_application(job_id, lease, "failed_retryable", f"preview pass error: {exc}")
         except Exception:
             pass
         raise
@@ -489,12 +525,12 @@ def submit(job_id):
         reason = f"submit() called on a permanently-excluded platform: {platform}"
         log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | error: {reason}")
         try:
-            db.set_automation_status(job_id, "unsupported", reason)
+            db.mark_unsupported(job_id, reason)
         except Exception:
             pass
         raise ValueError(reason)
 
-    lease = db.claim_application(job_id, ("approved",), "submitting")
+    lease = db.claim_application(job_id, "submitting")
     if lease is None:
         raise ValueError(
             f"submit() could not claim job_id={job_id}: row is not in automation_status 'approved' "
@@ -545,6 +581,11 @@ def submit(job_id):
 
         page = _launch_page(job.get("job_url"))
         try:
+            expected_signature = job.get("form_signature")
+            if not expected_signature:
+                log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | no preview form_signature, drift check skipped")
+            elif _form_signature(page) != expected_signature:
+                raise FormChangedError("Form changed after approval")
             field_values = _standard_field_values(job)
 
             if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
@@ -592,8 +633,8 @@ def submit(job_id):
                     f"no confirmation on the page afterward -- treating this as a failed submission "
                     f"and leaving the stage unchanged so a human can investigate before any retry."
                 )
-            recorded = db.record_submission(job_id, platform, date.today().isoformat(), lease_id=lease)
-            if recorded is None:
+            recorded = db.record_submission(job_id, lease, platform, date.today().isoformat())
+            if not recorded:
                 log.warning(
                     f"[APPLY-SUBMIT] | {job.get('company')} | submission confirmed but our lease was "
                     f"already recovered as stale -- row was already moved to needs_confirmation by lease recovery"
@@ -604,9 +645,10 @@ def submit(job_id):
             _close_page(page)
     except Exception as exc:
         log.warning(f"[APPLY-SUBMIT] | {job.get('company') if job else job_id} | error: {exc}")
-        to_status = "needs_confirmation" if clicked else "failed_retryable"
+        to_status = ("needs_confirmation" if clicked
+                     else "needs_input" if isinstance(exc, FormChangedError) else "failed_retryable")
         try:
-            db.release_application(job_id, lease, to_status, {"apply_blocked_reason": str(exc)})
+            db.release_application(job_id, lease, to_status, str(exc))
         except Exception:
             pass
         raise

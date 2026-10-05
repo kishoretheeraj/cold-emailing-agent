@@ -108,3 +108,20 @@ def test_monitor_run_paused_all_skips_lease_recovery(mocker):
     rec = mocker.patch.object(monitor, "recover_stale_leases")
     monitor.run()
     rec.assert_not_called()
+
+
+def test_monitor_run_calls_reconciler_after_recovery_and_survives_its_failure(mocker):
+    import monitor
+    order = []
+    mocker.patch.object(monitor, "get_pause_scope", return_value="none")
+    mocker.patch.object(monitor, "load_prompts", return_value={})
+    mocker.patch.object(monitor, "recover_stale_leases", side_effect=lambda *_: order.append("recover") or 0)
+    rec = mocker.patch.object(monitor.submission_reconciler, "run",
+                              side_effect=lambda: order.append("reconcile") or (_ for _ in ()).throw(Exception("boom")))
+    mocker.patch("monitor.detect_sent_drafts")
+    mocker.patch("monitor.detect_replies", return_value=[])
+    mocker.patch("monitor._draft_reply_responses")
+    mocker.patch.object(monitor, "record_run")
+    monitor.run()
+    assert order == ["recover", "reconcile"]
+    rec.assert_called_once()

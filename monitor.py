@@ -49,6 +49,7 @@ from gmail import (
     find_sent_by_subject, find_sent_by_thread_id, open_sent_mail_session,
 )
 from emailer import _call_claude
+import submission_reconciler
 
 REPLIED_LABEL = "Cold Outreach/Replied"
 
@@ -558,6 +559,12 @@ def run():
             log.info(f"[MONITOR] recovered {n} stale application lease(s)")
     except Exception as exc:
         log.warning(f"[MONITOR] stale-lease recovery failed: {exc}")
+
+    # Best-effort: resolves needs_confirmation rows from Gmail application receipts.
+    try:
+        submission_reconciler.run()
+    except Exception as exc:
+        log.warning(f"[MONITOR] submission reconciler failed: {exc}")
 
     prompts = {}
     try:
