@@ -95,10 +95,15 @@ def _track_usage(application_id, usage, action):
 # and "Anthropic" are deliberately absent: they're in the operator's own skills/projects, and
 # Anthropic can be the target company.
 
-_ATTRIBUTION_PHRASES = (
-    "generated with", "co-authored-by", "as an ai", "as a language model",
-    "i'm claude", "i am claude", "noreply@anthropic",
-)
+_ATTRIBUTION_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\bgenerated (with|by) (claude|chatgpt|gpt|an ai|ai)\b",
+    r"\bco-authored-by\b",
+    r"\bas an ai\b",
+    r"\bas a language model\b",
+    r"\bi'?m claude\b",
+    r"\bi am claude\b",
+    r"noreply@anthropic",
+))
 _CHAT_PREAMBLE = re.compile(r"^\s*(here's|here is|sure\b|certainly\b|below is)", re.I)
 _CHAT_SIGNOFF = re.compile(r"^\s*(let me know|i hope this)", re.I)
 # Skills group labels are the only model-written text rendered on the resume itself.
@@ -106,8 +111,11 @@ _LABEL_CHARS = re.compile(r"[A-Za-z0-9 &/,+.-]{1,40}")
 
 
 def _check_attribution(text):
-    lowered = text.lower()
-    violations = [f"contains tool attribution '{p}'" for p in _ATTRIBUTION_PHRASES if p in lowered]
+    violations = []
+    for pattern in _ATTRIBUTION_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            violations.append(f"contains tool attribution '{m.group(0).lower()}'")
     lines = [line for line in text.splitlines() if line.strip()]
     if lines and _CHAT_PREAMBLE.match(lines[0]):
         violations.append(f"starts with a chat preamble: {lines[0][:60]!r}")
