@@ -607,10 +607,14 @@ def fetch_inbox_since(since_date, address, password, want_body=None):
     imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
     try:
         imap.login(address, password)
-        imap.select('"[Gmail]/All Mail"', readonly=True)
+        status, _ = imap.select('"[Gmail]/All Mail"', readonly=True)
+        if status != "OK":
+            raise RuntimeError(f"IMAP receipt mailbox select failed: {status}")
         status, data = imap.search(
             None, "SINCE", since_date.strftime("%d-%b-%Y"), "NOT", "FROM", f'"{address}"')
-        if status != "OK" or not data or not data[0]:
+        if status != "OK":
+            raise RuntimeError(f"IMAP receipt mailbox search failed: {status}")
+        if not data or not data[0]:
             return []
         out = []
         for num in data[0].split():

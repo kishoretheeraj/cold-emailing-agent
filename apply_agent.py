@@ -426,6 +426,8 @@ def _process_one_preview(job):
         page = _launch_page(job.get("job_url"))
         try:
             signature = _form_signature(page)
+            if not signature:
+                raise ValueError("Could not fingerprint the application form; preview must be prepared again")
             db.heartbeat_application(job_id, lease)
             field_values = _standard_field_values(job)
 

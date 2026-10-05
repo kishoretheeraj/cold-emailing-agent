@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import gmail
+import pytest
 
 _HDR = (
     b"From: \"Acme Recruiting\" <no-reply@us.greenhouse-mail.io>\r\n"
@@ -21,6 +22,7 @@ _BODY = b"From: a@b.com\r\nSubject: s\r\nContent-Type: text/plain\r\n\r\nWe have
 
 def _fake_imap(mocker, headers, bodies=None):
     imap = MagicMock()
+    imap.select.return_value = ("OK", [b"0"])
     imap.search.return_value = ("OK", [b" ".join(str(i + 1).encode() for i in range(len(headers)))])
     fetches = []
 
@@ -98,4 +100,13 @@ def test_logs_out_even_when_search_fails(mocker):
         gmail.fetch_inbox_since(_since(), "me@gmail.com", "pw")
     except RuntimeError:
         pass
+    imap.logout.assert_called_once()
+
+
+@pytest.mark.parametrize("operation", ["select", "search"])
+def test_server_rejection_is_not_treated_as_an_empty_mailbox(mocker, operation):
+    imap = _fake_imap(mocker, [_HDR])
+    getattr(imap, operation).return_value = ("NO", [b"Mailbox unavailable"])
+    with pytest.raises(RuntimeError, match="receipt mailbox"):
+        gmail.fetch_inbox_since(_since(), "me@gmail.com", "pw")
     imap.logout.assert_called_once()

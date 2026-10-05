@@ -17,7 +17,7 @@ def _app(company="Acme", role="Product Manager", attempted=T0, reason=None, id=1
 
 def _msg(frm='"Acme Recruiting" <no-reply@us.greenhouse-mail.io>',
          subject="Thank you for applying to Acme", delta=timedelta(minutes=2),
-         is_reply=False, mid="<m1@x>", body=None):
+         is_reply=False, mid="<m1@x>", body="Product Manager"):
     m = {"num": b"1", "message_id": mid, "from": frm, "subject": subject,
          "date": T0 + delta, "is_reply": is_reply}
     if body is not None:
@@ -84,7 +84,7 @@ def test_company_is_whole_word_not_prefix():
 
 
 def test_receipt_phrase_found_in_body():
-    m = _msg(subject="Acme update", body="Hi! We have received your application.")
+    m = _msg(subject="Acme update", body="Hi! We have received your application for Product Manager.")
     assert sr.match_receipt(_app(), [m], T0) is not None
 
 
@@ -152,7 +152,7 @@ def test_fetch_called_once_with_bounded_since_and_address(env):
 
 def test_two_rows_same_company_receipt_names_one_role(env):
     env["rows"].return_value = [_app(id=1, role="Product Manager"), _app(id=2, role="Data Engineer")]
-    env["fetch"].return_value = [_msg(subject="Thank you for applying to Acme: Data Engineer")]
+    env["fetch"].return_value = [_msg(subject="Thank you for applying to Acme: Data Engineer", body="")]
     out = sr.run(now=T0 + timedelta(minutes=5))
     assert out["resolved"] == 1
     assert env["evidence"].call_args[0][0] == 2
@@ -160,7 +160,7 @@ def test_two_rows_same_company_receipt_names_one_role(env):
 
 def test_two_rows_same_company_receipt_without_role_resolves_neither(env):
     env["rows"].return_value = [_app(id=1, role="Product Manager"), _app(id=2, role="Data Engineer")]
-    env["fetch"].return_value = [_msg()]
+    env["fetch"].return_value = [_msg(body="")]
     out = sr.run(now=T0 + timedelta(minutes=5))
     assert out["resolved"] == 0
     env["evidence"].assert_not_called()
@@ -238,3 +238,41 @@ def test_want_body_only_for_company_matched_non_reply_messages(env):
     assert want(_msg()) is True
     assert want(_msg(frm='"Globex" <a@globex.com>', subject="hello")) is False
     assert want(_msg(is_reply=True)) is False
+
+
+@pytest.mark.parametrize("subject", [
+    "Complete your application to Acme for Product Manager",
+    "Verify your application for Product Manager at Acme",
+    "Update on your application at Acme: Product Manager",
+    "Thanks for submitting your feedback about Product Manager at Acme",
+])
+def test_non_receipt_application_mail_does_not_confirm(subject):
+    assert sr.match_receipt(_app(), [_msg(subject=subject, body="")], T0) is None
+
+
+def test_single_pending_row_cannot_claim_a_different_roles_receipt():
+    receipt = _msg(subject="Thank you for applying to Acme: Data Engineer", body="")
+    assert sr.match_receipt(_app(role="Product Manager"), [receipt], T0) is None
+
+
+def test_receipt_without_role_requires_manual_confirmation():
+    assert sr.match_receipt(_app(), [_msg(body="")], T0) is None
+
+
+def test_next_scan_does_not_assign_resolved_roles_receipt_to_remaining_role(env):
+    pm, engineer = _app(id=1), _app(id=2, role="Data Engineer")
+    env["rows"].return_value = [pm, engineer]
+    env["fetch"].return_value = [_msg(subject="Thank you for applying to Acme: Data Engineer", body="")]
+    assert sr.run(now=T0 + timedelta(minutes=5))["resolved"] == 1
+    env["evidence"].reset_mock()
+    env["rows"].return_value = [pm]
+    assert sr.run(now=T0 + timedelta(minutes=10))["resolved"] == 0
+    env["evidence"].assert_not_called()
+
+
+def test_already_consumed_receipt_does_not_suppress_manual_escalation(env):
+    env["rows"].return_value = [_app()]
+    env["fetch"].return_value = [_msg(body="Product Manager")]
+    env["evidence"].return_value = False
+    out = sr.run(now=T0 + timedelta(minutes=30))
+    assert out["resolved"] == 0 and out["escalated"] == 1

@@ -29,7 +29,7 @@ def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     fill_mock = mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
@@ -79,7 +79,7 @@ def test_run_preview_routes_generic_to_browser_use(mocker):
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     browser_use_mock = mocker.patch("apply_agent._fill_generic_via_browser_use")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
@@ -114,7 +114,7 @@ def test_run_preview_isolates_one_row_failure_from_the_rest(mocker):
          "resume_file_ref": "resumes/2/r.pdf", "cover_letter_file_ref": "resumes/2/cl.pdf"},
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    mocker.patch("apply_agent._launch_page", side_effect=[RuntimeError("browser crashed"), MagicMock()])
+    mocker.patch("apply_agent._launch_page", side_effect=[RuntimeError("browser crashed"), _sig_page(["text:name"])])
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
@@ -138,7 +138,7 @@ def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
          "resume_file_ref": "resumes/2/r.pdf", "cover_letter_file_ref": "resumes/2/cl.pdf"},
     ])
     mocker.patch("apply_agent.ats_platform.classify", side_effect=["greenhouse", "workday"])
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
@@ -404,7 +404,7 @@ def test_submission_confirmed_false_when_page_check_raises(mocker):
 
 def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    page = MagicMock()
+    page = _sig_page(["text:name"])
     mocker.patch("apply_agent._launch_page", return_value=page)
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
@@ -430,7 +430,7 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
 
 def test_process_one_preview_returns_lost_when_release_returns_none(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
     mocker.patch("apply_agent._attach_resume_and_cover_letter")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
@@ -486,7 +486,7 @@ def test_run_preview_blocks_the_row_when_the_generic_browser_use_fill_fails(mock
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
-    mocker.patch("apply_agent._launch_page", return_value=MagicMock())
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent._browser_use_agent_run", side_effect=RuntimeError("browser-use did not complete"))
     release_mock = mocker.patch("apply_agent.db.release_application")
 
@@ -803,7 +803,7 @@ def test_submit_raises_on_nonexistent_row(mocker):
 
 def test_process_one_preview_closes_the_page_even_when_filling_raises(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    page = MagicMock()
+    page = _sig_page(["text:name"])
     mocker.patch("apply_agent._launch_page", return_value=page)
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse", side_effect=RuntimeError("boom"))
     close_mock = mocker.patch("apply_agent._close_page")
@@ -1133,3 +1133,20 @@ def test_submit_with_matching_signature_proceeds(mocker, approved_job):
     apply_agent.submit(9)
     page.get_by_role.return_value.click.assert_called_once()
     record.assert_called_once()
+
+
+def test_new_preview_without_fingerprint_cannot_be_approved(mocker):
+    page = _sig_page([])
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    mocker.patch("apply_agent._launch_page", return_value=page)
+    fill = mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._generate_screening_answers", return_value={})
+    mocker.patch("apply_agent._fill_screening_questions")
+    mocker.patch("apply_agent._fill_eligibility_answers")
+    mocker.patch("apply_agent.db.load_prompts", return_value={})
+    with pytest.raises(ValueError, match="fingerprint"):
+        apply_agent._process_one_preview({"id": 1, "job_url": "https://boards.greenhouse.io/x"})
+    apply_agent.db.complete_preview.assert_not_called()
+    fill.assert_not_called()
+    assert apply_agent.db.release_application.call_args.args[2] == "failed_retryable"
