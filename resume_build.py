@@ -8,6 +8,7 @@ docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md.
 
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 
@@ -370,6 +371,19 @@ class StillOverflowError(Exception):
     Caller (resume_agent.py) catches this and triggers a content-editing regeneration."""
 
 
+def _seed_profile_fonts(profile):
+    fonts_dir = os.path.join(profile, "user", "fonts")
+    prefix = _FONT_NAME.lower()
+    for directory in config.RESUME_FONT_DIRS:
+        directory = os.path.expanduser(directory)
+        if not os.path.isdir(directory):
+            continue
+        for name in os.listdir(directory):
+            if name.lower().startswith(prefix) and name.lower().endswith(".ttf"):
+                os.makedirs(fonts_dir, exist_ok=True)
+                shutil.copy(os.path.join(directory, name), fonts_dir)
+
+
 def convert_to_pdf(docx_path, output_dir):
     """Convert docx_path to PDF via LibreOffice headless. Returns the output PDF path. Raises on
     any failure (missing soffice binary, conversion error, timeout, no PDF written) -- never
@@ -379,6 +393,7 @@ def convert_to_pdf(docx_path, output_dir):
     base = os.path.splitext(os.path.basename(docx_path))[0]
     pdf_path = os.path.join(output_dir, base + ".pdf")
     with tempfile.TemporaryDirectory(prefix="soffice-profile-") as profile:
+        _seed_profile_fonts(profile)
         subprocess.run(
             ["soffice", f"-env:UserInstallation={pathlib.Path(profile).as_uri()}",
              "--headless", "--norestore", "--nolockcheck", "--nologo", "--nodefault",

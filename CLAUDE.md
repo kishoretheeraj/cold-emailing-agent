@@ -1084,9 +1084,12 @@ URL or cloud provider over the subscription. A timeout kills the whole process g
   checks docinfo + XMP fingerprints, embedded fonts (allowlist `{RESUME_FONT_NAME}`), attribution in
   the rendered text, and Unicode `Cf` characters. The scrub deletes the XMP packet and disables
   pikepdf's editor stamp (it used to write `pikepdf 10.x` as Producer on every PDF), and LibreOffice
-  used to embed Carlito/Caladea/OpenSymbol (also on the Mac), so Calibri must be installed where
-  `soffice` sees it. Each build uses its own temp dir, and `convert_to_pdf` a throwaway LibreOffice
-  profile.
+  used to embed Carlito/Caladea/OpenSymbol (also on the Mac). Each build uses its own temp dir, and
+  `convert_to_pdf` a throwaway LibreOffice profile seeded with the Calibri `.ttf` files found in
+  `config.RESUME_FONT_DIRS` (`RESUME_FONT_DIR` env, `~/Library/Fonts`,
+  `/usr/local/share/fonts/calibri`) under `user/fonts` -- LibreOffice on macOS ignored a Calibri
+  installed in `~/Library/Fonts` and still embedded Carlito (verified 2026-10-05); fonts in the
+  profile are always loaded. The operator's own Calibri (from Word) must exist in one of those dirs.
 - **Watermark.** Claude's text may be watermarked (anthropic.com/news/claude-text-watermark). Resume
   bullets/skills are the operator's own text and only the skills group labels are model-written
   (governed); the cover letter is Claude-written. No watermark-removal step exists or will be added.

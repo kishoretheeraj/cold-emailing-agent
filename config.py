@@ -559,6 +559,12 @@ MODEL_PRICING = {
 # Calibri is the dominant choice (~76/77 files); Garamond appeared in exactly one recent
 # consulting-track variant. Default to the proven majority pattern, single line to override.
 RESUME_FONT_NAME = "Calibri"
+# Directories searched for RESUME_FONT_NAME .ttf files, which convert_to_pdf copies into its
+# throwaway LibreOffice profile (user/fonts). LibreOffice on macOS ignored a Calibri installed in
+# ~/Library/Fonts and embedded its bundled Carlito instead (verified 2026-10-05); fonts in the
+# profile are always loaded, on the Mac and on the Beelink alike.
+RESUME_FONT_DIRS = [d for d in (os.environ.get("RESUME_FONT_DIR"), "~/Library/Fonts",
+                                "/usr/local/share/fonts/calibri") if d]
 # The strategy step (resume_agent.py --propose) may only choose from this exact set of section
 # names -- an unconstrained LLM invented labels like "Selected Projects"/"Core Competencies" that
 # resume_build.py's section_order lookup silently dropped (found on the first live --build run).

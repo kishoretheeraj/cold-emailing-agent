@@ -159,6 +159,38 @@ def test_convert_to_pdf_uses_configured_timeout(mocker, tmp_path):
     assert seen["kwargs"]["timeout"] == config.RESUME_SOFFICE_TIMEOUT_SECONDS
 
 
+def test_convert_to_pdf_seeds_the_profile_with_the_resume_font_files(mocker, tmp_path):
+    # LibreOffice on macOS ignored a Calibri installed in ~/Library/Fonts and embedded its bundled
+    # Carlito; fonts in the profile's user/fonts are always loaded, on every OS.
+    font_dir = tmp_path / "fonts"
+    font_dir.mkdir()
+    for name in ("Calibri.ttf", "calibrib.ttf", "Arial.ttf", "Calibri.txt"):
+        (font_dir / name).write_bytes(b"font")
+    mocker.patch.object(config, "RESUME_FONT_DIRS", [str(tmp_path / "missing"), str(font_dir)])
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        profile = [a for a in argv if a.startswith("-env:UserInstallation=file://")][0].split("file://", 1)[1]
+        seen["fonts"] = sorted(os.listdir(os.path.join(profile, "user", "fonts")))
+        (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7")
+        return MagicMock(returncode=0)
+
+    mocker.patch("resume_build.subprocess.run", side_effect=fake_run)
+    resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
+    assert seen["fonts"] == ["Calibri.ttf", "calibrib.ttf"]
+
+
+def test_convert_to_pdf_runs_without_any_font_dir(mocker, tmp_path):
+    mocker.patch.object(config, "RESUME_FONT_DIRS", [str(tmp_path / "missing")])
+
+    def fake_run(argv, **kwargs):
+        (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7")
+        return MagicMock(returncode=0)
+
+    mocker.patch("resume_build.subprocess.run", side_effect=fake_run)
+    assert resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path)) == str(tmp_path / "resume.pdf")
+
+
 def test_convert_to_pdf_uses_a_throwaway_profile_and_removes_it(mocker, tmp_path):
     seen = {}
     mocker.patch("resume_build.subprocess.run", side_effect=_fake_soffice(tmp_path, seen))
