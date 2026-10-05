@@ -535,6 +535,7 @@ RESUME_CLAUDE_BACKEND = os.environ.get("RESUME_CLAUDE_BACKEND", "api")
 CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH", "claude")
 CLAUDE_CLI_TIMEOUT_SECONDS = 300
 RESUME_WORKER_BATCH = 3
+RESUME_QUEUE_STALE_HOURS = 24
 
 # ── Model pricing (system-wide cost tracking) ───────────────────────────────────
 # Real per-million-token USD prices, verified against platform.claude.com/docs/en/about-claude/

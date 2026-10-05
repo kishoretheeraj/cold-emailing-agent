@@ -760,6 +760,17 @@ def get_strong_applications_without_resume(limit):
     return result.data or []
 
 
+def count_stale_strong_without_resume(hours):
+    """Count queued strong rows (same filters as get_strong_applications_without_resume) not
+    touched for over `hours` -- the alarm that the Beelink resume worker is not consuming."""
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    result = _retry(lambda: get_client().table("job_applications")
+                     .select("id", count="exact").eq("pick_verdict", "strong").eq("stage", "saved")
+                     .is_("resume_file_ref", "null").is_("resume_error", "null")
+                     .lt("updated_at", cutoff).execute())
+    return result.count or 0
+
+
 def set_resume_error(application_id, message):
     """Record why the resume worker gave up on a row, so it isn't retried every run. Clearing
     the column re-queues the row."""
