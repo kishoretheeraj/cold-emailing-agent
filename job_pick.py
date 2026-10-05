@@ -2,9 +2,11 @@
 Three-stage job-relevance scoring: structured filters -> local embedding similarity
 -> coarse LLM judge. Replaces job_discovery.py's old target_roles word-overlap
 check with something that actually reads the posting. Best-effort, never-raises
-per-row -- one bad posting must never stop the batch. A "strong" verdict
-zero-tap triggers resume_agent's propose+build pipeline (real spend, no human
-pause between them for this auto-pick path specifically -- see
+per-row -- one bad posting must never stop the batch. On the "api" backend a
+"strong" verdict zero-tap triggers resume_agent's propose+build pipeline (real
+spend, no human pause between them for this auto-pick path specifically); on
+the "subscription" backend strong rows are queued for the Beelink resume
+worker instead -- see
 docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md).
 """
 
@@ -183,7 +185,8 @@ def run():
     try:
         stale = db.count_stale_strong_without_resume(config.RESUME_QUEUE_STALE_HOURS)
     except Exception as exc:
-        log.warning(f"[JOB-PICK] | stale-queue check failed: {exc}")
+        log.warning(f"[JOB-PICK] | WARNING | stale-queue check failed: {exc}")
+        return 1
     if stale:
         log.warning(f"[JOB-PICK] | WARNING | strong rows waiting > {config.RESUME_QUEUE_STALE_HOURS}h for the Beelink worker: {stale}")
     return stale

@@ -203,3 +203,11 @@ def test_run_returns_zero_without_db_call_on_api_backend(mocker):
 
     assert job_pick.run() == 0
     count.assert_not_called()
+
+
+def test_run_fails_closed_when_stale_queue_check_raises(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    mocker.patch("job_pick.db.get_unscored_saved_applications", return_value=[])
+    mocker.patch("job_pick.db.count_stale_strong_without_resume", side_effect=RuntimeError("bad column"))
+
+    assert job_pick.run() != 0
