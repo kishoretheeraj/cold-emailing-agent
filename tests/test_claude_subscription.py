@@ -23,6 +23,23 @@ def _completed(stdout, returncode=0, stderr=""):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+class FakePopen:
+    def __init__(self, stdout, returncode=0, stderr="", timeout_after_call=False):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+        self.timeout_after_call = timeout_after_call
+        self.pid = 12345
+        self._communicate_count = 0
+
+    def communicate(self, input=None, timeout=None):
+        self._communicate_count += 1
+        # Timeout only on the first call with a timeout argument
+        if self.timeout_after_call and self._communicate_count == 1 and timeout is not None:
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+        return self.stdout, self.stderr
+
+
 @pytest.fixture
 def token(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
@@ -30,7 +47,8 @@ def token(monkeypatch):
 
 @pytest.fixture
 def run(mocker, token):
-    return mocker.patch("claude_subscription.subprocess.run", return_value=_completed(_ok_payload()))
+    fake_popen = FakePopen(_ok_payload())
+    return mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
 
 
 # ── Invocation ─────────────────────────────────────────────────────────────────
@@ -48,10 +66,14 @@ def test_argv_strips_every_context_source_and_never_uses_bare(run):
     assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
 
 
-def test_prompt_goes_on_stdin_not_argv(run):
+def test_prompt_goes_on_stdin_not_argv(mocker, token):
+    fake_popen = FakePopen(_ok_payload())
+    popen_mock = mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
+    communicate_mock = mocker.patch.object(fake_popen, "communicate", return_value=(_ok_payload(), ""))
     claude_subscription.complete("SECRET-PROMPT-BODY")
-    assert run.call_args.kwargs["input"] == "SECRET-PROMPT-BODY"
-    assert "SECRET-PROMPT-BODY" not in run.call_args.args[0]
+    communicate_mock.assert_called_once()
+    assert communicate_mock.call_args.kwargs["input"] == "SECRET-PROMPT-BODY"
+    assert "SECRET-PROMPT-BODY" not in popen_mock.call_args.args[0]
 
 
 def test_system_prompt_replaces_the_default(run):
@@ -85,12 +107,13 @@ def test_child_env_never_inherits_a_conflicting_or_secret_variable(run, monkeypa
 def test_cwd_and_config_dir_are_empty_and_removed(mocker, token):
     seen = {}
 
-    def fake_run(argv, **kwargs):
+    def fake_popen(argv, **kwargs):
         seen["cwd"], seen["cfg"] = kwargs["cwd"], kwargs["env"]["CLAUDE_CONFIG_DIR"]
         seen["cwd_entries"], seen["cfg_entries"] = os.listdir(seen["cwd"]), os.listdir(seen["cfg"])
-        return _completed(_ok_payload())
+        fake = FakePopen(_ok_payload())
+        return fake
 
-    mocker.patch("claude_subscription.subprocess.run", side_effect=fake_run)
+    mocker.patch("claude_subscription.subprocess.Popen", side_effect=fake_popen)
     claude_subscription.complete("hi")
     assert seen["cwd_entries"] == [] and seen["cfg_entries"] == []
     assert not os.path.exists(seen["cwd"]) and not os.path.exists(seen["cfg"])
@@ -98,10 +121,10 @@ def test_cwd_and_config_dir_are_empty_and_removed(mocker, token):
 
 def test_missing_token_raises_before_spawning(mocker, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    run = mocker.patch("claude_subscription.subprocess.run")
+    popen = mocker.patch("claude_subscription.subprocess.Popen")
     with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="setup-token"):
         claude_subscription.complete("hi")
-    run.assert_not_called()
+    popen.assert_not_called()
 
 
 # ── Output parsing ─────────────────────────────────────────────────────────────
@@ -114,32 +137,36 @@ def test_returns_text_and_usage_with_cache_tokens_folded_into_input(run):
 
 def test_is_error_raises(mocker, token):
     payload = json.dumps({"is_error": True, "result": "Invalid model", "usage": {}})
-    mocker.patch("claude_subscription.subprocess.run", return_value=_completed(payload))
+    fake_popen = FakePopen(payload, returncode=1)
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
     with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="Invalid model"):
         claude_subscription.complete("hi")
 
 
 def test_nonzero_exit_with_garbage_stdout_raises(mocker, token):
-    mocker.patch("claude_subscription.subprocess.run",
-                 return_value=_completed("not json", returncode=1, stderr="boom"))
+    fake_popen = FakePopen("not json", returncode=1, stderr="boom")
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
     with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="boom"):
         claude_subscription.complete("hi")
 
 
-def test_runs_in_its_own_process_group_so_a_timeout_kills_children(run):
+def test_runs_in_its_own_process_group_so_a_timeout_kills_children(run, mocker):
     claude_subscription.complete("hi")
     assert run.call_args.kwargs["start_new_session"] is True
+    # Verify killpg would be called on timeout (tested separately in timeout test)
 
 
 def test_timeout_raises_subscription_error(mocker, token):
-    mocker.patch("claude_subscription.subprocess.run",
-                 side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=300))
+    fake_popen = FakePopen(_ok_payload(), timeout_after_call=True)
+    popen_mock = mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
+    killpg_mock = mocker.patch("claude_subscription.os.killpg")
     with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="timed out"):
         claude_subscription.complete("hi")
+    killpg_mock.assert_called_once_with(fake_popen.pid, mocker.ANY)
 
 
 def test_missing_binary_raises_subscription_error(mocker, token):
-    mocker.patch("claude_subscription.subprocess.run", side_effect=FileNotFoundError("claude"))
+    mocker.patch("claude_subscription.subprocess.Popen", side_effect=FileNotFoundError("claude"))
     with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="could not run"):
         claude_subscription.complete("hi")
 
@@ -152,22 +179,24 @@ def test_missing_binary_raises_subscription_error(mocker, token):
 ])
 def test_retry_later_messages_raise_usage_limit_error(mocker, token, message):
     payload = json.dumps({"is_error": True, "result": message, "usage": {}})
-    mocker.patch("claude_subscription.subprocess.run", return_value=_completed(payload, returncode=1))
+    fake_popen = FakePopen(payload, returncode=1)
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
     with pytest.raises(claude_subscription.ClaudeUsageLimitError):
         claude_subscription.complete("hi")
 
 
 def test_ordinary_error_is_not_a_usage_limit(mocker, token):
     payload = json.dumps({"is_error": True, "result": "Invalid model name", "usage": {}})
-    mocker.patch("claude_subscription.subprocess.run", return_value=_completed(payload, returncode=1))
+    fake_popen = FakePopen(payload, returncode=1)
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
     with pytest.raises(claude_subscription.ClaudeSubscriptionError) as exc:
         claude_subscription.complete("hi")
     assert not isinstance(exc.value, claude_subscription.ClaudeUsageLimitError)
 
 
 def test_result_text_is_sanitized(mocker, token):
-    mocker.patch("claude_subscription.subprocess.run",
-                 return_value=_completed(_ok_payload(result="Dear​ Ana, hi‮")))
+    fake_popen = FakePopen(_ok_payload(result="Dear​ Ana, hi‮"))
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
     text, _ = claude_subscription.complete("hi")
     assert text == "Dear Ana, hi"
 
@@ -179,8 +208,8 @@ def test_result_text_is_sanitized(mocker, token):
     ("a‍‌b", "ab"),      # zero-width joiner / non-joiner
     ("﻿start", "start"),      # byte-order mark
     ("a‮b⁦c", "abc"),    # bidi overrides / isolates
-    ("co­op", "coop"),        # soft hyphen
-    ("a b c", "a b c"),  # non-breaking spaces become plain spaces
+    ("co\xadop", "coop"),        # soft hyphen
+    ("a\xa0b c d", "a b c d"),  # non-breaking spaces become plain spaces
     ("line1\nline2\tx", "line1\nline2\tx"),
     ("café • 50%", "café • 50%"),
 ])

@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import unicodedata
@@ -38,7 +39,7 @@ class ClaudeUsageLimitError(ClaudeSubscriptionError):
 
 # ── Text hygiene ───────────────────────────────────────────────────────────────
 
-_SPACE_LIKE = {" ": " ", " ": " ", " ": " "}
+_SPACE_LIKE = {"\xa0": " ", " ": " ", " ": " "}
 
 
 def sanitize(text):
@@ -119,13 +120,21 @@ def complete(prompt, system=None, model=None):
     config_dir = tempfile.mkdtemp(prefix="claude-cfg-")
     try:
         try:
-            proc = subprocess.run(
-                _argv(model or config.RESUME_MODEL, system), input=prompt, capture_output=True,
-                text=True, timeout=config.CLAUDE_CLI_TIMEOUT_SECONDS, cwd=workdir,
+            proc = subprocess.Popen(
+                _argv(model or config.RESUME_MODEL, system), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=workdir,
                 env=_child_env(config_dir), start_new_session=True,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise ClaudeSubscriptionError(f"claude CLI timed out after {exc.timeout}s") from exc
+            try:
+                stdout, stderr = proc.communicate(input=prompt, timeout=config.CLAUDE_CLI_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.communicate()
+                raise ClaudeSubscriptionError(f"claude CLI timed out after {config.CLAUDE_CLI_TIMEOUT_SECONDS}s")
+            proc = type('CompletedProcess', (), {'returncode': proc.returncode, 'stdout': stdout, 'stderr': stderr})()
         except OSError as exc:
             raise ClaudeSubscriptionError(f"could not run claude CLI: {exc}") from exc
     finally:
