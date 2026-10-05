@@ -43,9 +43,13 @@ key.
     keep it Claude-written and accept the watermark.** No watermark-removal step is built or
     integrated, and none will be. A paragraph-library or talking-points cover letter remains an
     option for later.
-- **Fonts.** Mac builds embed real Calibri (from Microsoft Word's bundled fonts). Debian has no
-  Calibri; LibreOffice would substitute Carlito, which puts a Linux font name into a PDF whose
-  scrubbed metadata claims Microsoft Word.
+- **Fonts and XMP leak LibreOffice today, on the Mac too.** A sample DOCX (Calibri runs, a
+  `List Bullet` paragraph, a default-font paragraph) converted with the Mac's `soffice` embedded
+  `Carlito`, `Carlito-Bold`, `OpenSymbol` and `Caladea-Regular`: LibreOffice can't see the Calibri
+  inside Word's app bundle, renders Word bullets with its own OpenSymbol, and python-docx's default
+  body font (Cambria) became Caladea. The XMP packet also kept LibreOffice's real `xmp:CreateDate`/
+  `ModifyDate`/`MetadataDate`, contradicting the backdated docinfo dates the scrub writes. Every
+  resume built so far carries these LibreOffice-only font names under a "Microsoft Word" producer.
 
 ## Components
 
@@ -83,9 +87,12 @@ claude -p --output-format json --tools "" --no-session-persistence
   keeps today's `anthropic` path as a one-line rollback). Both paths run `sanitize`.
 - `_track_usage` passes `billing` through: subscription calls record real tokens and `$0` cost
   onto `job_applications.resume_*` and `api_usage_log`.
-- New attribution scan on generated text (strategy JSON values and cover letter): hard-fail on
-  `generated with`, `co-authored-by`, `claude code`, `as an ai`, `language model`, `anthropic`,
-  `noreply@`. The bare word "Claude" is allowed (it appears in the operator's skills/projects).
+- New attribution scan on generated text (strategy JSON and cover letter): hard-fail on
+  `generated with`, `co-authored-by`, `as an ai`, `language model`, `i'm claude`, `i am claude`,
+  `noreply@anthropic`, and on a chat preamble or sign-off (a first line starting `here's`/
+  `here is`/`sure`/`certainly`/`below is`, or a last line starting `let me know`/`i hope this`).
+  "Claude", "Claude Code" and "Anthropic" are allowed: the first two are in the operator's own
+  skills/projects, and the third can be the target company.
 - New `--drain` CLI mode: `drain(limit=config.RESUME_WORKER_BATCH)` fetches rows with
   `pick_verdict='strong' AND resume_file_ref IS NULL AND resume_error IS NULL`, oldest first, runs
   `propose` (skipped if `resume_strategy` already exists) then `build`, per row in its own
@@ -96,13 +103,25 @@ claude -p --output-format json --tools "" --no-session-persistence
 
 ### `resume_scrub.py`
 
-- `scrub_pdf_metadata` deletes the whole existing XMP packet before writing the Word-shaped one, so
-  no LibreOffice keys survive in XMP.
+- `scrub_pdf_metadata` deletes the whole existing XMP packet and writes a fresh one whose
+  `xmp:CreateDate`/`xmp:ModifyDate`/`xmp:MetadataDate` match the docinfo dates it writes, so no
+  LibreOffice key or real timestamp survives in XMP.
 - New `read_pdf_xmp_text(pdf_path)`; `build` runs `verify_no_fingerprints` over docinfo **and**
   XMP for both PDFs.
-- New `embedded_font_names(pdf_path)`; `build` fails if any embedded font family isn't
-  `config.RESUME_FONT_NAME` (catches Carlito/Liberation/DejaVu substitution).
-- `_FINGERPRINTS` gains `carlito`, `liberation`, `dejavu`, `claude code`, `anthropic`.
+- New `embedded_font_families(pdf_path)` and `check_fonts(pdf_path, allowed)`; `build` fails if
+  any embedded font family is not `config.RESUME_FONT_NAME` (an allowlist, so Carlito, Caladea,
+  OpenSymbol, Liberation and DejaVu all fail).
+
+### `resume_build.py`
+
+- The `List Bullet` numbering definition is rewritten to a U+2022 bullet in
+  `config.RESUME_FONT_NAME`, so no Symbol/OpenSymbol font is embedded.
+- New `new_document()` returns a `Document()` whose `Normal` style (and east-Asian/complex-script
+  fallbacks) is `config.RESUME_FONT_NAME`; the cover letter uses it instead of a bare `Document()`.
+- Calibri must be installed where LibreOffice sees it: `~/Library/Fonts` on the Mac (copied from
+  `/Applications/Microsoft Word.app/Contents/Resources/DFonts/Calibri*.ttf`),
+  `/usr/local/share/fonts/calibri/` on the Beelink. These are the operator's own licensed Office
+  fonts; copying them is their call, recorded in the plan as an operator step.
 
 ### `job_pick.py`
 
