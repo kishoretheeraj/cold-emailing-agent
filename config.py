@@ -526,6 +526,15 @@ RESUME_MAX_BUILD_RETRIES = 1
 RESUME_MODEL_COST_PER_MTOK_INPUT = 3.0
 RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0
 
+# "subscription": resume generation runs on the operator's Claude subscription through Claude
+# Code's headless mode (claude_subscription.py). "api": the pay-as-you-go anthropic client.
+# Defaults to "api" so merging changes nothing; only resume-worker.service sets "subscription",
+# and GitHub Actions opts in by setting it in jobright_pull.yml once the worker is proven.
+RESUME_CLAUDE_BACKEND = os.environ.get("RESUME_CLAUDE_BACKEND", "api")
+CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH", "claude")
+CLAUDE_CLI_TIMEOUT_SECONDS = 300
+RESUME_WORKER_BATCH = 3
+
 # ── Model pricing (system-wide cost tracking) ───────────────────────────────────
 # Real per-million-token USD prices, verified against platform.claude.com/docs/en/about-claude/
 # pricing 2026-08-29 -- not estimated. {model: (input_price_per_mtok, output_price_per_mtok)}.
