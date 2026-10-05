@@ -15,6 +15,7 @@ ExecStart=/usr/bin/x11vnc -display :%i -rfbport 590%i -localhost -rfbauth /etc/j
 Restart=always
 RestartSec=5
 RuntimeMaxSec=infinity
+MemoryMax=256M
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

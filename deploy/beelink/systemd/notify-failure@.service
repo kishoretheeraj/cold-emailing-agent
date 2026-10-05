@@ -23,6 +23,7 @@ ExecStart=/opt/job-agent/.venv/bin/python notify_failure.py
 # RuntimeMaxSec= (which only applies once a unit is considered "started" -- a no-op here since
 # the service is done by then). Using RuntimeMaxSec= on a oneshot unit silently does nothing.
 TimeoutStartSec=120
+MemoryMax=256M
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

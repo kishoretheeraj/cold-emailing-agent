@@ -44,6 +44,7 @@ RestartSec=5
 # Daily recycle for a wedged renderer. The login session survives -- it lives in the profile
 # directory on disk, not in process memory.
 RuntimeMaxSec=86400
+MemoryMax=2G
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

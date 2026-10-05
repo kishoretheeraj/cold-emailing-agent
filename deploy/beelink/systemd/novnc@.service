@@ -1,6 +1,7 @@
-# Browser-reachable VNC for slot %i. Reachable on the LAN interface only -- no port forwarding,
-# no public exposure. The runbook's ufw rules are what actually confine it; adding Tailscale
-# later is transparent to this unit.
+# Browser-reachable VNC for slot %i. Bound to 127.0.0.1 only -- never the LAN or the tailnet
+# interface. Reach it from the Mac through an SSH tunnel over Tailscale
+# (`ssh -L 6080:localhost:6080 kishore@beelink`). Binding here, not a host firewall, is what
+# confines it: docs/beelink-server.md rule 6, and Docker on this host makes ufw/nft unreliable.
 #
 # Port scheme (slots 0-3 only, per the hard concurrency cap -- this scheme needs a two-digit
 # instance number to extend past slot 9): x11vnc listens on 590%i (5900-5903), noVNC's websocket
@@ -18,10 +19,11 @@ Type=simple
 User=jobagent
 Group=jobagent
 Environment=APPLY_AGENT_ARMED=
-ExecStart=/usr/bin/websockify --web /usr/share/novnc 608%i localhost:590%i
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 127.0.0.1:608%i localhost:590%i
 Restart=always
 RestartSec=5
 RuntimeMaxSec=infinity
+MemoryMax=256M
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

@@ -126,3 +126,77 @@ def test_timer_firing_count_matches_the_configured_sessions_per_day():
 def test_timer_randomizes_its_start():
     assert "RandomizedDelaySec=1800" in _read(
         os.path.join(_SYSTEMD, "job-linkedin-ingest.timer"))
+
+
+# ── Exposure and memory (docs/beelink-server.md rules 4 and 6) ─────────────────
+
+def test_novnc_binds_loopback_only():
+    # A bare port makes websockify listen on every interface, LAN included. The box exposes
+    # nothing beyond the tailnet, and VNC is reached only through an SSH tunnel.
+    unit = _directives(os.path.join(_SYSTEMD, "novnc@.service"))
+    execstart = [line for line in unit.splitlines() if line.startswith("ExecStart=")]
+    assert len(execstart) == 1
+    assert " 127.0.0.1:608%i " in execstart[0]
+
+
+def test_x11vnc_binds_loopback_only():
+    assert " -localhost " in _directives(os.path.join(_SYSTEMD, "x11vnc@.service"))
+
+
+def test_every_service_has_a_hard_memory_cap():
+    for path in _unit_paths():
+        if path.endswith(".service"):
+            assert "\nMemoryMax=" in _directives(path), path
+
+
+def _memory_max_bytes(path):
+    value = [line for line in _directives(path).splitlines()
+             if line.startswith("MemoryMax=")][0].split("=", 1)[1]
+    return int(value[:-1]) * {"M": 2**20, "G": 2**30}[value[-1]]
+
+
+def test_one_display_slot_fits_the_real_memory_budget():
+    # The box reports ~12.6 GiB MemTotal (the iGPU reserves the rest of the 16 GB), and the
+    # rules reserve ~2 GiB for the OS and Docker. Three concurrent slots must fit what's left.
+    slot = sum(_memory_max_bytes(os.path.join(_SYSTEMD, name)) for name in (
+        "xvfb@.service", "chrome-profile@.service", "x11vnc@.service", "novnc@.service"))
+    assert 3 * slot <= int(10.5 * 2**30)
+
+
+# ── provision-debian.sh ────────────────────────────────────────────────────────
+
+_PROVISION = os.path.join(_ROOT, "deploy", "beelink", "provision-debian.sh")
+
+
+def _provision_code():
+    return "\n".join(line for line in _read(_PROVISION).splitlines()
+                     if not line.lstrip().startswith("#"))
+
+
+def test_provision_never_enables_the_ingest_timer():
+    # RUNBOOK.md section 8: a watched manual run comes before the timer goes live.
+    code = _provision_code()
+    assert "job-linkedin-ingest" not in code.split("systemctl enable", 1)[1].split("\n", 1)[0]
+    assert "enable --now job-linkedin" not in code
+    assert "enable job-linkedin" not in code
+
+
+def test_provision_verifies_the_tag_before_checking_it_out():
+    code = _provision_code()
+    assert "allowedSignersFile" in code
+    assert code.index("tag -v") < code.index("checkout")
+    assert "checkout -q main" not in code and "pull" not in code
+
+
+def test_provision_never_writes_a_secret_value():
+    code = _provision_code()
+    for key in ("ANTHROPIC_API_KEY", "GMAIL_APP_PASSWORD", "SUPABASE_ANON_KEY",
+                "APPLY_AGENT_ARMED", "CLAUDE_CODE_OAUTH_TOKEN"):
+        assert key not in code, key
+
+
+def test_provision_never_grants_the_agent_user_root_equivalent_groups():
+    code = _provision_code()
+    assert "usermod" not in code
+    assert "useradd --system --user-group" in code
+    assert "-G" not in code.split("useradd", 1)[1].split("\n", 1)[0]

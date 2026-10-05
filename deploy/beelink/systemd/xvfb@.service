@@ -14,6 +14,7 @@ Restart=always
 RestartSec=2
 RuntimeMaxSec=infinity
 Environment=APPLY_AGENT_ARMED=
+MemoryMax=512M
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

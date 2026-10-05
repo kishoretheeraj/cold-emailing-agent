@@ -36,7 +36,7 @@ Kishore is new to Linux server administration and learning as he goes.
 |---|---|
 | Model | Beelink SER5 Pro |
 | CPU | AMD Ryzen 7 5800H, 8 cores / 16 threads, Zen 3 |
-| RAM | 16 GB DDR4 SO-DIMM, 2 slots, max 64 GB. Beelink ships this config as 2×8 GB; not yet confirmed on this unit |
+| RAM | 16 GB DDR4 SO-DIMM, 2 slots, max 64 GB. Beelink ships this config as 2×8 GB; slot layout not yet confirmed (`dmidecode` needs sudo). **Linux sees only 12.6 GiB** (`MemTotal` 13204748 kB): the iGPU reserves the rest. Budget against 12.6, not 16 |
 | Disk | 512 GB NVMe, KINGSTON OM3SGP4512K2-A00 (`/dev/nvme0n1`) |
 | Wi-Fi | Intel Wi-Fi 6 AX200, interface `wlo1` (in use) |
 | Ethernet | Realtek RTL8111/8168, interface `enp1s0` (unused, no cable) |
@@ -53,6 +53,7 @@ Kishore is new to Linux server administration and learning as he goes.
 | Hostname | `beelink` |
 | Admin user | `kishore`, in the `sudo` and `docker` groups. Root has no password |
 | Disk layout | Guided, entire disk, single partition (EFI + ext4 root + swap). SteamOS was wiped |
+| Swap | 13 GB partition, `/dev/nvme0n1p3` (`swapon` isn't on a non-root PATH; read `/proc/swaps`) |
 | Networking | ifupdown + wpa_supplicant, configured in `/etc/network/interfaces`. No NetworkManager, so `nmcli` and `nmtui` don't exist |
 
 ### Access
@@ -68,7 +69,9 @@ Kishore is new to Linux server administration and learning as he goes.
 - From Debian: `openssh-server curl git tmux htop unattended-upgrades`
 - Tailscale, from Tailscale's apt repo
 - Docker CE via `get.docker.com`, which set up Docker's apt repo, including the compose and buildx plugins. `docker run hello-world` verified
-- **Not yet installed:** Claude Code, Node.js, Python tooling, Playwright, any agent or browser containers
+- Claude Code 2.1.289 for `kishore` (native installer, `~/.local/bin/claude`, on PATH for login shells). **Not logged in yet**
+- Python 3.13.5 (Debian's own; CI uses 3.11)
+- **Not yet installed:** the M1 stack (`jobagent` user, Chrome, Xvfb/x11vnc/noVNC, `/opt/job-agent`). `deploy/beelink/provision-debian.sh` installs it in one sudo run
 
 ### Config files changed from defaults
 
@@ -124,22 +127,31 @@ From the Mac, confirm passwords are refused: `ssh -o PubkeyAuthentication=no kis
 ### Phase 0: small items, do soon
 
 - [ ] Disable Tailscale key expiry for `beelink` (admin console → Machines → beelink → ⋯ → Disable key expiry). Otherwise the node key expires, 180 days by default, and the box silently drops off the tailnet.
-- [ ] Record the RAM layout with `sudo dmidecode -t memory | grep -E "Size|Locator"` and update section 3.
-- [ ] Record swap with `swapon --show` and update section 3.
+- [ ] Record the RAM slot layout with `sudo dmidecode -t memory | grep -E "Size|Locator"` and update section 3.
+- [x] Record swap (13 GB partition, section 3).
 - [ ] Confirm AC power-loss auto-on with a cord test, if not already done: `sudo poweroff`, pull the cord for 10 seconds, plug it back in without pressing the button, then SSH in.
-- [ ] Delete the leftover installer: `rm ~/get-docker.sh`.
+- [x] Delete the leftover installer: `rm ~/get-docker.sh`.
 
 ### Phase 1: Claude Code for `kishore` (interactive admin use)
 
 - Install with `curl -fsSL https://claude.ai/install.sh | bash`, then `source ~/.profile`, then `claude --version`. Start `claude` and log in with the Claude subscription account, not the Console/API option.
 - Done when: `claude` runs over SSH and `/status` shows subscription authentication.
+- [x] Installed 2026-10-04 (2.1.289).
+- [ ] Log in: run `claude` on the Beelink, `/login`, choose the subscription account.
 
 ### Phase 2: agent user and isolation model
 
 - Decide how an unprivileged agent gets a browser without access to the Docker socket. Options: (a) rootless Docker for the agent user; (b) each agent runs inside its own container started by systemd, so the agent never touches the Docker socket; (c) long-lived browser containers started by the admin, with agents connecting over CDP on localhost. Record the choice here.
+- **Chosen for the job-search agent (2026-10-04): (d) no containers.** Native systemd units from `deploy/beelink/systemd/`, all `User=jobagent` (system user, `nologin`, no sudo, no docker group), hardened with `ProtectSystem=strict`/`ProtectHome=yes`/`NoNewPrivileges=yes` and a `MemoryMax=` per unit. Reason: the units already existed, were reviewed, and run real headful Chrome, which is what the LinkedIn profile needs to look like. Containers remain the plan for the separate general-purpose agents below.
 - Create the user: `sudo adduser --disabled-password agent`, with no sudo and no docker group.
 - Unattended auth: `claude setup-token` generates a one-year OAuth token for environments without browser login. Store it as `CLAUDE_CODE_OAUTH_TOKEN` in a mode-600 `EnvironmentFile`. These tokens don't authenticate Remote Control.
 - Done when: the agent user can run `claude -p "say hello"` under its own identity, with no sudo or Docker access.
+
+### Phase 2b: job-search agent (M1) on this box
+
+- [ ] Sign and push a deploy tag from the Mac, then run `deploy/beelink/provision-debian.sh` (see `deploy/beelink/RUNBOOK.md`, top). Dry-run verified in a clean `debian:trixie` container on this box, 2026-10-04.
+- [ ] Fill `/etc/job-agent/base.env`, open the tunnel (`ssh -N -L 6080:localhost:6080 kishore@beelink`), log in to LinkedIn at `http://localhost:6080/vnc.html`.
+- [ ] First watched manual run (RUNBOOK section 8), then enable `job-linkedin-ingest.timer`.
 
 ### Phase 3: first browser-automation workload
 
@@ -167,7 +179,7 @@ From the Mac, confirm passwords are refused: `ssh -o PubkeyAuthentication=no kis
 
 ## 8. Open decisions
 
-- Agent isolation model (Phase 2).
+- Agent isolation model for the general-purpose agents (Phase 2). The job-search agent uses native systemd as `jobagent` (see Phase 2).
 - Python vs TypeScript Agent SDK. The Python SDK bundles the Claude Code CLI; check current docs for the TypeScript SDK's requirements.
 - Computer use through a Console API key (pay-as-you-go) vs an Agent SDK agent driving a virtual desktop through an MCP server (subscription limits, while the current policy holds).
 - RAM upgrade to 32 GB, only once 16 GB is the real ceiling.

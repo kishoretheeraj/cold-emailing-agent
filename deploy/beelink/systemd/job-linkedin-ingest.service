@@ -25,6 +25,7 @@ ExecStart=/opt/job-agent/.venv/bin/python cu_linkedin.py
 # using that directive here would silently let the distro default TimeoutStartSec, commonly 90s,
 # kill every session mid-browse well before the in-process 900s cap ever fires).
 TimeoutStartSec=1200
+MemoryMax=1G
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

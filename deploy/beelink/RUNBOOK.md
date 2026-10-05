@@ -4,7 +4,26 @@ Every command here runs **on the Beelink itself**, by hand, by the operator. Not
 any agent session can run or verify these — the box is not reachable from anywhere else in this
 repo's tooling. Work top to bottom; each section is independently re-runnable.
 
-Assumed: a fresh Ubuntu Server install, a `jobagent` user, and network on the LAN.
+**The real box runs Debian 13, not Ubuntu.** On it, sections 1-5 are replaced by one idempotent
+script, run on the Beelink after a signed tag exists (see `docs/beelink-server.md`):
+
+```bash
+# Mac: sign and push a deploy tag with your existing SSH key (no GPG, no global config change)
+git -c gpg.format=ssh -c user.signingkey=~/.ssh/id_ed25519.pub tag -s beelink-v1 -m "beelink-v1" && git push origin beelink-v1
+# Mac: copy the script and the signer list to the box
+scp deploy/beelink/provision-debian.sh deploy/beelink/allowed_signers kishore@beelink:~/
+# Beelink: provision (prompts once for the VNC password), then fill in the secrets
+sudo bash ~/provision-debian.sh beelink-v1 ~/allowed_signers
+sudo nano /etc/job-agent/base.env
+```
+
+It differs from the Ubuntu steps below in four ways: Debian's own Python 3.13 (no deadsnakes PPA
+on Debian), tags verified against `/etc/job-agent/allowed_signers` with SSH signatures instead of
+a GPG keyring, no `/etc/fstab` edit (Chrome already runs with `--disable-dev-shm-usage`), and no
+ufw (noVNC binds 127.0.0.1; see section 5). Sections 6-9 apply unchanged apart from the URL.
+
+The original Ubuntu steps follow for reference. They assumed a fresh Ubuntu Server install, a
+`jobagent` user, and network on the LAN.
 
 ## 1. Host baseline
 
@@ -121,29 +140,21 @@ sudo systemctl enable --now xvfb@0 chrome-profile@0 x11vnc@0 novnc@0
 systemctl status xvfb@0 chrome-profile@0 x11vnc@0 novnc@0
 ```
 
-## 5. Confine VNC to the LAN
+## 5. Reach VNC through an SSH tunnel (no firewall needed)
 
-**Allow SSH before enabling the firewall.** `ufw`'s default is deny-incoming; enabling it over an
-SSH session without an explicit allow rule drops that session immediately, and on a headless box
-with no other access path, that's a keyboard-and-monitor recovery trip. Do the SSH rule first,
-always:
+`novnc@.service` binds `127.0.0.1:608%i` and `x11vnc@.service` runs with `-localhost`, so neither
+is reachable from the LAN or the tailnet. Reach slot 0 from the Mac over Tailscale:
 
 ```bash
-sudo ufw allow OpenSSH   # do this BEFORE `ufw enable`, or you will lock yourself out
-
-# noVNC front ends, slots 0-3 (see the port scheme comment in novnc@.service: 6080-6083)
-sudo ufw allow from 192.168.0.0/16 to any port 6080:6083 proto tcp
-
-sudo ufw enable
-sudo ufw status verbose   # confirm both the SSH and noVNC rules are listed before disconnecting
+ssh -N -L 6080:localhost:6080 kishore@beelink
 ```
 
-No port forwarding, no public exposure. Adding Tailscale later is a transparent additional
-interface and needs no change here.
+Don't add ufw/nft rules for this: Docker shares the host and Docker's docs warn that host firewall
+rules made with `nft` aren't supported alongside it (`docs/beelink-server.md` rule 6).
 
 ## 6. Log in to LinkedIn once, by hand
 
-Open `http://<beelink-lan-ip>:6080/vnc.html` (slot 0's noVNC front end — 6080 is `608%i` for `%i=0`, matching `novnc@0.service` and the ufw rule in section 5 above; a later slot would be 6081-6083) from a laptop on the same LAN, enter the VNC
+With the section 5 tunnel open, open `http://localhost:6080/vnc.html` on the Mac (slot 0's noVNC front end -- 6080 is `608%i` for `%i=0`; a later slot would be 6081-6083 and needs its own `-L`), enter the VNC
 password, and sign in to LinkedIn inside that Chrome window — including any 2FA. The session
 cookie now lives in `/var/lib/job-agent/profiles/0` and survives restarts.
 
@@ -160,8 +171,9 @@ sudo smem -t -k -P 'chrome|Xvfb|x11vnc|websockify'
 ```
 
 Target: 3 concurrent display slots steady-state (1 LinkedIn + 2 ATS later), hard cap 4. The box
-is CPU-bound (4 E-cores, no hyperthreading) well before RAM runs out, so do not size slots from
-RAM headroom alone.
+is a Ryzen 7 5800H (8 cores / 16 threads), but only ~12.6 GiB of its 16 GB is visible to Linux (the
+iGPU reserves the rest), so RAM is the binding constraint here. Every unit carries a `MemoryMax=`;
+`tests/test_beelink_units.py` asserts three slots fit the budget.
 
 ## 8. First real run — manually, before the timer goes live
 
