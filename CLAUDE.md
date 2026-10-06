@@ -1213,7 +1213,7 @@ discarded, so every screening question shipped blank. `submit()` compounded this
 same generation function *again* (a fresh, possibly different Claude call, its result also
 discarded) instead of reusing what the human reviewed. Split into `_generate_screening_answers`
 (Claude call, preview pass only) + `_fill_screening_questions`/`_fill_eligibility_answers`
-(page-filling, by label, best-effort like `ats_fillers._try_fill`) -- the preview pass now
+(page-filling, by label, best-effort like `ats_fillers._fill_first`) -- the preview pass now
 generates and fills; `submit()` now only ever fills, from `job["apply_preview"]`'s stored
 `screening_answers`/`eligibility_answers`, never regenerating. Eligibility answers
 (`_eligibility_answers()`) were computed and stored in `apply_preview` from the very first
@@ -1396,11 +1396,21 @@ company is used only when the role disambiguates. After 15 min without a match i
 `apply_blocked_reason` with "No receipt email found..." once and keeps checking.
 Plan: docs/superpowers/plans/2026-10-01-automation-status-and-leases.md.
 
-**Known follow-up, still not fixed** (see the `project-phase2.5-auto-apply` memory file for full
-detail): a resume/cover-letter attach failure is silently swallowed even in the armed-submit
-path. It is not a safety gap -- the two ARMED/approval gates above are the actual safety boundary, and everything
-upstream of them degrading just means the *preview* is incomplete, not that an unapproved
-submission could happen.
+**Fill reports and the required-field gate (2026-10-06)**: `ats_fillers` locates fields by id/name
+selector first with a label-regex fallback, and each `fill_<platform>` returns `{field_key: bool}`;
+`_attach_resume_and_cover_letter` targets `input[type=file]` elements and returns
+`{"resume"|"cover_letter": True|False|None}`. `_missing_required` (name or first+last, email, resume)
+gates hand-mapped platforms: a preview missing any releases to `needs_input` with the reason (no
+`complete_preview`), and `submit()` raises pre-click (-> `failed_retryable`, never `needs_confirmation`).
+The stored preview carries `fill_report`. Per-field timeout is `APPLY_AGENT_FIELD_TIMEOUT_MS` (3s) so
+a missing field no longer stalls a job for Playwright's 30s default. These selectors are **not yet
+live-verified** against real forms (live form access pending the operator). Generic/browser-use
+platforms do not report and skip this gate. `locator.count()` is an instant snapshot, so a slow-rendering
+form degrades to `needs_input` (the safe direction) -- check this in the first live run.
+
+**Known follow-up, still not fixed**: a *cover-letter* attach failure is non-blocking (only the
+resume is required); required attachments are no longer silently swallowed. The ARMED/approval gates
+remain the actual safety boundary.
 
 ## System-wide Claude API cost tracking
 

@@ -588,6 +588,9 @@ JOB_PICK_EMBEDDING_THRESHOLD = 0.35
 JOB_PICK_MODEL = EMAIL_MODEL
 
 APPLY_AGENT_HAND_MAPPED_PLATFORMS = ("greenhouse", "ashby", "lever")
+# Per-field fill/attach timeout: Playwright's 30s default x every missing field made each job
+# take 15-20 min and a 45-min preview run finished 2 of 10 rows.
+APPLY_AGENT_FIELD_TIMEOUT_MS = 3000
 # Execution lifecycle on job_applications.automation_status; must match the migration's CHECK constraint.
 AUTOMATION_STATUSES = (
     "idle", "preparing", "needs_input", "ready_for_review", "approved", "submitting",

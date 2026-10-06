@@ -8,6 +8,9 @@ import pytest
 
 import apply_agent
 
+_OK_FIELDS = {"first_name": True, "last_name": True, "email": True, "phone": True, "linkedin": True}
+_OK_ATTACH = {"resume": True, "cover_letter": True}
+
 
 @pytest.fixture(autouse=True)
 def _lease_defaults(mocker):
@@ -28,10 +31,10 @@ def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
-    fill_mock = mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    fill_mock = mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
     mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent.db.load_prompts", return_value={})
     set_preview_mock = mocker.patch("apply_agent.db.complete_preview", return_value=True)
 
@@ -82,7 +85,7 @@ def test_run_preview_routes_generic_to_browser_use(mocker):
     mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
     browser_use_mock = mocker.patch("apply_agent._fill_generic_via_browser_use")
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent.db.load_prompts", return_value={})
     mocker.patch("apply_agent.db.release_application")
 
@@ -115,9 +118,9 @@ def test_run_preview_isolates_one_row_failure_from_the_rest(mocker):
     ])
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     mocker.patch("apply_agent._launch_page", side_effect=[RuntimeError("browser crashed"), _sig_page(["text:name"])])
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent.db.load_prompts", return_value={})
     complete_mock = mocker.patch("apply_agent.db.complete_preview", return_value=True)
     release_mock = mocker.patch("apply_agent.db.release_application")
@@ -139,9 +142,9 @@ def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
     ])
     mocker.patch("apply_agent.ats_platform.classify", side_effect=["greenhouse", "workday"])
     mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent.db.load_prompts", return_value={})
     mocker.patch("apply_agent.db.release_application")
     mocker.patch("apply_agent.db.mark_unsupported")
@@ -153,19 +156,6 @@ def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
     assert "filled=1" in done_line
     assert "blocked=1" in done_line
     assert "errors=0" in done_line
-
-
-def test_attach_resume_and_cover_letter_downloads_and_sets_input_files(mocker):
-    page = MagicMock()
-    mocker.patch("apply_agent.db.get_client", return_value=MagicMock(
-        storage=MagicMock(from_=MagicMock(return_value=MagicMock(
-            download=MagicMock(side_effect=[b"resume-bytes", b"cover-letter-bytes"]))))
-    ))
-    job = {"resume_file_ref": "resumes/1/resume.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
-
-    apply_agent._attach_resume_and_cover_letter(page, job)
-
-    assert page.get_by_label.return_value.set_input_files.call_count >= 1
 
 
 def test_generate_screening_answers_grounds_answer_in_call_claude(mocker):
@@ -217,7 +207,7 @@ def test_set_field_by_label_selects_a_dropdown_option(mocker):
     result = apply_agent._set_field_by_label(page, "Work authorized?", "Yes")
 
     assert result is True
-    page.get_by_label.return_value.select_option.assert_called_with(label="Yes")
+    page.get_by_label.return_value.select_option.assert_called_with(label="Yes", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
     page.get_by_label.return_value.fill.assert_not_called()
 
 
@@ -230,7 +220,7 @@ def test_set_field_by_label_clicks_a_radio_option_scoped_to_the_questions_group(
     assert result is True
     page.get_by_role.assert_any_call("group", name="Work authorized?")
     page.get_by_role.return_value.get_by_role.assert_called_with("radio", name="Yes")
-    page.get_by_role.return_value.get_by_role.return_value.click.assert_called_once()
+    page.get_by_role.return_value.get_by_role.return_value.click.assert_called_once_with(timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
     page.get_by_label.return_value.fill.assert_not_called()
 
 
@@ -242,7 +232,7 @@ def test_set_field_by_label_falls_back_to_a_plain_text_fill(mocker):
     result = apply_agent._set_field_by_label(page, "Phone", "555-1234")
 
     assert result is True
-    page.get_by_label.return_value.fill.assert_called_with("555-1234")
+    page.get_by_label.return_value.fill.assert_called_with("555-1234", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
 
 
 def test_set_field_by_label_returns_false_when_no_strategy_works(mocker):
@@ -406,8 +396,8 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = _sig_page(["text:name"])
     mocker.patch("apply_agent._launch_page", return_value=page)
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     generated = {"Why this role?": "Because reasons."}
     mocker.patch("apply_agent._generate_screening_answers", return_value=generated)
     fill_screening_mock = mocker.patch("apply_agent._fill_screening_questions")
@@ -431,8 +421,8 @@ def test_process_one_preview_fills_and_stores_screening_and_eligibility_answers(
 def test_process_one_preview_returns_lost_when_release_returns_none(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._fill_screening_questions")
     mocker.patch("apply_agent._fill_eligibility_answers")
@@ -593,8 +583,8 @@ def test_submit_does_not_click_submit_when_not_armed(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
     mocker.patch("apply_agent._launch_page", return_value=page)
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     record_submission_mock = mocker.patch("apply_agent.db.record_submission")
 
     apply_agent.submit(1)
@@ -615,8 +605,8 @@ def test_submit_clicks_submit_and_flips_stage_when_armed(mocker):
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
     mocker.patch("apply_agent._launch_page", return_value=page)
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent._submission_confirmed", return_value=True)
     fake_date = mocker.patch("apply_agent.date")
     fake_date.today.return_value.isoformat.return_value = "2026-09-24"
@@ -646,8 +636,8 @@ def test_submit_raises_and_leaves_stage_unchanged_when_confirmation_is_missing(m
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
     mocker.patch("apply_agent._launch_page", return_value=page)
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent._submission_confirmed", return_value=False)
     record_submission_mock = mocker.patch("apply_agent.db.record_submission")
     blocked_mock = mocker.patch("apply_agent.db.release_application")
@@ -688,8 +678,8 @@ def test_submit_fills_screening_and_eligibility_from_the_stored_preview_not_rege
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     page = MagicMock()
     mocker.patch("apply_agent._launch_page", return_value=page)
-    mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent._submission_confirmed", return_value=True)
     mocker.patch("apply_agent.db.record_submission")
 
@@ -717,8 +707,8 @@ def test_submit_never_arms_from_a_missing_or_falsy_env_value(mocker):
         mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
         page = MagicMock()
         mocker.patch("apply_agent._launch_page", return_value=page)
-        mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-        mocker.patch("apply_agent._attach_resume_and_cover_letter")
+        mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+        mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
         update_stage_mock = mocker.patch("apply_agent.db.update_job_application_stage")
 
         apply_agent.submit(1)
@@ -884,8 +874,8 @@ def _arm_submit(mocker, job, confirmed=True, click_raises=None):
         page.get_by_role.return_value.click.side_effect = click_raises
     mocker.patch.object(apply_agent, "_launch_page", return_value=page)
     mocker.patch.object(apply_agent, "_close_page")
-    mocker.patch.object(apply_agent.ats_fillers, "fill_greenhouse")
-    mocker.patch.object(apply_agent, "_attach_resume_and_cover_letter")
+    mocker.patch.object(apply_agent.ats_fillers, "fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch.object(apply_agent, "_attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch.object(apply_agent, "_fill_screening_questions")
     mocker.patch.object(apply_agent, "_fill_eligibility_answers")
     mocker.patch.object(apply_agent, "_submission_confirmed", return_value=confirmed)
@@ -1091,8 +1081,9 @@ def test_preview_computes_signature_before_any_fill_and_stores_it(mocker):
     mocker.patch("apply_agent._launch_page", return_value=page)
     mocker.patch("apply_agent._form_signature", side_effect=order.sig)
     order.sig.return_value = "sig-1"
+    order.fill.return_value = dict(_OK_FIELDS)
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse", side_effect=order.fill)
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._fill_screening_questions")
     mocker.patch("apply_agent._fill_eligibility_answers")
@@ -1139,8 +1130,8 @@ def test_new_preview_without_fingerprint_cannot_be_approved(mocker):
     page = _sig_page([])
     mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
     mocker.patch("apply_agent._launch_page", return_value=page)
-    fill = mocker.patch("apply_agent.ats_fillers.fill_greenhouse")
-    mocker.patch("apply_agent._attach_resume_and_cover_letter")
+    fill = mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=dict(_OK_ATTACH))
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._fill_screening_questions")
     mocker.patch("apply_agent._fill_eligibility_answers")
@@ -1150,3 +1141,159 @@ def test_new_preview_without_fingerprint_cannot_be_approved(mocker):
     apply_agent.db.complete_preview.assert_not_called()
     fill.assert_not_called()
     assert apply_agent.db.release_application.call_args.args[2] == "failed_retryable"
+
+
+# ── Fill report / required-field gate ──────────────────────────────────────────
+
+class _FileLocator:
+    def __init__(self, present):
+        self.present = present
+        self.set_calls = []
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1 if self.present else 0
+
+    def set_input_files(self, path, timeout=None):
+        self.set_calls.append((path, timeout))
+
+
+class _FilePage:
+    def __init__(self, present):
+        self.present = set(present)
+        self.locs = {}
+
+    def locator(self, sel):
+        return self.locs.setdefault(sel, _FileLocator(sel in self.present))
+
+
+def _storage(mocker):
+    mocker.patch("apply_agent.db.get_client", return_value=MagicMock(
+        storage=MagicMock(from_=MagicMock(return_value=MagicMock(download=MagicMock(return_value=b"x"))))))
+
+
+def test_attach_finds_hidden_file_input_by_id(mocker):
+    _storage(mocker)
+    page = _FilePage({"#resume", "#cover_letter"})
+    job = {"resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"}
+    assert apply_agent._attach_resume_and_cover_letter(page, job) == {"resume": True, "cover_letter": True}
+    assert page.locs["#resume"].set_calls[0][1] == apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS
+
+
+def test_attach_resume_falls_back_to_first_file_input_and_cover_letter_none_without_field(mocker):
+    _storage(mocker)
+    page = _FilePage({"input[type='file']:not([id*='cover' i]):not([name*='cover' i])"})
+    job = {"resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"}
+    assert apply_agent._attach_resume_and_cover_letter(page, job) == {"resume": True, "cover_letter": None}
+
+
+def test_attach_none_when_no_file_ref_and_false_on_set_failure(mocker):
+    _storage(mocker)
+    page = _FilePage({"#resume"})
+    page.locator("#resume").set_input_files = MagicMock(side_effect=RuntimeError("bad"))
+    assert apply_agent._attach_resume_and_cover_letter(page, {"resume_file_ref": "r.pdf"}) == {
+        "resume": False, "cover_letter": None}
+    assert apply_agent._attach_resume_and_cover_letter(_FilePage(set()), {}) == {
+        "resume": None, "cover_letter": None}
+
+
+@pytest.mark.parametrize("fields,attach,expected_missing", [
+    ({"first_name": True, "last_name": True, "email": True}, {"resume": True}, []),
+    ({"name": True, "email": True}, {"resume": True}, []),
+    ({"first_name": True, "last_name": False, "email": True}, {"resume": True}, ["name"]),
+    ({"name": True, "email": False}, {"resume": True}, ["email"]),
+    ({"name": True, "email": True}, {"resume": None}, ["resume"]),
+    ({}, {}, ["name", "email", "resume"]),
+])
+def test_missing_required(fields, attach, expected_missing):
+    missing = apply_agent._missing_required({"fields": fields, "attachments": attach})
+    assert missing == expected_missing
+
+
+def _preview_job():
+    return {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/x"}
+
+
+def _preview_mocks(mocker, attach):
+    mocker.patch("apply_agent.ats_platform.classify", return_value="greenhouse")
+    mocker.patch("apply_agent._launch_page", return_value=_sig_page(["text:name"]))
+    mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
+    mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=attach)
+    mocker.patch("apply_agent._generate_screening_answers", return_value={})
+    mocker.patch("apply_agent._fill_screening_questions")
+    mocker.patch("apply_agent._fill_eligibility_answers")
+    mocker.patch("apply_agent.db.load_prompts", return_value={})
+
+
+def test_preview_missing_resume_releases_needs_input_without_complete_preview(mocker):
+    _preview_mocks(mocker, {"resume": False, "cover_letter": None})
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+    release = mocker.patch("apply_agent.db.release_application")
+
+    assert apply_agent._process_one_preview(_preview_job()) == "blocked"
+
+    complete.assert_not_called()
+    args = release.call_args[0]
+    assert args[2] == "needs_input"
+    assert args[3] == "Preview couldn't fill required fields: resume"
+
+
+def test_preview_complete_stores_fill_report(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+
+    assert apply_agent._process_one_preview(_preview_job()) == "filled"
+
+    assert complete.call_args[0][2]["fill_report"] == {
+        "fields": _OK_FIELDS, "attachments": _OK_ATTACH}
+
+
+def test_submit_refuses_before_clicking_when_required_fields_missing(mocker, approved_job):
+    page, release, record = _arm_submit(mocker, approved_job)
+    apply_agent._attach_resume_and_cover_letter.return_value = {"resume": False, "cover_letter": None}
+
+    with pytest.raises(ValueError, match="Refusing to submit: required fields not filled: resume"):
+        apply_agent.submit(9)
+
+    page.get_by_role.return_value.click.assert_not_called()
+    apply_agent.db.renew_submission_lease.assert_not_called()
+    record.assert_not_called()
+    assert release.call_args[0][2] == "failed_retryable"
+
+
+def test_attach_resume_does_not_take_a_cover_letter_only_file_input(mocker):
+    _storage(mocker)
+    page = _FilePage({"#cover_letter", "input[type='file']"})
+    job = {"resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"}
+    report = apply_agent._attach_resume_and_cover_letter(page, job)
+    assert report == {"resume": None, "cover_letter": True}
+    assert "input[type='file']" not in page.locs or not page.locs["input[type='file']"].set_calls
+    assert apply_agent._missing_required(
+        {"fields": {"name": True, "email": True}, "attachments": report}) == ["resume"]
+    assert "input[type='file']:not([id*='cover' i]):not([name*='cover' i])" in page.locs
+
+
+def test_attach_does_not_download_when_no_matching_file_input(mocker):
+    _storage(mocker)
+    client = apply_agent.db.get_client()
+    apply_agent._attach_resume_and_cover_letter(_FilePage(set()), {"resume_file_ref": "r.pdf"})
+    client.storage.from_.return_value.download.assert_not_called()
+
+
+def test_generic_platform_with_no_resume_input_still_completes_preview(mocker):
+    _preview_mocks(mocker, {"resume": None, "cover_letter": None})
+    mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
+    mocker.patch("apply_agent._fill_generic_via_browser_use")
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+    assert apply_agent._process_one_preview(_preview_job()) == "filled"
+    complete.assert_called_once()
+    assert "fill_report" not in complete.call_args[0][2]
+
+
+def test_preview_returns_lost_when_needs_input_release_returns_none(mocker):
+    _preview_mocks(mocker, {"resume": None, "cover_letter": None})
+    mocker.patch("apply_agent.db.release_application", return_value=None)
+    assert apply_agent._process_one_preview(_preview_job()) == "lost"
