@@ -30,6 +30,8 @@ _MODE_TAGS = {"preview": "[APPLY-PREVIEW]", "submit": "[APPLY-SUBMIT]"}
 def _standard_field_values(job):
     return {
         "name": "Kishore Theeraj Vasudevan Jaya",
+        "first_name": "Kishore Theeraj",
+        "last_name": "Vasudevan Jaya",
         "email": "kishoretheerajvj@gmail.com",
         "phone": "+1 603-322-0535",
         "location": "Hanover, NH",
@@ -230,26 +232,65 @@ def _submission_confirmed(page):
         return False
 
 
+_RESUME_INPUTS = ["#resume", "input[type='file'][name='resume']", "#_systemfield_resume",
+                  "input[type='file'][id*='resume' i]", "input[type='file'][name*='resume' i]"]
+_COVER_INPUTS = ["#cover_letter", "input[type='file'][id*='cover' i]", "input[type='file'][name*='cover' i]"]
+
+
+def _find_file_input(page, selectors):
+    for sel in selectors:
+        try:
+            locator = page.locator(sel).first
+            if locator.count() > 0:
+                return locator
+        except Exception as exc:
+            log.info(f"[APPLY-AGENT] | file input {sel} lookup failed: {exc}")
+    return None
+
+
 def _attach_resume_and_cover_letter(page, job):
     # set_input_files works with real bytes headlessly -- no OS dialog, no third-party dependency.
     import tempfile
 
     client = db.get_client()
-    for field_ref_key, label, ext in (
-        ("resume_file_ref", "Resume", "pdf"),
-        ("cover_letter_file_ref", "Cover Letter", "pdf"),
+    report = {}
+    for report_key, field_ref_key, selectors, fallback in (
+        ("resume", "resume_file_ref", _RESUME_INPUTS, ["input[type='file']"]),
+        ("cover_letter", "cover_letter_file_ref", _COVER_INPUTS, []),
     ):
+        report[report_key] = None
         storage_path = job.get(field_ref_key)
         if not storage_path:
             continue
         try:
+            locator = _find_file_input(page, selectors) or _find_file_input(page, fallback)
+            if locator is None:
+                log.info(f"[APPLY-AGENT] | {report_key} attach skipped: no file input on the form")
+                continue
             content = client.storage.from_(config.RESUME_STORAGE_BUCKET).download(storage_path)
-            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                 f.write(content)
                 temp_path = f.name
-            page.get_by_label(label).set_input_files(temp_path)
+            locator.set_input_files(temp_path, timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+            report[report_key] = True
         except Exception as exc:
-            log.info(f"[APPLY-AGENT] | {label} attach skipped: {exc}")
+            report[report_key] = False
+            log.info(f"[APPLY-AGENT] | {report_key} attach skipped: {exc}")
+    return report
+
+
+def _missing_required(fill_report):
+    fields = fill_report.get("fields") or {}
+    attachments = fill_report.get("attachments") or {}
+    missing = []
+    if not (fields.get("name") is True
+            or (fields.get("first_name") is True and fields.get("last_name") is True)):
+        missing.append("name")
+    if fields.get("email") is not True:
+        missing.append("email")
+    if attachments.get("resume") is not True:
+        missing.append("resume")
+    return missing
 
 
 # ── Browser lifecycle (real Playwright launch -- mocked in every test) ───────────
@@ -431,15 +472,25 @@ def _process_one_preview(job):
             db.heartbeat_application(job_id, lease)
             field_values = _standard_field_values(job)
 
+            fields_report = None
             if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
-                {"greenhouse": ats_fillers.fill_greenhouse,
-                 "ashby": ats_fillers.fill_ashby,
-                 "lever": ats_fillers.fill_lever}[platform](page, field_values)
+                fields_report = {"greenhouse": ats_fillers.fill_greenhouse,
+                                 "ashby": ats_fillers.fill_ashby,
+                                 "lever": ats_fillers.fill_lever}[platform](page, field_values)
             else:
                 _fill_generic_via_browser_use(page, job, field_values)
             db.heartbeat_application(job_id, lease)
 
-            _attach_resume_and_cover_letter(page, job)
+            attach_report = _attach_resume_and_cover_letter(page, job)
+            fill_report = None
+            if fields_report is not None:
+                fill_report = {"fields": fields_report, "attachments": attach_report}
+                missing = _missing_required(fill_report)
+                if missing:
+                    reason = "Preview couldn't fill required fields: " + ", ".join(missing)
+                    log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | {reason}")
+                    db.release_application(job_id, lease, "needs_input", reason)
+                    return "blocked"
             db.heartbeat_application(job_id, lease)
             screening_answers = _generate_screening_answers(page, job)
             _fill_screening_questions(page, screening_answers)
@@ -453,6 +504,8 @@ def _process_one_preview(job):
                 "eligibility_answers": eligibility_answers,
                 "screening_answers": screening_answers,
             }
+            if fill_report is not None:
+                preview["fill_report"] = fill_report
             if not db.complete_preview(job_id, lease, preview, signature):
                 log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded "
                             f"(row was recovered by lease recovery)")
@@ -588,10 +641,11 @@ def submit(job_id):
                 raise FormChangedError("Form changed after approval")
             field_values = _standard_field_values(job)
 
+            fields_report = None
             if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
-                {"greenhouse": ats_fillers.fill_greenhouse,
-                 "ashby": ats_fillers.fill_ashby,
-                 "lever": ats_fillers.fill_lever}[platform](page, field_values)
+                fields_report = {"greenhouse": ats_fillers.fill_greenhouse,
+                                 "ashby": ats_fillers.fill_ashby,
+                                 "lever": ats_fillers.fill_lever}[platform](page, field_values)
             else:
                 # generic-platform fill runs an LLM browser agent against the real page before
                 # the ARMED gate below -- restrained only by the task-string instruction not to
@@ -599,7 +653,7 @@ def submit(job_id):
                 _fill_generic_via_browser_use(page, job, field_values)
             db.heartbeat_application(job_id, lease)
 
-            _attach_resume_and_cover_letter(page, job)
+            attach_report = _attach_resume_and_cover_letter(page, job)
             # Reuse the stored preview's answers verbatim -- never regenerate here. The human
             # approved what's in apply_preview when they tapped "Approve & Submit"; a fresh
             # Claude call at submit time could produce a different answer than the one they saw,
@@ -609,6 +663,11 @@ def submit(job_id):
             _fill_screening_questions(page, preview.get("screening_answers"))
             _fill_eligibility_answers(page, preview.get("eligibility_answers"))
             db.heartbeat_application(job_id, lease)
+
+            if fields_report is not None:
+                missing = _missing_required({"fields": fields_report, "attachments": attach_report})
+                if missing:
+                    raise ValueError("Refusing to submit: required fields not filled: " + ", ".join(missing))
 
             if os.environ.get("APPLY_AGENT_ARMED") != "1":
                 log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
