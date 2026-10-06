@@ -1102,6 +1102,22 @@ describe("ApplicationsPage -- needs_input re-prepare and needs_confirmation reas
     });
   });
 
+  it("a ready_for_review row also offers Re-prepare, which POSTs requeue-preview", async () => {
+    stubList([{ ...readyApplication, id: "33", company: "Review Co", automation_status: "ready_for_review" }]);
+    const user = userEvent.setup();
+    render(<ApplicationsPage />);
+    await screen.findByText("Review Co");
+    const row = screen.getByText("Review Co").closest("tr") as HTMLElement;
+    expect(within(row).getByRole("button", { name: /approve & submit/i })).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: /re-prepare/i }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/applications/33/requeue-preview",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
   it("a needs_input row with no reason falls back to 'Needs your input'", async () => {
     stubList([{ ...readyApplication, id: "32", company: "Blank Co", automation_status: "needs_input", apply_blocked_reason: null }]);
     render(<ApplicationsPage />);

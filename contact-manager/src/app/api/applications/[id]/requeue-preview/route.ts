@@ -15,8 +15,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     return Response.json({ error: "Invalid application id" }, { status: 400 });
   }
 
-  // requeue_preview only acts on a needs_input row with no lease; it clears approval and the
-  // stored form signature so the next preview pass re-reads the (changed) form from scratch.
+  // requeue_preview only acts on a needs_input or ready_for_review row with no lease; it clears
+  // approval, the stored preview and the form signature so the next preview pass starts fresh.
   // supabase-js RPC calls don't throw on a Postgres exception; the error is on the result.
   const supabase = getClient();
   const { error } = await supabase.rpc("requeue_preview", { p_id: Number(id) });

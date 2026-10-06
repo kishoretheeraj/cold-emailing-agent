@@ -10,6 +10,8 @@ import apply_agent
 
 _OK_FIELDS = {"first_name": True, "last_name": True, "email": True, "phone": True, "linkedin": True}
 _OK_ATTACH = {"resume": True, "cover_letter": True}
+# Captured before the autouse fixture below replaces it, for the tests of the real function.
+_REAL_FORM_INVENTORY = apply_agent._form_inventory
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +25,10 @@ def _lease_defaults(mocker):
     mocker.patch("apply_agent.db.release_application")
     mocker.patch("apply_agent.db.mark_unsupported")
     mocker.patch("apply_agent.db.complete_preview", return_value=True)
+    # The form inventory reads the live DOM; default to an empty form (nothing required) so
+    # tests that aren't about questions don't trip the required-question gate.
+    mocker.patch("apply_agent._form_inventory", return_value=[])
+    mocker.patch("apply_agent.db.load_prompts", return_value={})
 
 
 def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
@@ -158,13 +164,19 @@ def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
     assert "errors=0" in done_line
 
 
+def _field(label, kind="input", required=True, filled=False, options=None, selector=None,
+           option_selectors=None):
+    return {"key": selector or f"#{label[:8]}", "selector": selector or f"#{label[:8]}", "label": label,
+            "kind": kind, "required": required, "filled": filled, "options": options or [],
+            "option_selectors": option_selectors or []}
+
+
 def test_generate_screening_answers_grounds_answer_in_call_claude(mocker):
-    page = MagicMock()
-    page.get_by_text.return_value.all.return_value = [MagicMock(inner_text=lambda: "Why do you want this role?")]
+    mocker.patch("apply_agent._form_inventory", return_value=[_field("Why do you want this role?", "textarea")])
     mocker.patch("apply_agent._call_claude", return_value="Grounded answer text.")
     job = {"company": "Acme", "role": "PM"}
 
-    result = apply_agent._generate_screening_answers(page, job)
+    result = apply_agent._generate_screening_answers(MagicMock(), job)
 
     assert result == {"Why do you want this role?": "Grounded answer text."}
 
@@ -173,13 +185,12 @@ def test_generate_screening_answers_grounds_answer_in_call_claude(mocker):
 # a posting titled "Senior Product Manager" was presented back to the LLM as the candidate's own
 # facts, so it could never produce the "real, factual experience" answers the prompt promises.
 def test_generate_screening_answers_grounds_the_prompt_in_the_real_candidate_profile_not_the_job_role(mocker):
-    page = MagicMock()
-    page.get_by_text.return_value.all.return_value = [MagicMock(inner_text=lambda: "Why do you want this role?")]
+    mocker.patch("apply_agent._form_inventory", return_value=[_field("Why do you want this role?", "textarea")])
     call_claude_mock = mocker.patch("apply_agent._call_claude", return_value="Grounded answer text.")
     mocker.patch("apply_agent.candidate_profile.profile_text", return_value="Associate PM at Protium Finance.")
     job = {"company": "Acme", "role": "Senior Product Manager"}
 
-    apply_agent._generate_screening_answers(page, job)
+    apply_agent._generate_screening_answers(MagicMock(), job)
 
     prompt = call_claude_mock.call_args[0][0]
     assert "Associate PM at Protium Finance." in prompt
@@ -187,16 +198,61 @@ def test_generate_screening_answers_grounds_the_prompt_in_the_real_candidate_pro
 
 
 def test_generate_screening_answers_flags_for_human_review_when_no_profile_text_available(mocker):
-    page = MagicMock()
-    page.get_by_text.return_value.all.return_value = [MagicMock(inner_text=lambda: "Why do you want this role?")]
+    mocker.patch("apply_agent._form_inventory", return_value=[_field("Why do you want this role?", "textarea")])
     call_claude_mock = mocker.patch("apply_agent._call_claude")
     mocker.patch("apply_agent.candidate_profile.profile_text", return_value="")
     job = {"company": "Acme", "role": "PM"}
 
-    result = apply_agent._generate_screening_answers(page, job)
+    result = apply_agent._generate_screening_answers(MagicMock(), job)
 
     assert result == {"Why do you want this role?": apply_agent._NO_PROFILE_ANSWER}
     call_claude_mock.assert_not_called()
+
+
+def test_generate_screening_answers_skips_optional_filled_file_and_eligibility_fields(mocker):
+    """Regression for the 2026-10-06 live preview: page headings ("What You'll Do?") were
+    answered as questions. Only required, still-empty, non-file controls get an answer, and a
+    question the applicant_eligibility answers cover is left to _fill_eligibility_answers."""
+    mocker.patch("apply_agent._form_inventory", return_value=[
+        _field("Why us?", "textarea"),
+        _field("Anything else?", "textarea", required=False),
+        _field("First Name", filled=True),
+        _field("Resume/CV", "file"),
+        _field("Are you legally authorized to work in the United States?", "select", options=["Yes", "No"]),
+    ])
+    mocker.patch("apply_agent.db.load_prompts", return_value={
+        "applicant_eligibility": '{"work_authorized_us": "Yes"}'})
+    call_claude_mock = mocker.patch("apply_agent._call_claude", return_value="Because.")
+
+    result = apply_agent._generate_screening_answers(MagicMock(), {"company": "Acme"})
+
+    assert result == {"Why us?": "Because."}
+    assert call_claude_mock.call_count == 1
+
+
+def test_generate_screening_answers_snaps_choice_answers_to_a_real_option(mocker):
+    mocker.patch("apply_agent._form_inventory", return_value=[
+        _field("How did you hear about us?", "select", options=["LinkedIn", "Company website", "Referral"])])
+    call_claude_mock = mocker.patch("apply_agent._call_claude", return_value="company website")
+
+    result = apply_agent._generate_screening_answers(MagicMock(), {"company": "Acme"})
+
+    assert result == {"How did you hear about us?": "Company website"}
+    assert "Referral" in call_claude_mock.call_args[0][0]  # options were offered in the prompt
+
+
+def test_generate_screening_answers_keeps_needs_human_review(mocker):
+    mocker.patch("apply_agent._form_inventory", return_value=[_field("What is your desired annual salary?")])
+    mocker.patch("apply_agent._call_claude", return_value="NEEDS HUMAN REVIEW")
+
+    result = apply_agent._generate_screening_answers(MagicMock(), {"company": "Acme"})
+
+    assert result == {"What is your desired annual salary?": "NEEDS HUMAN REVIEW"}
+
+
+def test_generate_screening_answers_survives_an_unreadable_form(mocker):
+    mocker.patch("apply_agent._form_inventory", return_value=None)
+    assert apply_agent._generate_screening_answers(MagicMock(), {"company": "Acme"}) == {}
 
 
 # ── _set_field_by_label: the shared dropdown/radio/text fallback chain ──────────
@@ -280,20 +336,43 @@ def test_fill_screening_questions_handles_none_and_empty(mocker):
     set_field_mock.assert_not_called()
 
 
-def test_fill_eligibility_answers_translates_known_keys_to_real_question_patterns(mocker):
-    """Regression test for the reported bug: the filler used to search for labels like
-    "work_authorized_us" verbatim -- an internal seed-data key, not real form text. Every
-    known applicant_eligibility key must resolve through _ELIGIBILITY_QUESTION_PATTERNS
-    before reaching the page, never the raw key."""
+def test_fill_screening_questions_fills_an_inventory_match_by_selector(mocker):
     page = MagicMock()
-    set_field_mock = mocker.patch("apply_agent._set_field_by_label", return_value=True)
+    field = _field("What attracted you to this role?", "textarea")
+    mocker.patch("apply_agent._form_inventory", return_value=[field])
+    fill_mock = mocker.patch("apply_agent._fill_field", return_value=True)
+    set_field_mock = mocker.patch("apply_agent._set_field_by_label")
 
-    apply_agent._fill_eligibility_answers(page, {"work_authorized_us": "Yes"})
+    report = apply_agent._fill_screening_questions(page, {"What attracted you to this role? *": "The team."})
 
-    set_field_mock.assert_called_once_with(
-        page, apply_agent._ELIGIBILITY_QUESTION_PATTERNS["work_authorized_us"], "Yes"
-    )
-    assert "work_authorized_us" not in [c.args[1] for c in set_field_mock.call_args_list]
+    fill_mock.assert_called_once_with(page, field, "The team.")
+    set_field_mock.assert_not_called()
+    assert report == {"What attracted you to this role? *": True}
+
+
+def test_fill_screening_questions_never_types_a_needs_human_review_answer(mocker):
+    mocker.patch("apply_agent._form_inventory", return_value=[_field("Desired salary")])
+    fill_mock = mocker.patch("apply_agent._fill_field")
+
+    report = apply_agent._fill_screening_questions(MagicMock(), {"Desired salary": "NEEDS HUMAN REVIEW"})
+
+    fill_mock.assert_not_called()
+    assert report == {"Desired salary": False}
+
+
+def test_fill_eligibility_answers_translates_known_keys_to_real_question_patterns(mocker):
+    """Regression test: the filler used to search for labels like "work_authorized_us"
+    verbatim -- an internal seed-data key, not real form text. A known key matches the real
+    question through _ELIGIBILITY_QUESTION_PATTERNS."""
+    page = MagicMock()
+    field = _field("Are you legally authorized to work in the United States?", "select", options=["Yes", "No"])
+    mocker.patch("apply_agent._form_inventory", return_value=[field, _field("Phone")])
+    fill_mock = mocker.patch("apply_agent._fill_field", return_value=True)
+
+    report = apply_agent._fill_eligibility_answers(page, {"work_authorized_us": "Yes"})
+
+    fill_mock.assert_called_once_with(page, field, "Yes")
+    assert report == {field["label"]: True}
 
 
 @pytest.mark.parametrize("key", list(apply_agent._ELIGIBILITY_QUESTION_PATTERNS))
@@ -302,20 +381,159 @@ def test_every_known_eligibility_key_has_a_question_pattern_that_compiles(key):
     assert hasattr(pattern, "search")  # a compiled re.Pattern, not a bare string
 
 
-def test_fill_eligibility_answers_falls_back_to_the_raw_key_for_unrecognized_keys(mocker):
+@pytest.mark.parametrize("label,key", [
+    ("Are you authorized to work in the United States for any employer?", "work_authorized_us"),
+    ("Will you now or in the future require Morning Consult to sponsor an employment visa?",
+     "requires_visa_sponsorship"),
+    ("Gender", "gender"),
+    ("Race", "race_ethnicity"),
+    ("Veteran Status", "veteran_status"),
+    ("Disability Status", "disability_status"),
+    ("Do you identify as LGBTQ+?", "lgbtq_identity"),
+])
+def test_eligibility_patterns_match_real_live_question_wording(label, key):
+    answers = {k: f"value-{k}" for k in apply_agent._ELIGIBILITY_QUESTION_PATTERNS}
+    assert apply_agent._eligibility_value_for(label, answers) == f"value-{key}"
+
+
+def test_user_added_eligibility_key_matches_any_label_containing_it():
+    answers = {"desired salary": "150000"}
+    assert apply_agent._eligibility_value_for("What is your desired annual salary?", answers) is None
+    assert apply_agent._eligibility_value_for("What is your desired salary?*", answers) == "150000"
+    assert apply_agent._eligibility_value_for("Desired Salary", {"desired salary": ""}) is None
+
+
+def test_short_salary_key_matches_real_live_salary_questions():
+    answers = {"salary": "150000"}
+    for label in ("What is your desired annual salary?", "What is your desired base salary?"):
+        assert apply_agent._eligibility_value_for(label, answers) == "150000"
+
+
+def test_inventory_js_gives_name_only_radios_a_per_option_selector():
+    """A radio with a name but no id must not share the group's selector with its siblings, or
+    _fill_field would always check the first option."""
+    assert "[value=" in apply_agent._FORM_INVENTORY_JS
+
+
+def test_fill_eligibility_answers_skips_filled_fields_and_unmatched_keys(mocker):
+    mocker.patch("apply_agent._form_inventory", return_value=[
+        _field("Gender", "select", filled=True, options=["Male", "Female"])])
+    fill_mock = mocker.patch("apply_agent._fill_field")
+
+    assert apply_agent._fill_eligibility_answers(MagicMock(), {"gender": "Male", "veteran_status": "No"}) == {}
+    fill_mock.assert_not_called()
+
+
+def test_fill_eligibility_answers_never_raises_on_an_unreadable_form(mocker):
+    mocker.patch("apply_agent._form_inventory", return_value=None)
+    assert apply_agent._fill_eligibility_answers(MagicMock(), {"work_authorized_us": "Yes"}) == {}
+
+
+# ── Form inventory and field filling ───────────────────────────────────────────
+
+def test_form_inventory_returns_none_when_the_page_cannot_be_read():
     page = MagicMock()
-    set_field_mock = mocker.patch("apply_agent._set_field_by_label", return_value=True)
+    page.evaluate.side_effect = RuntimeError("page closed")
+    assert _REAL_FORM_INVENTORY(page) is None
+    page.evaluate.side_effect = None
+    page.evaluate.return_value = "not a list"
+    assert _REAL_FORM_INVENTORY(page) is None
 
-    apply_agent._fill_eligibility_answers(page, {"some_future_custom_key": "Yes"})
 
-    set_field_mock.assert_called_once_with(page, "some_future_custom_key", "Yes")
-
-
-def test_fill_eligibility_answers_never_raises_when_field_not_fillable(mocker):
+def test_form_inventory_drops_entries_without_a_label():
     page = MagicMock()
-    mocker.patch("apply_agent._set_field_by_label", return_value=False)
+    page.evaluate.return_value = [{"label": ""}, {"label": "Email", "kind": "input"}, "junk"]
+    assert _REAL_FORM_INVENTORY(page) == [{"label": "Email", "kind": "input"}]
 
-    apply_agent._fill_eligibility_answers(page, {"work_authorized_us": "Yes"})  # must not raise
+
+def test_required_unfilled_lists_required_empty_fields_and_fails_closed():
+    inventory = [_field("Salary"), _field("Gender", required=False), _field("Email", filled=True)]
+    assert apply_agent._required_unfilled(inventory) == ["Salary"]
+    assert apply_agent._required_unfilled([]) == []
+    assert apply_agent._required_unfilled(None) == ["form questions (the form could not be read)"]
+
+
+@pytest.mark.parametrize("options,value,expected", [
+    (["Male", "Female", "Decline"], "Male", "Male"),
+    (["Female", "Male"], "male", "Male"),
+    (["Yes, I am authorized", "No"], "Yes", "Yes, I am authorized"),
+    (["Yes", "No"], "Yes - I am authorized", "Yes"),
+    (["LinkedIn", "Other"], "Referral", None),
+    (["Yes", "No"], "", None),
+    (["Male", "Female", "Decline To Self Identify"], "decline to self-identify", "Decline To Self Identify"),
+    (["Yes", "No", "I don't wish to answer"], "decline to self-identify", "I don't wish to answer"),
+    (["Yes", "No"], "decline to self-identify", None),
+])
+def test_pick_option(options, value, expected):
+    assert apply_agent._pick_option(options, value) == expected
+
+
+def test_fill_field_text_uses_the_selector_and_field_timeout():
+    page = MagicMock()
+    assert apply_agent._fill_field(page, _field("Employer", selector="#question_1"), "Protium") is True
+    page.locator.assert_called_once_with("#question_1")
+    page.locator.return_value.first.fill.assert_called_once_with(
+        "Protium", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+
+
+def test_fill_field_select_picks_the_matching_option_or_gives_up():
+    page = MagicMock()
+    field = _field("Gender", "select", options=["Female", "Male"], selector="#g")
+    assert apply_agent._fill_field(page, field, "male") is True
+    page.locator.return_value.first.select_option.assert_called_once_with(
+        label="Male", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+    assert apply_agent._fill_field(MagicMock(), field, "Nonbinary") is False
+
+
+def test_fill_field_radio_checks_the_chosen_options_own_input():
+    page = MagicMock()
+    field = _field("Sponsorship?", "radio", options=["Yes", "No"], option_selectors=["#s_yes", "#s_no"])
+    assert apply_agent._fill_field(page, field, "No") is True
+    page.locator.assert_called_once_with("#s_no")
+    page.locator.return_value.first.check.assert_called_once()
+
+
+def test_fill_field_single_checkbox_only_checks_on_agreement():
+    field = _field("I agree to the privacy policy", "checkbox", options=["I agree"], option_selectors=["#ok"])
+    page = MagicMock()
+    assert apply_agent._fill_field(page, field, "Yes") is True
+    page.locator.assert_called_once_with("#ok")
+    assert apply_agent._fill_field(MagicMock(), field, "No") is False
+
+
+def test_fill_field_combobox_types_and_presses_enter():
+    page = MagicMock()
+    assert apply_agent._fill_field(page, _field("Country", "combobox", selector="#c"), "United States") is True
+    box = page.locator.return_value.first
+    box.click.assert_called_once()
+    box.fill.assert_called_once_with("United States", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+    page.keyboard.press.assert_called_once_with("Enter")
+
+
+def test_fill_field_never_raises_and_skips_files():
+    page = MagicMock()
+    page.locator.return_value.first.fill.side_effect = RuntimeError("Timeout 3000ms exceeded")
+    assert apply_agent._fill_field(page, _field("Employer"), "x") is False
+    assert apply_agent._fill_field(MagicMock(), _field("Resume", "file"), "x") is False
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://jobs.ashbyhq.com/neighborly-software/23712769-a9c6-4840-ac07-7116ca45d79a",
+     "https://jobs.ashbyhq.com/neighborly-software/23712769-a9c6-4840-ac07-7116ca45d79a/application"),
+    ("https://jobs.ashbyhq.com/kalshi/a2e482ee-e520-4182-b383-3be4f9ca8155/application",
+     "https://jobs.ashbyhq.com/kalshi/a2e482ee-e520-4182-b383-3be4f9ca8155/application"),
+    ("https://jobs.ashbyhq.com/x/23712769-a9c6-4840-ac07-7116ca45d79a/?src=jr",
+     "https://jobs.ashbyhq.com/x/23712769-a9c6-4840-ac07-7116ca45d79a/application?src=jr"),
+    ("https://jobs.lever.co/neighbor/aa8a58c7-9a82-4127-b060-28d168bcd3fc",
+     "https://jobs.lever.co/neighbor/aa8a58c7-9a82-4127-b060-28d168bcd3fc/apply"),
+    ("https://jobs.lever.co/neighbor/aa8a58c7-9a82-4127-b060-28d168bcd3fc/apply",
+     "https://jobs.lever.co/neighbor/aa8a58c7-9a82-4127-b060-28d168bcd3fc/apply"),
+    ("https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=7737124",
+     "https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=7737124"),
+    (None, ""),
+])
+def test_application_url(url, expected):
+    assert apply_agent._application_url(url) == expected
 
 
 # ── _submission_confirmed: rejection copy must never read as confirmed ──────────
@@ -1223,7 +1441,7 @@ def _preview_mocks(mocker, attach):
     mocker.patch("apply_agent.ats_fillers.fill_greenhouse", return_value=dict(_OK_FIELDS))
     mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=attach)
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
-    mocker.patch("apply_agent._fill_screening_questions")
+    mocker.patch("apply_agent._fill_screening_questions", return_value={})
     mocker.patch("apply_agent._fill_eligibility_answers")
     mocker.patch("apply_agent.db.load_prompts", return_value={})
 
@@ -1248,7 +1466,73 @@ def test_preview_complete_stores_fill_report(mocker):
     assert apply_agent._process_one_preview(_preview_job()) == "filled"
 
     assert complete.call_args[0][2]["fill_report"] == {
-        "fields": _OK_FIELDS, "attachments": _OK_ATTACH}
+        "fields": _OK_FIELDS, "attachments": _OK_ATTACH, "questions": {}, "required_unfilled": []}
+
+
+def test_preview_releases_needs_input_when_a_required_question_stays_empty(mocker):
+    """Regression for the 2026-10-06 live preview: 7 forms reached ready_for_review with every
+    required screening question blank, because only name/email/resume were checked."""
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent._form_inventory", return_value=[
+        _field("What is your desired annual salary?"), _field("Email", filled=True)])
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+    release = mocker.patch("apply_agent.db.release_application", return_value=True)
+
+    assert apply_agent._process_one_preview(_preview_job()) == "blocked"
+
+    complete.assert_not_called()
+    args = release.call_args[0]
+    assert args[2] == "needs_input"
+    assert args[3].startswith("Preview couldn't fill required questions: What is your desired annual salary?. ")
+    assert "applicant_eligibility" in args[3]
+
+
+def test_preview_releases_needs_input_when_the_form_cannot_be_read(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent._form_inventory", return_value=None)
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+    release = mocker.patch("apply_agent.db.release_application", return_value=True)
+
+    assert apply_agent._process_one_preview(_preview_job()) == "blocked"
+    complete.assert_not_called()
+    assert release.call_args[0][2] == "needs_input"
+
+
+def test_preview_logs_the_form_inventory_without_values(mocker, caplog):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent._form_inventory", return_value=[
+        dict(_field("Email", filled=True), value="secret@example.com")])
+    caplog.set_level("INFO")
+
+    apply_agent._process_one_preview(_preview_job())
+
+    line = next(r.getMessage() for r in caplog.records if "[APPLY-FORM]" in r.getMessage())
+    assert '"label": "Email"' in line
+    assert "secret@example.com" not in line
+
+
+def test_preview_opens_the_application_url_not_the_posting(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent.ats_platform.classify", return_value="ashby")
+    mocker.patch("apply_agent.ats_fillers.fill_ashby", return_value={"name": True, "email": True})
+    launch = apply_agent._launch_page
+    job = dict(_preview_job(), job_url="https://jobs.ashbyhq.com/n/23712769-a9c6-4840-ac07-7116ca45d79a")
+
+    apply_agent._process_one_preview(job)
+
+    launch.assert_called_once_with("https://jobs.ashbyhq.com/n/23712769-a9c6-4840-ac07-7116ca45d79a/application")
+
+
+def test_submit_refuses_before_clicking_when_a_required_question_is_empty(mocker, approved_job):
+    page, release, record = _arm_submit(mocker, approved_job)
+    mocker.patch("apply_agent._form_inventory", return_value=[_field("Desired salary")])
+
+    with pytest.raises(ValueError, match="required fields not filled: Desired salary"):
+        apply_agent.submit(9)
+
+    page.get_by_role.return_value.click.assert_not_called()
+    record.assert_not_called()
+    assert release.call_args[0][2] == "failed_retryable"
 
 
 def test_submit_refuses_before_clicking_when_required_fields_missing(mocker, approved_job):

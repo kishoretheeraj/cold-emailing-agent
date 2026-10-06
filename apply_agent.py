@@ -52,13 +52,21 @@ def _eligibility_answers():
         return {}
 
 
-_SCREENING_PROMPT = """Answer this job application screening question, grounded only in real facts
-about the candidate below. Never invent experience, projects, or numbers not listed. Keep it to
-2-4 sentences.
-
+_SCREENING_PROMPT = """Answer this job application question, grounded only in real facts about the
+candidate below. Never invent experience, projects, or numbers not listed.
+- If the question asks for a short fact (a name, employer, title, city, date, yes/no), reply with
+  just that fact.
+- Otherwise keep it to 2-4 sentences.
+- If the facts below don't contain the answer (for example a desired salary or a start date),
+  reply exactly: NEEDS HUMAN REVIEW
+{options_block}
 Question: {question}
 
 Candidate facts: {profile_summary}
+"""
+
+_OPTIONS_BLOCK = """- This question has fixed choices. Reply with exactly one of them, verbatim:
+{options}
 """
 
 # Merge review 2026-09-28, finding 3: a missing/empty candidate profile used to still get an
@@ -66,60 +74,244 @@ Candidate facts: {profile_summary}
 # prompt above claims never to do. Flag it for the human reviewing apply_preview instead of
 # calling Claude with no real facts to ground an answer in.
 _NO_PROFILE_ANSWER = "NEEDS HUMAN REVIEW -- no candidate profile text available to ground an answer in."
+_NEEDS_REVIEW_PREFIX = "NEEDS HUMAN REVIEW"
 
+
+# ── Form inventory ─────────────────────────────────────────────────────────────
+
+# Field-driven, not text-driven: the first live preview (2026-10-06) found questions with
+# page.get_by_text("?"), which picked up page headings ("What You'll Do?"), missed questions
+# without a "?" ("Desired salary*"), and then could not locate any control by that text. This
+# reads every real control instead: its question label, kind, required flag, options, whether it
+# currently holds a value, and a selector to reach it again. Values are never returned.
+_FORM_INVENTORY_JS = r"""() => {
+  const clean = (t) => (t || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim().slice(0, 300);
+  const starred = (t) => /\*\s*$/.test((t || '').trim());
+  const textOf = (ids) => (ids || '').split(/\s+/).map((i) => {
+    const n = document.getElementById(i); return n ? n.innerText : '';
+  }).join(' ');
+  const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
+  const sel = (el) => el.id ? '#' + CSS.escape(el.id)
+    : (el.name ? el.tagName.toLowerCase() + '[name="' + el.name.replace(/"/g, '\\"') + '"]' : null);
+  const rawLabel = (el) => {
+    if (el.getAttribute('aria-labelledby')) return textOf(el.getAttribute('aria-labelledby'));
+    if (el.labels && el.labels[0]) return el.labels[0].innerText;
+    return el.getAttribute('aria-label') || el.placeholder || el.name || el.id || '';
+  };
+  const groupLabel = (el) => {
+    const g = el.closest('fieldset, [role=radiogroup], [role=group]');
+    if (!g) {
+      // A lone checkbox ("I agree to ...") is its own question; a radio's own label is an option.
+      if (el.type === 'checkbox' && el.labels && el.labels[0]) return el.labels[0].innerText;
+      return el.name || '';
+    }
+    if (g.getAttribute('aria-labelledby')) return textOf(g.getAttribute('aria-labelledby'));
+    if (g.getAttribute('aria-label')) return g.getAttribute('aria-label');
+    const legend = g.querySelector('legend');
+    return legend ? legend.innerText : (el.name || '');
+  };
+  const skip = ['hidden', 'submit', 'button', 'reset', 'image'];
+  const out = [];
+  const groups = {};
+  for (const el of document.querySelectorAll('input, select, textarea')) {
+    const type = (el.type || '').toLowerCase();
+    if (skip.includes(type) || el.disabled) continue;
+    if (/captcha/i.test((el.name || '') + ' ' + (el.id || ''))) continue;
+    if (type !== 'file' && !visible(el)) continue;
+    if (type === 'radio' || type === 'checkbox') {
+      const key = 'group:' + (el.name || el.id);
+      const optLabel = clean(el.labels && el.labels[0] ? el.labels[0].innerText : el.value);
+      if (!groups[key]) {
+        const raw = groupLabel(el);
+        groups[key] = {key, kind: type, label: clean(raw), required: false, filled: false,
+                       options: [], option_selectors: [], selector: sel(el)};
+        groups[key]._starred = starred(raw);
+        out.push(groups[key]);
+      }
+      const g = groups[key];
+      g.options.push(optLabel);
+      // A name-only radio's sel() is the whole group's; the value tells its options apart.
+      g.option_selectors.push(el.id ? sel(el) : (el.name
+        ? 'input[name="' + el.name.replace(/"/g, '\\"') + '"][value="' + (el.value || '').replace(/"/g, '\\"') + '"]'
+        : null));
+      g.required = g.required || el.required || el.getAttribute('aria-required') === 'true' || g._starred;
+      g.filled = g.filled || el.checked;
+      continue;
+    }
+    const raw = rawLabel(el);
+    const f = {key: sel(el) || ('field:' + out.length), selector: sel(el), label: clean(raw),
+               required: el.required || el.getAttribute('aria-required') === 'true' || starred(raw),
+               options: [], kind: el.tagName.toLowerCase(), filled: false};
+    if (type === 'file') { f.kind = 'file'; f.filled = el.files && el.files.length > 0; }
+    else if (el.tagName === 'SELECT') {
+      f.options = Array.from(el.options).filter((o) => o.value !== '').map((o) => clean(o.text));
+      f.filled = el.value !== '';
+    } else if (el.getAttribute('role') === 'combobox') {
+      f.kind = 'combobox';
+      const box = el.closest('[class*="container"]') || (el.parentElement && el.parentElement.parentElement);
+      f.filled = el.value.trim() !== '' || !!(box && box.querySelector(
+        '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
+    } else { f.filled = (el.value || '').trim() !== ''; }
+    out.push(f);
+  }
+  for (const g of Object.values(groups)) delete g._starred;
+  return out;
+}"""
+
+
+def _form_inventory(page):
+    try:
+        fields = page.evaluate(_FORM_INVENTORY_JS)
+    except Exception as exc:
+        log.warning(f"[APPLY-AGENT] | form inventory failed: {exc}")
+        return None
+    if not isinstance(fields, list):
+        return None
+    return [f for f in fields if isinstance(f, dict) and f.get("label")]
+
+
+def _norm_label(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip().rstrip("*").strip().lower()
+
+
+def _required_unfilled(inventory):
+    if inventory is None:
+        return ["form questions (the form could not be read)"]
+    return [f["label"] for f in inventory if f.get("required") and not f.get("filled")]
+
+
+# Forms word "decline" many ways ("Decline To Self Identify", "I don't wish to answer").
+_DECLINE_OPTION = re.compile(r"decline|don.?t wish|do not wish|prefer not|not to (say|answer|disclose)"
+                             r"|choose not|rather not", re.IGNORECASE)
+
+
+def _norm_option(text):
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _pick_option(options, value):
+    want = _norm_option(value)
+    if not want:
+        return None
+    normed = [(o, _norm_option(o)) for o in (options or []) if _norm_option(o)]
+    for checks in (lambda o: o == want, lambda o: o.startswith(want), lambda o: want.startswith(o),
+                   lambda o: want in o):
+        for original, o in normed:
+            if checks(o):
+                return original
+    if _DECLINE_OPTION.search(str(value)):
+        for original, o in normed:
+            if _DECLINE_OPTION.search(original):
+                return original
+    return None
+
+
+def _fill_field(page, field, value):
+    kind = field.get("kind")
+    timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
+    try:
+        if kind in ("input", "textarea"):
+            page.locator(field["selector"]).first.fill(str(value), timeout=timeout)
+        elif kind == "select":
+            option = _pick_option(field.get("options"), value)
+            if option is None:
+                return False
+            page.locator(field["selector"]).first.select_option(label=option, timeout=timeout)
+        elif kind in ("radio", "checkbox"):
+            options = field.get("options") or []
+            if kind == "checkbox" and len(options) == 1:
+                if _norm_label(value) not in ("yes", "true", "i agree", "agree", _norm_label(options[0])):
+                    return False
+                index = 0
+            else:
+                option = _pick_option(options, value)
+                if option is None:
+                    return False
+                index = options.index(option)
+            target = (field.get("option_selectors") or [None] * len(options))[index]
+            if not target:
+                return False
+            page.locator(target).first.check(timeout=timeout, force=True)
+        elif kind == "combobox":
+            box = page.locator(field["selector"]).first
+            box.click(timeout=timeout)
+            box.fill(str(value), timeout=timeout)
+            page.keyboard.press("Enter")
+        else:
+            return False
+        return True
+    except Exception as exc:
+        log.info(f"[APPLY-AGENT] | field not fillable: {field.get('label', '')[:60]!r} | {exc}")
+        return False
+
+
+def _eligibility_value_for(label, answers):
+    for key, value in (answers or {}).items():
+        if not value:
+            continue
+        pattern = _ELIGIBILITY_QUESTION_PATTERNS.get(key)
+        if pattern is not None:
+            if pattern.search(label):
+                return value
+        elif _norm_label(key) and _norm_label(key) in _norm_label(label):
+            # A key the user added to applicant_eligibility themselves (e.g. "desired salary")
+            # matches any question label containing it.
+            return value
+    return None
+
+
+# ── Screening questions ────────────────────────────────────────────────────────
 
 def _generate_screening_answers(page, job):
-    """Finds on-page screening questions and generates grounded answers via Claude --
+    """Generates grounded answers for the form's required, still-empty questions via Claude --
     generation only, this never fills the page. Called exactly once, in the preview pass;
     submit() must reuse the stored result via _fill_screening_questions instead of calling
     this again, so a submitted application always matches what the human reviewed in the
-    preview rather than a freshly (and differently) generated answer."""
+    preview rather than a freshly (and differently) generated answer. Questions the
+    applicant_eligibility answers cover are left to _fill_eligibility_answers, and optional
+    questions are left blank. Keyed by the question's label."""
     answers = {}
-    try:
-        question_elements = page.get_by_text("?").all()
-    except Exception:
-        return answers
+    inventory = _form_inventory(page) or []
 
     # Merge review 2026-09-28, finding 3: this used to pass job.get("role", "") as
     # profile_summary -- a posting titled "Senior Product Manager" was presented back to the LLM
     # as the candidate's own facts. candidate_profile.profile_text() is the same real
     # experience/projects text job_pick.py's fit judge is grounded in.
     profile_summary = candidate_profile.profile_text()
+    eligibility = _eligibility_answers()
 
-    for el in question_elements:
-        try:
-            question_text = el.inner_text()
-        except Exception:
+    for field in inventory:
+        label = field.get("label") or ""
+        if (field.get("filled") or not field.get("required") or field.get("kind") == "file"
+                or _eligibility_value_for(label, eligibility) is not None):
             continue
         if not profile_summary.strip():
-            answers[question_text] = _NO_PROFILE_ANSWER
+            answers[label] = _NO_PROFILE_ANSWER
             continue
+        options = field.get("options") or []
+        options_block = _OPTIONS_BLOCK.format(options="\n".join(options)) if options else ""
         try:
             answer = _call_claude(
-                _SCREENING_PROMPT.format(question=question_text, profile_summary=profile_summary),
+                _SCREENING_PROMPT.format(question=label, profile_summary=profile_summary,
+                                         options_block=options_block),
                 module="apply_agent", action="screening_question", contact_id=None,
-            )
-            answers[question_text] = answer
+            ).strip()
         except Exception as exc:
             log.info(f"[APPLY-AGENT] | screening question skipped: {exc}")
+            continue
+        if options and not answer.startswith(_NEEDS_REVIEW_PREFIX):
+            answer = _pick_option(options, answer) or answer
+        answers[label] = answer
     return answers
 
 
 def _set_field_by_label(page, label_pattern, value):
     """Best-effort generic field setter supporting the three control shapes a screening or
     eligibility question can actually be: a <select> dropdown, a radio-button group, or a
-    plain text/textarea field. A generic filler can't know a question's control type in
-    advance, so this tries each in turn and stops at the first that succeeds -- Playwright
-    raises when a locator method doesn't apply to the element it resolved to (e.g.
-    select_option() on a text input, fill() on a radio), which is exactly the signal used to
-    fall through to the next strategy. Radios are scoped to the question's own
-    role="group"/fieldset first, since page.get_by_role("radio", name=value) alone would grab
-    the first same-labeled radio anywhere on the page if more than one Yes/No question is
-    present. Returns True on success, False if no strategy worked; never raises."""
-    # Each strategy re-resolves the locator independently (rather than sharing one `locator`
-    # variable across all three) so a failure IN page.get_by_label() itself -- e.g. a strict-
-    # mode violation from more than one match -- degrades to "try the next strategy" like any
-    # other failure, instead of raising past this function entirely.
+    plain text/textarea field. Used only for a stored answer whose label is no longer in the
+    form inventory (e.g. a preview stored before the inventory existed). Tries each shape in
+    turn and stops at the first that succeeds; returns True on success, False if no strategy
+    worked; never raises."""
     try:
         page.get_by_label(label_pattern).select_option(label=str(value), timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
         return True
@@ -140,50 +332,62 @@ def _set_field_by_label(page, label_pattern, value):
 
 
 def _fill_screening_questions(page, answers):
-    """Writes pre-computed screening-question answers into the page, by label -- best-effort
-    per question via _set_field_by_label (a screening question can be a dropdown or a
-    yes/no radio, not only free text). Used right after generation in the preview pass, and
-    again during submit to replay a stored preview's answers verbatim."""
+    """Writes pre-computed screening-question answers into the page. Each stored label is
+    matched to a control in the form inventory and filled by its selector; a label with no
+    match falls back to _set_field_by_label. An answer still flagged NEEDS HUMAN REVIEW is
+    never typed into the form. Used right after generation in the preview pass, and again
+    during submit to replay a stored (possibly human-edited) preview's answers verbatim.
+    Returns {label: filled}."""
+    report = {}
+    by_label = {_norm_label(f["label"]): f for f in (_form_inventory(page) or [])}
     for question_text, answer in (answers or {}).items():
-        if not answer:
+        if not answer or str(answer).startswith(_NEEDS_REVIEW_PREFIX):
+            report[question_text] = False
             continue
-        if not _set_field_by_label(page, question_text, answer):
+        field = by_label.get(_norm_label(question_text))
+        ok = _fill_field(page, field, answer) if field else _set_field_by_label(page, question_text, answer)
+        if not ok:
             log.info(f"[APPLY-AGENT] | screening field not fillable: {question_text[:60]!r}")
+        report[question_text] = ok
+    return report
 
 
 # Known applicant_eligibility keys -> the real on-page question wording those keys mean,
-# matched as a case-insensitive substring/regex against the form's actual label text. The
+# matched as a case-insensitive regex against the form's actual label text. The
 # `applicant_eligibility` prompts key itself stays keyed by these stable internal names (the
 # user edits it live via the contact-manager's Prompts page, and nothing here should force a
 # migration of that live data) -- but a real ATS form never has a field literally labeled
-# "work_authorized_us", so filling must go through this translation, not the raw key. An
-# eligibility key with no entry here falls back to trying the raw key as the label (today's
-# behavior) and is logged as unmapped, so a custom key the user adds still gets attempted
-# rather than silently dropped.
+# "work_authorized_us", so filling must go through this translation. A key with no entry here
+# (one the user added, e.g. "desired salary") matches any label containing the key's text.
 _ELIGIBILITY_QUESTION_PATTERNS = {
     "work_authorized_us": re.compile(r"(legally )?authorized to work", re.IGNORECASE),
-    "requires_visa_sponsorship": re.compile(r"require.{0,25}sponsorship", re.IGNORECASE),
+    "requires_visa_sponsorship": re.compile(r"require.{0,40}sponsor", re.IGNORECASE),
     "gender": re.compile(r"\bgender\b", re.IGNORECASE),
-    "race_ethnicity": re.compile(r"race|ethnicity", re.IGNORECASE),
+    "race_ethnicity": re.compile(r"\brace\b|ethnicity", re.IGNORECASE),
     "veteran_status": re.compile(r"veteran", re.IGNORECASE),
     "disability_status": re.compile(r"disability", re.IGNORECASE),
+    "lgbtq_identity": re.compile(r"lgbtq|sexual orientation", re.IGNORECASE),
 }
 
 
 def _fill_eligibility_answers(page, answers):
-    """Writes the fixed EEO/work-authorization answers into the page -- translates each
-    internal applicant_eligibility key to the real question wording it means
-    (_ELIGIBILITY_QUESTION_PATTERNS) before locating the field, and fills via
-    _set_field_by_label so a dropdown or radio-button EEO question (the overwhelmingly common
-    shape for these specific questions) is handled, not only a text input. Same best-effort
-    posture as _fill_screening_questions -- a field this generic filler can't locate is logged
-    and skipped, never a blocking error."""
-    for key, value in (answers or {}).items():
-        if not value:
+    """Writes the fixed EEO/work-authorization answers into the page: every still-empty
+    control in the form inventory whose label matches an applicant_eligibility key
+    (_ELIGIBILITY_QUESTION_PATTERNS, or the key's own text for a user-added key) is filled
+    with that key's value, picking the matching option for a dropdown, radio or combobox.
+    Best-effort per field; returns {label: filled}."""
+    report = {}
+    for field in _form_inventory(page) or []:
+        if field.get("filled") or field.get("kind") == "file":
             continue
-        pattern = _ELIGIBILITY_QUESTION_PATTERNS.get(key, key)
-        if not _set_field_by_label(page, pattern, value):
-            log.info(f"[APPLY-AGENT] | eligibility field not fillable: {key!r}")
+        value = _eligibility_value_for(field.get("label") or "", answers)
+        if value is None:
+            continue
+        ok = _fill_field(page, field, value)
+        if not ok:
+            log.info(f"[APPLY-AGENT] | eligibility field not fillable: {field['label'][:60]!r}")
+        report[field["label"]] = ok
+    return report
 
 
 # A rejection/validation-error message takes precedence over any confirmation match below --
@@ -292,7 +496,23 @@ def _missing_required(fill_report):
         missing.append("email")
     if attachments.get("resume") is not True:
         missing.append("resume")
+    missing.extend(fill_report.get("required_unfilled") or [])
     return missing
+
+
+_ASHBY_POSTING = re.compile(r"^(https://jobs\.ashbyhq\.com/[^/?#]+/[0-9a-f-]{36})/?(?=$|[?#])", re.I)
+_LEVER_POSTING = re.compile(r"^(https://jobs\.lever\.co/[^/?#]+/[0-9a-f-]{36})/?(?=$|[?#])", re.I)
+
+
+def _application_url(job_url):
+    # Ashby and Lever posting URLs show the job description; the form lives one path deeper.
+    # Opening the posting page timed out the form fingerprint on the first live preview.
+    url = job_url or ""
+    for pattern, suffix in ((_ASHBY_POSTING, "/application"), (_LEVER_POSTING, "/apply")):
+        match = pattern.match(url)
+        if match:
+            return match.group(1) + suffix + url[match.end():]
+    return url
 
 
 # ── Browser lifecycle (real Playwright launch -- mocked in every test) ───────────
@@ -447,6 +667,17 @@ def _form_signature(page):
         return None
 
 
+def _log_inventory(job, inventory):
+    # Labels, kinds and filled flags only -- never field values. The run log is the only way to
+    # see how a live form is built without opening it.
+    try:
+        slim = [{k: f.get(k) for k in ("label", "kind", "required", "filled", "options")}
+                for f in (inventory or [])]
+        log.info(f"[APPLY-FORM] | {job.get('company')} | {json.dumps(slim)[:8000]}")
+    except Exception:
+        pass
+
+
 # ── Preview pass ───────────────────────────────────────────────────────────────
 
 def _process_one_preview(job):
@@ -466,7 +697,7 @@ def _process_one_preview(job):
         return "skipped"
 
     try:
-        page = _launch_page(job.get("job_url"))
+        page = _launch_page(_application_url(job.get("job_url")))
         try:
             signature = _form_signature(page)
             if not signature:
@@ -495,11 +726,26 @@ def _process_one_preview(job):
                         return "lost"
                     return "blocked"
             db.heartbeat_application(job_id, lease)
-            screening_answers = _generate_screening_answers(page, job)
-            _fill_screening_questions(page, screening_answers)
-            db.heartbeat_application(job_id, lease)
             eligibility_answers = _eligibility_answers()
             _fill_eligibility_answers(page, eligibility_answers)
+            screening_answers = _generate_screening_answers(page, job)
+            question_report = _fill_screening_questions(page, screening_answers)
+            db.heartbeat_application(job_id, lease)
+
+            inventory = _form_inventory(page)
+            _log_inventory(job, inventory)
+            if fill_report is not None:
+                fill_report["questions"] = question_report
+                fill_report["required_unfilled"] = _required_unfilled(inventory)
+                if fill_report["required_unfilled"]:
+                    reason = ("Preview couldn't fill required questions: "
+                              + "; ".join(fill_report["required_unfilled"]))[:900]
+                    reason += (". To answer one every time, add it to applicant_eligibility on the Prompts "
+                               "page, keyed by a word from the question (e.g. \"salary\"), then Re-prepare.")
+                    log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | {reason}")
+                    if not db.release_application(job_id, lease, "needs_input", reason):
+                        return "lost"
+                    return "blocked"
 
             preview = {
                 "platform": platform,
@@ -635,7 +881,7 @@ def submit(job_id):
                 f"hash_match={job.get('approved_revision_hash') == job.get('preview_revision_hash')}"
             )
 
-        page = _launch_page(job.get("job_url"))
+        page = _launch_page(_application_url(job.get("job_url")))
         try:
             expected_signature = job.get("form_signature")
             if not expected_signature:
@@ -663,12 +909,13 @@ def submit(job_id):
             # and any screening/eligibility question the preview pass couldn't fill would
             # otherwise go out blank instead of being retried from the same known values.
             preview = job.get("apply_preview") or {}
-            _fill_screening_questions(page, preview.get("screening_answers"))
             _fill_eligibility_answers(page, preview.get("eligibility_answers"))
+            _fill_screening_questions(page, preview.get("screening_answers"))
             db.heartbeat_application(job_id, lease)
 
             if fields_report is not None:
-                missing = _missing_required({"fields": fields_report, "attachments": attach_report})
+                missing = _missing_required({"fields": fields_report, "attachments": attach_report,
+                                             "required_unfilled": _required_unfilled(_form_inventory(page))})
                 if missing:
                     raise ValueError("Refusing to submit: required fields not filled: " + ", ".join(missing))
 
