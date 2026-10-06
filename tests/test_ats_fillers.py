@@ -100,11 +100,11 @@ def test_greenhouse_fills_first_and_last_not_full_name():
     assert not any("full name" in str(q).lower() for q in page.queried)
 
 
-def test_greenhouse_phone_uses_id_before_any_label():
-    page = _FakePage(present={"#phone"})
+def test_greenhouse_phone_uses_id_and_never_reaches_tel_fallback():
+    page = _FakePage(present={"#phone", "input[type='tel']"})
     ats_fillers.fill_greenhouse(page, _FIELDS)
     assert page.locators["#phone"].fills
-    assert "phone" not in [q for q in page.queried if not str(q).startswith(("#", "input"))]
+    assert "input[type='tel']" not in page.locators
 
 
 def test_report_omits_fields_with_empty_values():

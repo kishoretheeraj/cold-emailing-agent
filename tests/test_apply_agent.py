@@ -207,7 +207,7 @@ def test_set_field_by_label_selects_a_dropdown_option(mocker):
     result = apply_agent._set_field_by_label(page, "Work authorized?", "Yes")
 
     assert result is True
-    page.get_by_label.return_value.select_option.assert_called_with(label="Yes")
+    page.get_by_label.return_value.select_option.assert_called_with(label="Yes", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
     page.get_by_label.return_value.fill.assert_not_called()
 
 
@@ -220,7 +220,7 @@ def test_set_field_by_label_clicks_a_radio_option_scoped_to_the_questions_group(
     assert result is True
     page.get_by_role.assert_any_call("group", name="Work authorized?")
     page.get_by_role.return_value.get_by_role.assert_called_with("radio", name="Yes")
-    page.get_by_role.return_value.get_by_role.return_value.click.assert_called_once()
+    page.get_by_role.return_value.get_by_role.return_value.click.assert_called_once_with(timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
     page.get_by_label.return_value.fill.assert_not_called()
 
 
@@ -232,7 +232,7 @@ def test_set_field_by_label_falls_back_to_a_plain_text_fill(mocker):
     result = apply_agent._set_field_by_label(page, "Phone", "555-1234")
 
     assert result is True
-    page.get_by_label.return_value.fill.assert_called_with("555-1234")
+    page.get_by_label.return_value.fill.assert_called_with("555-1234", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
 
 
 def test_set_field_by_label_returns_false_when_no_strategy_works(mocker):
@@ -1185,7 +1185,7 @@ def test_attach_finds_hidden_file_input_by_id(mocker):
 
 def test_attach_resume_falls_back_to_first_file_input_and_cover_letter_none_without_field(mocker):
     _storage(mocker)
-    page = _FilePage({"input[type='file']"})
+    page = _FilePage({"input[type='file']:not([id*='cover' i]):not([name*='cover' i])"})
     job = {"resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"}
     assert apply_agent._attach_resume_and_cover_letter(page, job) == {"resume": True, "cover_letter": None}
 
@@ -1259,5 +1259,41 @@ def test_submit_refuses_before_clicking_when_required_fields_missing(mocker, app
         apply_agent.submit(9)
 
     page.get_by_role.return_value.click.assert_not_called()
+    apply_agent.db.renew_submission_lease.assert_not_called()
     record.assert_not_called()
     assert release.call_args[0][2] == "failed_retryable"
+
+
+def test_attach_resume_does_not_take_a_cover_letter_only_file_input(mocker):
+    _storage(mocker)
+    page = _FilePage({"#cover_letter", "input[type='file']"})
+    job = {"resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"}
+    report = apply_agent._attach_resume_and_cover_letter(page, job)
+    assert report == {"resume": None, "cover_letter": True}
+    assert "input[type='file']" not in page.locs or not page.locs["input[type='file']"].set_calls
+    assert apply_agent._missing_required(
+        {"fields": {"name": True, "email": True}, "attachments": report}) == ["resume"]
+    assert "input[type='file']:not([id*='cover' i]):not([name*='cover' i])" in page.locs
+
+
+def test_attach_does_not_download_when_no_matching_file_input(mocker):
+    _storage(mocker)
+    client = apply_agent.db.get_client()
+    apply_agent._attach_resume_and_cover_letter(_FilePage(set()), {"resume_file_ref": "r.pdf"})
+    client.storage.from_.return_value.download.assert_not_called()
+
+
+def test_generic_platform_with_no_resume_input_still_completes_preview(mocker):
+    _preview_mocks(mocker, {"resume": None, "cover_letter": None})
+    mocker.patch("apply_agent.ats_platform.classify", return_value="generic")
+    mocker.patch("apply_agent._fill_generic_via_browser_use")
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+    assert apply_agent._process_one_preview(_preview_job()) == "filled"
+    complete.assert_called_once()
+    assert "fill_report" not in complete.call_args[0][2]
+
+
+def test_preview_returns_lost_when_needs_input_release_returns_none(mocker):
+    _preview_mocks(mocker, {"resume": None, "cover_letter": None})
+    mocker.patch("apply_agent.db.release_application", return_value=None)
+    assert apply_agent._process_one_preview(_preview_job()) == "lost"

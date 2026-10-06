@@ -1213,7 +1213,7 @@ discarded, so every screening question shipped blank. `submit()` compounded this
 same generation function *again* (a fresh, possibly different Claude call, its result also
 discarded) instead of reusing what the human reviewed. Split into `_generate_screening_answers`
 (Claude call, preview pass only) + `_fill_screening_questions`/`_fill_eligibility_answers`
-(page-filling, by label, best-effort like `ats_fillers._try_fill`) -- the preview pass now
+(page-filling, by label, best-effort like `ats_fillers._fill_first`) -- the preview pass now
 generates and fills; `submit()` now only ever fills, from `job["apply_preview"]`'s stored
 `screening_answers`/`eligibility_answers`, never regenerating. Eligibility answers
 (`_eligibility_answers()`) were computed and stored in `apply_preview` from the very first
@@ -1405,7 +1405,8 @@ gates hand-mapped platforms: a preview missing any releases to `needs_input` wit
 The stored preview carries `fill_report`. Per-field timeout is `APPLY_AGENT_FIELD_TIMEOUT_MS` (3s) so
 a missing field no longer stalls a job for Playwright's 30s default. These selectors are **not yet
 live-verified** against real forms (live form access pending the operator). Generic/browser-use
-platforms do not report and skip this gate.
+platforms do not report and skip this gate. `locator.count()` is an instant snapshot, so a slow-rendering
+form degrades to `needs_input` (the safe direction) -- check this in the first live run.
 
 **Known follow-up, still not fixed**: a *cover-letter* attach failure is non-blocking (only the
 resume is required); required attachments are no longer silently swallowed. The ARMED/approval gates

@@ -121,17 +121,18 @@ def _set_field_by_label(page, label_pattern, value):
     # mode violation from more than one match -- degrades to "try the next strategy" like any
     # other failure, instead of raising past this function entirely.
     try:
-        page.get_by_label(label_pattern).select_option(label=str(value))
+        page.get_by_label(label_pattern).select_option(label=str(value), timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
         return True
     except Exception:
         pass
     try:
-        page.get_by_role("group", name=label_pattern).get_by_role("radio", name=str(value)).click()
+        page.get_by_role("group", name=label_pattern).get_by_role("radio", name=str(value)).click(
+            timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
         return True
     except Exception:
         pass
     try:
-        page.get_by_label(label_pattern).fill(str(value))
+        page.get_by_label(label_pattern).fill(str(value), timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
         return True
     except Exception:
         pass
@@ -255,7 +256,8 @@ def _attach_resume_and_cover_letter(page, job):
     client = db.get_client()
     report = {}
     for report_key, field_ref_key, selectors, fallback in (
-        ("resume", "resume_file_ref", _RESUME_INPUTS, ["input[type='file']"]),
+        ("resume", "resume_file_ref", _RESUME_INPUTS,
+         ["input[type='file']:not([id*='cover' i]):not([name*='cover' i])"]),
         ("cover_letter", "cover_letter_file_ref", _COVER_INPUTS, []),
     ):
         report[report_key] = None
@@ -489,7 +491,8 @@ def _process_one_preview(job):
                 if missing:
                     reason = "Preview couldn't fill required fields: " + ", ".join(missing)
                     log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | {reason}")
-                    db.release_application(job_id, lease, "needs_input", reason)
+                    if not db.release_application(job_id, lease, "needs_input", reason):
+                        return "lost"
                     return "blocked"
             db.heartbeat_application(job_id, lease)
             screening_answers = _generate_screening_answers(page, job)
