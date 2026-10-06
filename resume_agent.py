@@ -7,6 +7,7 @@ unattended.
 Usage:
   python3 resume_agent.py --job-id 42 --propose
   python3 resume_agent.py --job-id 42 --build
+  python3 resume_agent.py --drain        # Beelink resume-worker.service: strong rows without a resume
 """
 
 import argparse
@@ -14,10 +15,15 @@ import datetime
 import json
 import logging
 import os
+import re
+import shutil
+import sys
+import tempfile
+import unicodedata
 
 import anthropic
-from docx import Document
 
+import claude_subscription
 import config
 import db
 import resume_build
@@ -48,8 +54,14 @@ class LintFailedError(Exception):
 # ── Claude client ────────────────────────────────────────────────────────────────
 
 def _call_claude(prompt, system=None):
-    """Returns (text, usage) -- usage is {"input_tokens": int, "output_tokens": int} from the
-    real API response, consumed by _track_usage to accumulate cost onto job_applications."""
+    """Returns (text, usage) -- usage is {"input_tokens": int, "output_tokens": int}, consumed by
+    _track_usage. config.RESUME_CLAUDE_BACKEND picks the operator's Claude subscription
+    (claude_subscription) or the pay-as-you-go API key ("api", the default)."""
+    backend = config.RESUME_CLAUDE_BACKEND
+    if backend == "subscription":
+        return claude_subscription.complete(prompt, system=system, model=config.RESUME_MODEL)
+    if backend != "api":
+        raise ValueError(f"unknown RESUME_CLAUDE_BACKEND {backend!r} -- use 'subscription' or 'api'")
     kwargs = dict(
         model=config.RESUME_MODEL,
         max_tokens=2000,
@@ -59,7 +71,7 @@ def _call_claude(prompt, system=None):
         kwargs["system"] = system
     resp = _claude.messages.create(**kwargs)
     usage = {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
-    return resp.content[0].text, usage
+    return claude_subscription.sanitize(resp.content[0].text), usage
 
 
 def _calculate_cost(usage):
@@ -70,13 +82,50 @@ def _calculate_cost(usage):
 def _track_usage(application_id, usage, action):
     """Writes to both job_applications' per-application running total (db.record_resume_usage,
     used by the propose/build CLI output) and the system-wide api_usage_log ledger
-    (usage_tracking.log_usage, best-effort -- used by cross-cutting cost analytics)."""
-    cost = _calculate_cost(usage)
+    (usage_tracking.log_usage, best-effort -- used by cross-cutting cost analytics). Subscription
+    calls record real tokens at $0."""
+    billing = "subscription" if config.RESUME_CLAUDE_BACKEND == "subscription" else "api"
+    cost = 0.0 if billing == "subscription" else _calculate_cost(usage)
     db.record_resume_usage(application_id, usage["input_tokens"], usage["output_tokens"], cost)
     usage_tracking.log_usage(
         "resume_agent", action, config.RESUME_MODEL, usage, job_application_id=application_id,
+        billing=billing,
     )
     return cost
+
+
+# ── Attribution scan ─────────────────────────────────────────────────────────────
+# Tool attribution and chat framing that must never reach an employer. "Claude", "Claude Code"
+# and "Anthropic" are deliberately absent: they're in the operator's own skills/projects, and
+# Anthropic can be the target company.
+
+_ATTRIBUTION_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\bgenerated (with|by) (claude|chatgpt|gpt|an ai|ai)\b",
+    r"\bco-authored-by\b",
+    r"\bas an ai\b",
+    r"\bas a language model\b",
+    r"\bi'?m claude\b",
+    r"\bi am claude\b",
+    r"noreply@anthropic",
+))
+_CHAT_PREAMBLE = re.compile(r"^\s*(here's|here is|sure\b|certainly\b|below is)", re.I)
+_CHAT_SIGNOFF = re.compile(r"^\s*(let me know|i hope this)", re.I)
+# Skills group labels are the only model-written text rendered on the resume itself.
+_LABEL_CHARS = re.compile(r"[A-Za-z0-9 &/,+.-]{1,40}")
+
+
+def _check_attribution(text):
+    violations = []
+    for pattern in _ATTRIBUTION_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            violations.append(f"contains tool attribution '{m.group(0).lower()}'")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if lines and _CHAT_PREAMBLE.match(lines[0]):
+        violations.append(f"starts with a chat preamble: {lines[0][:60]!r}")
+    if lines and _CHAT_SIGNOFF.match(lines[-1]):
+        violations.append(f"ends with a chat sign-off: {lines[-1][:60]!r}")
+    return violations
 
 
 # ── Deadline gate (corpus spec Part 11: Cott/McKinsey lesson) ──────────────────
@@ -124,6 +173,7 @@ Follow this process:
    list above), how to group skills into 2-4 labeled categories (skills must come only from
    the spine/swap_pool above -- never invent a skill and never use a banned one), a one-line
    cover letter angle, and the honest gaps to name rather than hide.
+   Each skills group label is 1-4 plain words (letters, digits, & / , + . -), e.g. "Data & Tools".
 
 Respond with ONLY a JSON object, no other text:
 {{"section_order": [...], "projects_included": [...],
@@ -156,12 +206,26 @@ def propose(application_id):
         allowed_sections=", ".join(config.RESUME_ALLOWED_SECTIONS),
     )
     raw, usage = _call_claude(prompt)
+    cost = _track_usage(application_id, usage, "propose")
     try:
         strategy = json.loads(_strip_json_fence(raw))
     except json.JSONDecodeError as exc:
         raise ValueError(f"could not parse strategy from Claude's response: {exc}") from exc
 
-    cost = _track_usage(application_id, usage, "propose")
+    attribution = _check_attribution(json.dumps(strategy))
+    if attribution:
+        raise LintFailedError(f"strategy contains tool attribution: {attribution}")
+
+    problems = [f"unknown section {name!r}" for name in strategy.get("section_order", [])
+                if name not in config.RESUME_ALLOWED_SECTIONS]
+    try:
+        _resolve_master(master, _load_data("metrics.json"), strategy)
+    except ValueError as exc:
+        problems.append(str(exc))
+    problems += _check_skills_governance(skills, strategy)
+    if problems:
+        raise LintFailedError(f"strategy fails governance: {problems}")
+
     db.set_resume_strategy(application_id, strategy)
     log.info(
         f"[RESUME] | {application_id} | {job.get('company')} | strategy proposed | "
@@ -251,6 +315,10 @@ def _check_skills_governance(skills_data, strategy):
     banned = set(skills_data.get("banned", []))
     violations = []
     for group in strategy.get("skills_groups", []):
+        label = group.get("label", "")
+        if len(label.split()) > 4 or not _LABEL_CHARS.fullmatch(label):
+            violations.append(f"skills group label {label!r} must be 1-4 plain words")
+        violations += [f"skills group label {label!r}: {v}" for v in _check_attribution(label)]
         for skill in group.get("skills", []):
             if skill in banned:
                 violations.append(f"'{skill}' is banned -- resume/data/skills.json")
@@ -264,7 +332,23 @@ def _lint_cover_letter(cl_text, resume_text):
     violations += resume_lint.check_em_dashes(cl_text)
     violations += resume_lint.check_jargon(cl_text, _load_data("jargon.json"))
     violations += resume_lint.check_cover_letter(cl_text, resume_text)
+    violations += _check_attribution(cl_text)
     return violations
+
+
+def _verify_clean_pdf(pdf_path, label):
+    meta_text = resume_scrub.read_pdf_metadata_text(pdf_path) + " " + resume_scrub.read_pdf_xmp_text(pdf_path)
+    problems = [f"metadata fingerprint '{fp}'" for fp in resume_scrub.verify_no_fingerprints(meta_text)]
+    problems += resume_scrub.check_fonts(pdf_path, allowed={config.RESUME_FONT_NAME})
+    # The rendered text itself, not just what went in: catches invisible characters from stored
+    # strategies or source data, and attribution that slipped past the per-response checks.
+    text = resume_build.pdf_text(pdf_path)
+    # Cf only: pypdf legitimately emits Cc characters (\r, \x0c) between lines and pages.
+    if any(unicodedata.category(ch) == "Cf" for ch in text):
+        problems.append("rendered text contains invisible control/format characters")
+    problems += [p for p in _check_attribution(text) if "tool attribution" in p]
+    if problems:
+        raise LintFailedError(f"{label} PDF is not clean: {problems}")
 
 
 def build(application_id):
@@ -296,68 +380,140 @@ def build(application_id):
     if resume_violations:
         raise LintFailedError(f"resume content fails lint: {resume_violations}")
 
-    pdf_path = None
-    for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
-        try:
-            pdf_path, preset_used = resume_build.fit_to_one_page(
-                strategy, master, f"/tmp/resume_{application_id}.docx", "/tmp",
-            )
-            break
-        except resume_build.StillOverflowError:
+    workdir = tempfile.mkdtemp(prefix=f"resume-{application_id}-")
+    try:
+        pdf_path = None
+        for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
+            try:
+                pdf_path, preset_used = resume_build.fit_to_one_page(
+                    strategy, master, os.path.join(workdir, "resume.docx"), workdir,
+                )
+                break
+            except resume_build.StillOverflowError:
+                if attempt >= config.RESUME_MAX_BUILD_RETRIES:
+                    raise
+                log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying once")
+
+        resume_scrub.scrub_pdf_metadata(
+            pdf_path, title=f"{job.get('company')} - Resume", keywords=job.get("role", ""),
+        )
+        _verify_clean_pdf(pdf_path, "resume")
+
+        cl_prompt = _COVER_LETTER_PROMPT.format(
+            company=job.get("company"), role=job.get("role"),
+            angle=strategy.get("cover_letter_angle", ""), gaps=strategy.get("named_gaps", []),
+        )
+
+        cl_text = None
+        for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
+            cl_text, usage = _call_claude(cl_prompt)
+            _track_usage(application_id, usage, "cover_letter")
+            violations = _lint_cover_letter(cl_text, resume_text)
+            if not violations:
+                break
             if attempt >= config.RESUME_MAX_BUILD_RETRIES:
-                raise
-            log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying once")
+                raise LintFailedError(f"cover letter still fails lint after retry: {violations}")
+            log.warning(f"[RESUME] | {application_id} | cover letter lint failed, retrying once: {violations}")
+            cl_prompt = cl_prompt + f"\n\nFix these violations from the previous draft: {violations}"
 
-    resume_scrub.scrub_pdf_metadata(
-        pdf_path, title=f"{job.get('company')} - Resume", keywords=job.get("role", ""),
-    )
-    resume_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(pdf_path))
-    if resume_fingerprints:
-        raise LintFailedError(f"resume PDF metadata still contains fingerprints: {resume_fingerprints}")
+        cl_docx_path = os.path.join(workdir, "cover_letter.docx")
+        cl_doc = resume_build.new_document()
+        cl_doc.add_paragraph(cl_text)
+        cl_doc.save(cl_docx_path)
+        cl_pdf_path = resume_build.convert_to_pdf(cl_docx_path, workdir)
+        resume_scrub.scrub_pdf_metadata(
+            cl_pdf_path, title=f"{job.get('company')} - Cover Letter", keywords=job.get("role", ""),
+        )
+        _verify_clean_pdf(cl_pdf_path, "cover letter")
 
-    cl_prompt = _COVER_LETTER_PROMPT.format(
-        company=job.get("company"), role=job.get("role"),
-        angle=strategy.get("cover_letter_angle", ""), gaps=strategy.get("named_gaps", []),
-    )
+        with open(pdf_path, "rb") as f:
+            resume_ref = db.upload_resume_file(f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
+        with open(cl_pdf_path, "rb") as f:
+            cl_ref = db.upload_resume_file(f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
 
-    cl_text = None
-    for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
-        cl_text, usage = _call_claude(cl_prompt)
-        _track_usage(application_id, usage, "cover_letter")
-        violations = _lint_cover_letter(cl_text, resume_text)
-        if not violations:
-            break
-        if attempt >= config.RESUME_MAX_BUILD_RETRIES:
-            raise LintFailedError(f"cover letter still fails lint after retry: {violations}")
-        log.warning(f"[RESUME] | {application_id} | cover letter lint failed, retrying once: {violations}")
-        cl_prompt = cl_prompt + f"\n\nFix these violations from the previous draft: {violations}"
-
-    cl_docx_path = f"/tmp/cover_letter_{application_id}.docx"
-    cl_doc = Document()
-    cl_doc.add_paragraph(cl_text)
-    cl_doc.save(cl_docx_path)
-    cl_pdf_path = resume_build.convert_to_pdf(cl_docx_path, "/tmp")
-    resume_scrub.scrub_pdf_metadata(
-        cl_pdf_path, title=f"{job.get('company')} - Cover Letter", keywords=job.get("role", ""),
-    )
-    cl_fingerprints = resume_scrub.verify_no_fingerprints(resume_scrub.read_pdf_metadata_text(cl_pdf_path))
-    if cl_fingerprints:
-        raise LintFailedError(f"cover letter PDF metadata still contains fingerprints: {cl_fingerprints}")
-
-    with open(pdf_path, "rb") as f:
-        resume_ref = db.upload_resume_file(f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
-    with open(cl_pdf_path, "rb") as f:
-        cl_ref = db.upload_resume_file(f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
-
-    db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref)
-    log.info(f"[RESUME] | {application_id} | {job.get('company')} | build complete")
-    return {"resume_file_ref": resume_ref, "cover_letter_file_ref": cl_ref}
+        db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref)
+        log.info(f"[RESUME] | {application_id} | {job.get('company')} | build complete")
+        return {"resume_file_ref": resume_ref, "cover_letter_file_ref": cl_ref}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def run_build(application_id):
     result = build(application_id)
     print(f"Resume: {result['resume_file_ref']}")
     print(f"Cover letter: {result['cover_letter_file_ref']}")
+
+
+# ── Worker (Beelink resume-worker.service) ─────────────────────────────────────────
+
+def _worker_preflight():
+    problems = []
+    if config.RESUME_CLAUDE_BACKEND == "subscription" and not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        problems.append("CLAUDE_CODE_OAUTH_TOKEN is not set")
+    if config.RESUME_CLAUDE_BACKEND == "subscription" and not shutil.which(config.CLAUDE_CLI_PATH):
+        problems.append(f"claude CLI not found at {config.CLAUDE_CLI_PATH}")
+    if config.RESUME_CLAUDE_BACKEND not in ("api", "subscription"):
+        problems.append(f"unknown RESUME_CLAUDE_BACKEND {config.RESUME_CLAUDE_BACKEND!r}")
+    if not shutil.which("soffice"):
+        problems.append("soffice (LibreOffice) not found")
+    else:
+        # A box where LibreOffice can't see the resume font would otherwise fail every queued row
+        # after the quota is already spent.
+        try:
+            with tempfile.TemporaryDirectory(prefix="resume-canary-") as tmp:
+                doc = resume_build.new_document()
+                doc.add_paragraph("Canary")
+                doc.add_paragraph("Canary bullet", style="List Bullet")
+                docx_path = os.path.join(tmp, "canary.docx")
+                doc.save(docx_path)
+                pdf_path = resume_build.convert_to_pdf(docx_path, tmp)
+                violations = resume_scrub.check_fonts(pdf_path, {config.RESUME_FONT_NAME})
+            if violations:
+                problems.append(f"PDF canary failed: {violations}")
+        except Exception as exc:
+            problems.append(f"PDF canary failed: {exc}")
+    return problems
+
+
+def drain(limit=None):
+    """Build resumes for strong-verdict rows that don't have one yet: propose (unless a strategy
+    already exists) then build, one row at a time. Machine-wide problems -- a failed preflight,
+    a usage limit, or any Claude CLI/auth/timeout failure -- stop the run without marking a row,
+    so fixing the machine resumes the queue; a usage limit isn't counted as an error. Per-row
+    content failures (bad strategy, lint, deadline passed, page overflow) are written to
+    resume_error so the row isn't retried every run. Returns the error count."""
+    problems = _worker_preflight()
+    if problems:
+        log.warning(f"[RESUME] | drain | preflight failed, no rows touched: {problems}")
+        return 1
+    rows = db.get_strong_applications_without_resume(limit or config.RESUME_WORKER_BATCH)
+    log.info(f"[RESUME] | drain | START | rows={len(rows)}")
+    built = errors = 0
+    for job in rows:
+        job_id = job.get("id")
+        try:
+            if not _check_deadline(job):
+                raise DeadlinePassedError(f"row {job_id}'s deadline has passed")
+            if not job.get("resume_strategy"):
+                propose(job_id)
+            build(job_id)
+            built += 1
+        except claude_subscription.ClaudeUsageLimitError as exc:
+            log.warning(f"[RESUME] | {job_id} | {job.get('company')} | usage limit, stopping drain: {exc}")
+            break
+        except claude_subscription.ClaudeSubscriptionError as exc:
+            errors += 1
+            log.warning(f"[RESUME] | {job_id} | {job.get('company')} | Claude CLI failure, stopping drain: {exc}")
+            break
+        except Exception as exc:
+            errors += 1
+            log.warning(f"[RESUME] | {job_id} | {job.get('company')} | drain failed: {exc}")
+            try:
+                db.set_resume_error(job_id, f"{type(exc).__name__}: {exc}")
+            except Exception as write_exc:
+                log.warning(f"[RESUME] | {job_id} | could not record resume_error: {write_exc}")
+    log.info(f"[RESUME] | drain | DONE | built={built} | errors={errors}")
+    return errors
 
 
 if __name__ == "__main__":
@@ -368,13 +524,18 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M",
     )
     parser = argparse.ArgumentParser()
-    parser.add_argument("--job-id", type=int, required=True)
+    parser.add_argument("--job-id", type=int)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--propose", action="store_true")
     mode.add_argument("--build", action="store_true")
+    mode.add_argument("--drain", action="store_true")
     args = parser.parse_args()
+    if (args.propose or args.build) and args.job_id is None:
+        parser.error("--job-id is required with --propose/--build")
 
     if args.propose:
         run_propose(args.job_id)
     elif args.build:
         run_build(args.job_id)
+    elif args.drain:
+        sys.exit(1 if drain() else 0)

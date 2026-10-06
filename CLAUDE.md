@@ -43,6 +43,7 @@ resume_build.py
 resume_scrub.py
 resume/
 candidate_profile.py
+claude_subscription.py
 usage_tracking.py
 supabase/migrations/
 deploy/beelink/
@@ -453,8 +454,10 @@ Seven workflows live in `.github/workflows/`:
   `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, "JobRight scheduling").
   Pulls fresh recommendations via `jobright.py`, then runs `job_pick.py` to score
   every newly-saved row through three stages (structured filters, embedding similarity,
-  LLM judge) and zero-tap trigger `resume_agent.py`'s propose+build on `strong`
-  verdicts (see `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
+  LLM judge) and queue `strong` verdicts for the Beelink resume worker. Production is still the
+  api/zero-tap path (`resume_agent.py` propose+build in the workflow) until rollout sets
+  `RESUME_CLAUDE_BACKEND: subscription` in this workflow; GitHub Actions has no LibreOffice, so
+  api-backend zero-tap builds there already fail at `soffice` (pre-existing) (see `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
 - **`apply_agent_preview.yml`** (named "Apply Agent Preview") — daily (`37 12 * * *`,
   off the hour), runs `python apply_agent.py --preview` unattended: fills every eligible
   job application's form (Greenhouse/Ashby/Lever hand-mapped, or `browser-use` for
@@ -564,6 +567,9 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_lifecycle_rpcs_migration.py` — static SQL assertions for the 2026-10-04 lifecycle RPCs/grants (functional checks live in `supabase/tests/lifecycle_rpcs_dryrun.sql`).
 - `tests/test_application_leases_db.py` — `db.py` lifecycle RPC wrappers (exact RPC names/params, claim re-read recovery, never `table().update`).
 - `tests/test_submission_reconciler.py` / `tests/test_gmail_inbox_receipts.py` — receipt matching (window, reply skip, ambiguity, escalation) and the read-only All Mail fetch.
+- `tests/test_claude_subscription.py` — `claude_subscription.complete()` argv, env allowlist, process-group kill on timeout, error mapping (all subprocess mocked).
+- `tests/test_resume_subscription_migration.py` — static SQL assertions for migration `20261005000000` (`billing` CHECK, `resume_error` grants).
+- `tests/test_db_resume_queue.py` — `db.py`'s resume-queue accessors (`count_stale_strong_without_resume` etc.).
 - `tests/test_engagement_report.py` — the report's `db.py` accessors (following `test_db_draft_history.py`'s mock pattern), the contact join, distinct-contact grouping, NULL-renders-as-"unknown", small-`n` rate suppression, and a malformed-row never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
@@ -954,7 +960,7 @@ on the box changes.
 
 ## Resume intelligence (full-fledged buildout, Phase 3)
 
-`resume_agent.py` (manual only, two-command CLI: `--propose` then `--build`) generates a tailored
+`resume_agent.py` (manual CLI: `--propose` then `--build`, plus `--drain` for the Beelink worker) generates a tailored
 resume + cover letter for a specific `job_applications` row, distilled from the user's own 30-session
 corpus spec (`RESUME_AGENT_SPEC.md`). `--propose` runs JD diagnosis/research/strategy and writes
 `job_applications.resume_strategy` (JSONB) -- nothing is built yet. `--build` only proceeds if a
@@ -1047,6 +1053,47 @@ docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md's "Reject
 section. The humanizer lint pass (em dashes, jargon) and the PDF metadata scrub (tool-fingerprint
 removal, realistic timestamps) both shipped; a dedicated AI-detector-evasion layer did not, and no
 third-party tool was fetched or integrated for that purpose.
+
+**Subscription transport (2026-10-04).** `resume_agent._call_claude` can run on the operator's
+Claude subscription via `claude_subscription.complete()` (`claude -p`), selected by
+`config.RESUME_CLAUDE_BACKEND` (read from the `RESUME_CLAUDE_BACKEND` env var, default `"api"`;
+`resume-worker.service` sets `"subscription"`, and `jobright_pull.yml` opts in only after rollout).
+Every call strips ambient context (empty cwd + empty `CLAUDE_CONFIG_DIR`, `--strict-mcp-config
+--setting-sources ""`, `--tools ""`; measured ~224K -> ~6.5K tokens per call) and passes the CLI an
+env **allowlist** (`_ENV_ALLOW`), not a denylist: Claude Code prefers an API key, auth token, base
+URL or cloud provider over the subscription. A timeout kills the whole process group (`Popen` +
+`os.killpg`). **Never `--bare`**: it ignores OAuth. Auth is `CLAUDE_CODE_OAUTH_TOKEN`
+(`claude setup-token`). Rows are logged with `api_usage_log.billing='subscription'`, `cost_usd=0`
+(assumes paid usage credits are off for the account).
+- **Queue, not zero-tap.** On the subscription backend `job_pick.run()` writes nothing for `strong` rows (the
+  queue is the row filters: `stage='saved'`, strong verdict, no resume, no `resume_error`) and
+  returns a stale count after `RESUME_QUEUE_STALE_HOURS` (24); nonzero fails closed (exit 1). The
+  Beelink's `resume-worker.service` + `.timer` runs `resume_agent.py --drain`, the only unit that
+  loads `/etc/job-agent/claude.env`. `drain()` runs `_worker_preflight()` first, selects only
+  `stage='saved'` rows, checks the deadline per row, and writes content failures to
+  `job_applications.resume_error` (stops retries; clearing `resume_error` re-queues; a strategy-level failure stored
+  before `propose` validated strategies also needs `resume_strategy` cleared, since `drain` skips
+  `propose` when a strategy exists). Any Claude CLI or usage-limit failure, and a missing token, stops
+  the run without marking rows. `_worker_preflight` also builds a canary PDF through LibreOffice and
+  requires `check_fonts` clean (catches a box where Calibri is not visible to `soffice`) and validates
+  `RESUME_CLAUDE_BACKEND`. `propose` runs strategy governance (sections, projects, skills) before
+  `set_resume_strategy` and records usage before validating the response.
+- **Output hygiene.** Every response is `sanitize()`d (zero-width/bidi/control chars);
+  `_check_attribution` (word-boundary `_ATTRIBUTION_PATTERNS`) hard-fails tool attribution and chat
+  preambles/sign-offs; skills group labels are limited to 1-4 plain words. `_verify_clean_pdf`
+  checks docinfo + XMP fingerprints, embedded fonts (allowlist `{RESUME_FONT_NAME}`), attribution in
+  the rendered text, and Unicode `Cf` characters. The scrub deletes the XMP packet and disables
+  pikepdf's editor stamp (it used to write `pikepdf 10.x` as Producer on every PDF), and LibreOffice
+  used to embed Carlito/Caladea/OpenSymbol (also on the Mac). Each build uses its own temp dir, and
+  `convert_to_pdf` a throwaway LibreOffice profile seeded with the Calibri `.ttf` files found in
+  `config.RESUME_FONT_DIRS` (`RESUME_FONT_DIR` env, `~/Library/Fonts`,
+  `/usr/local/share/fonts/calibri`) under `user/fonts` -- LibreOffice on macOS ignored a Calibri
+  installed in `~/Library/Fonts` and still embedded Carlito (verified 2026-10-05); fonts in the
+  profile are always loaded. The operator's own Calibri (from Word) must exist in one of those dirs.
+- **Watermark.** Claude's text may be watermarked (anthropic.com/news/claude-text-watermark). Resume
+  bullets/skills are the operator's own text and only the skills group labels are model-written
+  (governed); the cover letter is Claude-written. No watermark-removal step exists or will be added.
+Spec: docs/superpowers/specs/2026-10-04-resume-subscription-transport-design.md.
 
 No auto-submit exists in this phase -- Phase 2.5 (auto-apply agent, documented below) is the
 separate, later phase that adds it, gated behind its own explicit opt-in.

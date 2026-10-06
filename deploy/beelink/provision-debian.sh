@@ -37,7 +37,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
     xvfb x11vnc novnc websockify xdotool scrot mutter tint2 \
-    python3 python3-venv git curl smem ca-certificates systemd-timesyncd >/dev/null
+    python3 python3-venv git curl smem ca-certificates systemd-timesyncd \
+    libreoffice-writer-nogui >/dev/null
 have_systemd && timedatectl set-ntp true
 
 # Chrome (not Chromium): the profile has to look like the browser the operator really uses. Its
@@ -47,6 +48,17 @@ if ! command -v google-chrome >/dev/null; then
     curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb
     apt-get install -y -qq /tmp/chrome.deb >/dev/null
     rm -f /tmp/chrome.deb
+fi
+
+# ── Resume worker prerequisites ────────────────────────────────────────────────
+# Calibri is the operator's own licensed font (from Microsoft Word on the Mac), copied here by
+# hand. Without it LibreOffice embeds Carlito and resume_agent's font check refuses every build.
+FONT_DIR=/usr/local/share/fonts/calibri
+[ -d "$FONT_DIR" ] && fc-cache -f "$FONT_DIR" >/dev/null
+# fc-match, not a file check: proves fontconfig actually resolves the family LibreOffice will ask for.
+if [ "$(fc-match -f '%{family}' Calibri)" != "Calibri" ]; then
+    echo "fontconfig does not resolve Calibri -- copy Calibri*.ttf from the Mac into $FONT_DIR (RUNBOOK, top)" >&2
+    exit 1
 fi
 
 # ── Agent user: no sudo, no docker group (docs/beelink-server.md rule 2) ───────
@@ -81,6 +93,16 @@ log "venv"
 as_agent "$APP/.venv/bin/pip" install -q --upgrade pip
 as_agent "$APP/.venv/bin/pip" install -q -r "$APP/requirements.txt"
 
+log "claude CLI for jobagent"
+if [ ! -x "$STATE/.local/bin/claude" ]; then
+    runuser -u jobagent -- env HOME="$STATE" bash -c 'curl -fsSL https://claude.ai/install.sh | bash' >/dev/null
+fi
+runuser -u jobagent -- env HOME="$STATE" "$STATE/.local/bin/claude" --version
+if [ ! -f "$ETC/claude.env" ]; then
+    install -o root -g root -m 0600 "$APP/deploy/beelink/env/claude.env.example" "$ETC/claude.env"
+    log "created $ETC/claude.env from the template -- paste your setup-token: sudo nano $ETC/claude.env"
+fi
+
 # ── Secrets: created empty or prompted for, never written by this script ───────
 if [ ! -f "$ETC/base.env" ]; then
     install -o root -g root -m 0600 "$APP/deploy/beelink/env/base.env.example" "$ETC/base.env"
@@ -101,6 +123,7 @@ if have_systemd; then
     install -m 0644 "$APP"/deploy/beelink/systemd/*.service "$APP"/deploy/beelink/systemd/*.timer \
         /etc/systemd/system/
     systemctl daemon-reload
+    # resume-worker.timer is enabled by hand after the first watched run (RUNBOOK).
     if [ -f "$ETC/vncpasswd" ]; then
         systemctl enable --now xvfb@0 chrome-profile@0 x11vnc@0 novnc@0
         systemctl --no-pager --lines=0 status xvfb@0 chrome-profile@0 x11vnc@0 novnc@0 || true

@@ -7,7 +7,10 @@ docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md.
 """
 
 import os
+import pathlib
+import shutil
 import subprocess
+import tempfile
 
 from docx import Document
 from docx.shared import Pt, Twips
@@ -93,6 +96,48 @@ def _add_bottom_border(paragraph):
 
 def _add_right_tab_stop(paragraph, position_twips):
     paragraph.paragraph_format.tab_stops.add_tab_stop(Twips(position_twips), WD_TAB_ALIGNMENT.RIGHT)
+
+
+# LibreOffice can't use Word's theme fonts or its Symbol bullet glyph, and substitutes Carlito,
+# Caladea and OpenSymbol -- LibreOffice-only font names that end up embedded in the PDF. Pinning
+# every style and bullet level to one real installed font keeps the PDF's font list Word-shaped.
+_FONT_ATTRS = ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia")
+
+
+def _pin_rfonts(rfonts):
+    for key in [k for k in rfonts.attrib if "Theme" in k or k == qn("w:hint")]:
+        del rfonts.attrib[key]
+    for attr in _FONT_ATTRS:
+        rfonts.set(qn(attr), _FONT_NAME)
+
+
+def _force_font_everywhere(doc):
+    for rfonts in doc.styles.element.iter(qn("w:rFonts")):
+        _pin_rfonts(rfonts)
+    for lvl in doc.part.numbering_part.element.iter(qn("w:lvl")):
+        fmt = lvl.find(qn("w:numFmt"))
+        if fmt is None or fmt.get(qn("w:val")) != "bullet":
+            continue
+        text = lvl.find(qn("w:lvlText"))
+        if text is not None:
+            text.set(qn("w:val"), "\u2022")
+        rpr = lvl.find(qn("w:rPr"))
+        if rpr is None:
+            rpr = OxmlElement("w:rPr")
+            lvl.append(rpr)
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is None:
+            rfonts = OxmlElement("w:rFonts")
+            rpr.insert(0, rfonts)
+        _pin_rfonts(rfonts)
+
+
+def new_document():
+    """A python-docx Document whose styles and bullet numbering all use config.RESUME_FONT_NAME,
+    with theme-font references removed and bullets rendered as U+2022 in that font."""
+    doc = Document()
+    _force_font_everywhere(doc)
+    return doc
 
 
 def _new_paragraph(doc, style=None):
@@ -300,7 +345,7 @@ def build_docx(strategy, master, output_path, margin_preset="standard", style=No
     config.RESUME_ALLOWED_SECTIONS -- an unconstrained value here previously meant a whole section
     silently vanished from the built resume instead of failing loudly."""
     style = style or _DEFAULT_STYLE
-    doc = Document()
+    doc = new_document()
     _apply_margins(doc, margin_preset)
     content_width = _content_width_twips(doc)
 
@@ -326,19 +371,46 @@ class StillOverflowError(Exception):
     Caller (resume_agent.py) catches this and triggers a content-editing regeneration."""
 
 
+def _seed_profile_fonts(profile):
+    fonts_dir = os.path.join(profile, "user", "fonts")
+    prefix = _FONT_NAME.lower()
+    for directory in config.RESUME_FONT_DIRS:
+        directory = os.path.expanduser(directory)
+        if not os.path.isdir(directory):
+            continue
+        for name in os.listdir(directory):
+            if name.lower().startswith(prefix) and name.lower().endswith(".ttf"):
+                os.makedirs(fonts_dir, exist_ok=True)
+                shutil.copy(os.path.join(directory, name), fonts_dir)
+
+
 def convert_to_pdf(docx_path, output_dir):
     """Convert docx_path to PDF via LibreOffice headless. Returns the output PDF path. Raises on
-    any failure (missing soffice binary, conversion error, timeout) -- never swallowed."""
-    subprocess.run(
-        ["soffice", "--headless", "--convert-to", "pdf", "--outdir", output_dir, docx_path],
-        check=True, capture_output=True, timeout=config.RESUME_SOFFICE_TIMEOUT_SECONDS,
-    )
+    any failure (missing soffice binary, conversion error, timeout, no PDF written) -- never
+    swallowed. Each call uses its own throwaway LibreOffice profile: a conversion killed mid-run
+    leaves the shared profile's lock behind, and an already-open LibreOffice window can make a
+    headless conversion exit 0 without writing anything."""
     base = os.path.splitext(os.path.basename(docx_path))[0]
-    return os.path.join(output_dir, base + ".pdf")
+    pdf_path = os.path.join(output_dir, base + ".pdf")
+    with tempfile.TemporaryDirectory(prefix="soffice-profile-") as profile:
+        _seed_profile_fonts(profile)
+        subprocess.run(
+            ["soffice", f"-env:UserInstallation={pathlib.Path(profile).as_uri()}",
+             "--headless", "--norestore", "--nolockcheck", "--nologo", "--nodefault",
+             "--convert-to", "pdf", "--outdir", output_dir, docx_path],
+            check=True, capture_output=True, timeout=config.RESUME_SOFFICE_TIMEOUT_SECONDS,
+        )
+    if not os.path.exists(pdf_path):
+        raise RuntimeError(f"soffice exited cleanly but wrote no PDF at {pdf_path}")
+    return pdf_path
 
 
 def page_count(pdf_path):
     return len(PdfReader(pdf_path).pages)
+
+
+def pdf_text(pdf_path):
+    return "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)
 
 
 # ── Fitting ladder (corpus spec Part 13, formatting rungs only -- see Task 9's docstring note) ──

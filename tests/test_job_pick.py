@@ -2,6 +2,7 @@
 embedding call goes through job_pick._embed (mocked, never loads the real sentence-transformers
 model) -- tests stay fast and fully offline."""
 
+import config
 import job_pick
 
 
@@ -117,6 +118,7 @@ def test_profile_text_includes_real_role_and_project_bullets():
 # ── run(): batch orchestration, zero-tap resume trigger ──────────────────────────
 
 def test_run_triggers_resume_pipeline_only_on_strong_verdict(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     mocker.patch("job_pick.db.get_unscored_saved_applications",
                  return_value=[{"id": 1, "role": "PM", "posting_snapshot": {}}])
     mocker.patch("job_pick.score_job", return_value={"verdict": "strong", "score": 0.9, "reasoning": "x"})
@@ -132,6 +134,7 @@ def test_run_triggers_resume_pipeline_only_on_strong_verdict(mocker):
 
 
 def test_run_does_not_trigger_resume_pipeline_on_maybe_or_no(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     mocker.patch("job_pick.db.get_unscored_saved_applications",
                  return_value=[{"id": 1, "role": "PM", "posting_snapshot": {}}])
     mocker.patch("job_pick.score_job", return_value={"verdict": "maybe", "score": 0.4, "reasoning": "x"})
@@ -157,6 +160,7 @@ def test_run_isolates_one_row_failure_from_the_rest(mocker):
 
 
 def test_run_never_raises_when_resume_pipeline_fails(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     mocker.patch("job_pick.db.get_unscored_saved_applications",
                  return_value=[{"id": 1, "role": "PM", "posting_snapshot": {}}])
     mocker.patch("job_pick.score_job", return_value={"verdict": "strong", "score": 0.9, "reasoning": "x"})
@@ -164,3 +168,46 @@ def test_run_never_raises_when_resume_pipeline_fails(mocker):
     mocker.patch("job_pick.resume_agent.propose", side_effect=RuntimeError("claude down"))
 
     job_pick.run()  # must not raise
+
+
+def test_run_queues_strong_verdict_for_the_beelink_on_subscription_backend(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    mocker.patch("job_pick.db.get_unscored_saved_applications",
+                 return_value=[{"id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {}}])
+    mocker.patch("job_pick.score_job", return_value={"verdict": "strong", "score": 0.9, "reasoning": "x"})
+    set_verdict = mocker.patch("job_pick.db.set_pick_verdict")
+    mocker.patch("job_pick.db.count_stale_strong_without_resume", return_value=0)
+    propose = mocker.patch("job_pick.resume_agent.propose")
+    build = mocker.patch("job_pick.resume_agent.build")
+
+    job_pick.run()
+
+    set_verdict.assert_called_once_with(1, "strong", 0.9, "x")
+    propose.assert_not_called()
+    build.assert_not_called()
+
+
+def test_run_returns_stale_count_on_subscription_backend(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    mocker.patch("job_pick.db.get_unscored_saved_applications", return_value=[])
+    count = mocker.patch("job_pick.db.count_stale_strong_without_resume", return_value=4)
+
+    assert job_pick.run() == 4
+    count.assert_called_once_with(config.RESUME_QUEUE_STALE_HOURS)
+
+
+def test_run_returns_zero_without_db_call_on_api_backend(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    mocker.patch("job_pick.db.get_unscored_saved_applications", return_value=[])
+    count = mocker.patch("job_pick.db.count_stale_strong_without_resume")
+
+    assert job_pick.run() == 0
+    count.assert_not_called()
+
+
+def test_run_fails_closed_when_stale_queue_check_raises(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    mocker.patch("job_pick.db.get_unscored_saved_applications", return_value=[])
+    mocker.patch("job_pick.db.count_stale_strong_without_resume", side_effect=RuntimeError("bad column"))
+
+    assert job_pick.run() != 0

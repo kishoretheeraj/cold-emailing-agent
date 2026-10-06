@@ -12,11 +12,19 @@ script, run on the Beelink after a signed tag exists (see `docs/beelink-server.m
 # -- never a bare `tag -s`, which signs whatever HEAD is, and build-continue.yml can push unreviewed
 # commits to main. Uses your existing SSH key: no GPG, no global config change.
 git -c gpg.format=ssh -c user.signingkey=$HOME/.ssh/id_ed25519 tag -s beelink-v1 <commit> -m "beelink-v1" && git push origin beelink-v1
+# Mac: copy your own Calibri (from Microsoft Word) to the box -- provision refuses to run without it
+scp "/Applications/Microsoft Word.app/Contents/Resources/DFonts/"[Cc]alibri*.ttf kishore@beelink:/tmp/
+# Beelink: install it
+sudo install -d /usr/local/share/fonts/calibri && sudo install -m 0644 /tmp/[Cc]alibri*.ttf /usr/local/share/fonts/calibri/ && rm /tmp/[Cc]alibri*.ttf
 # Mac: copy the script and the signer list to the box
 scp deploy/beelink/provision-debian.sh deploy/beelink/allowed_signers kishore@beelink:~/
 # Beelink: provision (prompts once for the VNC password), then fill in the secrets
 sudo bash ~/provision-debian.sh beelink-v1 ~/allowed_signers
 sudo nano /etc/job-agent/base.env
+# Mac: create a one-year subscription token (opens a browser); copy the printed token
+claude setup-token
+# Beelink: paste it after CLAUDE_CODE_OAUTH_TOKEN=
+sudo nano /etc/job-agent/claude.env
 ```
 
 It differs from the Ubuntu steps below in four ways: Debian's own Python 3.13 (no deadsnakes PPA

@@ -10,6 +10,7 @@ from docx import Document
 
 import config
 import resume_build
+from docx.oxml.ns import qn
 
 _STRATEGY = {
     "section_order": ["Experience", "Projects", "Skills", "Leadership"],
@@ -126,8 +127,21 @@ def test_standard_preset_is_in_margin_ladder():
 
 # ── convert_to_pdf ─────────────────────────────────────────────────────────────
 
+def _fake_soffice(tmp_path, seen=None):
+    def fake_run(argv, **kwargs):
+        if seen is not None:
+            profile_arg = [a for a in argv if a.startswith("-env:UserInstallation=file://")]
+            seen["profile"] = profile_arg[0].split("file://", 1)[1] if profile_arg else None
+            seen["exists_during"] = seen["profile"] is not None and os.path.isdir(seen["profile"])
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+        (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7")
+        return MagicMock(returncode=0)
+    return fake_run
+
+
 def test_convert_to_pdf_calls_soffice_and_returns_pdf_path(mocker, tmp_path):
-    run = mocker.patch("resume_build.subprocess.run")
+    run = mocker.patch("resume_build.subprocess.run", side_effect=_fake_soffice(tmp_path))
     docx_path = str(tmp_path / "resume.docx")
     result = resume_build.convert_to_pdf(docx_path, str(tmp_path))
     run.assert_called_once()
@@ -139,9 +153,59 @@ def test_convert_to_pdf_calls_soffice_and_returns_pdf_path(mocker, tmp_path):
 
 
 def test_convert_to_pdf_uses_configured_timeout(mocker, tmp_path):
-    run = mocker.patch("resume_build.subprocess.run")
-    resume_build.convert_to_pdf(str(tmp_path / "r.docx"), str(tmp_path))
-    assert run.call_args.kwargs["timeout"] == config.RESUME_SOFFICE_TIMEOUT_SECONDS
+    seen = {}
+    mocker.patch("resume_build.subprocess.run", side_effect=_fake_soffice(tmp_path, seen))
+    resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
+    assert seen["kwargs"]["timeout"] == config.RESUME_SOFFICE_TIMEOUT_SECONDS
+
+
+def test_convert_to_pdf_seeds_the_profile_with_the_resume_font_files(mocker, tmp_path):
+    # LibreOffice on macOS ignored a Calibri installed in ~/Library/Fonts and embedded its bundled
+    # Carlito; fonts in the profile's user/fonts are always loaded, on every OS.
+    font_dir = tmp_path / "fonts"
+    font_dir.mkdir()
+    for name in ("Calibri.ttf", "calibrib.ttf", "Arial.ttf", "Calibri.txt"):
+        (font_dir / name).write_bytes(b"font")
+    mocker.patch.object(config, "RESUME_FONT_DIRS", [str(tmp_path / "missing"), str(font_dir)])
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        profile = [a for a in argv if a.startswith("-env:UserInstallation=file://")][0].split("file://", 1)[1]
+        seen["fonts"] = sorted(os.listdir(os.path.join(profile, "user", "fonts")))
+        (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7")
+        return MagicMock(returncode=0)
+
+    mocker.patch("resume_build.subprocess.run", side_effect=fake_run)
+    resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
+    assert seen["fonts"] == ["Calibri.ttf", "calibrib.ttf"]
+
+
+def test_convert_to_pdf_runs_without_any_font_dir(mocker, tmp_path):
+    mocker.patch.object(config, "RESUME_FONT_DIRS", [str(tmp_path / "missing")])
+
+    def fake_run(argv, **kwargs):
+        (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7")
+        return MagicMock(returncode=0)
+
+    mocker.patch("resume_build.subprocess.run", side_effect=fake_run)
+    assert resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path)) == str(tmp_path / "resume.pdf")
+
+
+def test_convert_to_pdf_uses_a_throwaway_profile_and_removes_it(mocker, tmp_path):
+    seen = {}
+    mocker.patch("resume_build.subprocess.run", side_effect=_fake_soffice(tmp_path, seen))
+    out = resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
+    assert out == str(tmp_path / "resume.pdf")
+    assert seen["exists_during"] is True
+    assert not os.path.exists(seen["profile"])
+    for flag in ("--headless", "--norestore", "--nolockcheck"):
+        assert flag in seen["argv"]
+
+
+def test_convert_to_pdf_raises_when_no_pdf_was_written(mocker, tmp_path):
+    mocker.patch("resume_build.subprocess.run", return_value=MagicMock(returncode=0))
+    with pytest.raises(RuntimeError, match="no PDF"):
+        resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
 
 
 # ── page_count ─────────────────────────────────────────────────────────────────
@@ -222,3 +286,50 @@ def test_build_docx_applies_style_tightening_to_bullets_and_headers(tmp_path):
     bullet = next(p for p in doc.paragraphs if "Eliminated vendor cost" in p.text)
     assert bullet.paragraph_format.space_before.pt == 0
     assert bullet.runs[0].font.size.pt == 9
+
+
+# ── Calibri everywhere ─────────────────────────────────────────────────────────
+
+def _all_rfonts(doc):
+    elems = list(doc.styles.element.iter(qn("w:rFonts")))
+    elems += list(doc.part.numbering_part.element.iter(qn("w:rFonts")))
+    return elems
+
+
+def test_new_document_forces_resume_font_and_drops_theme_fonts():
+    doc = resume_build.new_document()
+    fonts = _all_rfonts(doc)
+    assert fonts
+    for f in fonts:
+        assert not any("Theme" in k for k in f.attrib), f.attrib
+        for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+            assert f.get(qn(attr)) == config.RESUME_FONT_NAME
+
+
+def test_new_document_bullets_are_unicode_bullet_in_resume_font():
+    doc = resume_build.new_document()
+    bullet_levels = [lvl for lvl in doc.part.numbering_part.element.iter(qn("w:lvl"))
+                     if lvl.find(qn("w:numFmt")) is not None
+                     and lvl.find(qn("w:numFmt")).get(qn("w:val")) == "bullet"]
+    assert bullet_levels
+    for lvl in bullet_levels:
+        assert lvl.find(qn("w:lvlText")).get(qn("w:val")) == "\u2022"
+        assert lvl.find(qn("w:rPr")).find(qn("w:rFonts")).get(qn("w:ascii")) == config.RESUME_FONT_NAME
+
+
+def test_build_docx_output_keeps_the_forced_fonts(tmp_path):
+    path = resume_build.build_docx(_STRATEGY, _MASTER, str(tmp_path / "r.docx"))
+    doc = Document(path)
+    for f in _all_rfonts(doc):
+        assert f.get(qn("w:ascii")) == config.RESUME_FONT_NAME
+
+
+# ── pdf_text ───────────────────────────────────────────────────────────────────
+
+def test_pdf_text_returns_a_string_for_a_real_pdf(tmp_path):
+    import pikepdf
+    path = str(tmp_path / "t.pdf")
+    pdf = pikepdf.new()
+    pdf.add_blank_page(page_size=(200, 200))
+    pdf.save(path)
+    assert isinstance(resume_build.pdf_text(path), str)

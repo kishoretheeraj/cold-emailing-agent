@@ -517,7 +517,8 @@ RULES FOR USING THIS CONTEXT:
 
 RESUME_STORAGE_BUCKET = "resumes"
 RESUME_MODEL = EMAIL_MODEL
-RESUME_SOFFICE_TIMEOUT_SECONDS = 30
+# 90: each conversion starts a fresh throwaway LibreOffice profile, adding first-run setup time.
+RESUME_SOFFICE_TIMEOUT_SECONDS = 90
 RESUME_COVER_LETTER_MAX_WORDS = 300
 # preflight.py's own pattern: one automatic regeneration on a lint failure, then give up loudly.
 RESUME_MAX_BUILD_RETRIES = 1
@@ -525,6 +526,16 @@ RESUME_MAX_BUILD_RETRIES = 1
 # Update these if RESUME_MODEL changes or Anthropic's pricing changes.
 RESUME_MODEL_COST_PER_MTOK_INPUT = 3.0
 RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0
+
+# "subscription": resume generation runs on the operator's Claude subscription through Claude
+# Code's headless mode (claude_subscription.py). "api": the pay-as-you-go anthropic client.
+# Defaults to "api" so merging changes nothing; only resume-worker.service sets "subscription",
+# and GitHub Actions opts in by setting it in jobright_pull.yml once the worker is proven.
+RESUME_CLAUDE_BACKEND = os.environ.get("RESUME_CLAUDE_BACKEND", "api")
+CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH", "claude")
+CLAUDE_CLI_TIMEOUT_SECONDS = 300
+RESUME_WORKER_BATCH = 3
+RESUME_QUEUE_STALE_HOURS = 24
 
 # ── Model pricing (system-wide cost tracking) ───────────────────────────────────
 # Real per-million-token USD prices, verified against platform.claude.com/docs/en/about-claude/
@@ -548,6 +559,12 @@ MODEL_PRICING = {
 # Calibri is the dominant choice (~76/77 files); Garamond appeared in exactly one recent
 # consulting-track variant. Default to the proven majority pattern, single line to override.
 RESUME_FONT_NAME = "Calibri"
+# Directories searched for RESUME_FONT_NAME .ttf files, which convert_to_pdf copies into its
+# throwaway LibreOffice profile (user/fonts). LibreOffice on macOS ignored a Calibri installed in
+# ~/Library/Fonts and embedded its bundled Carlito instead (verified 2026-10-05); fonts in the
+# profile are always loaded, on the Mac and on the Beelink alike.
+RESUME_FONT_DIRS = [d for d in (os.environ.get("RESUME_FONT_DIR"), "~/Library/Fonts",
+                                "/usr/local/share/fonts/calibri") if d]
 # The strategy step (resume_agent.py --propose) may only choose from this exact set of section
 # names -- an unconstrained LLM invented labels like "Selected Projects"/"Core Competencies" that
 # resume_build.py's section_order lookup silently dropped (found on the first live --build run).

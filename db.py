@@ -749,6 +749,38 @@ def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref
     return result.data[0] if result.data else None
 
 
+def get_strong_applications_without_resume(limit):
+    """Rows at stage='saved' that job_pick.py scored 'strong', with no built resume and no
+    recorded resume_error, oldest first -- the Beelink resume worker's queue
+    (resume_agent.py --drain). Applied/rejected/withdrawn rows are never rebuilt."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .select("*").eq("pick_verdict", "strong").eq("stage", "saved")
+                     .is_("resume_file_ref", "null").is_("resume_error", "null")
+                     .order("created_at", desc=False).limit(limit).execute())
+    return result.data or []
+
+
+def count_stale_strong_without_resume(hours):
+    """Count queued strong rows (same filters as get_strong_applications_without_resume) not
+    touched for over `hours` -- the alarm that the Beelink resume worker is not consuming."""
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    result = _retry(lambda: get_client().table("job_applications")
+                     .select("id", count="exact").eq("pick_verdict", "strong").eq("stage", "saved")
+                     .is_("resume_file_ref", "null").is_("resume_error", "null")
+                     .lt("updated_at", cutoff).execute())
+    return result.count or 0
+
+
+def set_resume_error(application_id, message):
+    """Record why the resume worker gave up on a row, so it isn't retried every run. Clearing
+    the column re-queues the row."""
+    result = _retry(lambda: get_client().table("job_applications")
+                     .update({"resume_error": str(message)[:1000],
+                              "updated_at": datetime.utcnow().isoformat()})
+                     .eq("id", application_id).execute())
+    return result.data[0] if result.data else None
+
+
 def upload_resume_file(storage_path, file_bytes, content_type):
     """Upload a built file to the resumes Storage bucket. Returns storage_path. Raises on failure --
     unlike the rest of this module's best-effort accessors, a failed upload must not look like success."""
@@ -779,7 +811,7 @@ def record_resume_usage(application_id, tokens_input, tokens_output, cost_usd):
 
 
 def log_api_usage(module, action, model, input_tokens, output_tokens, cost_usd,
-                   contact_id=None, job_application_id=None):
+                   contact_id=None, job_application_id=None, billing="api"):
     """Insert one row into the system-wide api_usage_log ledger. Raises on failure -- callers
     (usage_tracking.log_usage) are responsible for the best-effort wrapping, since this accessor
     follows the rest of db.py's pattern of surfacing real failures rather than swallowing them."""
@@ -788,5 +820,9 @@ def log_api_usage(module, action, model, input_tokens, output_tokens, cost_usd,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost_usd,
         "contact_id": contact_id, "job_application_id": job_application_id,
     }
+    # 'api' is the column default: leaving it out keeps every existing writer working even before
+    # migration 20261005000000 lands.
+    if billing != "api":
+        payload["billing"] = billing
     result = _retry(lambda: get_client().table("api_usage_log").insert(payload).execute())
     return result.data[0] if result.data else None

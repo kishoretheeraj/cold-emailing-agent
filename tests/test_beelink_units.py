@@ -38,6 +38,8 @@ def test_every_expected_unit_exists():
         "job-linkedin-ingest.timer",
         "notify-failure@.service",
         "novnc@.service",
+        "resume-worker.service",
+        "resume-worker.timer",
         "x11vnc@.service",
         "xvfb@.service",
     ]
@@ -191,8 +193,9 @@ def test_provision_verifies_the_tag_before_checking_it_out():
 def test_provision_never_writes_a_secret_value():
     code = _provision_code()
     for key in ("ANTHROPIC_API_KEY", "GMAIL_APP_PASSWORD", "SUPABASE_ANON_KEY",
-                "APPLY_AGENT_ARMED", "CLAUDE_CODE_OAUTH_TOKEN"):
+                "APPLY_AGENT_ARMED"):
         assert key not in code, key
+    assert "CLAUDE_CODE_OAUTH_TOKEN=" not in code
 
 
 def test_provision_never_grants_the_agent_user_root_equivalent_groups():
@@ -200,3 +203,47 @@ def test_provision_never_grants_the_agent_user_root_equivalent_groups():
     assert "usermod" not in code
     assert "useradd --system --user-group" in code
     assert "-G" not in code.split("useradd", 1)[1].split("\n", 1)[0]
+
+
+# ── resume-worker ──────────────────────────────────────────────────────────────
+
+_WORKER = os.path.join(_SYSTEMD, "resume-worker.service")
+_CLAUDE_ENV_EXAMPLE = os.path.join(_ROOT, "deploy", "beelink", "env", "claude.env.example")
+
+
+def test_resume_worker_runs_drain_as_jobagent_with_its_own_token_file():
+    unit = _directives(_WORKER)
+    assert "User=jobagent" in unit and "Type=oneshot" in unit
+    assert "ExecStart=/opt/job-agent/.venv/bin/python resume_agent.py --drain" in unit
+    assert "EnvironmentFile=/etc/job-agent/base.env" in unit
+    assert "EnvironmentFile=/etc/job-agent/claude.env" in unit
+    assert "Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude" in unit
+    assert "Environment=RESUME_CLAUDE_BACKEND=subscription" in unit
+    assert "TimeoutStartSec=7200" in unit
+    assert "OnFailure=notify-failure@%n.service" in unit
+
+
+def test_only_the_resume_worker_loads_the_claude_token():
+    for path in _unit_paths():
+        if os.path.basename(path) != "resume-worker.service":
+            assert "claude.env" not in _read(path), path
+
+
+def test_claude_env_template_is_valueless_and_token_only():
+    lines = [l for l in _read(_CLAUDE_ENV_EXAMPLE).splitlines() if l and not l.startswith("#")]
+    assert lines == ["CLAUDE_CODE_OAUTH_TOKEN="]
+
+
+def test_resume_worker_timer_cadence():
+    timer = _read(os.path.join(_SYSTEMD, "resume-worker.timer"))
+    assert "OnCalendar=*:0/30" in timer
+    assert "RandomizedDelaySec=300" in timer
+
+
+def test_provision_installs_worker_prereqs_but_never_enables_the_worker_timer():
+    code = _provision_code()
+    assert "libreoffice-writer-nogui" in code
+    assert "claude.ai/install.sh" in code
+    assert "/usr/local/share/fonts/calibri" in code
+    assert "fc-match" in code
+    assert "enable --now resume-worker" not in code and "enable resume-worker" not in code

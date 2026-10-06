@@ -1,13 +1,16 @@
 """Tests for resume_agent.py. All Claude calls and db.py calls are mocked -- no real network,
 no real Supabase, no real credentials."""
 
+import os
 import datetime
 
 import pytest
 
+import claude_subscription
 import config
 import db
 import resume_agent
+import resume_lint
 
 
 # ── _check_deadline ──────────────────────────────────────────────────────────
@@ -49,6 +52,7 @@ _USAGE = {"input_tokens": 100, "output_tokens": 50}
 
 
 def test_propose_writes_strategy_to_db(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     mocker.patch.object(db, "get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "Product Manager", "posting_snapshot": {},
     })
@@ -70,7 +74,7 @@ def test_propose_writes_strategy_to_db(mocker):
     log_api_usage.assert_called_once_with(
         module="resume_agent", action="propose", model=config.RESUME_MODEL,
         input_tokens=100, output_tokens=50, cost_usd=pytest.approx(0.001050),
-        contact_id=None, job_application_id=1,
+        contact_id=None, job_application_id=1, billing="api",
     )
 
 
@@ -79,11 +83,14 @@ def test_propose_raises_on_malformed_claude_response(mocker):
         "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {},
     })
     mocker.patch.object(resume_agent, "_call_claude", return_value=("not json", _USAGE))
+    mocker.patch.object(db, "record_resume_usage")
+    mocker.patch.object(db, "log_api_usage")
     with pytest.raises(ValueError, match="could not parse strategy"):
         resume_agent.propose(1)
 
 
 def test_propose_strips_markdown_json_fence_before_parsing(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     # Regression test: live run against job 41 (2026-08-29) showed Claude wraps the response
     # in a ```json fence despite the prompt saying "ONLY a JSON object, no other text".
     mocker.patch.object(db, "get_job_application", return_value={
@@ -198,6 +205,12 @@ def _mock_clean_data(mocker):
     }[name])
 
 
+def _mock_pdf_checks(mocker):
+    mocker.patch("resume_agent.resume_scrub.read_pdf_xmp_text", return_value="")
+    mocker.patch("resume_agent.resume_scrub.check_fonts", return_value=[])
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team")
+
+
 def test_build_raises_when_no_strategy_proposed_yet(mocker):
     mocker.patch.object(db, "get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "resume_strategy": None,
@@ -231,7 +244,8 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
-    mocker.patch("resume_agent.Document")
+    _mock_pdf_checks(mocker)
+    mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     upload = mocker.patch.object(db, "upload_resume_file", side_effect=[
         "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
@@ -246,6 +260,114 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     set_files.assert_called_once()
 
 
+def _mock_happy_build(mocker):
+    mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
+    _mock_clean_data(mocker)
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
+    mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
+    mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
+    mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
+    mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
+    mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
+    mocker.patch("resume_agent.resume_build.new_document")
+    mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
+
+
+def test_build_refuses_to_upload_when_pdf_embeds_a_substitute_font(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_scrub.check_fonts",
+                 return_value=["embedded font 'Carlito' is not allowed"])
+    upload = mocker.patch.object(db, "upload_resume_file")
+    with pytest.raises(resume_agent.LintFailedError, match="Carlito"):
+        resume_agent.build(1)
+    upload.assert_not_called()
+
+
+def test_build_uploads_nothing_when_only_the_cover_letter_pdf_fails_verification(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_scrub.check_fonts", side_effect=lambda path, allowed: (
+        ["embedded font 'Carlito' is not allowed"] if path == "/tmp/cl.pdf" else []))
+    upload = mocker.patch.object(db, "upload_resume_file")
+    with pytest.raises(resume_agent.LintFailedError, match="cover letter PDF is not clean"):
+        resume_agent.build(1)
+    upload.assert_not_called()
+
+
+def test_build_refuses_to_upload_when_rendered_text_has_invisible_characters(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear\u200b team")
+    upload = mocker.patch.object(db, "upload_resume_file")
+    with pytest.raises(resume_agent.LintFailedError, match="invisible"):
+        resume_agent.build(1)
+    upload.assert_not_called()
+
+
+def test_build_allows_pypdf_control_characters_in_rendered_text(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team\r\nBest\x0c")
+    upload = mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
+    result = resume_agent.build(1)
+    assert upload.call_count == 2
+    assert result == {"resume_file_ref": "a", "cover_letter_file_ref": "b"}
+
+
+def test_build_refuses_to_upload_when_rendered_text_has_tool_attribution(mocker):
+    _mock_happy_build(mocker)
+    mocker.patch("resume_agent.resume_build.pdf_text", return_value="Written by I am Claude")
+    with pytest.raises(resume_agent.LintFailedError, match="attribution"):
+        resume_agent.build(1)
+
+
+def _mock_build_pipeline(mocker, fit):
+    mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
+    _mock_clean_data(mocker)
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
+    mocker.patch("resume_agent.resume_build.fit_to_one_page", side_effect=fit)
+
+
+def test_build_uses_a_per_build_workdir_and_removes_it_on_success(mocker):
+    seen = {}
+
+    def fit(strategy, master, docx_path, out_dir):
+        seen["docx"], seen["dir"] = docx_path, out_dir
+        assert os.path.isdir(out_dir)
+        return ("/tmp/r.pdf", "standard")
+
+    _mock_build_pipeline(mocker, fit)
+    mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
+    mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
+    mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
+    mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
+    mocker.patch("resume_agent.resume_build.new_document")
+    mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
+    mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
+    resume_agent.build(1)
+    assert not seen["docx"].startswith("/tmp/resume_")
+    assert seen["docx"] == os.path.join(seen["dir"], "resume.docx")
+    assert not os.path.exists(seen["dir"])
+
+
+def test_build_removes_its_workdir_when_it_raises(mocker):
+    seen = {}
+
+    def fit(strategy, master, docx_path, out_dir):
+        seen["dir"] = out_dir
+        raise resume_agent.resume_build.StillOverflowError("too long")
+
+    _mock_build_pipeline(mocker, fit)
+    with pytest.raises(resume_agent.resume_build.StillOverflowError):
+        resume_agent.build(1)
+    assert not os.path.exists(seen["dir"])
+
+
 def test_build_raises_on_cover_letter_lint_violation_after_one_retry(mocker):
     mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
     _mock_clean_data(mocker)
@@ -253,6 +375,7 @@ def test_build_raises_on_cover_letter_lint_violation_after_one_retry(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
     mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
     mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
     # Cover letter always contains an em dash -- lint keeps failing across the one retry.
@@ -272,7 +395,8 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
     mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
-    mocker.patch("resume_agent.Document")
+    _mock_pdf_checks(mocker)
+    mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     mocker.patch.object(db, "upload_resume_file", side_effect=[
         "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
@@ -285,7 +409,7 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     log_api_usage.assert_called_once_with(
         module="resume_agent", action="cover_letter", model=config.RESUME_MODEL,
         input_tokens=100, output_tokens=50, cost_usd=pytest.approx(0.001050),
-        contact_id=None, job_application_id=1,
+        contact_id=None, job_application_id=1, billing="api",
     )
 
 
@@ -295,6 +419,7 @@ def test_build_raises_lint_failed_error_when_resume_pdf_metadata_still_has_finge
     mocker.patch("resume_agent.resume_build.fit_to_one_page", return_value=("/tmp/r.pdf", "standard"))
     mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
     mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Producer: LibreOffice 24.2")
+    _mock_pdf_checks(mocker)
     with pytest.raises(resume_agent.LintFailedError, match="fingerprint"):
         resume_agent.build(1)
 
@@ -308,3 +433,297 @@ def test_build_still_overflow_error_propagates_after_retry(mocker):
     )
     with pytest.raises(resume_agent.resume_build.StillOverflowError):
         resume_agent.build(1)
+
+
+# ── Backend dispatch ───────────────────────────────────────────────────────────
+
+def test_call_claude_subscription_backend_uses_claude_subscription(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    complete = mocker.patch.object(claude_subscription, "complete", return_value=("txt", _USAGE))
+    assert resume_agent._call_claude("p", system="s") == ("txt", _USAGE)
+    complete.assert_called_once_with("p", system="s", model=config.RESUME_MODEL)
+
+
+def test_call_claude_api_backend_sanitizes(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    resp = mocker.MagicMock()
+    resp.content = [mocker.MagicMock(text="Dear\u200b Ana")]
+    resp.usage.input_tokens, resp.usage.output_tokens = 10, 5
+    mocker.patch.object(resume_agent._claude.messages, "create", return_value=resp)
+    assert resume_agent._call_claude("p") == ("Dear Ana", {"input_tokens": 10, "output_tokens": 5})
+
+
+def test_call_claude_rejects_unknown_backend(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "carrier-pigeon")
+    with pytest.raises(ValueError, match="RESUME_CLAUDE_BACKEND"):
+        resume_agent._call_claude("p")
+
+
+def test_track_usage_subscription_records_zero_cost_and_billing(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    record = mocker.patch.object(db, "record_resume_usage")
+    log_api = mocker.patch.object(db, "log_api_usage")
+    assert resume_agent._track_usage(9, {"input_tokens": 100, "output_tokens": 50}, "propose") == 0.0
+    record.assert_called_once_with(9, 100, 50, 0.0)
+    assert log_api.call_args.kwargs["billing"] == "subscription"
+    assert log_api.call_args.kwargs["cost_usd"] == 0.0
+
+
+# ── Attribution scan ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "Dear team,\nI built things.\nGenerated with Claude",
+    "Dear team,\nCo-Authored-By: Claude <noreply@anthropic.com>",
+    "Dear team,\nAs an AI, I cannot attend interviews.",
+    "Dear team,\nAs a language model I lack opinions.",
+    "Here's a cover letter tailored to the role:\nDear team,",
+    "Sure! Below is the letter.\nDear team,",
+    "Dear team,\nI shipped a thing.\nLet me know if you'd like any changes!",
+    "Dear team,\nThis letter was generated by ChatGPT.",
+])
+def test_check_attribution_flags(text):
+    assert resume_agent._check_attribution(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Dear Anthropic hiring team,\nI shipped Claude Code workflows and the Claude Vision API.\nBest,\nKishore",
+    "Dear team,\nMy work on large language model evaluation cut costs 30%.\nBest,\nKishore",
+    "Dear team,\nRevenue generated with outbound grew 30%.\nBest,\nKishore",
+    "Dear team,\nI was an aide to the CFO.\nBest,\nKishore",
+    "Dear team,\nHe has an aim.\nBest,\nKishore",
+])
+def test_check_attribution_allows_operator_facts(text):
+    assert resume_agent._check_attribution(text) == []
+
+
+def test_operator_resume_data_never_trips_the_attribution_scan():
+    import json
+    import os
+    data_dir = os.path.join(os.path.dirname(resume_agent.__file__), "resume", "data")
+    for name in os.listdir(data_dir):
+        if name.endswith(".json"):
+            with open(os.path.join(data_dir, name)) as f:
+                text = json.dumps(json.load(f))
+            assert resume_agent._check_attribution(text) == [], name
+
+
+def test_propose_raises_on_attribution_in_strategy(mocker):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    mocker.patch.object(db, "get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {}})
+    mocker.patch.object(resume_agent, "_call_claude", return_value=(
+        '{"section_order": ["Experience"], "cover_letter_angle": "Generated with Claude"}', _USAGE))
+    mocker.patch.object(db, "record_resume_usage")
+    mocker.patch.object(db, "log_api_usage")
+    set_strategy = mocker.patch.object(db, "set_resume_strategy")
+    with pytest.raises(resume_agent.LintFailedError, match="generated with"):
+        resume_agent.propose(1)
+    set_strategy.assert_not_called()
+
+
+def test_lint_cover_letter_flags_chat_preamble_so_build_regenerates(mocker):
+    mocker.patch.object(resume_lint, "check_cover_letter", return_value=[])
+    violations = resume_agent._lint_cover_letter("Here's your cover letter:\nDear team,", "resume text")
+    assert any("preamble" in v for v in violations)
+
+
+@pytest.mark.parametrize("label,ok", [
+    ("Data & Tools", True),
+    ("Product, Analytics", True),
+    ("AI/ML Platforms", True),
+    ("Strategic Leadership And Vision Setting", False),
+    ("Tools I'm great at!", False),
+    ("Generated with Claude", False),
+])
+def test_skills_group_labels_are_short_plain_and_unattributed(label, ok):
+    skills = {"spine": ["SQL"], "swap_pool": [], "banned": []}
+    strategy = {"skills_groups": [{"label": label, "skills": ["SQL"]}]}
+    assert (resume_agent._check_skills_governance(skills, strategy) == []) is ok
+
+
+# ── drain ──────────────────────────────────────────────────────────────────────
+
+def _drain_ready(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
+    mocker.patch.object(resume_agent, "_check_deadline", return_value=True)
+
+
+def test_drain_runs_propose_then_build_per_row(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B", "resume_strategy": {"x": 1}}])
+    propose = mocker.patch.object(resume_agent, "propose")
+    build = mocker.patch.object(resume_agent, "build")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain(limit=3) == 0
+    propose.assert_called_once_with(1)
+    assert [c.args[0] for c in build.call_args_list] == [1, 2]
+    set_error.assert_not_called()
+
+
+def test_drain_records_error_and_continues(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    mocker.patch.object(resume_agent, "propose", side_effect=[ValueError("bad json"), None])
+    build = mocker.patch.object(resume_agent, "build")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    set_error.assert_called_once()
+    assert set_error.call_args.args[0] == 1 and "bad json" in set_error.call_args.args[1]
+    build.assert_called_once_with(2)
+
+
+def test_drain_marks_deadline_passed_rows(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 5, "company": "A"}])
+    mocker.patch.object(resume_agent, "propose", side_effect=resume_agent.DeadlinePassedError("passed"))
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    set_error.assert_called_once()
+
+
+def test_drain_stops_on_usage_limit_without_marking(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    propose = mocker.patch.object(resume_agent, "propose",
+                                  side_effect=claude_subscription.ClaudeUsageLimitError("usage limit reached"))
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 0
+    propose.assert_called_once_with(1)
+    set_error.assert_not_called()
+
+
+def test_drain_survives_a_failing_error_write(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    mocker.patch.object(resume_agent, "propose", side_effect=ValueError("x"))
+    mocker.patch.object(db, "set_resume_error", side_effect=RuntimeError("db down"))
+    assert resume_agent.drain() == 1
+
+
+def test_drain_uses_configured_batch_by_default(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
+    get = mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[])
+    resume_agent.drain()
+    get.assert_called_once_with(config.RESUME_WORKER_BATCH)
+
+
+def test_drain_preflight_failure_touches_no_rows(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=["CLAUDE_CODE_OAUTH_TOKEN is not set"])
+    get = mocker.patch.object(db, "get_strong_applications_without_resume")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    get.assert_not_called()
+    set_error.assert_not_called()
+
+
+def test_drain_transport_failure_stops_the_run_without_marking(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    propose = mocker.patch.object(resume_agent, "propose",
+                                  side_effect=claude_subscription.ClaudeSubscriptionError("claude CLI failed (exit 1): auth"))
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    propose.assert_called_once_with(1)
+    set_error.assert_not_called()
+
+
+def test_drain_checks_the_deadline_even_when_a_strategy_exists(mocker):
+    mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 4, "company": "A", "resume_strategy": {"x": 1}}])
+    mocker.patch.object(resume_agent, "_check_deadline", return_value=False)
+    build = mocker.patch.object(resume_agent, "build")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 1
+    build.assert_not_called()
+    assert "deadline" in set_error.call_args.args[1].lower()
+
+
+def test_worker_preflight_reports_missing_prereqs(mocker, monkeypatch):
+    monkeypatch.setattr(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    mocker.patch("resume_agent.shutil.which", return_value=None)
+    problems = resume_agent._worker_preflight()
+    assert any("CLAUDE_CODE_OAUTH_TOKEN" in p for p in problems)
+    assert any("soffice" in p for p in problems)
+
+
+# ── propose: governance before persisting, usage before validating ─────────────
+
+def _propose_with(mocker, strategy_json):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    mocker.patch.object(db, "get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {}})
+    mocker.patch.object(resume_agent, "_call_claude", return_value=(strategy_json, _USAGE))
+    mocker.patch.object(db, "record_resume_usage")
+    mocker.patch.object(db, "log_api_usage")
+    return mocker.patch.object(db, "set_resume_strategy")
+
+
+@pytest.mark.parametrize("strategy_json", [
+    '{"section_order": ["Experience"], "projects_included": ["A Project That Does Not Exist"]}',
+    '{"section_order": ["Core Competencies"], "projects_included": []}',
+    '{"section_order": ["Experience"], "projects_included": [], '
+    '"skills_groups": [{"label": "Data & Tools", "skills": ["Definitely Not A Skill"]}]}',
+])
+def test_propose_rejects_ungoverned_strategies_without_persisting(mocker, strategy_json):
+    set_strategy = _propose_with(mocker, strategy_json)
+    with pytest.raises(resume_agent.LintFailedError, match="governance"):
+        resume_agent.propose(1)
+    set_strategy.assert_not_called()
+
+
+def test_propose_rejects_a_bad_skills_label_without_persisting(mocker):
+    set_strategy = _propose_with(mocker, '{"section_order": ["Experience"], "projects_included": [], '
+                                         '"skills_groups": [{"label": "one two three four five", "skills": []}]}')
+    with pytest.raises(resume_agent.LintFailedError, match="governance"):
+        resume_agent.propose(1)
+    set_strategy.assert_not_called()
+
+
+def test_propose_records_usage_even_when_the_response_is_unparseable(mocker):
+    _propose_with(mocker, "not json")
+    track = mocker.patch.object(resume_agent, "_track_usage", return_value=0.0)
+    with pytest.raises(ValueError):
+        resume_agent.propose(1)
+    track.assert_called_once_with(1, _USAGE, "propose")
+
+
+# ── _worker_preflight canary ───────────────────────────────────────────────────
+
+def _preflight_env(mocker, monkeypatch, backend="api"):
+    monkeypatch.setattr(config, "RESUME_CLAUDE_BACKEND", backend)
+    mocker.patch("resume_agent.shutil.which", return_value="/usr/bin/soffice")
+    mocker.patch("resume_agent.resume_build.new_document")
+    return mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/canary.pdf")
+
+
+def test_preflight_canary_success_reports_no_problem(mocker, monkeypatch):
+    _preflight_env(mocker, monkeypatch)
+    mocker.patch("resume_agent.resume_scrub.check_fonts", return_value=[])
+    assert resume_agent._worker_preflight() == []
+
+
+def test_preflight_canary_font_violation_is_a_problem(mocker, monkeypatch):
+    _preflight_env(mocker, monkeypatch)
+    mocker.patch("resume_agent.resume_scrub.check_fonts",
+                 return_value=["embedded font 'Carlito' is not allowed"])
+    problems = resume_agent._worker_preflight()
+    assert any("PDF canary failed" in p and "Carlito" in p for p in problems)
+
+
+def test_preflight_canary_conversion_failure_is_a_problem(mocker, monkeypatch):
+    convert = _preflight_env(mocker, monkeypatch)
+    convert.side_effect = RuntimeError("soffice exploded")
+    problems = resume_agent._worker_preflight()
+    assert any("PDF canary failed" in p and "soffice exploded" in p for p in problems)
+
+
+def test_preflight_rejects_an_unknown_backend(mocker, monkeypatch):
+    _preflight_env(mocker, monkeypatch, backend="bogus")
+    mocker.patch("resume_agent.resume_scrub.check_fonts", return_value=[])
+    assert any("RESUME_CLAUDE_BACKEND" in p for p in resume_agent._worker_preflight())

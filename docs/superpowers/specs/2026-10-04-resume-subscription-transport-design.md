@@ -177,8 +177,9 @@ On `strong`, when `RESUME_CLAUDE_BACKEND == "subscription"`, log
 
 | Failure | Result |
 |---|---|
-| No `CLAUDE_CODE_OAUTH_TOKEN` | `ClaudeSubscriptionError` before spawning; drain records `resume_error` |
-| CLI nonzero exit / `is_error` / bad JSON / timeout | `ClaudeSubscriptionError`; row gets `resume_error` |
+| No `CLAUDE_CODE_OAUTH_TOKEN` | Preflight problem / `ClaudeSubscriptionError` before spawning; drain stops without writing `resume_error` |
+| CLI nonzero exit / `is_error` / bad JSON / timeout | `ClaudeSubscriptionError`; drain stops without writing `resume_error` |
+| Calibri not visible to LibreOffice, broken `soffice` | Caught by the preflight canary PDF; drain stops before spending quota |
 | Usage window exhausted | `ClaudeUsageLimitError`; drain stops, row untouched, retried next run |
 | Attribution phrase, fingerprint, wrong font | `LintFailedError`; row gets `resume_error`; nothing uploaded |
 | `api_usage_log` write fails | warning only (existing best-effort contract) |

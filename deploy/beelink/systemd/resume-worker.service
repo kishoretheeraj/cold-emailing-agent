@@ -1,0 +1,28 @@
+# Builds resumes for job_pick.py's strong-verdict rows on the operator's Claude subscription
+# (resume_agent.py --drain -> claude_subscription.py -> claude -p). The only unit that loads
+# /etc/job-agent/claude.env (CLAUDE_CODE_OAUTH_TOKEN). base.env also carries ANTHROPIC_API_KEY
+# because config.py hard-requires it at import; claude_subscription.py strips it from the CLI's
+# environment so the subscription, not the API key, is billed.
+[Unit]
+Description=Resume worker: build resumes for strong-verdict jobs on the Claude subscription
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/job-agent
+EnvironmentFile=/etc/job-agent/base.env
+EnvironmentFile=/etc/job-agent/claude.env
+Environment=HOME=/var/lib/job-agent
+Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
+Environment=RESUME_CLAUDE_BACKEND=subscription
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/opt/job-agent/.venv/bin/python resume_agent.py --drain
+TimeoutStartSec=7200
+MemoryMax=1536M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/job-agent /var/lib/job-agent

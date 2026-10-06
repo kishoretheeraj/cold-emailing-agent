@@ -71,7 +71,7 @@ Kishore is new to Linux server administration and learning as he goes.
 - Docker CE via `get.docker.com`, which set up Docker's apt repo, including the compose and buildx plugins. `docker run hello-world` verified
 - Claude Code 2.1.289 for `kishore` (native installer, `~/.local/bin/claude`, on PATH for login shells). **Not logged in yet**
 - Python 3.13.5 (Debian's own; CI uses 3.11)
-- **Not yet installed:** the M1 stack (`jobagent` user, Chrome, Xvfb/x11vnc/noVNC, `/opt/job-agent`). `deploy/beelink/provision-debian.sh` installs it in one sudo run
+- **Not yet installed:** the M1 stack (`jobagent` user, Chrome, Xvfb/x11vnc/noVNC, `/opt/job-agent`) and Claude Code for `jobagent` (resume worker). `deploy/beelink/provision-debian.sh` installs it in one sudo run
 
 ### Config files changed from defaults
 
@@ -86,6 +86,7 @@ Kishore is new to Linux server administration and learning as he goes.
 ## 4. Rules
 
 1. **Never set `ANTHROPIC_API_KEY` globally** (shell profiles, `/etc/environment`, settings `env` blocks). It overrides subscription login and switches Claude Code and the Agent SDK to pay-as-you-go API billing. If one container genuinely needs a Console key, pass it to that container only, through a `chmod 600` env file that is never committed.
+   The resume worker is the one deliberate subscription-token holder: `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/job-agent/claude.env`, loaded only by `resume-worker.service`.
 2. **Agents never run as `kishore`.** Membership in `sudo` or `docker` is root-equivalent, so a prompt-injected agent with either one owns the box. Agents get their own unprivileged users with no sudo and no docker group.
 3. **arm64 vs amd64.** The Mac (M4) builds arm64 images by default; the Beelink needs amd64. Use `docker buildx build --platform linux/amd64 ...` on the Mac, or build on the Beelink after `git pull`.
 4. **Hard memory limits on everything long-running** (`docker run --memory`, systemd `MemoryMax=`). Budget: 16 GB total, about 1–2 GB for the OS and Docker, and 1–2 GB per Xvfb + browser session, so plan for 3–4 concurrent browser sessions. RAM is the binding constraint, not CPU.
@@ -152,6 +153,9 @@ From the Mac, confirm passwords are refused: `ssh -o PubkeyAuthentication=no kis
 - [ ] Sign and push a deploy tag from the Mac, then run `deploy/beelink/provision-debian.sh` (see `deploy/beelink/RUNBOOK.md`, top). Dry-run verified in a clean `debian:trixie` container on this box, 2026-10-04.
 - [ ] Fill `/etc/job-agent/base.env`, open the tunnel (`ssh -N -L 6080:localhost:6080 kishore@beelink`), log in to LinkedIn at `http://localhost:6080/vnc.html`.
 - [ ] First watched manual run (RUNBOOK section 8), then enable `job-linkedin-ingest.timer`.
+- [ ] Copy Calibri to `/usr/local/share/fonts/calibri/`
+- [ ] Paste `claude setup-token` output into `/etc/job-agent/claude.env`
+- [ ] Watched `systemctl start resume-worker`, then `systemctl enable --now resume-worker.timer`
 
 ### Phase 3: first browser-automation workload
 

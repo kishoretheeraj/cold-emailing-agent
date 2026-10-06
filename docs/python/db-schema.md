@@ -321,6 +321,8 @@ CREATE TABLE job_applications (
 - `source` is free text (`"manual"`, `"ats_scan"`, `"jobright"`, etc.) — no
   CHECK constraint, since new sources are expected as Phase 2 (job/company
   discovery) lands.
+- `resume_error TEXT NULL` (migration `20261005000000`): set by `resume_agent.py --drain` on a content
+  failure; stops retries, clearing it re-queues. anon/authenticated `UPDATE (resume_error)` granted.
 - Accessors in `db.py`: `create_job_application`, `get_job_applications`
   (optional `stage` filter), `update_job_application_stage`,
   `get_job_application`. Tests: `tests/test_job_applications_db.py`.
@@ -419,10 +421,13 @@ CREATE TABLE api_usage_log (
   output_tokens INTEGER NOT NULL,
   cost_usd NUMERIC(10,6) NOT NULL,
   contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
-  job_application_id INTEGER REFERENCES job_applications(id) ON DELETE SET NULL
+  job_application_id INTEGER REFERENCES job_applications(id) ON DELETE SET NULL,
+  billing TEXT NOT NULL DEFAULT 'api' CHECK (billing IN ('api', 'subscription'))
 );
 ```
 
+- `billing` is `'api'|'subscription'` (migration `20261005000000`); subscription rows have real
+  token counts and `cost_usd = 0`.
 - `db.log_api_usage(module, action, model, input_tokens, output_tokens, cost_usd, contact_id=None,
   job_application_id=None)` inserts one row. Raises on failure, matching most of this file's
   write-path accessors -- `usage_tracking.log_usage()` is the layer that makes logging

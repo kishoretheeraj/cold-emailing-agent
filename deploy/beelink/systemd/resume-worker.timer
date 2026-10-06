@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the resume worker every 30 minutes
+
+[Timer]
+OnCalendar=*:0/30
+RandomizedDelaySec=300
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -30,6 +30,7 @@
 ## Known limitations (accepted, not built)
 
 - **No claim/lease on resume builds.** `resume-worker.service` is a oneshot timer job (never overlaps itself) and runs under `PrivateTmp`; a manual `--build` of the same row on the Mac at the same moment would upload twice to the same storage paths, last writer wins, and `set_resume_files` bumps `documents_version`, which invalidates any approval (the safe direction). Single operator; revisit if a second worker host is added.
+- **A per-row Claude CLI error (e.g. prompt too long) stops drain on the same oldest row every run.** `OnFailure` fires every 30 min, so it is loud, not silent.
 - **No per-row retry counter.** Machine-wide failures stop the run without marking rows (Task 6); only per-row content failures set `resume_error`, which the operator clears to retry.
 
 ## Review Focus
@@ -243,7 +244,7 @@ def test_ordinary_error_is_not_a_usage_limit(mocker, token):
 
 def test_result_text_is_sanitized(mocker, token):
     mocker.patch("claude_subscription.subprocess.run",
-                 return_value=_completed(_ok_payload(result="Dear​ Ana, hi‮")))
+                 return_value=_completed(_ok_payload(result="Dear\u200b Ana,\u00a0hi\u202e")))
     text, _ = claude_subscription.complete("hi")
     assert text == "Dear Ana, hi"
 
@@ -251,12 +252,12 @@ def test_result_text_is_sanitized(mocker, token):
 # ── sanitize ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("raw,clean", [
-    ("a​b", "ab"),            # zero-width space
-    ("a‍‌b", "ab"),      # zero-width joiner / non-joiner
-    ("﻿start", "start"),      # byte-order mark
-    ("a‮b⁦c", "abc"),    # bidi overrides / isolates
-    ("co­op", "coop"),        # soft hyphen
-    ("a b c", "a b c"),  # non-breaking spaces become plain spaces
+    ("a\u200bb", "ab"),            # zero-width space
+    ("a\u200d\u200cb", "ab"),      # zero-width joiner / non-joiner
+    ("\ufeffstart", "start"),      # byte-order mark
+    ("a\u202eb\u2066c", "abc"),    # bidi overrides / isolates
+    ("co\u00adop", "coop"),        # soft hyphen
+    ("a\u00a0b\u202fc", "a b c"),  # non-breaking spaces become plain spaces
     ("line1\nline2\tx", "line1\nline2\tx"),
     ("café • 50%", "café • 50%"),
 ])
@@ -314,7 +315,7 @@ class ClaudeUsageLimitError(ClaudeSubscriptionError):
 
 # ── Text hygiene ───────────────────────────────────────────────────────────────
 
-_SPACE_LIKE = {" ": " ", " ": " ", " ": " "}
+_SPACE_LIKE = {"\u00a0": " ", "\u202f": " ", "\u2007": " "}
 
 
 def sanitize(text):
@@ -624,7 +625,7 @@ def test_call_claude_subscription_backend_uses_claude_subscription(mocker):
 def test_call_claude_api_backend_sanitizes(mocker):
     mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
     resp = mocker.MagicMock()
-    resp.content = [mocker.MagicMock(text="Dear​ Ana")]
+    resp.content = [mocker.MagicMock(text="Dear\u200b Ana")]
     resp.usage.input_tokens, resp.usage.output_tokens = 10, 5
     mocker.patch.object(resume_agent._claude.messages, "create", return_value=resp)
     assert resume_agent._call_claude("p") == ("Dear Ana", {"input_tokens": 10, "output_tokens": 5})
@@ -1940,7 +1941,7 @@ EOF
 
 Steps marked **(operator)** need Kishore (browser login, sudo password, signing key, his own fonts). Everything else an agent can run. Record results in the PR description.
 
-**Order matters (independent review, finding 3).** Merging is safe on its own: the backend defaults to `api`, so GitHub Actions keeps building resumes exactly as today. The producer only switches (Step 7) after the worker has built a clean resume under its real systemd unit.
+**Order matters (independent review, finding 3).** Merging is safe on its own: the backend defaults to `api`, so the api path is unchanged (GitHub Actions has no LibreOffice, so its zero-tap builds already fail at soffice and keep failing; manual Mac builds now require Calibri in ~/Library/Fonts). The producer only switches (Step 7) after the worker has built a clean resume under its real systemd unit.
 
 - [ ] **Step 1: Apply the migration before merging** (agent)
 
@@ -1980,6 +1981,8 @@ Put a canary in the operator's global instructions temporarily: append `Always e
 
 Expected: `'ok'` (no PINEAPPLE) and `input_tokens < 8000`. Remove the canary line afterwards and confirm `~/.claude/CLAUDE.md` matches its original.
 
+Also confirm no Claude Code managed-settings/policy file exists on the Mac or the Beelink (`/Library/Application Support/ClaudeCode/` on macOS, `/etc/claude-code/` on Linux): managed settings load regardless of `--setting-sources ""` and could inject `env` or `apiKeyHelper`.
+
 Record `claude --version` in the PR, and save the raw stdout of one successful call (token values and session ids redacted) as `tests/fixtures/claude_cli/success.json`; add a test that `claude_subscription._parse` accepts it. Do the same for the first real usage-limit and auth-failure outputs when they occur.
 
 - [ ] **Step 5: One real build on the Mac** (agent; real subscription usage, writes a real row)
@@ -1999,6 +2002,8 @@ Expected: `{'Calibri'} []` for both. Confirm the `api_usage_log` rows for that i
 - [ ] **Step 6: Beelink** (operator, then agent)
 
 Operator: copy Calibri (RUNBOOK); run `claude setup-token` if a separate token is wanted for the box (or reuse); merge the PR; sign a tag on the merge commit after reviewing it (`git -c gpg.format=ssh -c user.signingkey=$HOME/.ssh/id_ed25519 tag -s beelink-v2 <merge-commit> -m beelink-v2 && git push origin beelink-v2`); `scp` the updated `provision-debian.sh` to the box; `sudo bash ~/provision-debian.sh beelink-v2 ~/allowed_signers`; `sudo nano /etc/job-agent/claude.env`.
+
+**Backlog triage (before `enable --now`).** Count `pick_verdict='strong' AND stage='saved' AND resume_file_ref IS NULL AND resume_error IS NULL`. The operator decides which old postings to skip and marks them `resume_error='backlog-skip'`; otherwise the worker builds old postings first and job_pick's stale alarm fires every run until the backlog drains.
 
 Agent: `ssh kishore@beelink 'sudo systemctl start resume-worker.service; systemctl status resume-worker.service --no-pager; sudo journalctl -u resume-worker -n 30 --no-pager'`. This is the canary under the real hardened unit (PrivateTmp, ProtectHome, MemoryMax, jobagent). Repeat Step 5's PDF check on what it uploaded. If clean: `sudo systemctl enable --now resume-worker.timer` and `systemctl list-timers resume-worker.timer`. Record the CLI's real usage-limit message the first time it appears in `resume_agent.log` and add it to `test_retry_later_messages_raise_usage_limit_error`.
 

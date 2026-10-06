@@ -2,14 +2,17 @@
 Three-stage job-relevance scoring: structured filters -> local embedding similarity
 -> coarse LLM judge. Replaces job_discovery.py's old target_roles word-overlap
 check with something that actually reads the posting. Best-effort, never-raises
-per-row -- one bad posting must never stop the batch. A "strong" verdict
-zero-tap triggers resume_agent's propose+build pipeline (real spend, no human
-pause between them for this auto-pick path specifically -- see
+per-row -- one bad posting must never stop the batch. On the "api" backend a
+"strong" verdict zero-tap triggers resume_agent's propose+build pipeline (real
+spend, no human pause between them for this auto-pick path specifically); on
+the "subscription" backend strong rows are queued for the Beelink resume
+worker instead -- see
 docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md).
 """
 
 import json
 import logging
+import sys
 
 from sentence_transformers import SentenceTransformer
 
@@ -139,11 +142,12 @@ def score_job(job):
 
 
 def run():
-    """Batch-score unscored job applications; trigger resume_agent on strong verdicts."""
+    """Batch-score unscored job applications. Strong verdicts are queued for the Beelink resume worker (subscription backend) or built immediately (api backend)."""
     jobs = db.get_unscored_saved_applications()
     log.info(f"[JOB-PICK] | START | jobs_to_score={len(jobs)}")
     scored = 0
     triggered = 0
+    queued = 0
     errors = 0
     pipeline_errors = 0
 
@@ -156,18 +160,36 @@ def run():
             log.info(f"[JOB-PICK] | {job.get('company')} | {job.get('role')} | verdict={result['verdict']} | score={result['score']}")
 
             if result["verdict"] == "strong":
-                try:
-                    resume_agent.propose(job_id)
-                    resume_agent.build(job_id)
-                    triggered += 1
-                except Exception as exc:
-                    log.warning(f"[JOB-PICK] | {job.get('company')} | resume pipeline failed: {exc}")
-                    pipeline_errors += 1
+                if config.RESUME_CLAUDE_BACKEND == "subscription":
+                    # GitHub Actions never holds the subscription token; the Beelink's
+                    # resume-worker.service picks strong rows up (resume_agent.py --drain).
+                    queued += 1
+                    log.info(f"[JOB-PICK] | {job.get('company')} | {job.get('role')} | queued for Beelink resume worker")
+                else:
+                    try:
+                        resume_agent.propose(job_id)
+                        resume_agent.build(job_id)
+                        triggered += 1
+                    except Exception as exc:
+                        log.warning(f"[JOB-PICK] | {job.get('company')} | resume pipeline failed: {exc}")
+                        pipeline_errors += 1
         except Exception as exc:
             log.warning(f"[JOB-PICK] | {job.get('company')} | scoring error: {exc}")
             errors += 1
 
-    log.info(f"[JOB-PICK] | DONE | scored={scored} | resume_triggered={triggered} | errors={errors} | pipeline_errors={pipeline_errors}")
+    log.info(f"[JOB-PICK] | DONE | scored={scored} | resume_triggered={triggered} | resume_queued={queued} | errors={errors} | pipeline_errors={pipeline_errors}")
+
+    if config.RESUME_CLAUDE_BACKEND != "subscription":
+        return 0
+    stale = 0
+    try:
+        stale = db.count_stale_strong_without_resume(config.RESUME_QUEUE_STALE_HOURS)
+    except Exception as exc:
+        log.warning(f"[JOB-PICK] | WARNING | stale-queue check failed: {exc}")
+        return 1
+    if stale:
+        log.warning(f"[JOB-PICK] | WARNING | strong rows waiting > {config.RESUME_QUEUE_STALE_HOURS}h for the Beelink worker: {stale}")
+    return stale
 
 
 if __name__ == "__main__":
@@ -177,4 +199,5 @@ if __name__ == "__main__":
         format="%(asctime)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M",
     )
-    run()
+    if run():
+        sys.exit(1)
