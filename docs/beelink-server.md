@@ -28,7 +28,7 @@ Kishore is new to Linux server administration and learning as he goes.
 - Call out destructive commands explicitly before running them.
 - Verify Anthropic product details (Claude Code install and auth, Agent SDK, billing, computer-use tool versions) against current official docs, not memory. They change often.
 
-## 3. Current state (2026-10-04)
+## 3. Current state (2026-10-06)
 
 ### Hardware
 
@@ -71,7 +71,9 @@ Kishore is new to Linux server administration and learning as he goes.
 - Docker CE via `get.docker.com`, which set up Docker's apt repo, including the compose and buildx plugins. `docker run hello-world` verified
 - Claude Code 2.1.289 for `kishore` (native installer, `~/.local/bin/claude`, on PATH for login shells). **Not logged in yet**
 - Python 3.13.5 (Debian's own; CI uses 3.11)
-- **Not yet installed:** the M1 stack (`jobagent` user, Chrome, Xvfb/x11vnc/noVNC, `/opt/job-agent`) and Claude Code for `jobagent` (resume worker). `deploy/beelink/provision-debian.sh` installs it in one sudo run
+- The M1 stack via `deploy/beelink/provision-debian.sh` at signed tag `beelink-v2` (2026-10-06): `jobagent` user, Chrome, Xvfb/x11vnc/noVNC (slot 0 active), `/opt/job-agent`, LibreOffice 25.2, Claude Code for `jobagent`, and Calibri in `/usr/local/share/fonts/calibri/` (the operator's own fonts from Word on the Mac)
+- `/etc/job-agent/base.env` (5 secrets) and `/etc/job-agent/claude.env` (subscription token) filled 2026-10-06 from the Mac via `~/handoff-beelink-env.sh` (root:root 0600)
+- **Running:** `resume-worker.timer` (every 30 min, enabled 2026-10-06; first watched run: preflight + canary passed, `rows=0`). `job-linkedin-ingest.timer` still disabled (LinkedIn login + watched run pending)
 
 ### Config files changed from defaults
 
@@ -150,12 +152,12 @@ From the Mac, confirm passwords are refused: `ssh -o PubkeyAuthentication=no kis
 
 ### Phase 2b: job-search agent (M1) on this box
 
-- [ ] Sign and push a deploy tag from the Mac, then run `deploy/beelink/provision-debian.sh` (see `deploy/beelink/RUNBOOK.md`, top). Dry-run verified in a clean `debian:trixie` container on this box, 2026-10-04.
-- [ ] Fill `/etc/job-agent/base.env`, open the tunnel (`ssh -N -L 6080:localhost:6080 kishore@beelink`), log in to LinkedIn at `http://localhost:6080/vnc.html`.
+- [x] Sign and push a deploy tag from the Mac, then run `deploy/beelink/provision-debian.sh` (see `deploy/beelink/RUNBOOK.md`, top). Dry-run verified in a clean `debian:trixie` container on this box, 2026-10-04.
+- [x] Fill `/etc/job-agent/base.env` (2026-10-06). [ ] Open the tunnel (`ssh -N -L 6080:localhost:6080 kishore@beelink`), log in to LinkedIn at `http://localhost:6080/vnc.html`.
 - [ ] First watched manual run (RUNBOOK section 8), then enable `job-linkedin-ingest.timer`.
-- [ ] Copy Calibri to `/usr/local/share/fonts/calibri/`
-- [ ] Paste `claude setup-token` output into `/etc/job-agent/claude.env`
-- [ ] Watched `systemctl start resume-worker`, then `systemctl enable --now resume-worker.timer`
+- [x] Copy Calibri to `/usr/local/share/fonts/calibri/` (2026-10-06)
+- [x] Put the subscription token in `/etc/job-agent/claude.env` (2026-10-06)
+- [x] Watched `systemctl start resume-worker`, then `systemctl enable --now resume-worker.timer` (2026-10-06)
 
 ### Phase 3: first browser-automation workload
 

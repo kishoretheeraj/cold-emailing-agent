@@ -454,10 +454,11 @@ Seven workflows live in `.github/workflows/`:
   `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, "JobRight scheduling").
   Pulls fresh recommendations via `jobright.py`, then runs `job_pick.py` to score
   every newly-saved row through three stages (structured filters, embedding similarity,
-  LLM judge) and queue `strong` verdicts for the Beelink resume worker. Production is still the
-  api/zero-tap path (`resume_agent.py` propose+build in the workflow) until rollout sets
-  `RESUME_CLAUDE_BACKEND: subscription` in this workflow; GitHub Actions has no LibreOffice, so
-  api-backend zero-tap builds there already fail at `soffice` (pre-existing) (see `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
+  LLM judge) and queue `strong` verdicts for the Beelink resume worker: the scoring step sets
+  `RESUME_CLAUDE_BACKEND: subscription` (switched 2026-10-06, after the worker was live-verified on
+  the Beelink). Removing that line rolls back to the old api/zero-tap path, which can't build here
+  anyway: GitHub Actions has no LibreOffice, so those builds always failed at `soffice` (see
+  `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
 - **`apply_agent_preview.yml`** (named "Apply Agent Preview") — daily (`37 12 * * *`,
   off the hour), runs `python apply_agent.py --preview` unattended: fills every eligible
   job application's form (Greenhouse/Ashby/Lever hand-mapped, or `browser-use` for
@@ -1057,7 +1058,7 @@ third-party tool was fetched or integrated for that purpose.
 **Subscription transport (2026-10-04).** `resume_agent._call_claude` can run on the operator's
 Claude subscription via `claude_subscription.complete()` (`claude -p`), selected by
 `config.RESUME_CLAUDE_BACKEND` (read from the `RESUME_CLAUDE_BACKEND` env var, default `"api"`;
-`resume-worker.service` sets `"subscription"`, and `jobright_pull.yml` opts in only after rollout).
+`resume-worker.service` and `jobright_pull.yml`'s scoring step set `"subscription"`; live since 2026-10-06).
 Every call strips ambient context (empty cwd + empty `CLAUDE_CONFIG_DIR`, `--strict-mcp-config
 --setting-sources ""`, `--tools ""`; measured ~224K -> ~6.5K tokens per call) and passes the CLI an
 env **allowlist** (`_ENV_ALLOW`), not a denylist: Claude Code prefers an API key, auth token, base
