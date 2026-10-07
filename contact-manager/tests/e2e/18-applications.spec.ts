@@ -29,7 +29,8 @@ test.describe("Applications page", () => {
                 pick_verdict: "strong", pick_score: 0.9, pick_reasoning: "Great fit.",
                 apply_preview: { platform: "ashby", field_values: {},
                   eligibility_answers: { salary: "$170,000 - $215,000" }, screening_answers: {},
-                  salary_basis: "Ashby Co's H-1B filings in CA: 12 product manager filings, FY2023-FY2026" },
+                  salary_basis: "Ashby Co's H-1B filings in CA: 12 product manager filings, FY2023-FY2026",
+                  fill_report: { eligibility: { "What is your desired annual salary?": true } } },
                 apply_blocked_reason: null, approved_at: null,
                 automation_status: "ready_for_review", preview_revision_hash: "c".repeat(64),
                 approved_revision_hash: null,
@@ -174,6 +175,8 @@ test.describe("Applications page", () => {
     await expect(page.getByTestId("salary-basis")).toHaveText(
       "Salary based on Ashby Co's H-1B filings in CA: 12 product manager filings, FY2023-FY2026");
     await expect(page.locator(`input[value="$170,000 - $215,000"]`)).toBeVisible();
+    await expect(page.getByTestId("eligibility-placement")).toContainText(
+      "What is your desired annual salary?: filled");
     await page.waitForTimeout(600); // let the side sheet finish sliding in before the screenshot
     await page.screenshot({ path: "tests/e2e/screenshots/18-applications-salary-basis.png" });
   });

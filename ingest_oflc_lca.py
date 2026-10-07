@@ -58,9 +58,11 @@ COLUMN_ALIASES = {
     # present. Pre-2020 vintages predate the consolidation and have no such
     # column -- absence degrades to "don't filter," not an error.
     "visa_class": ["VISA_CLASS"],
-    # Wage columns feed h1b_wage_stats (salary answers), not employer_h1b_stats.
+    # Wage columns feed h1b_wage_stats (salary answers), not employer_h1b_stats. Header names
+    # checked against the real FY2026 Q3 file on 2026-10-07.
     "job_title": ["JOB_TITLE"],
     "wage_from": ["WAGE_RATE_OF_PAY_FROM", "WAGE_RATE_OF_PAY", "WAGE_RATE_OF_PAY_FROM_1"],
+    "wage_to": ["WAGE_RATE_OF_PAY_TO", "WAGE_RATE_OF_PAY_TO_1"],
     "wage_unit": ["WAGE_UNIT_OF_PAY", "WAGE_UNIT_OF_PAY_1"],
 }
 
@@ -190,13 +192,19 @@ def annualize_wage(raw_wage, raw_unit):
     return int(round(annual))
 
 
-def fold_wage(wage_accumulator, raw_employer_name, job_title, worksite_state, wage_from, wage_unit):
+def fold_wage(wage_accumulator, raw_employer_name, job_title, worksite_state, wage_from, wage_unit,
+              wage_to=None):
     family = role_family_for(job_title)
     if family is None:
         return
     annual = annualize_wage(wage_from, wage_unit)
     if annual is None:
         return
+    # WAGE_RATE_OF_PAY_FROM is the bottom of the offered range when a range was filed (e.g.
+    # $208,000-$327,750); the low end alone would understate pay, so a range counts as its midpoint.
+    annual_to = annualize_wage(wage_to, wage_unit)
+    if annual_to is not None and annual_to > annual:
+        annual = (annual + annual_to) // 2
     normalized = entity_resolution.canonicalize_alias_group(entity_resolution.normalize(raw_employer_name))
     if not normalized:
         return
@@ -291,7 +299,7 @@ def parse_lca_file(path, fiscal_year, accumulator, wage_accumulator=None):
             )
             if wage_accumulator is not None:
                 fold_wage(wage_accumulator, employer_name, _cell("job_title"), _cell("worksite_state"),
-                          _cell("wage_from"), _cell("wage_unit"))
+                          _cell("wage_from"), _cell("wage_unit"), _cell("wage_to"))
             rows_folded += 1
 
         return rows_folded
@@ -473,6 +481,12 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
         db.upsert_employer_h1b_stats(rows[i:i + batch_size])
 
     wage_rows = build_wage_rows(wage_accumulator, ingested_fys)
+    if not wage_rows:
+        # A renamed wage/title column would drop every wage silently and every salary answer
+        # would quietly fall back to the flat one -- count it as an error instead.
+        log.warning("[RESEARCH-C] visa_intel | no wage rows built from ingested files -- check the "
+                    "JOB_TITLE/WAGE_RATE_OF_PAY_FROM/WAGE_UNIT_OF_PAY column aliases")
+        errors += 1
     for i in range(0, len(wage_rows), batch_size):
         if not db.upsert_h1b_wage_stats(wage_rows[i:i + batch_size]):
             errors += 1

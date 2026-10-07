@@ -356,6 +356,18 @@ export function ApplicationDetailSheet({
                           Salary based on {application.apply_preview.salary_basis}
                         </p>
                       ) : null}
+                      {Object.keys(application.apply_preview.fill_report?.eligibility ?? {}).length > 0 ? (
+                        <div data-testid="eligibility-placement" className="flex flex-col gap-0.5">
+                          <p className="text-xs text-fg-dim">Fixed answers went into these questions:</p>
+                          {Object.entries(application.apply_preview.fill_report?.eligibility ?? {}).map(
+                            ([label, filled]) => (
+                              <p key={label} className="text-xs text-fg-muted">
+                                {label}: {filled ? "filled" : "not filled"}
+                              </p>
+                            )
+                          )}
+                        </div>
+                      ) : null}
                       <AnswerEditor
                         title="Eligibility answers"
                         answers={eligibilityAnswers}

@@ -16,8 +16,18 @@ import ingest_oflc_lca as ingest
 @pytest.mark.parametrize("title,expected", [
     ("Product Manager", "product_manager"),
     ("Senior Product Manager, Payments", "product_manager"),
-    ("Associate Product Manager", "product_manager"),
     ("Technical Product Owner", "product_manager"),
+    ("PRODUCT MANAGER III- TECHNICAL", "product_manager"),
+    ("Product Manager II", "product_manager"),
+    ("Senior Associate Product Manager", "product_manager"),
+    # Entry level is its own family (first match wins), so a new-grad role isn't priced on
+    # senior filings.
+    ("Associate Product Manager", "associate_product_manager"),
+    ("Product Manager: New Grad Accelerator", "associate_product_manager"),
+    ("Junior Product Manager", "associate_product_manager"),
+    ("APM - Rotational Program", "associate_product_manager"),
+    ("Product Manager I", "associate_product_manager"),
+    ("New Grad Software Engineer", None),
     ("Director of Product Management", None),
     ("VP, Product Management", None),
     ("Head of Product Management", None),
@@ -53,6 +63,19 @@ def test_fold_wage_keys_by_normalized_employer_family_and_state():
     ingest.fold_wage(acc, "Stripe, Inc.", "Software Engineer", "CA", 200000, "Year")
     ingest.fold_wage(acc, "Stripe, Inc.", "Product Manager", None, 170000, "Year")
     assert acc == {("stripe", "product_manager", "CA"): [180000], ("stripe", "product_manager", None): [170000]}
+
+
+@pytest.mark.parametrize("wage_from,wage_to,expected", [
+    (208000, 327750, 267875),   # NVIDIA, real FY2026 row: a filed range counts as its midpoint
+    (270000, None, 270000),     # PayPal, real FY2026 row: no range
+    (150000, 150000, 150000),
+    (150000, 100000, 150000),   # a malformed "to" below "from" is ignored
+    (150000, "", 150000),
+])
+def test_fold_wage_uses_the_midpoint_of_a_filed_range(wage_from, wage_to, expected):
+    acc = {}
+    ingest.fold_wage(acc, "Acme", "Product Manager", "CA", wage_from, "Year", wage_to)
+    assert acc == {("acme", "product_manager", "CA"): [expected]}
 
 
 def test_build_wage_rows_pools_employer_and_market_levels():
@@ -126,6 +149,38 @@ def test_run_upserts_wage_rows_after_employer_rows(mocker, tmp_path):
     keys = {(r["normalized_name"], r["worksite_state"]) for r in upsert_wages.call_args[0][0]}
     assert keys == {("stripe", "CA"), ("stripe", "*"), ("*", "CA"), ("*", "*")}
     assert record.call_args[0][3] == 0  # errors
+
+
+def test_run_counts_zero_wage_rows_as_an_error(mocker, caplog):
+    """A renamed wage column would drop every wage silently; it must show up as an error."""
+    mocker.patch.object(ingest, "current_dol_fiscal_year", return_value=2026)
+    mocker.patch.object(ingest, "discover_lca_file_urls", return_value={2026: "https://example.test/fy26.xlsx"})
+    mocker.patch.object(ingest, "download_file")
+    mocker.patch.object(ingest, "parse_lca_file",
+                        side_effect=lambda path, fy, acc, wages: ingest.fold_row(acc, "Stripe, Inc.", fy) or 1)
+    mocker.patch.object(ingest.db, "upsert_employer_h1b_stats")
+    mocker.patch.object(ingest.db, "upsert_h1b_wage_stats", return_value=True)
+    record = mocker.patch.object(ingest.db, "record_run")
+
+    ingest.run(fiscal_years_back=1)
+
+    assert record.call_args[0][3] == 1
+    assert any("no wage rows" in r.getMessage() for r in caplog.records)
+
+
+def test_parse_lca_file_reads_the_real_fy2026_wage_headers(tmp_path):
+    # Header names as published in LCA_Disclosure_Data_FY2026_Q3.xlsx (checked 2026-10-07).
+    path = tmp_path / "fy2026.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["CASE_STATUS", "VISA_CLASS", "JOB_TITLE", "SOC_CODE", "EMPLOYER_NAME", "WORKSITE_STATE",
+               "WAGE_RATE_OF_PAY_FROM", "WAGE_RATE_OF_PAY_TO", "WAGE_UNIT_OF_PAY", "PW_WAGE_LEVEL"])
+    ws.append(["Certified", "H-1B", "Product Manager", "11-2021", "NVIDIA Corporation", "CA",
+               208000, 327750, "Year", "II"])
+    wb.save(path)
+    wages = {}
+    ingest.parse_lca_file(str(path), 2026, {}, wages)
+    assert wages == {("nvidia", "product_manager", "CA"): [267875]}
 
 
 # ── db accessors ─────────────────────────────────────────────────────────────────

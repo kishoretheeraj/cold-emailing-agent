@@ -378,6 +378,13 @@ _ELIGIBILITY_QUESTION_PATTERNS = {
     "veteran_status": re.compile(r"veteran", re.IGNORECASE),
     "disability_status": re.compile(r"disability", re.IGNORECASE),
     "lgbtq_identity": re.compile(r"lgbtq|sexual orientation", re.IGNORECASE),
+    # Desired/expected pay only. A "current salary" or "salary history" question must never get
+    # the desired range -- that would be a false statement on the application.
+    "salary": re.compile(
+        r"^(?!.*\b(current|currently|present|previous|prior|last|past|history)\b)"
+        r"(?=.*\b(salary|compensation|pay)\b)"
+        r"(?=.*\b(desired|expected|expecting|expectations?|target|requirements?|requested|looking for)\b)",
+        re.IGNORECASE),
 }
 
 
@@ -743,7 +750,7 @@ def _process_one_preview(job):
                 # Per-job H-1B wage range replaces the operator's flat "salary" answer for this row
                 # only; stored with the preview so submit() replays exactly what was reviewed.
                 eligibility_answers["salary"] = salary["text"]
-            _fill_eligibility_answers(page, eligibility_answers)
+            eligibility_report = _fill_eligibility_answers(page, eligibility_answers)
             screening_answers = _generate_screening_answers(page, job)
             question_report = _fill_screening_questions(page, screening_answers)
             db.heartbeat_application(job_id, lease)
@@ -752,6 +759,9 @@ def _process_one_preview(job):
             _log_inventory(job, inventory)
             if fill_report is not None:
                 fill_report["questions"] = question_report
+                # Which on-page question each fixed answer went into ({label: filled}), so the reviewer
+                # sees e.g. that the salary range landed in "desired salary" and nowhere else.
+                fill_report["eligibility"] = eligibility_report
                 fill_report["required_unfilled"] = _required_unfilled(inventory)
                 if fill_report["required_unfilled"]:
                     reason = ("Preview couldn't fill required questions: "

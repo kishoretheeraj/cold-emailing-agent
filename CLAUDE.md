@@ -293,11 +293,14 @@ fuse `"Amazon.com"` into `"amazoncom"`, permanently unreachable from the
 `"amazon com services"` alias-group member.
 
 **Offered wages (`h1b_wage_stats`, migration `20261007000000`, 2026-10-07).** The same LCA files
-also carry `JOB_TITLE`/`WAGE_RATE_OF_PAY_FROM`/`WAGE_UNIT_OF_PAY`; `ingest_oflc_lca.fold_wage`
-annualizes them (hour x2080, week x52, bi-weekly x26, month x12; outside $30K-$1M dropped) for titles
-in `config.H1B_WAGE_ROLE_FAMILIES` (today only `product_manager`, leadership titles excluded) and
+also carry `JOB_TITLE`/`WAGE_RATE_OF_PAY_FROM`/`WAGE_RATE_OF_PAY_TO`/`WAGE_UNIT_OF_PAY` (header names
+checked against the real FY2026 Q3 file); `ingest_oflc_lca.fold_wage` annualizes them (hour x2080, week
+x52, bi-weekly x26, month x12; outside $30K-$1M dropped; a filed range counts as its midpoint, since
+`FROM` alone is the low end) for titles in `config.H1B_WAGE_ROLE_FAMILIES` (`associate_product_manager`
+first, then `product_manager`; first match wins, leadership titles excluded) and
 `build_wage_rows` writes p25/median/p75 per `(normalized_name, role_family, worksite_state)` with
-`'*'` market rows (all employers / all states). Keyed by the same `normalized_name` as
+`'*'` market rows (all employers / all states). Zero wage rows from an ingest that read files is logged
+and counted as an error (a renamed column would otherwise silently empty the table). Keyed by the same `normalized_name` as
 `employer_h1b_stats`. Read by `salary_estimate.py` (see Auto-apply). Same governance as the rest of
 this section: a missing row means no filings observed, never a claim about pay.
 
@@ -1427,7 +1430,10 @@ lists every visible control (plus file inputs) with its question label, kind
 page could not be read. It replaced `get_by_text("?")`, which answered page headings and missed
 starless questions. Order in both passes: eligibility (`_fill_eligibility_answers`: inventory fields
 whose label matches `_ELIGIBILITY_QUESTION_PATTERNS`, or contains a user-added
-`applicant_eligibility` key such as `"desired salary"`), then screening. `_generate_screening_answers`
+`applicant_eligibility` key such as `"privacy policy"`), then screening. The `salary` key has its own
+pattern: desired/expected/target pay only, never a label with current/previous/prior/last/past/history
+(a desired range in "current salary" would be a false statement). `fill_report["eligibility"]` records
+`{label: filled}` and the detail sheet lists it. `_generate_screening_answers`
 answers only **required, still-empty** non-file fields (choices snapped to a real option via
 `_pick_option`, which also maps "decline to self-identify" to any decline wording); a
 `NEEDS HUMAN REVIEW` answer is stored but never typed. `_fill_screening_questions` replays stored

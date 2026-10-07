@@ -315,6 +315,8 @@ export type JobApplicationApplyPreview = {
   // Where the per-job salary range came from (apply_agent.py / salary_estimate.py); absent when
   // the flat applicant_eligibility answer was used.
   salary_basis?: string;
+  // What the preview pass actually filled; eligibility is {on-page question label: filled}.
+  fill_report?: { eligibility?: Record<string, boolean> };
 };
 
 export type SubmissionEvidence = {

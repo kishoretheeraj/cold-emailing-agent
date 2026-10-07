@@ -594,8 +594,18 @@ APPLY_AGENT_FIELD_TIMEOUT_MS = 3000
 
 # ── H-1B wage-based salary answers ────────────────────────────────────────────────
 # Job titles folded into h1b_wage_stats by ingest_oflc_lca.py, and matched against a job's role by
-# salary_estimate.py. "exclude" keeps leadership titles out of an individual-contributor PM range.
+# salary_estimate.py. First matching family wins, so entry-level comes first: priced against all PM
+# filings, "Product Manager: New Grad Accelerator" at Stripe got Stripe's mostly-senior $230K-$270K.
+# "exclude" keeps leadership titles out of an individual-contributor PM range.
 H1B_WAGE_ROLE_FAMILIES = {
+    "associate_product_manager": {
+        "include": (r"\b(associate|junior|entry[- ]level|new grad|graduate|rotational)\b.*"
+                    r"\bproduct\s+(manager|management|owner)\b"
+                    r"|\bproduct\s+(manager|management|owner)\b.*"
+                    r"\b(associate|junior|entry[- ]level|new grad|graduate|rotational)\b"
+                    r"|\bapm\b|\bproduct manager,?\s*(i|1)\b(?!\s*[-/]?\s*(ii|iii|2|3))"),
+        "exclude": r"\b(director|vice president|vp|head|chief|cpo|svp|evp|senior|sr|lead|principal|staff)\b",
+    },
     "product_manager": {
         "include": r"\bproduct\s+(manager|management|owner|lead)\b",
         "exclude": r"\b(director|vice president|vp|head|chief|cpo|svp|evp)\b",
