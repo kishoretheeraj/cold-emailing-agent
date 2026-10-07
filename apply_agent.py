@@ -18,6 +18,7 @@ import ats_platform
 import candidate_profile
 import config
 import db
+import salary_estimate
 from emailer import _call_claude
 
 log = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ _FORM_INVENTORY_JS = r"""() => {
     const raw = rawLabel(el);
     const f = {key: sel(el) || ('field:' + out.length), selector: sel(el), label: clean(raw),
                required: el.required || el.getAttribute('aria-required') === 'true' || starred(raw),
-               options: [], kind: el.tagName.toLowerCase(), filled: false};
+               options: [], kind: el.tagName.toLowerCase(), input_type: type, filled: false};
     if (type === 'file') { f.kind = 'file'; f.filled = el.files && el.files.length > 0; }
     else if (el.tagName === 'SELECT') {
       f.options = Array.from(el.options).filter((o) => o.value !== '').map((o) => clean(o.text));
@@ -206,11 +207,21 @@ def _pick_option(options, value):
     return None
 
 
+def _numbers_in(value):
+    # "$140,000 - $175,000" -> [140000, 175000]; a number-only box gets their midpoint.
+    return [int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", str(value or "")) if n.replace(",", "")]
+
+
 def _fill_field(page, field, value):
     kind = field.get("kind")
     timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
     try:
-        if kind in ("input", "textarea"):
+        if kind == "input" and field.get("input_type") == "number":
+            numbers = _numbers_in(value)
+            if not numbers:
+                return False
+            page.locator(field["selector"]).first.fill(str(sum(numbers) // len(numbers)), timeout=timeout)
+        elif kind in ("input", "textarea"):
             page.locator(field["selector"]).first.fill(str(value), timeout=timeout)
         elif kind == "select":
             option = _pick_option(field.get("options"), value)
@@ -727,6 +738,11 @@ def _process_one_preview(job):
                     return "blocked"
             db.heartbeat_application(job_id, lease)
             eligibility_answers = _eligibility_answers()
+            salary = salary_estimate.estimate(job)
+            if salary:
+                # Per-job H-1B wage range replaces the operator's flat "salary" answer for this row
+                # only; stored with the preview so submit() replays exactly what was reviewed.
+                eligibility_answers["salary"] = salary["text"]
             _fill_eligibility_answers(page, eligibility_answers)
             screening_answers = _generate_screening_answers(page, job)
             question_report = _fill_screening_questions(page, screening_answers)
@@ -755,6 +771,8 @@ def _process_one_preview(job):
             }
             if fill_report is not None:
                 preview["fill_report"] = fill_report
+            if salary:
+                preview["salary_basis"] = salary["basis"]
             if not db.complete_preview(job_id, lease, preview, signature):
                 log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded "
                             f"(row was recovered by lease recovery)")

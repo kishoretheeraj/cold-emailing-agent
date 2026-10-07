@@ -12,6 +12,7 @@ a fresh fiscal year's ingest.
 import io
 import logging
 import re
+import statistics
 import time
 import urllib.request
 import zipfile
@@ -19,6 +20,7 @@ from datetime import datetime, timezone
 
 import openpyxl
 
+import config
 import db
 import entity_resolution
 
@@ -56,6 +58,10 @@ COLUMN_ALIASES = {
     # present. Pre-2020 vintages predate the consolidation and have no such
     # column -- absence degrades to "don't filter," not an error.
     "visa_class": ["VISA_CLASS"],
+    # Wage columns feed h1b_wage_stats (salary answers), not employer_h1b_stats.
+    "job_title": ["JOB_TITLE"],
+    "wage_from": ["WAGE_RATE_OF_PAY_FROM", "WAGE_RATE_OF_PAY", "WAGE_RATE_OF_PAY_FROM_1"],
+    "wage_unit": ["WAGE_UNIT_OF_PAY", "WAGE_UNIT_OF_PAY_1"],
 }
 
 REQUIRED_FIELDS = {"employer_name"}
@@ -151,10 +157,91 @@ def fold_row(accumulator, raw_employer_name, fiscal_year, soc_code=None,
     entry["wage_level_counts"][normalize_wage_level(wage_level)] += 1
 
 
-def parse_lca_file(path, fiscal_year, accumulator):
+# ── Offered wages per role family (h1b_wage_stats) ──────────────────────────────
+
+_WAGE_UNIT_MULTIPLIER = {"year": 1, "month": 12, "bi-weekly": 26, "biweekly": 26, "week": 52, "hour": 2080}
+_MIN_ANNUAL_WAGE = 30000
+_MAX_ANNUAL_WAGE = 1000000
+MARKET_KEY = "*"
+
+
+def role_family_for(title):
+    for family, pattern in config.H1B_WAGE_ROLE_FAMILIES.items():
+        if title and re.search(pattern["include"], str(title), re.IGNORECASE) \
+                and not re.search(pattern["exclude"], str(title), re.IGNORECASE):
+            return family
+    return None
+
+
+def annualize_wage(raw_wage, raw_unit):
+    if raw_wage is None or raw_wage == "":
+        return None
+    try:
+        wage = float(re.sub(r"[^0-9.]", "", str(raw_wage)))
+    except ValueError:
+        return None
+    unit = str(raw_unit or "year").strip().lower()
+    multiplier = _WAGE_UNIT_MULTIPLIER.get(unit)
+    if multiplier is None:
+        return None
+    annual = wage * multiplier
+    if not _MIN_ANNUAL_WAGE <= annual <= _MAX_ANNUAL_WAGE:
+        return None
+    return int(round(annual))
+
+
+def fold_wage(wage_accumulator, raw_employer_name, job_title, worksite_state, wage_from, wage_unit):
+    family = role_family_for(job_title)
+    if family is None:
+        return
+    annual = annualize_wage(wage_from, wage_unit)
+    if annual is None:
+        return
+    normalized = entity_resolution.canonicalize_alias_group(entity_resolution.normalize(raw_employer_name))
+    if not normalized:
+        return
+    state = str(worksite_state or "").strip().upper()[:2] or None
+    wage_accumulator.setdefault((normalized, family, state), []).append(annual)
+
+
+def _quartiles(values):
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0], ordered[0], ordered[0]
+    q1, median, q3 = statistics.quantiles(ordered, n=4, method="inclusive")
+    return int(round(q1)), int(round(median)), int(round(q3))
+
+
+def build_wage_rows(wage_accumulator, ingested_fiscal_years):
+    """One row per (employer, role family, state), plus each employer's all-states row and
+    market-wide rows (normalized_name MARKET_KEY) per state and nationally -- the fallbacks
+    salary_estimate.py walks when an employer has too few filings."""
+    pooled = {}
+    for (employer, family, state), wages in wage_accumulator.items():
+        keys = [(employer, family, MARKET_KEY), (MARKET_KEY, family, MARKET_KEY)]
+        if state:
+            keys += [(employer, family, state), (MARKET_KEY, family, state)]
+        for key in keys:
+            pooled.setdefault(key, []).extend(wages)
+
+    fiscal_years = sorted(set(ingested_fiscal_years))
+    updated_at = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for (employer, family, state), wages in pooled.items():
+        p25, median, p75 = _quartiles(wages)
+        rows.append({
+            "normalized_name": employer, "role_family": family, "worksite_state": state,
+            "filings": len(wages), "wage_p25": p25, "wage_median": median, "wage_p75": p75,
+            "fiscal_years": fiscal_years, "updated_at": updated_at,
+        })
+    return rows
+
+
+def parse_lca_file(path, fiscal_year, accumulator, wage_accumulator=None):
     """
     Streams one LCA disclosure workbook into accumulator (dict keyed by
-    normalized employer name). Raises MissingRequiredColumnError if
+    normalized employer name), and offered wages for config.H1B_WAGE_ROLE_FAMILIES titles into
+    wage_accumulator when given. Raises MissingRequiredColumnError if
     employer_name can't be resolved -- that's the one field a caller should
     treat as a hard failure for this file. Every other field degrades.
     """
@@ -202,6 +289,9 @@ def parse_lca_file(path, fiscal_year, accumulator):
                 worksite_state=_cell("worksite_state"),
                 wage_level=_cell("wage_level"),
             )
+            if wage_accumulator is not None:
+                fold_wage(wage_accumulator, employer_name, _cell("job_title"), _cell("worksite_state"),
+                          _cell("wage_from"), _cell("wage_unit"))
             rows_folded += 1
 
         return rows_folded
@@ -344,6 +434,7 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
 
     urls_by_fy = discover_lca_file_urls()
     accumulator = {}
+    wage_accumulator = {}
     ingested_fys = []
     errors = 0
 
@@ -360,7 +451,7 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
             dest = os.path.join(tmpdir, f"oflc_lca_fy{fy}.xlsx")
             try:
                 download_file(url, dest)
-                rows_folded = parse_lca_file(dest, fy, accumulator)
+                rows_folded = parse_lca_file(dest, fy, accumulator, wage_accumulator)
                 ingested_fys.append(fy)
                 log.info(f"[RESEARCH-C] visa_intel | FY{fy} | rows_folded={rows_folded}")
             except MissingRequiredColumnError as exc:
@@ -381,9 +472,15 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
     for i in range(0, len(rows), batch_size):
         db.upsert_employer_h1b_stats(rows[i:i + batch_size])
 
+    wage_rows = build_wage_rows(wage_accumulator, ingested_fys)
+    for i in range(0, len(wage_rows), batch_size):
+        if not db.upsert_h1b_wage_stats(wage_rows[i:i + batch_size]):
+            errors += 1
+
     status = "success" if errors == 0 else "success"  # partial FY misses are non-fatal
     log.info(
-        f"[RESEARCH-C] visa_intel | DONE | fys={ingested_fys} | employers={len(rows)} | errors={errors}"
+        f"[RESEARCH-C] visa_intel | DONE | fys={ingested_fys} | employers={len(rows)} | "
+        f"wage_rows={len(wage_rows)} | errors={errors}"
     )
     db.record_run(status, len(rows), 0, errors, round(time.time() - start), source="visa_ingest_lca")
 

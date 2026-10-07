@@ -29,6 +29,7 @@ def _lease_defaults(mocker):
     # tests that aren't about questions don't trip the required-question gate.
     mocker.patch("apply_agent._form_inventory", return_value=[])
     mocker.patch("apply_agent.db.load_prompts", return_value={})
+    mocker.patch("apply_agent.salary_estimate.estimate", return_value=None)
 
 
 def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
@@ -508,6 +509,26 @@ def test_fill_field_combobox_types_and_presses_enter():
     box.click.assert_called_once()
     box.fill.assert_called_once_with("United States", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
     page.keyboard.press.assert_called_once_with("Enter")
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("$140,000 - $175,000", "157500"),
+    ("Flexible, $100,000+ depending on location", "100000"),
+    ("150000", "150000"),
+])
+def test_fill_field_number_input_gets_the_midpoint(value, expected):
+    page = MagicMock()
+    field = dict(_field("Desired salary", selector="#sal"), input_type="number")
+    assert apply_agent._fill_field(page, field, value) is True
+    page.locator.return_value.first.fill.assert_called_once_with(
+        expected, timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+
+
+def test_fill_field_number_input_without_a_number_is_not_filled():
+    page = MagicMock()
+    field = dict(_field("Desired salary"), input_type="number")
+    assert apply_agent._fill_field(page, field, "Negotiable") is False
+    page.locator.assert_not_called()
 
 
 def test_fill_field_never_raises_and_skips_files():
@@ -1509,6 +1530,37 @@ def test_preview_logs_the_form_inventory_without_values(mocker, caplog):
     line = next(r.getMessage() for r in caplog.records if "[APPLY-FORM]" in r.getMessage())
     assert '"label": "Email"' in line
     assert "secret@example.com" not in line
+
+
+def test_preview_answers_salary_from_h1b_wages_and_stores_the_basis(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent.db.load_prompts", return_value={
+        "applicant_eligibility": '{"salary": "Flexible, $100,000+", "gender": "Male"}'})
+    mocker.patch("apply_agent.salary_estimate.estimate", return_value={
+        "text": "$170,000 - $215,000", "low": 170000, "high": 215000, "basis": "Stripe's H-1B filings in CA"})
+    fill_eligibility = apply_agent._fill_eligibility_answers
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+
+    assert apply_agent._process_one_preview(_preview_job()) == "filled"
+
+    expected = {"salary": "$170,000 - $215,000", "gender": "Male"}
+    assert fill_eligibility.call_args[0][1] == expected
+    preview = complete.call_args[0][2]
+    assert preview["eligibility_answers"] == expected
+    assert preview["salary_basis"] == "Stripe's H-1B filings in CA"
+
+
+def test_preview_keeps_the_flat_salary_answer_without_h1b_data(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent.db.load_prompts", return_value={
+        "applicant_eligibility": '{"salary": "Flexible, $100,000+"}'})
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+
+    apply_agent._process_one_preview(_preview_job())
+
+    preview = complete.call_args[0][2]
+    assert preview["eligibility_answers"] == {"salary": "Flexible, $100,000+"}
+    assert "salary_basis" not in preview
 
 
 def test_preview_opens_the_application_url_not_the_posting(mocker):

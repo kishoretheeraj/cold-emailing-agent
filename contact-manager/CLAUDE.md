@@ -383,7 +383,8 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 81** (vitest: 713 across 47 files, playwright: 81). Beelink M2 Task 9
+- **Current test count: 83** (vitest: 781 across 49 files, playwright: 83; 2026-10-07 added
+  Re-prepare on ready_for_review rows and the detail sheet's salary-basis line). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more

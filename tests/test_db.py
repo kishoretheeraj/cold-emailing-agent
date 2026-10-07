@@ -250,3 +250,28 @@ def test_log_api_usage_raises_on_failure(fake_client):
             module="emailer", action=None, model="claude-sonnet-4-6",
             input_tokens=1, output_tokens=1, cost_usd=0.0001,
         )
+
+
+# ── upsert_prompt ──────────────────────────────────────────────────────────────────
+
+def test_upsert_prompt_updates_the_existing_row_by_key(fake_client):
+    chain = fake_client.table.return_value.update.return_value.eq.return_value
+    chain.execute.return_value.data = [{"key": "applicant_eligibility"}]
+    assert db.upsert_prompt("applicant_eligibility", "{}") is True
+    fields = fake_client.table.return_value.update.call_args[0][0]
+    assert fields["value"] == "{}" and "updated_at" in fields
+    # Regression: an upsert carried no display_title and Postgres rejected it on NOT NULL even
+    # for an existing key (checked on the proposed insert row before the conflict resolves).
+    fake_client.table.return_value.upsert.assert_not_called()
+    fake_client.table.return_value.update.return_value.eq.assert_called_once_with("key", "applicant_eligibility")
+
+
+def test_upsert_prompt_returns_false_for_an_unseeded_key(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = []
+    assert db.upsert_prompt("voice_dna", "x") is False
+
+
+def test_upsert_prompt_is_best_effort(mocker):
+    mocker.patch.object(db, "get_client", side_effect=RuntimeError("db down"))
+    mocker.patch.object(db, "_retry", side_effect=lambda fn: fn())
+    assert db.upsert_prompt("voice_dna", "x") is False

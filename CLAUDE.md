@@ -43,6 +43,7 @@ resume_build.py
 resume_scrub.py
 resume/
 candidate_profile.py
+salary_estimate.py
 claude_subscription.py
 usage_tracking.py
 supabase/migrations/
@@ -290,6 +291,15 @@ governance check for that company. `entity_resolution.normalize()` replaces
 (never deletes) punctuation for the same reason — deleting a period would
 fuse `"Amazon.com"` into `"amazoncom"`, permanently unreachable from the
 `"amazon com services"` alias-group member.
+
+**Offered wages (`h1b_wage_stats`, migration `20261007000000`, 2026-10-07).** The same LCA files
+also carry `JOB_TITLE`/`WAGE_RATE_OF_PAY_FROM`/`WAGE_UNIT_OF_PAY`; `ingest_oflc_lca.fold_wage`
+annualizes them (hour x2080, week x52, bi-weekly x26, month x12; outside $30K-$1M dropped) for titles
+in `config.H1B_WAGE_ROLE_FAMILIES` (today only `product_manager`, leadership titles excluded) and
+`build_wage_rows` writes p25/median/p75 per `(normalized_name, role_family, worksite_state)` with
+`'*'` market rows (all employers / all states). Keyed by the same `normalized_name` as
+`employer_h1b_stats`. Read by `salary_estimate.py` (see Auto-apply). Same governance as the rest of
+this section: a missing row means no filings observed, never a claim about pay.
 
 Full schema, entity-resolution calibration notes, and ingestion details:
 see docs/python/db-schema.md.
@@ -568,6 +578,8 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_lifecycle_rpcs_migration.py` — static SQL assertions for the 2026-10-04 lifecycle RPCs/grants (functional checks live in `supabase/tests/lifecycle_rpcs_dryrun.sql`).
 - `tests/test_application_leases_db.py` — `db.py` lifecycle RPC wrappers (exact RPC names/params, claim re-read recovery, never `table().update`).
 - `tests/test_requeue_preview_migration.py` — static SQL assertions for migration `20261006000000` (`requeue_preview` from `ready_for_review`).
+- `tests/test_h1b_wage_stats.py` — wage folding/annualizing, role families, pooled market rows, `run()` upsert order, `h1b_wage_stats` db accessors, migration `20261007000000`.
+- `tests/test_salary_estimate.py` — `salary_estimate.estimate()` level walk, floor/rounding, exact-or-confirmed employer key (never fuzzy), never raises.
 - `tests/test_submission_reconciler.py` / `tests/test_gmail_inbox_receipts.py` — receipt matching (window, reply skip, ambiguity, escalation) and the read-only All Mail fetch.
 - `tests/test_claude_subscription.py` — `claude_subscription.complete()` argv, env allowlist, process-group kill on timeout, error mapping (all subprocess mocked).
 - `tests/test_resume_subscription_migration.py` — static SQL assertions for migration `20261005000000` (`billing` CHECK, `resume_error` grants).
@@ -1426,6 +1438,21 @@ unreadable form fails closed) sends a preview to `needs_input` naming the questi
 only view of a live form's structure. `_application_url` opens Ashby `/application` and Lever `/apply`
 instead of the posting page. `requeue_preview` (migration `20261006000000`) also accepts
 `ready_for_review` and clears `apply_preview`; the UI shows "Re-prepare" on those rows too.
+
+**Salary answers from H-1B wages (2026-10-07)**: the preview calls `salary_estimate.estimate(job)`
+and, when it returns a range, overrides the `salary` eligibility answer for that row only (stored in
+`apply_preview.eligibility_answers`, so submit replays what was reviewed) and stores
+`apply_preview.salary_basis` (shown in the detail sheet). The range is the 25th-75th percentile of
+offered H-1B wages from `h1b_wage_stats`, walked from most specific: this employer in the posting's
+state, this employer anywhere (both need `SALARY_MIN_EMPLOYER_FILINGS`), all employers in that state,
+all employers nationally (`SALARY_MIN_MARKET_FILINGS`); rounded to $5,000 and never below
+`config.SALARY_FLOOR_USD` (100,000, the operator's floor). The employer key is the exact normalized
+name or a company_intel match that is `auto`/`confirmed` -- **no fuzzy fallback** (single-token names
+like "AXS"/"nCino" never auto-match "AXS Group"/"nCino Opco"; a wrong employer would anchor on someone
+else's pay), so an unmatched employer gets market data. No role family or no data: the operator's flat
+`applicant_eligibility` `salary` answer stays. A number-only input gets the range midpoint
+(`_numbers_in`). `upsert_prompt` now UPDATEs by key (its upsert always failed NOT NULL on
+`display_title`) and returns False for an unseeded key.
 
 **Known follow-up, still not fixed**: a *cover-letter* attach failure is non-blocking (only the
 resume is required); required attachments are no longer silently swallowed. The ARMED/approval gates

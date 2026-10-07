@@ -351,6 +351,11 @@ export function ApplicationDetailSheet({
                           reset approval to edit them again.
                         </p>
                       ) : null}
+                      {application.apply_preview.salary_basis ? (
+                        <p data-testid="salary-basis" className="text-xs text-fg-dim">
+                          Salary based on {application.apply_preview.salary_basis}
+                        </p>
+                      ) : null}
                       <AnswerEditor
                         title="Eligibility answers"
                         answers={eligibilityAnswers}
