@@ -634,13 +634,22 @@ export function ApplicationsPage() {
                               {blockedReasons[app.id] ?? app.apply_blocked_reason}
                             </span>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setConfirmingApplication(app)}
-                            className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
-                          >
-                            Approve & Submit
-                          </button>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingApplication(app)}
+                              className="px-2 py-1 bg-emerald-600 text-white rounded-md text-xs w-fit"
+                            >
+                              Approve & Submit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRequeue(app.id)}
+                              className="px-2 py-1 bg-surface-2 text-fg-muted rounded-md text-xs border border-border hover:text-fg w-fit"
+                            >
+                              Re-prepare
+                            </button>
+                          </div>
                         </div>
                       ) : automationStatus === "failed_retryable" ? (
                         <div className="flex flex-col gap-1">

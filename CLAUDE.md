@@ -567,6 +567,7 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_automation_status_migration.py` — static assertions over the automation_status migration's SQL text (status CHECK, old-overload drop, anon grants never covering the hash columns or `approved_at`, trigger, RPC guards); there is no live DB in the test suite.
 - `tests/test_lifecycle_rpcs_migration.py` — static SQL assertions for the 2026-10-04 lifecycle RPCs/grants (functional checks live in `supabase/tests/lifecycle_rpcs_dryrun.sql`).
 - `tests/test_application_leases_db.py` — `db.py` lifecycle RPC wrappers (exact RPC names/params, claim re-read recovery, never `table().update`).
+- `tests/test_requeue_preview_migration.py` — static SQL assertions for migration `20261006000000` (`requeue_preview` from `ready_for_review`).
 - `tests/test_submission_reconciler.py` / `tests/test_gmail_inbox_receipts.py` — receipt matching (window, reply skip, ambiguity, escalation) and the read-only All Mail fetch.
 - `tests/test_claude_subscription.py` — `claude_subscription.complete()` argv, env allowlist, process-group kill on timeout, error mapping (all subprocess mocked).
 - `tests/test_resume_subscription_migration.py` — static SQL assertions for migration `20261005000000` (`billing` CHECK, `resume_error` grants).
@@ -1403,10 +1404,28 @@ selector first with a label-regex fallback, and each `fill_<platform>` returns `
 gates hand-mapped platforms: a preview missing any releases to `needs_input` with the reason (no
 `complete_preview`), and `submit()` raises pre-click (-> `failed_retryable`, never `needs_confirmation`).
 The stored preview carries `fill_report`. Per-field timeout is `APPLY_AGENT_FIELD_TIMEOUT_MS` (3s) so
-a missing field no longer stalls a job for Playwright's 30s default. These selectors are **not yet
-live-verified** against real forms (live form access pending the operator). Generic/browser-use
-platforms do not report and skip this gate. `locator.count()` is an instant snapshot, so a slow-rendering
-form degrades to `needs_input` (the safe direction) -- check this in the first live run.
+a missing field no longer stalls a job for Playwright's 30s default. Live-verified 2026-10-06 (run
+37501451899): 7/8 forms got name/email/resume. Generic/browser-use platforms do not report and skip
+this gate.
+
+**Questions come from the form inventory (2026-10-06)**: `_form_inventory(page)` (`_FORM_INVENTORY_JS`)
+lists every visible control (plus file inputs) with its question label, kind
+(`input`/`textarea`/`select`/`radio`/`checkbox`/`combobox`/`file`), required flag (`required`,
+`aria-required`, or a trailing `*`), options, `filled`, and a selector -- never values; `None` means the
+page could not be read. It replaced `get_by_text("?")`, which answered page headings and missed
+starless questions. Order in both passes: eligibility (`_fill_eligibility_answers`: inventory fields
+whose label matches `_ELIGIBILITY_QUESTION_PATTERNS`, or contains a user-added
+`applicant_eligibility` key such as `"desired salary"`), then screening. `_generate_screening_answers`
+answers only **required, still-empty** non-file fields (choices snapped to a real option via
+`_pick_option`, which also maps "decline to self-identify" to any decline wording); a
+`NEEDS HUMAN REVIEW` answer is stored but never typed. `_fill_screening_questions` replays stored
+(possibly human-edited) answers by matching the label to the inventory, falling back to
+`_set_field_by_label`. After filling, any required field still empty (`_required_unfilled`; an
+unreadable form fails closed) sends a preview to `needs_input` naming the questions, and makes
+`submit()` raise pre-click. Each preview logs `[APPLY-FORM]` (labels/kinds/flags, no values) -- the
+only view of a live form's structure. `_application_url` opens Ashby `/application` and Lever `/apply`
+instead of the posting page. `requeue_preview` (migration `20261006000000`) also accepts
+`ready_for_review` and clears `apply_preview`; the UI shows "Re-prepare" on those rows too.
 
 **Known follow-up, still not fixed**: a *cover-letter* attach failure is non-blocking (only the
 resume is required); required attachments are no longer silently swallowed. The ARMED/approval gates
