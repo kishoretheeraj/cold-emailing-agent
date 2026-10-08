@@ -1,0 +1,52 @@
+name: Apply Status
+
+# Read-only snapshot of the job-application pipeline (counts, the first-10 funnel, which
+# applicant_eligibility keys exist). Per-row detail prints only when the repo is private:
+# Actions logs are world-readable on a public repo. Never writes. See scripts/apply_status.py.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-status
+  cancel-in-progress: false
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check repo visibility
+        id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          private="$(gh api "repos/$GITHUB_REPOSITORY" --jq .private 2>/dev/null || true)"
+          if [ "$private" != "true" ]; then private=false; fi
+          echo "private=$private" >> "$GITHUB_OUTPUT"
+
+      - name: Print pipeline status
+        run: python scripts/apply_status.py
+        env:
+          REPO_PRIVATE: ${{ steps.visibility.outputs.private }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}

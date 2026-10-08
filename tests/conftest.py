@@ -29,6 +29,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch):
+    # agent.run() calls email_verify.verify(), which resolves MX records. Unmocked, a test did a
+    # real lookup and passed or failed depending on the machine's network. Failing fast here makes
+    # verify() return "unknown" (never a block); tests that need DNS answers patch resolve().
+    import dns.resolver
+
+    def _blocked(*args, **kwargs):
+        raise dns.resolver.NoNameservers()
+
+    monkeypatch.setattr(dns.resolver, "resolve", _blocked)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_lease_recovery_in_monitor(request):
     # monitor.run() calls recover_stale_leases best-effort; unmocked, it would hit the fake
     # Supabase URL and sit in db._retry's backoff sleeps for every run() test.

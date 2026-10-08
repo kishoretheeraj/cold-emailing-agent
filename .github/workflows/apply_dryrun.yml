@@ -1,0 +1,73 @@
+name: Apply Dry Run
+
+# Read-only probe of real application forms: opens each job's form, fills only deterministic
+# data (contact fields, resume/cover letter, fixed eligibility answers) and prints what landed
+# and which required questions stay empty. Never writes to the database, never calls Claude,
+# never clicks Submit, and refuses to run if APPLY_AGENT_ARMED is set. Company names and page
+# HTML print only when the repo is private. See scripts/apply_dryrun.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_ids:
+        description: 'Comma-separated job_applications ids (max 20)'
+        required: true
+        type: string
+      dump_html:
+        description: 'Print each form page as gzip+base64 HTML (private repo only)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-dryrun
+  cancel-in-progress: false
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-apply.txt
+          playwright install --with-deps chromium
+
+      - name: Check repo visibility
+        id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          private="$(gh api "repos/$GITHUB_REPOSITORY" --jq .private 2>/dev/null || true)"
+          if [ "$private" != "true" ]; then private=false; fi
+          echo "private=$private" >> "$GITHUB_OUTPUT"
+
+      - name: Probe application forms
+        run: |
+          if [ "$DUMP_HTML" = "true" ]; then
+            python scripts/apply_dryrun.py --dump-html
+          else
+            python scripts/apply_dryrun.py
+          fi
+        env:
+          JOB_IDS: ${{ inputs.job_ids }}
+          DUMP_HTML: ${{ inputs.dump_html }}
+          REPO_PRIVATE: ${{ steps.visibility.outputs.private }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}

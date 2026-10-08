@@ -474,9 +474,32 @@ Seven workflows live in `.github/workflows/`:
   this workflow's own env block — **the only place in this entire repo this variable
   is ever set.** `timeout-minutes: 15`. See "Auto-apply agent" below.
 
-All seven workflows: upload the relevant `.log` file as an artifact (30-day
+Those seven upload the relevant `.log` file as an artifact (30-day
 retention) where one exists, and run `notify_failure.py` in an `if: failure()` step.
 All support `workflow_dispatch` for manual triggers.
+
+Three more are **ops workflows**, manual-trigger only (`workflow_dispatch`), `contents: read`,
+inputs passed to the shell only through `env:` (never `${{ }}` inside `run:`), never armed, and
+asserted by `tests/test_ops_workflows.py`. They exist so the pipeline can be watched and fixed from
+somewhere with no database or job-site access:
+
+- **`apply_status.yml`** — `scripts/apply_status.py`, a read-only pipeline snapshot (counts by
+  stage/`automation_status`, the supported-ATS funnel, which `applicant_eligibility` keys exist).
+- **`apply_dryrun.yml`** — `scripts/apply_dryrun.py`, a read-only probe of real forms for given
+  ids: fills only deterministic data (contact fields, files, eligibility answers) and prints the
+  fill report, form inventory and still-empty required questions. No database writes, no Claude,
+  no browser-use, no clicks; refuses to start if `APPLY_AGENT_ARMED` is present at all.
+- **`db_migrate.yml`** — `list` / `dryrun` / `push` against the linked Supabase project (secrets
+  `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD`; the ref comes from `SUPABASE_URL`). `dryrun`
+  composes BEGIN + migration + optional `supabase/tests` file + ROLLBACK through
+  `scripts/sql_guard.py` (refuses anything that could commit or can't run in a transaction) and
+  fails unless `scripts/schema_fingerprint.sql` reads the same before and after. `push` needs the
+  `confirm` input to be exactly `push`.
+
+**Privacy rule for any workflow output:** company names, roles, URLs, answers and page HTML print
+only when a `Check repo visibility` step reads `private: true` from the GitHub API (anything else,
+including an API failure, becomes `false`). Logs and artifacts are world-readable while the repo
+is public. `applicant_eligibility` values never print in any mode.
 Python version: **3.11**. Dependencies are split so the frequently-run workflows stay light —
 `monitor.yml` alone runs ~50×/day and must not install `torch` on every run:
 
