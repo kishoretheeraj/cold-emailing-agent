@@ -307,15 +307,21 @@ export const AUTOMATION_STATUS_LABELS: Record<AutomationStatus, string> = {
 
 export type JobApplicationPickVerdict = "strong" | "maybe" | "no";
 
+export type KeywordCoverage = { covered: string[]; missing: string[] };
+
 export type JobApplicationApplyPreview = {
   platform: string;
   field_values: Record<string, string>;
   eligibility_answers: Record<string, string>;
   screening_answers: Record<string, string>;
+  keyword_coverage?: KeywordCoverage | null;
+  workday_steps?: string[];
 };
 
 export type SubmissionEvidence = {
   source: string;
+  url?: string;
+  text?: string;
   message_id?: string;
   from?: string;
   subject?: string;

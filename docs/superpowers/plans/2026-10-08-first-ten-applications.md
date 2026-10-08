@@ -138,9 +138,10 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
 
 - [ ] Preview screenshot stored and referenced in `apply_preview` (hash covers it).
 - [ ] Confirmation screenshot, text and URL through `record_submission(p_evidence)`.
-- [ ] Queue UI (spec §9): cards, inline edit, Submit with 5 s undo, Skip, live status, takeover
-      card, proof links, "N of 10". vitest for every state; Playwright e2e with screenshots
-      checked by eye.
+- [x] Queue UI (spec §9): cards, Submit with 5 s undo, Skip, live status, takeover card, proof
+      links, "N of 10". vitest for every state; Playwright e2e (phone and desktop) with screenshots
+      checked by eye; the page no longer scrolls sideways on a phone.
+- [ ] Inline edit of an answer on the card (today: edit through the detail sheet, then Prepare again).
 
 ## Phase H: watched preparation, then the pilot
 

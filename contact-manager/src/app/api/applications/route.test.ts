@@ -26,6 +26,19 @@ beforeEach(() => {
   mockFrom.mockReturnValue({ select: mockSelect, insert: mockInsert });
 });
 
+describe("GET /api/applications?view=queue", () => {
+  it("returns the approval queue's statuses and drops skipped or closed rows", async () => {
+    const mockIn = vi.fn().mockReturnValue({ order: mockOrder, eq: mockEq });
+    const mockNot = vi.fn().mockReturnValue({ in: mockIn, order: mockOrder });
+    mockSelect.mockReturnValue({ order: mockOrder, eq: mockEq, not: mockNot, in: mockIn });
+    await GET(new Request("http://test/api/applications?view=queue"));
+    expect(mockNot).toHaveBeenCalledWith("stage", "in", "(withdrawn,rejected)");
+    expect(mockIn).toHaveBeenCalledWith("automation_status", [
+      "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
+    ]);
+  });
+});
+
 describe("GET /api/applications?takeover=open", () => {
   it("returns only rows whose current worker is waiting for a human", async () => {
     const waiting = { id: "1", worker_lease_id: "L", takeover: { kind: "captcha", reason: "x", lease: "L", requested_at: "t", continue_at: null } };

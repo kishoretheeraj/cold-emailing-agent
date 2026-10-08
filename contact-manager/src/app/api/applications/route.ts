@@ -11,18 +11,30 @@ function getClient() {
   );
 }
 
+const QUEUE_STATUSES = [
+  "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
+];
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const stage = searchParams.get("stage");
   const source = searchParams.get("source");
   // ?takeover=open: only rows where a Beelink worker is waiting for a human (the banner polls it).
   const takeoverOpen = searchParams.get("takeover") === "open";
+  // ?view=queue: what the approval queue shows (ready, in flight, needs you, and submitted for the
+  // "N of 10" count); skipped (withdrawn) and rejected rows leave it.
+  const queueView = searchParams.get("view") === "queue";
   try {
     const supabase = getClient();
     let query = supabase.from("job_applications").select("*");
     if (stage) query = query.eq("stage", stage);
     if (source) query = query.eq("source", source);
     if (takeoverOpen) query = query.not("takeover", "is", null);
+    if (queueView) {
+      query = query
+        .not("stage", "in", "(withdrawn,rejected)")
+        .in("automation_status", QUEUE_STATUSES);
+    }
     const { data, error } = await query.order("created_at", { ascending: false });
     if (error) throw error;
     const rows = (data ?? []) as JobApplication[];

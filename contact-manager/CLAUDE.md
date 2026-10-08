@@ -98,6 +98,8 @@ src/
 │   ├── ApplicationDetailSheet.tsx
 │   ├── SystemHealthStrip.tsx
 │   ├── LoginForm.tsx
+│   ├── ApprovalQueue.tsx
+│   ├── TakeoverBanner.tsx
 │   └── Field.tsx
 ├── proxy.ts
 └── lib/
@@ -174,6 +176,22 @@ not just the proxy) and signs `approval:v1:<id>:<hash>:<signed_at_ms>` with
 `APPROVAL_SIGNING_KEY` (`lib/approvalSignature.ts`, mirrored by the root `approval_signature.py`
 with a shared test vector). The submit worker refuses any approval whose signature it cannot
 verify. Missing key: `503` before any RPC.
+
+### Approval queue (2026-10-08)
+
+`ApprovalQueue.tsx` sits at the top of `/applications` (above the "All applications" table) and polls
+`GET /api/applications?view=queue` every 10 s (server: `automation_status` in ready_for_review,
+approved, submitting, needs_input, needs_confirmation, submitted; stage not withdrawn/rejected). It
+shows "N of 10 submitted" (ten segments, no inline styles), a **Needs you** list (needs_input reason +
+"Prepare again" -> requeue-preview; needs_confirmation -> "It went through"/"It did not" ->
+resolve-confirmation), **Ready to submit** cards (best `pick_score` first: answers, keyword coverage,
+posting link, "Show documents" -> signed links from `/files`, **Submit** and **Skip**), "On the way",
+and **Submitted** with proof links. Submit starts a 5-second countdown with Undo; only when it runs
+out is `POST /submit` sent with the card's `preview_revision_hash`; Undo or leaving the page sends
+nothing; one countdown at a time. Skip PATCHes `stage: "withdrawn"`. `ApplicationsPage.test.tsx`
+mocks it (its polling tests count fetch calls). The nav's links and the applications table scroll
+inside their own containers so nothing widens the page on a phone (`21-approval-queue.spec.ts`
+asserts `scrollWidth <= 390`).
 
 ### Takeover card (2026-10-08)
 
@@ -422,7 +440,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 84** (vitest: 832 across 57 files, playwright: 84; 2026-10-08 added `19-login.spec.ts` and `20-takeover.spec.ts`). Beelink M2 Task 9
+- **Current test count: 86** (vitest: 847 across 58 files, playwright: 86; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more

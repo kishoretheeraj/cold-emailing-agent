@@ -127,14 +127,15 @@ export function Nav() {
           Cold Email Ops
         </Link>
 
-        <div className="flex items-center gap-1.5 flex-1">
+        {/* On a phone the links scroll sideways inside the bar instead of widening the page. */}
+        <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-x-auto">
           {NAV_LINKS.map(({ href, label }) => {
             const active = pathname === href;
             return (
               <Link
                 key={href}
                 href={href}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition ${
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition ${
                   active
                     ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-300"
                     : "border-border text-fg-muted hover:text-fg hover:border-border-strong"
