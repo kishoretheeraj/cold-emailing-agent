@@ -777,3 +777,7 @@ RECEIPT_IMAP_APP_PASSWORD = os.environ.get("RECEIPT_IMAP_APP_PASSWORD")
 # Mirrored by the contacts_link_guard trigger (migration 20261010000000) and warmPaths.ts; a static
 # test fails if they drift.
 WARM_MAX_PEOPLE_PER_APPLICATION = 3
+
+# ── Application outcomes (rejections and interview invites from the receipt inbox) ──
+APPLY_OUTCOME_LOOKBACK_DAYS = 3       # each monitor pass reads this many days of mail (it runs every 20 min)
+APPLY_OUTCOME_MAX_AGE_DAYS = 180      # applications older than this are not matched any more

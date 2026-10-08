@@ -34,6 +34,7 @@ let queue: unknown[];
 let calls: Call[];
 let submitStatus: number;
 let today: { submitted: number; cap: number };
+let outcomeRows: unknown[];
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -41,10 +42,14 @@ beforeEach(() => {
   calls = [];
   submitStatus = 200;
   today = { submitted: 2, cap: 50 };
+  outcomeRows = [];
   vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
     calls.push([url, init]);
     if (url === "/api/applications?view=queue") {
       return Promise.resolve(new Response(JSON.stringify({ applications: queue }), { status: 200 }));
+    }
+    if (url === "/api/applications?view=outcomes") {
+      return Promise.resolve(new Response(JSON.stringify({ applications: outcomeRows }), { status: 200 }));
     }
     if (url === "/api/applications/today") {
       return Promise.resolve(new Response(JSON.stringify(today), { status: 200 }));
@@ -291,5 +296,39 @@ describe("ApprovalQueue -- warm paths", () => {
     expect(screen.getByTestId("people-panel")).toBeInTheDocument();
     await click(toggle);
     expect(screen.queryByTestId("people-panel")).toBeNull();
+  });
+});
+
+
+describe("ApprovalQueue -- replies from companies", () => {
+  const evidence = (kind: string) => ({ kind, message_id: "<m@x>", from: "Acme <a@acme.com>",
+    subject: kind === "interview" ? "Next steps with Acme" : "Your application to Acme",
+    date: "2026-10-18T12:00:00Z", previous_stage: "applied" });
+
+  it("lists interview invites and rejections with the email subject", async () => {
+    outcomeRows = [
+      row({ id: "7", company: "Acme", stage: "phone_screen", outcome_evidence: evidence("interview") }),
+      row({ id: "8", company: "Beta", stage: "rejected", outcome_evidence: evidence("rejection") }),
+    ];
+    await renderQueue();
+    const acme = screen.getByRole("article", { name: "Acme reply" });
+    expect(within(acme).getByText("interview invite")).toHaveClass("text-emerald-300");
+    expect(within(acme).getByText(/Next steps with Acme/)).toBeInTheDocument();
+    expect(within(screen.getByRole("article", { name: "Beta reply" })).getByText("not moving forward")).toBeInTheDocument();
+  });
+
+  it("undo puts the stage back", async () => {
+    outcomeRows = [row({ id: "8", company: "Beta", stage: "rejected", outcome_evidence: evidence("rejection") })];
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Not right? Undo" }));
+    const patch = calls.find(([url, init]) => url === "/api/applications/8" && init?.method === "PATCH");
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ stage: "applied" });
+  });
+
+  it("an undone outcome says so and offers no button", async () => {
+    outcomeRows = [row({ id: "8", company: "Beta", stage: "applied", outcome_evidence: evidence("rejection") })];
+    await renderQueue();
+    expect(screen.getByText("Undone")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Not right? Undo" })).toBeNull();
   });
 });

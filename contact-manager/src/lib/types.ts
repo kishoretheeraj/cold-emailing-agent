@@ -359,6 +359,11 @@ export type JobApplication = {
   company_30d?: { others: number; cap: number };
   // H-1B signal for the company (lib/visaSignal.ts): never a negative unless a human confirmed it.
   visa?: { label: string; tone: "good" | "review" | "none" };
+  // The employer email that last moved the stage (application_outcomes.py); NULL = none read.
+  outcome_evidence?: {
+    kind: "rejection" | "interview"; message_id: string; from: string; subject: string; date: string;
+    previous_stage: JobApplicationStage;
+  } | null;
   company_key?: string | null;
   stage: JobApplicationStage;
   applied_date: string | null;

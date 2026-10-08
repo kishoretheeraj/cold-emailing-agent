@@ -1038,6 +1038,30 @@ def mark_unsupported(application_id, reason):
         "p_id": application_id, "p_reason": reason})))
 
 
+_OUTCOME_STAGES = ("applied", "phone_screen", "onsite")
+
+
+def get_open_applications_for_outcomes(max_age_days):
+    """Submitted applications still open (applied/phone_screen/onsite) from the last `max_age_days`,
+    with what application_outcomes needs to match employer email to them."""
+    cutoff = (date.today() - timedelta(days=max_age_days)).isoformat()
+    result = _retry(lambda: get_client().table("job_applications")
+                    .select("id,company,role,stage,applied_date,submit_attempted_at,outcome_evidence")
+                    .in_("stage", list(_OUTCOME_STAGES)).gte("applied_date", cutoff)
+                    .order("id").limit(5000).execute())
+    return result.data or []
+
+
+def record_application_outcome(application_id, to_stage, from_stages, evidence):
+    """Move a row to `to_stage` with the email that established it, only from one of `from_stages`
+    (so a concurrent human edit or an earlier outcome wins). Returns the row, or None if it no
+    longer qualified."""
+    updates = {"stage": to_stage, "outcome_evidence": evidence, "updated_at": datetime.utcnow().isoformat()}
+    result = _retry(lambda: get_client().table("job_applications").update(updates)
+                    .eq("id", application_id).in_("stage", list(from_stages)).execute())
+    return result.data[0] if result.data else None
+
+
 def get_applications_needing_confirmation():
     """Unleased rows whose Submit click may have landed but was never confirmed on the page."""
     result = _retry(lambda: get_client().table("job_applications")

@@ -81,6 +81,7 @@ export function ApprovalQueue() {
   const [docs, setDocs] = useState<Record<string, DocLinks>>({});
   const [today, setToday] = useState<Today | null>(null);
   const [peopleOpen, setPeopleOpen] = useState<string | null>(null);
+  const [outcomes, setOutcomes] = useState<JobApplication[]>([]);
   const countdown = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
@@ -91,6 +92,11 @@ export function ApprovalQueue() {
       setRows(body.applications ?? []);
       const todayRes = await fetch("/api/applications/today");
       if (todayRes.ok) setToday((await todayRes.json()) as Today);
+      const outcomesRes = await fetch("/api/applications?view=outcomes");
+      if (outcomesRes.ok) {
+        const o = (await outcomesRes.json()) as { applications?: JobApplication[] };
+        setOutcomes((o.applications ?? []).filter((a) => a.outcome_evidence));
+      }
     } catch {
       // the next poll tries again
     } finally {
@@ -191,6 +197,12 @@ export function ApprovalQueue() {
   const stopWaiting = (app: JobApplication) =>
     post(`/api/applications/${app.id}/hold`, { method: "DELETE" }, `${app.company}: no longer waiting`);
 
+  const undoOutcome = (app: JobApplication) =>
+    post(`/api/applications/${app.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage: app.outcome_evidence?.previous_stage }),
+    }, `${app.company}: back to ${app.outcome_evidence?.previous_stage?.replace("_", " ")}`);
+
   const loadDocs = async (app: JobApplication) => {
     try {
       const res = await fetch(`/api/applications/${app.id}/files`);
@@ -233,6 +245,37 @@ export function ApprovalQueue() {
 
       {loaded && ready.length === 0 && inFlight.length === 0 && needsYou.length === 0 && (
         <p className="text-sm text-fg-dim">Nothing is waiting for you. New applications appear here once they are prepared.</p>
+      )}
+
+      {outcomes.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h3 className="text-sm font-medium text-fg">Replies from companies</h3>
+          {outcomes.map((app) => {
+            const e = app.outcome_evidence!;
+            const undone = app.stage === e.previous_stage;
+            const interview = e.kind === "interview";
+            return (
+              <article key={app.id} aria-label={`${app.company} reply`}
+                className={`flex flex-wrap items-center gap-3 rounded-lg border bg-surface px-4 py-3 text-sm ${interview ? "border-emerald-500/40" : "border-border"}`}>
+                <div className="min-w-[12rem] flex-1">
+                  <p className="font-medium text-fg">
+                    {app.company} &middot; {app.role}:{" "}
+                    <span className={interview ? "text-emerald-300" : "text-fg-muted"}>
+                      {interview ? "interview invite" : "not moving forward"}
+                    </span>
+                  </p>
+                  <p className="text-fg-dim">&ldquo;{e.subject}&rdquo; &middot; {new Date(e.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</p>
+                </div>
+                {undone ? (
+                  <span className="text-xs text-fg-dim">Undone</span>
+                ) : (
+                  <button type="button" onClick={() => undoOutcome(app)}
+                    className="rounded-md border border-border-strong px-3 py-2 text-fg">Not right? Undo</button>
+                )}
+              </article>
+            );
+          })}
+        </div>
       )}
 
       {needsYou.length > 0 && (

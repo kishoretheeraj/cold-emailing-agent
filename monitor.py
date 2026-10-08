@@ -49,6 +49,7 @@ from gmail import (
     find_sent_by_subject, find_sent_by_thread_id, open_sent_mail_session,
 )
 from emailer import _call_claude
+import application_outcomes
 import submission_reconciler
 
 REPLIED_LABEL = "Cold Outreach/Replied"
@@ -565,6 +566,12 @@ def run():
         submission_reconciler.run()
     except Exception as exc:
         log.warning(f"[MONITOR] submission reconciler failed: {exc}")
+
+    # Best-effort: rejections and interview invites from the same mailbox move the application stage.
+    try:
+        application_outcomes.run()
+    except Exception as exc:
+        log.warning(f"[MONITOR] application outcomes failed: {exc}")
 
     prompts = {}
     try:

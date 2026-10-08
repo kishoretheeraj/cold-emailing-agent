@@ -531,3 +531,12 @@ posting_description}}`, chunks of 200, raises on failure). `get_all_contacts()` 
 Local stacks: `scripts/local_dryrun/prod_drift.sql` adds the live-only `contacts` columns
 (`classifier_status`, `resume_url`, `deleted_at`) and `build_db.sh` loads `setup_prompts.sql`, so the stress
 stack can run the contact-manager's real queries.
+
+## Application outcomes (migration 20261011000000)
+
+`job_applications.outcome_evidence JSONB NULL`: the employer email that last moved the row's stage, written by
+`application_outcomes.py` via `db.record_application_outcome(id, to_stage, from_stages, evidence)` (a conditional
+UPDATE on `stage IN from_stages`). Shape: `{source: "gmail_outcome", kind: "rejection"|"interview", message_id,
+from, subject, date, previous_stage}`. NULL means no outcome email was read, never "no outcome". Column-granted
+UPDATE to anon and authenticated; it is not part of `preview_revision_hash`. Reader: `db.get_open_applications_for_outcomes(max_age_days)`.
+Functional check: `supabase/tests/application_outcomes_dryrun.sql`.

@@ -48,6 +48,7 @@ job_filters.py
 job_sources.py
 job_sourcing.py
 job_liveness.py
+application_outcomes.py
 approval_signature.py
 apply_worker.py
 takeover.py
@@ -92,7 +93,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, `[WARM]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, `[WARM]`, `[OUTCOME]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -1567,6 +1568,23 @@ search window is bounded to 72h after the submit attempt, and one receipt matchi
 company is used only when the role disambiguates. After 15 min without a match it prefixes
 `apply_blocked_reason` with "No receipt email found..." once and keeps checking.
 Plan: docs/superpowers/plans/2026-10-01-automation-status-and-leases.md.
+
+**Application outcomes** (`application_outcomes.py`, run from `monitor.py` right after the reconciler,
+best-effort, marker `[OUTCOME]`, migration `20261011000000`): reads the last `APPLY_OUTCOME_LOOKBACK_DAYS` (3)
+of the same receipt mailbox and moves open submitted rows (applied/phone_screen/onsite, at most
+`APPLY_OUTCOME_MAX_AGE_DAYS` old). A rejection moves applied/phone_screen/onsite to `rejected`, which also stops
+applied-mode warm-path mail for that role. An interview invite moves applied to `phone_screen`. Each move writes
+`outcome_evidence` (message id, from, subject, date, kind, `previous_stage`) through
+`db.record_application_outcome`, conditional on the source stage. A message already stored on the row is never
+applied again, so the queue's Undo (a PATCH back to `previous_stage`) sticks. Matching is deliberately narrow:
+- exact phrases only; a rejection beats interview wording;
+- a receipt saying "if selected we'll schedule an interview" is not an invite unless it carries a booking link;
+- mail must come from the company (display name, subject or domain, as the reconciler matches), never from a job
+  board (`_JOB_BOARD_DOMAINS`), and never a reply in a human thread;
+- it must arrive after `submit_attempted_at`/`applied_date`;
+- with two open applications at one company, the email has to name the role.
+Anything uncertain changes nothing. Tests: `tests/test_application_outcomes.py`,
+`tests/test_application_outcomes_migration.py` (+ `supabase/tests/application_outcomes_dryrun.sql`).
 
 **Fill reports and the required-field gate (2026-10-06)**: `ats_fillers` locates fields by id/name
 selector first with a label-regex fallback, and each `fill_<platform>` returns `{field_key: bool}`;

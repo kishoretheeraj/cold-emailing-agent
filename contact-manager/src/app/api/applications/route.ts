@@ -57,12 +57,18 @@ export async function GET(req: Request) {
   // ?view=queue: what the approval queue shows (ready, in flight, needs you, and the last two weeks
   // of submitted rows); skipped (withdrawn) and rejected rows leave it.
   const queueView = searchParams.get("view") === "queue";
+  // ?view=outcomes: rows an employer email moved (rejection, interview invite) in the last two weeks.
+  const outcomesView = searchParams.get("view") === "outcomes";
   try {
     const supabase = getClient();
     let query = supabase.from("job_applications").select("*");
     if (stage) query = query.eq("stage", stage);
     if (source) query = query.eq("source", source);
     if (takeoverOpen) query = query.not("takeover", "is", null);
+    if (outcomesView) {
+      const since = new Date(Date.now() - SUBMITTED_DAYS * 86_400_000).toISOString();
+      query = query.not("outcome_evidence", "is", null).gte("updated_at", since);
+    }
     if (queueView) {
       const since = new Date(Date.now() - SUBMITTED_DAYS * 86_400_000).toISOString();
       query = query

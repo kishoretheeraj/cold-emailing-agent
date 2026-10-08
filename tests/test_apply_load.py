@@ -51,9 +51,11 @@ def site():
     httpd.shutdown()
 
 
-def _browsers_running():
+def _browser_pids():
+    # Process ids, not a count: other suites on the same machine start and stop their own Chromium,
+    # and only a browser this test started and left running is a leak.
     out = subprocess.run(["pgrep", "-f", "pw-browsers/chromium"], capture_output=True, text=True).stdout
-    return len([line for line in out.splitlines() if line.strip()])
+    return {line.strip() for line in out.splitlines() if line.strip()}
 
 
 def _answers(prompt, job_id):
@@ -120,7 +122,7 @@ def _job(site, index):
 
 def test_preview_then_submit_at_load(wired, site, mocker):
     tmp_before = set(os.listdir(tempfile.gettempdir()))
-    browsers_before = _browsers_running()
+    browsers_before = _browser_pids()
     durations = []
     jobs = [_job(site, i) for i in range(_ROWS)]
 
@@ -128,7 +130,7 @@ def test_preview_then_submit_at_load(wired, site, mocker):
         started = time.monotonic()
         assert apply_agent._process_one_preview(job) == "filled", wired["released"].get(job["id"])
         durations.append(time.monotonic() - started)
-        assert _browsers_running() == browsers_before, "a Chromium outlived its row"
+        assert not _browser_pids() - browsers_before, "a Chromium outlived its row"
 
     for job in jobs:
         preview, signature = wired["previews"][job["id"]]
@@ -153,7 +155,7 @@ def test_preview_then_submit_at_load(wired, site, mocker):
     assert sorted(wired["recorded"]) == [j["id"] for j in jobs]
     names = [names for names in wired["uploaded"].values() if names]
     assert names and all(n[0] == "Kishore_Theeraj_Vasudevan_Jaya_Resume.pdf" for n in names)
-    assert _browsers_running() == browsers_before
+    assert not _browser_pids() - browsers_before
     leaked = set(os.listdir(tempfile.gettempdir())) - tmp_before
     assert not [f for f in leaked if f.endswith(".pdf")]
     print(f"\n{_ROWS} previews + {_ROWS} submits: mean {sum(durations) / len(durations):.2f}s per pass, "

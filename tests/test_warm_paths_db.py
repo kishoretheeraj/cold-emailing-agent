@@ -87,3 +87,27 @@ def test_an_exact_multiple_of_the_page_size_ends_on_an_empty_page(fake_client, m
 def test_no_contacts(fake_client):
     _contacts_query(fake_client).execute.return_value.data = None
     assert db.get_all_contacts() == []
+
+
+# ── Application outcomes (rejections and interview invites) ──────────────────
+
+def test_open_applications_for_outcomes_reads_only_open_recent_rows(fake_client):
+    chain = fake_client.table.return_value.select.return_value.in_.return_value.gte.return_value.order.return_value.limit.return_value
+    chain.execute.return_value.data = [{"id": 1}]
+    assert db.get_open_applications_for_outcomes(180) == [{"id": 1}]
+    select = fake_client.table.return_value.select
+    assert "outcome_evidence" in select.call_args.args[0]
+    assert select.return_value.in_.call_args.args == ("stage", ["applied", "phone_screen", "onsite"])
+
+
+def test_record_application_outcome_is_conditional_on_the_source_stage(fake_client):
+    chain = fake_client.table.return_value.update.return_value.eq.return_value.in_.return_value
+    chain.execute.return_value.data = [{"id": 4, "stage": "rejected"}]
+    row = db.record_application_outcome(4, "rejected", ("applied", "phone_screen"), {"message_id": "<m>"})
+    assert row["stage"] == "rejected"
+    update = fake_client.table.return_value.update.call_args.args[0]
+    assert update["stage"] == "rejected" and update["outcome_evidence"] == {"message_id": "<m>"}
+    assert fake_client.table.return_value.update.return_value.eq.return_value.in_.call_args.args == (
+        "stage", ["applied", "phone_screen"])
+    chain.execute.return_value.data = []
+    assert db.record_application_outcome(4, "rejected", ("applied",), {}) is None

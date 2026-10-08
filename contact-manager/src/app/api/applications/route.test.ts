@@ -134,6 +134,20 @@ describe("GET /api/applications?view=queue -- people counts (warm paths)", () =>
   });
 });
 
+describe("GET /api/applications?view=outcomes", () => {
+  it("returns rows an employer email moved in the last two weeks", async () => {
+    const mockGte = vi.fn().mockReturnValue({ order: mockOrder });
+    const mockNot = vi.fn().mockReturnValue({ gte: mockGte });
+    mockSelect.mockReturnValue({ not: mockNot });
+    await GET(new Request("http://test/api/applications?view=outcomes"));
+    expect(mockNot).toHaveBeenCalledWith("outcome_evidence", "is", null);
+    const [column, since] = mockGte.mock.calls[0];
+    expect(column).toBe("updated_at");
+    expect(Math.round((Date.now() - Date.parse(since)) / 86_400_000)).toBe(14);
+    expect(mockKnown).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/applications?takeover=open", () => {
   it("returns only rows whose current worker is waiting for a human", async () => {
     const waiting = { id: "1", worker_lease_id: "L", takeover: { kind: "captcha", reason: "x", lease: "L", requested_at: "t", continue_at: null } };
