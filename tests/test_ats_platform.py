@@ -36,3 +36,17 @@ def test_classify(url, expected):
 ])
 def test_workday_variants_are_all_excluded(url):
     assert ats_platform.classify(url) == "workday"
+
+
+@pytest.mark.parametrize("url,expected", [
+    # Substring look-alikes used to route to a hand-mapped filler (fifty-a-day F6).
+    ("https://clever.com/about/careers/123", "generic"),
+    ("https://jobs.example.com/apply?src=greenhouse.io", "generic"),
+    ("https://careers.ashbyhq.com.evil.example/x/27af5f96-b287-4bcc-8679-f96686dc7c8d", "generic"),
+    # A company page embedding the Greenhouse form is fillable as Greenhouse.
+    ("https://www.ixl.com/company/jobs?gh_jid=8862211002", "greenhouse"),
+    # Platforms without an adapter here stay generic for routing.
+    ("https://jobs.smartrecruiters.com/Visa/744000080000000-product-manager", "generic"),
+])
+def test_classify_by_hostname(url, expected):
+    assert ats_platform.classify(url) == expected

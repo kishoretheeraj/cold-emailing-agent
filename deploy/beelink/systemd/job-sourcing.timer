@@ -1,0 +1,10 @@
+[Unit]
+Description=Source job postings every 2 hours
+
+[Timer]
+OnCalendar=*-*-* 00/2:13:00
+RandomizedDelaySec=300
+Unit=job-sourcing.service
+
+[Install]
+WantedBy=timers.target

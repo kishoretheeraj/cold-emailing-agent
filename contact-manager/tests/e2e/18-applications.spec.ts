@@ -46,6 +46,8 @@ test.describe("Applications page", () => {
     // querystring variant. Cheap insurance either way.
     await page.route("**/api/applications", applicationsHandler);
     await page.route("**/api/applications?*", applicationsHandler);
+    await page.route("**/api/applications/today", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ submitted: 0, cap: 50 }) }));
     await page.route("**/api/applications/1/files", async (route) => {
       await route.fulfill({
         status: 200,

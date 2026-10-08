@@ -347,6 +347,8 @@ export type JobApplication = {
   job_url: string | null;
   source: string | null;
   source_channel: string | null;
+  location?: string | null;
+  posted_at?: string | null;
   stage: JobApplicationStage;
   applied_date: string | null;
   notes: string | null;

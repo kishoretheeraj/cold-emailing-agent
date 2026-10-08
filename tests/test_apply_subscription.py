@@ -86,7 +86,7 @@ def _job(i):
 ])
 def test_run_preview_stops_on_a_subscription_failure(mocker, exc, caplog):
     mocker.patch("apply_agent.db.recover_stale_leases", return_value=0)
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[_job(1), _job(2)])
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[_job(1), _job(2)])
     process = mocker.patch("apply_agent._process_one_preview", side_effect=[exc, "filled"])
 
     apply_agent.run_preview()

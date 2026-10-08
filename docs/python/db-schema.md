@@ -474,3 +474,29 @@ CREATE TABLE api_usage_log (
   `resume_agent.py` keeps its own independent Anthropic client but calls
   `usage_tracking.log_usage` too (`action="propose"` / `"cover_letter"`), so this table captures
   Phase 3's calls alongside every other module's.
+
+
+## Job identity, preview attempts and job_boards (migration 20261009000000)
+
+New `job_applications` columns (spec 2026-10-08 fifty-a-day):
+
+| Column | Written by | Meaning |
+|---|---|---|
+| `job_key` | `db.save_job_application`, `db.backfill_identity` | `job_identity.identify(url)["job_key"]`: one key per real job across URL spellings. Unique when not NULL (`idx_job_applications_job_key_unique`). |
+| `platform` | same | `job_identity` platform (`greenhouse`, `lever`, `ashby`, `workday`, `smartrecruiters`, `workable`, `oracle`, `icims`, `aggregator`, `generic`). The queues exclude platforms this host cannot prepare. |
+| `company_key`, `title_key` | same | Company name without legal suffixes; the set of title words. Same company and title identity within 45 days is a duplicate role (indexed together). |
+| `location`, `posted_at` | `job_sourcing` | Where and when the source said the job was posted. |
+| `jd_fingerprint` | same | 64-bit SimHash of the description: tells a repost of a role already applied to from a different opening with the same title. |
+| `prepare_attempts` | `claim_application` (+1 on a preview claim), `requeue_preview` (reset) | RPC-owned; no API role may write it. The preview queue skips a row at `APPLY_PREPARE_MAX_ATTEMPTS`. |
+| `pick_attempts` | `job_pick` | Failed fit judgments; `maybe` after `JOB_PICK_MAX_ATTEMPTS`. |
+
+`requeue_preview` also accepts `failed_retryable` now. DELETE, TRUNCATE and TRIGGER on `job_applications`
+are revoked from anon and authenticated (rows leave through `stage='withdrawn'`).
+
+`job_boards` (platform, board, company, source, enabled, last_scanned_at, last_job_count,
+consecutive_failures, dead_at; unique `(platform, board)`): the company boards `job_sourcing.py` sweeps.
+`board` is the slug for Greenhouse/Lever/Ashby and `<host>/<tenant>/<site>` for Workday. Rows come from
+the Simplify feed's URLs. A board is dead after 3 consecutive "does not exist" answers; transient
+errors only move it to the back of the queue. API roles: SELECT, INSERT, UPDATE.
+
+Functional checks: `supabase/tests/job_identity_queue_dryrun.sql`.

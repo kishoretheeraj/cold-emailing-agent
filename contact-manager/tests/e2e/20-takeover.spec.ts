@@ -31,6 +31,8 @@ test.describe("Takeover card", () => {
     };
     await page.route("**/api/applications", list);
     await page.route("**/api/applications?*", list);
+    await page.route("**/api/applications/today", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ submitted: 0, cap: 50 }) }));
     await page.route("**/api/system-health", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ health: [] }) }));
     await page.route("**/api/applications/7/takeover-continue", async (route) => {

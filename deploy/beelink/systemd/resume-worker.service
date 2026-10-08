@@ -17,6 +17,7 @@ EnvironmentFile=/etc/job-agent/claude.env
 Environment=HOME=/var/lib/job-agent
 Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
 Environment=RESUME_CLAUDE_BACKEND=subscription
+Environment=APPLY_GENERIC_ADAPTER=none
 Environment=APPLY_AGENT_ARMED=
 ExecStart=/opt/job-agent/.venv/bin/python resume_agent.py --drain
 TimeoutStartSec=7200

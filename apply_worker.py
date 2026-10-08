@@ -21,11 +21,13 @@ import socket
 import sys
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import apply_agent
 import claude_subscription
 import config
 import db
+import job_sourcing
 
 log = logging.getLogger(__name__)
 
@@ -96,10 +98,14 @@ def run_prepare(limit):
             log.info("[APPLY-WORKER] | prepare | display busy, skipping this run")
             return 0
         db.recover_stale_leases(config.APPLY_AGENT_LEASE_STALE_SECONDS)
-        jobs = apply_agent.preview_candidates()[:limit]
+        jobs = apply_agent.preview_candidates()
         log.info(f"[APPLY-WORKER] | START | prepare | candidates={len(jobs)}")
         errors = 0
+        prepared = 0
         for job in jobs:
+            # The limit counts rows actually worked on; a row this host has to skip costs nothing.
+            if prepared >= limit:
+                break
             if _paused():
                 log.info("[APPLY-WORKER] | PAUSED | prepare stopped between rows")
                 break
@@ -108,7 +114,7 @@ def run_prepare(limit):
                 break
             started = datetime.now(timezone.utc)
             try:
-                apply_agent._process_one_preview(job)
+                status = apply_agent._process_one_preview(job)
             except claude_subscription.ClaudeSubscriptionError as exc:
                 errors += 1
                 _log_run("prepare", job, started, _outcome(job["id"], "failed_retryable"), exc)
@@ -116,15 +122,34 @@ def run_prepare(limit):
                 break
             except Exception as exc:
                 errors += 1
+                prepared += 1
                 _log_run("prepare", job, started, _outcome(job["id"], "failed_retryable"), exc)
                 log.warning(f"[APPLY-WORKER] | {job.get('company')} | prepare error: {exc}")
                 continue
+            if status == "skipped":
+                continue
+            prepared += 1
             _log_run("prepare", job, started, _outcome(job["id"], "skipped"))
         log.info(f"[APPLY-WORKER] | DONE | prepare | errors={errors}")
         return errors
 
 
 # ── Submit ─────────────────────────────────────────────────────────────────────
+
+def _daily_room():
+    # Submissions left today (America/New_York) under daily_submit_cap, or None for no cap. An
+    # unreadable count stops the run rather than guessing: the cap is the one limit on volume.
+    cap = job_sourcing.load_search_settings()[0]["daily_submit_cap"]
+    if not cap:
+        return None
+    start = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        used = db.count_submit_attempts_since(start.astimezone(timezone.utc))
+    except Exception as exc:
+        log.warning(f"[APPLY-WORKER] | submit | could not count today's submissions, not submitting: {exc}")
+        return 0
+    return cap - used
+
 
 def run_submit(limit):
     """Submit up to `limit` approved rows, oldest approval first. Returns the number that errored."""
@@ -137,6 +162,12 @@ def run_submit(limit):
     ids = db.get_approved_application_ids()[:limit]
     if not ids:
         return 0
+    room = _daily_room()
+    if room is not None and room <= 0:
+        log.info("[APPLY-WORKER] | submit | daily submit cap reached; approvals wait for tomorrow")
+        return 0
+    if room is not None:
+        ids = ids[:room]
     with display_lock(blocking=True, timeout_seconds=config.APPLY_SUBMIT_LOCK_WAIT_SECONDS) as acquired:
         if not acquired:
             log.warning("[APPLY-WORKER] | submit | display still busy, will retry next run")

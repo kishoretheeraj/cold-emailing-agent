@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import application_quality
@@ -26,6 +26,7 @@ import config
 import credential_vault
 import db
 import email_verification
+import job_identity
 import takeover
 import usage_tracking
 import workday_adapter
@@ -78,6 +79,23 @@ Candidate facts: {profile_summary}
 
 _OPTIONS_BLOCK = """- This question has fixed choices. Reply with exactly one of them, verbatim:
 {options}
+"""
+
+# Every question on a form in one call: a form with eight questions used to cost eight
+# subscription calls (fifty-a-day §3.7). Questions missing from the answer fall back to one call each.
+_SCREENING_BATCH_PROMPT = """Answer these job application questions, grounded only in real facts about the
+candidate below. Never invent experience, projects, or numbers not listed.
+- For a short-fact question (a name, employer, title, city, date, yes/no), answer with just that fact.
+- Otherwise keep each answer to 2-4 sentences.
+- When a question lists choices, answer with exactly one of them, verbatim.
+- If the facts below don't contain the answer (for example a desired salary or a start date), answer
+  exactly: NEEDS HUMAN REVIEW
+Respond with ONLY a JSON array, no other text: [{{"id": <question id>, "answer": "<answer>"}}]
+
+Questions:
+{questions}
+
+Candidate facts: {profile_summary}
 """
 
 # Merge review 2026-09-28, finding 3: a missing/empty candidate profile used to still get an
@@ -371,6 +389,7 @@ def _generate_screening_answers(page, job):
     if config.APPLY_CLAUDE_BACKEND not in ("api", "subscription"):
         raise ValueError(f"unknown APPLY_CLAUDE_BACKEND {config.APPLY_CLAUDE_BACKEND!r} -- use 'subscription' or 'api'")
     answers = {}
+    pending = []
     bank = None
     inventory = _form_inventory(page) or []
 
@@ -401,18 +420,69 @@ def _generate_screening_answers(page, job):
             if reuse:
                 answers[label] = reuse
                 continue
-        options_block = _OPTIONS_BLOCK.format(options="\n".join(options)) if options else ""
-        prompt = _SCREENING_PROMPT.format(question=label, profile_summary=profile_summary,
-                                          options_block=options_block)
+        pending.append((label, options))
+    answers.update(_answer_questions(pending, profile_summary, job.get("id")))
+    return answers
+
+
+def _batch_answers(pending, profile_summary, job_id):
+    blocks = []
+    for index, (label, options) in enumerate(pending):
+        choices = f" (choices: {' | '.join(options)})" if options else ""
+        blocks.append(f"[{index}] {label}{choices}")
+    raw = _screening_completion(_SCREENING_BATCH_PROMPT.format(
+        questions="\n".join(blocks), profile_summary=profile_summary), job_id)
+    try:
+        parsed = json.loads(_strip_fence(raw))
+    except ValueError:
+        return {}
+    found = {}
+    for item in parsed if isinstance(parsed, list) else []:
         try:
-            answer = _screening_completion(prompt, job.get("id")).strip()
+            index = int(item.get("id"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        answer = item.get("answer")
+        if 0 <= index < len(pending) and isinstance(answer, str) and answer.strip():
+            found[index] = answer.strip()
+    return found
+
+
+def _strip_fence(text):
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+
+def _answer_questions(pending, profile_summary, job_id):
+    """{label: answer} for (label, options) questions: one batched call for a form with several
+    questions, then one call per question the batch left unanswered."""
+    answers = {}
+    batched = {}
+    if len(pending) > 1:
+        try:
+            batched = _batch_answers(pending, profile_summary, job_id)
         except claude_subscription.ClaudeSubscriptionError:
-            # Usage limit, missing token or a broken CLI affects every question; skipping one would
-            # only resurface later as a misleading "required question blank".
             raise
         except Exception as exc:
-            log.info(f"[APPLY-AGENT] | screening question skipped: {exc}")
-            continue
+            log.info(f"[APPLY-AGENT] | batched screening answers failed, asking one by one: {exc}")
+    for index, (label, options) in enumerate(pending):
+        answer = batched.get(index)
+        if answer is None:
+            options_block = _OPTIONS_BLOCK.format(options="\n".join(options)) if options else ""
+            prompt = _SCREENING_PROMPT.format(question=label, profile_summary=profile_summary,
+                                              options_block=options_block)
+            try:
+                answer = _screening_completion(prompt, job_id).strip()
+            except claude_subscription.ClaudeSubscriptionError:
+                # Usage limit, missing token or a broken CLI affects every question; skipping one
+                # would only resurface later as a misleading "required question blank".
+                raise
+            except Exception as exc:
+                log.info(f"[APPLY-AGENT] | screening question skipped: {exc}")
+                continue
         if options and not answer.startswith(_NEEDS_REVIEW_PREFIX):
             answer = _pick_option(options, answer) or answer
         answers[label] = answer
@@ -570,24 +640,113 @@ def _record_submission(job_id, lease, platform, applied_date, evidence):
     return db.record_submission(job_id, lease, platform, applied_date)
 
 
-def _submission_confirmed(page):
+_CONFIRMATION_URL = re.compile(r"/(confirmation|thanks|thank[-_]?you|application[-_]?submitted)(?=$|[/?#])",
+                               re.IGNORECASE)
+_EMAIL_CODE_PROMPT = re.compile(r"\b(security|verification) code\b|\benter the code\b|\bcode (was |we )?sent to\b",
+                                re.IGNORECASE)
+_CODE_INPUTS = ("input[autocomplete='one-time-code'], input[name*='code' i], input[id*='code' i], "
+                "input[aria-label*='code' i]")
+
+
+def _submission_state(page):
+    if page.get_by_text(_REJECTION_TEXT_PATTERN).count() > 0:
+        return "rejected"
+    if page.get_by_text(_CONFIRMATION_TEXT_PATTERN).count() > 0:
+        return "confirmed"
+    if _CONFIRMATION_URL.search(str(page.url or "")):
+        return "confirmed"
+    return "pending"
+
+
+def _submission_confirmed(page, polls=None):
     """Best-effort post-click confirmation check -- clicking Submit is not proof the
     application landed; a client-side validation error can leave the button's click handler
-    a no-op with the form still on screen. Looks for common ATS post-submit copy after a
-    short settle/navigation wait, checking the rejection pattern FIRST so validation-error
-    copy can never read as a confirmation (see _REJECTION_TEXT_PATTERN). Never raises: a
-    check failure degrades to "not confirmed", the safe direction, since submit() treats an
-    unconfirmed click as a failed submission and does not flip the row to 'applied'."""
-    try:
-        page.wait_for_timeout(2000)
-    except Exception:
-        pass
-    try:
-        if page.get_by_text(_REJECTION_TEXT_PATTERN).count() > 0:
+    a no-op with the form still on screen. Polls for up to APPLY_CONFIRMATION_POLLS seconds for
+    common ATS post-submit copy or a confirmation URL (a submit that uploads files can take
+    a while), checking the rejection pattern FIRST each time so validation-error copy can never
+    read as a confirmation (see _REJECTION_TEXT_PATTERN). Never raises: a check failure
+    degrades to "not confirmed", the safe direction, since submit() treats an unconfirmed click
+    as a failed submission and does not flip the row to 'applied'."""
+    for attempt in range(config.APPLY_CONFIRMATION_POLLS if polls is None else polls):
+        try:
+            page.wait_for_timeout(1000 if attempt else 2000)
+        except Exception:
+            pass
+        try:
+            state = _submission_state(page)
+        except Exception:
             return False
-        return page.get_by_text(_CONFIRMATION_TEXT_PATTERN).count() > 0
+        if state == "rejected":
+            return False
+        if state == "confirmed":
+            return True
+        if attempt >= 1 and _email_code_requested(page):
+            return False
+    return False
+
+
+def _email_code_requested(page):
+    # Greenhouse (and some others) may hold a submission until a code emailed to the applicant
+    # is entered (its documented spam protection). Text alone is not enough: a code field must be
+    # on screen too.
+    try:
+        return (page.get_by_text(_EMAIL_CODE_PROMPT).count() > 0
+                and page.locator(_CODE_INPUTS).filter(visible=True).count() > 0)
     except Exception:
         return False
+
+
+def _enter_email_code(page, code):
+    boxes = page.locator(_CODE_INPUTS).filter(visible=True)
+    count = boxes.count()
+    if count == 1:
+        boxes.first.fill(code, timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+        return True
+    if count == len(code):
+        for index, char in enumerate(code):
+            boxes.nth(index).fill(char, timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+        return True
+    return False
+
+
+def _complete_email_code(page, job_id, lease, clicked_at):
+    """Finish a submission the site is holding for an emailed code: read the code from the receipt
+    inbox (only from the ATS's own senders, only mail that arrived after the click), type it, and
+    press the form's own Submit, which is the same submission completing. With no code, a human
+    finishes it over the takeover view. True only when the page then confirms."""
+    found = email_verification.wait_for_verification(
+        config.APPLY_EMAIL_CODE_SENDERS, clicked_at - timedelta(minutes=1),
+        timeout_seconds=config.APPLY_EMAIL_CODE_WAIT_SECONDS)
+    code = (found or {}).get("code")
+    if code and _enter_email_code(page, code):
+        log.info(f"[APPLY-SUBMIT] | {job_id} | entered the emailed security code")
+        try:
+            _resolve_submit_control(page).click()
+        except Exception as exc:
+            log.info(f"[APPLY-SUBMIT] | {job_id} | no Submit after the code ({exc}); waiting for the page")
+        if _submission_confirmed(page):
+            return True
+    if not config.APPLY_TAKEOVER_ENABLED:
+        return False
+    if takeover.await_human(job_id, lease, "email_verification",
+                            "Enter the code from your email (kishoretheerajvj@gmail.com) and press Submit once"):
+        return _submission_confirmed(page)
+    return False
+
+
+_SUBMIT_LABEL = re.compile(r"^\s*submit(\s+(your|my))?\s+application\s*$", re.IGNORECASE)
+
+
+def _resolve_submit_control(page):
+    """The one visible, enabled Submit Application button. Raises before anything is clicked when
+    there is none or more than one: an ambiguous page is retried, never parked in
+    needs_confirmation as if the click might have landed."""
+    buttons = page.get_by_role("button", name=_SUBMIT_LABEL).filter(visible=True)
+    usable = [buttons.nth(i) for i in range(buttons.count()) if buttons.nth(i).is_enabled()]
+    if len(usable) != 1:
+        raise ValueError(f"Refusing to submit: expected one visible, enabled Submit Application button, "
+                         f"found {len(usable)}")
+    return usable[0]
 
 
 _RESUME_INPUTS = ["#resume", "input[type='file'][name='resume']", "#_systemfield_resume",
@@ -607,10 +766,15 @@ def _find_file_input(page, selectors):
     return None
 
 
-def _attach_resume_and_cover_letter(page, job):
-    # set_input_files works with real bytes headlessly -- no OS dialog, no third-party dependency.
-    import tempfile
+def _attachment_name(kind):
+    # Recruiters see the uploaded file's name; a temp name like tmpk3j2a.pdf reads as careless.
+    name = re.sub(r"[^A-Za-z0-9]+", "_", candidate_profile.candidate_name() or "Resume").strip("_")
+    return f"{name}_{'Resume' if kind == 'resume' else 'Cover_Letter'}.pdf"
 
+
+def _attach_resume_and_cover_letter(page, job):
+    # The bytes go to the browser as a named payload: no temp file to leak, and the employer sees
+    # Firstname_Lastname_Resume.pdf. Works headlessly, with no OS dialog.
     client = db.get_client()
     report = {}
     for report_key, field_ref_key, selectors, fallback in (
@@ -628,10 +792,8 @@ def _attach_resume_and_cover_letter(page, job):
                 log.info(f"[APPLY-AGENT] | {report_key} attach skipped: no file input on the form")
                 continue
             content = client.storage.from_(config.RESUME_STORAGE_BUCKET).download(storage_path)
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-                f.write(content)
-                temp_path = f.name
-            locator.set_input_files(temp_path, timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+            payload = {"name": _attachment_name(report_key), "mimeType": "application/pdf", "buffer": content}
+            locator.set_input_files(payload, timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
             report[report_key] = True
         except Exception as exc:
             report[report_key] = False
@@ -654,19 +816,11 @@ def _missing_required(fill_report):
     return missing
 
 
-_ASHBY_POSTING = re.compile(r"^(https://jobs\.ashbyhq\.com/[^/?#]+/[0-9a-f-]{36})/?(?=$|[?#])", re.I)
-_LEVER_POSTING = re.compile(r"^(https://jobs\.lever\.co/[^/?#]+/[0-9a-f-]{36})/?(?=$|[?#])", re.I)
-
-
 def _application_url(job_url):
-    # Ashby and Lever posting URLs show the job description; the form lives one path deeper.
+    # Ashby and Lever posting URLs show the job description; the form lives one path deeper, and a
+    # company page carrying only gh_jid embeds the Greenhouse form. job_identity knows each one.
     # Opening the posting page timed out the form fingerprint on the first live preview.
-    url = job_url or ""
-    for pattern, suffix in ((_ASHBY_POSTING, "/application"), (_LEVER_POSTING, "/apply")):
-        match = pattern.match(url)
-        if match:
-            return match.group(1) + suffix + url[match.end():]
-    return url
+    return job_identity.identify(job_url)["apply_url"] or ""
 
 
 # ── Browser lifecycle (real Playwright launch -- mocked in every test) ───────────
@@ -700,6 +854,7 @@ def _launch_page(job_url, storage_state=None):
     debug_port = _free_local_port() if config.APPLY_GENERIC_ADAPTER == "browser_use" else None
     browser = playwright.chromium.launch(
         headless=config.APPLY_BROWSER_HEADLESS, channel=config.APPLY_BROWSER_CHANNEL,
+        executable_path=config.APPLY_BROWSER_EXECUTABLE,
         args=[f"--remote-debugging-port={debug_port}"] if debug_port else []
     )
     if storage_state:
@@ -1132,11 +1287,30 @@ def _process_one_preview(job):
         raise
 
 
-def preview_candidates():
-    """Rows the preview pass may claim: saved, both documents built, idle or retryable."""
-    return [j for j in db.get_job_applications(stage="saved")
-            if j.get("resume_file_ref") and j.get("cover_letter_file_ref")
-            and (j.get("automation_status") or "idle") in config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES]
+def _backoff_elapsed(job, now):
+    if job.get("automation_status") != "failed_retryable":
+        return True
+    attempts = max(1, int(job.get("prepare_attempts") or 1))
+    wait = timedelta(minutes=config.APPLY_PREPARE_BACKOFF_MINUTES * 2 ** (attempts - 1))
+    try:
+        updated = datetime.fromisoformat(str(job.get("updated_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return now - updated >= wait
+
+
+def preview_candidates(limit=None, now=None):
+    """Rows the preview pass may claim: saved, both documents built, idle or retryable (after a
+    backoff that doubles per attempt, and only under APPLY_PREPARE_MAX_ATTEMPTS), on a platform
+    this host can prepare. Best pick_score first."""
+    now = now or datetime.now(timezone.utc)
+    excluded = set(ats_platform.unpreparable_platforms())
+    pool = db.get_preview_candidates(config.APPLY_PREVIEW_POOL, exclude_platforms=sorted(excluded))
+    jobs = [j for j in pool if _backoff_elapsed(j, now)
+            and (j.get("platform") or job_identity.identify(j.get("job_url"))["platform"]) not in excluded]
+    return jobs[:limit] if limit else jobs
 
 
 def run_preview():
@@ -1322,7 +1496,7 @@ def submit(job_id):
                                                  "required_unfilled": _required_unfilled(_form_inventory(page))})
                     if missing:
                         raise ValueError("Refusing to submit: required fields not filled: " + ", ".join(missing))
-                submit_control = page.get_by_role("button", name=_SUBMIT_BUTTON_NAME)
+                submit_control = _resolve_submit_control(page)
 
             if os.environ.get("APPLY_AGENT_ARMED") != "1":
                 log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
@@ -1338,11 +1512,14 @@ def submit(job_id):
 
             # from here on the site may have the application -- any failure is needs_confirmation, never retryable.
             clicked = True
+            clicked_at = datetime.now(timezone.utc)
             submit_control.click()
             # The click succeeding is not proof the application landed -- a client-side validation
             # error commonly leaves the button's own click handler a no-op with the form still on
             # screen. Do not advance the stage until the site itself confirms it.
             confirmed = _submission_confirmed(page)
+            if not confirmed and _email_code_requested(page):
+                confirmed = _complete_email_code(page, job_id, lease, clicked_at)
             # A challenge after the click: a human finishes it. This worker never clicks Submit
             # again; an unsolved one leaves the row in needs_confirmation (clicked is True).
             if not confirmed and _handle_challenge(

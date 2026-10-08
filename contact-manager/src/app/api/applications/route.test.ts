@@ -28,7 +28,8 @@ beforeEach(() => {
 
 describe("GET /api/applications?view=queue", () => {
   it("returns the approval queue's statuses and drops skipped or closed rows", async () => {
-    const mockIn = vi.fn().mockReturnValue({ order: mockOrder, eq: mockEq });
+    const mockOr = vi.fn().mockReturnValue({ order: mockOrder });
+    const mockIn = vi.fn().mockReturnValue({ order: mockOrder, eq: mockEq, or: mockOr });
     const mockNot = vi.fn().mockReturnValue({ in: mockIn, order: mockOrder });
     mockSelect.mockReturnValue({ order: mockOrder, eq: mockEq, not: mockNot, in: mockIn });
     await GET(new Request("http://test/api/applications?view=queue"));
@@ -36,6 +37,11 @@ describe("GET /api/applications?view=queue", () => {
     expect(mockIn).toHaveBeenCalledWith("automation_status", [
       "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
     ]);
+    // Only the last two weeks of submitted rows, so the list stays bounded at fifty a day.
+    const filter = mockOr.mock.calls[0][0] as string;
+    expect(filter.startsWith("automation_status.neq.submitted,updated_at.gte.")).toBe(true);
+    const since = Date.parse(filter.split("updated_at.gte.")[1]);
+    expect(Math.round((Date.now() - since) / 86_400_000)).toBe(14);
   });
 });
 

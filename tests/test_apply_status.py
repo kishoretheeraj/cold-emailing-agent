@@ -123,7 +123,7 @@ def test_detail_text_is_single_line_and_bounded():
 
 
 def test_main_only_enables_detail_for_exact_true(mocker, capsys):
-    mocker.patch("db.get_job_applications", return_value=[_row(1)])
+    mocker.patch("db.get_all_job_applications", return_value=[_row(1)])
     mocker.patch("db.load_prompts", return_value={"applicant_eligibility": _ELIGIBILITY})
     for value in ("True", "1", "yes", ""):
         mocker.patch.dict("os.environ", {"REPO_PRIVATE": value})
@@ -135,7 +135,7 @@ def test_main_only_enables_detail_for_exact_true(mocker, capsys):
 
 
 def test_main_returns_nonzero_when_the_database_read_fails(mocker, capsys):
-    mocker.patch("db.get_job_applications", side_effect=RuntimeError("boom"))
+    mocker.patch("db.get_all_job_applications", side_effect=RuntimeError("boom"))
     mocker.patch("db.load_prompts", return_value={})
     assert apply_status.main() == 1
 
@@ -170,7 +170,7 @@ def test_run_reasons_print_only_when_private():
 
 
 def test_main_reports_runs_and_survives_a_missing_run_log(mocker, capsys):
-    mocker.patch("db.get_job_applications", return_value=[])
+    mocker.patch("db.get_all_job_applications", return_value=[])
     mocker.patch("db.load_prompts", return_value={})
     mocker.patch("db.get_recent_application_runs", return_value=_RUNS)
     assert apply_status.main() == 0
@@ -178,3 +178,23 @@ def test_main_reports_runs_and_survives_a_missing_run_log(mocker, capsys):
     mocker.patch("db.get_recent_application_runs", side_effect=RuntimeError("relation application_runs does not exist"))
     assert apply_status.main() == 0
     assert "application_runs: unavailable (RuntimeError)" in capsys.readouterr().out
+
+
+
+def test_listings_stop_at_the_limit_with_a_count_of_the_rest():
+    rows = [dict(_row(i), automation_status="needs_input", apply_blocked_reason="x") for i in range(120)]
+    lines = apply_status.summarize(rows, None, detail=True)
+    assert "  ... and 70 more" in lines
+    assert sum(1 for l in lines if l.startswith("  #")) <= 2 * apply_status._LIST_LIMIT
+
+
+def test_all_rows_are_read_in_pages(mocker):
+    # fifty-a-day: a single select stops at PostgREST's 1000-row cap, so counts silently undercount.
+    pages = [[{"id": i} for i in range(1000)], [{"id": i} for i in range(1000, 1500)]]
+    client = mocker.MagicMock()
+    chain = client.table.return_value.select.return_value.order.return_value
+    chain.range.return_value.execute.side_effect = [mocker.MagicMock(data=p) for p in pages]
+    mocker.patch.object(apply_status.db, "get_client", return_value=client)
+    rows = apply_status.db.get_all_job_applications("id")
+    assert len(rows) == 1500
+    assert [c.args for c in chain.range.call_args_list] == [(0, 999), (1000, 1999)]

@@ -14,6 +14,9 @@ function getClient() {
 const QUEUE_STATUSES = [
   "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
 ];
+// Submitted rows stay in the queue's "Submitted" list for two weeks; at fifty a day an unbounded
+// list grows past what a phone can show and past the API's row cap.
+const SUBMITTED_DAYS = 14;
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -21,8 +24,8 @@ export async function GET(req: Request) {
   const source = searchParams.get("source");
   // ?takeover=open: only rows where a Beelink worker is waiting for a human (the banner polls it).
   const takeoverOpen = searchParams.get("takeover") === "open";
-  // ?view=queue: what the approval queue shows (ready, in flight, needs you, and submitted for the
-  // "N of 10" count); skipped (withdrawn) and rejected rows leave it.
+  // ?view=queue: what the approval queue shows (ready, in flight, needs you, and the last two weeks
+  // of submitted rows); skipped (withdrawn) and rejected rows leave it.
   const queueView = searchParams.get("view") === "queue";
   try {
     const supabase = getClient();
@@ -31,9 +34,11 @@ export async function GET(req: Request) {
     if (source) query = query.eq("source", source);
     if (takeoverOpen) query = query.not("takeover", "is", null);
     if (queueView) {
+      const since = new Date(Date.now() - SUBMITTED_DAYS * 86_400_000).toISOString();
       query = query
         .not("stage", "in", "(withdrawn,rejected)")
-        .in("automation_status", QUEUE_STATUSES);
+        .in("automation_status", QUEUE_STATUSES)
+        .or(`automation_status.neq.submitted,updated_at.gte.${since}`);
     }
     const { data, error } = await query.order("created_at", { ascending: false });
     if (error) throw error;

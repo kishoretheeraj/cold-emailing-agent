@@ -30,16 +30,21 @@ type Call = [string, RequestInit | undefined];
 let queue: unknown[];
 let calls: Call[];
 let submitStatus: number;
+let today: { submitted: number; cap: number };
 
 beforeEach(() => {
   vi.useFakeTimers();
   queue = [row({})];
   calls = [];
   submitStatus = 200;
+  today = { submitted: 2, cap: 50 };
   vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
     calls.push([url, init]);
     if (url === "/api/applications?view=queue") {
       return Promise.resolve(new Response(JSON.stringify({ applications: queue }), { status: 200 }));
+    }
+    if (url === "/api/applications/today") {
+      return Promise.resolve(new Response(JSON.stringify(today), { status: 200 }));
     }
     if (url.endsWith("/submit")) {
       return Promise.resolve(new Response(JSON.stringify(submitStatus === 200 ? { ok: true } : { error: "approve_application: the preview changed since it was shown" }), { status: submitStatus }));
@@ -70,11 +75,33 @@ async function click(el: HTMLElement) {
 }
 
 describe("ApprovalQueue", () => {
-  it("shows progress toward ten submissions", async () => {
-    queue = [row({}), row({ id: "2", automation_status: "submitted" }), row({ id: "3", automation_status: "submitted" })];
+  it("shows today's submissions against the daily cap", async () => {
+    today = { submitted: 25, cap: 50 };
     await renderQueue();
-    expect(screen.getByRole("heading", { name: "2 of 10 submitted" })).toBeInTheDocument();
-    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
+    expect(screen.getByRole("heading", { name: "Today: 25 of 50 submitted" })).toBeInTheDocument();
+    const bar = screen.getByRole("progressbar");
+    expect(bar).toHaveAttribute("aria-valuemax", "50");
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+  });
+
+  it("says when today's cap is reached", async () => {
+    today = { submitted: 50, cap: 50 };
+    await renderQueue();
+    expect(screen.getByText(/cap is reached/)).toBeInTheDocument();
+  });
+
+  it("shows no meter when there is no cap", async () => {
+    today = { submitted: 7, cap: 0 };
+    await renderQueue();
+    expect(screen.getByRole("heading", { name: "Today: 7 submitted" })).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("shows where and when each job was posted", async () => {
+    queue = [row({ location: "San Francisco, CA", source: "simplify", posted_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })];
+    await renderQueue();
+    const card = screen.getByRole("article", { name: "Acme Product Manager" });
+    expect(within(card).getByText("San Francisco, CA · simplify · posted 3 days ago")).toBeInTheDocument();
   });
 
   it("shows each ready application with its answers, coverage and links", async () => {

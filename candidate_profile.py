@@ -33,3 +33,12 @@ def profile_text():
             parts += [metrics_by_id[bid] for bid in project.get("bullet_ids", []) if bid in metrics_by_id]
         _cache = " ".join(parts)
     return _cache
+
+
+def candidate_name():
+    """The candidate's name as master.json spells it ('' when unreadable)."""
+    try:
+        with open(_MASTER_DATA_PATH) as f:
+            return str(json.load(f).get("name") or "")
+    except (OSError, ValueError):
+        return ""

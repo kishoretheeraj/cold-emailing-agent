@@ -102,3 +102,20 @@ def _no_real_answer_bank(request):
         yield
     finally:
         apply_agent._answer_bank = original
+
+
+@pytest.fixture(autouse=True)
+def _lenient_submit_control(request):
+    # submit() resolves exactly one visible, enabled Submit Application button before clicking.
+    # Tests that drive submit() with MagicMock pages get the old single locator; the resolver's own
+    # tests (module names containing "submit_control") use a real browser DOM.
+    if "submit_control" in request.module.__name__:
+        yield
+        return
+    import apply_agent
+    original = apply_agent._resolve_submit_control
+    apply_agent._resolve_submit_control = lambda page: page.get_by_role("button", name=apply_agent._SUBMIT_BUTTON_NAME)
+    try:
+        yield
+    finally:
+        apply_agent._resolve_submit_control = original

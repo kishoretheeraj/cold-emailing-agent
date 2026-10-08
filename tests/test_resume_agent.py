@@ -13,6 +13,16 @@ import resume_agent
 import resume_lint
 
 
+@pytest.fixture(autouse=True)
+def _offline_queue_checks(mocker):
+    # drain() reads the search preferences and asks the ATS whether a posting is still open; tests
+    # that exercise those checks override these.
+    mocker.patch.object(resume_agent.job_sourcing, "load_search_settings",
+                        return_value=(resume_agent.job_sourcing.job_filters.load_preferences({}), {}))
+    mocker.patch.object(resume_agent.job_liveness, "check", return_value="unknown")
+    mocker.patch.object(resume_agent.db, "count_company_applications", return_value=0)
+
+
 # ── _check_deadline ──────────────────────────────────────────────────────────
 
 def test_check_deadline_true_when_no_deadline_known():
@@ -546,6 +556,7 @@ def test_skills_group_labels_are_short_plain_and_unattributed(label, ok):
 def _drain_ready(mocker):
     mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
     mocker.patch.object(resume_agent, "_check_deadline", return_value=True)
+    mocker.patch.object(resume_agent, "_queue_gate", return_value=None)
 
 
 def test_drain_runs_propose_then_build_per_row(mocker):
@@ -607,7 +618,44 @@ def test_drain_uses_configured_batch_by_default(mocker):
     mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
     get = mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[])
     resume_agent.drain()
-    get.assert_called_once_with(config.RESUME_WORKER_BATCH)
+    get.assert_called_once_with(config.RESUME_WORKER_BATCH * config.RESUME_QUEUE_POOL_FACTOR,
+                                exclude_platforms=resume_agent.ats_platform.unpreparable_platforms())
+
+
+def test_drain_parks_closed_and_capped_rows_without_spending_the_batch(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(resume_agent, "_queue_gate", side_effect=[
+        ("closed", "Posting closed"), ("cap", "Skipped: 3 applications"), None, None])
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": i, "company": "A", "resume_strategy": {"x": 1}} for i in (1, 2, 3, 4)])
+    unsupported = mocker.patch.object(db, "mark_unsupported")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    build = mocker.patch.object(resume_agent, "build")
+    assert resume_agent.drain(limit=1) == 0
+    unsupported.assert_called_once_with(1, "Posting closed")
+    set_error.assert_called_once_with(2, "Skipped: 3 applications")
+    assert [c.args[0] for c in build.call_args_list] == [3]
+
+
+@pytest.mark.parametrize("liveness,count,cap,expected", [
+    ("closed", 0, 3, "closed"),
+    ("live", 3, 3, "cap"),
+    ("unknown", 2, 3, None),
+    ("live", 9, 0, None),          # a cap of 0 means no cap
+])
+def test_queue_gate(mocker, liveness, count, cap, expected):
+    mocker.patch.object(resume_agent.job_liveness, "check", return_value=liveness)
+    mocker.patch.object(db, "count_company_applications", return_value=count)
+    gate = resume_agent._queue_gate({"id": 1, "company": "Figma, Inc.", "job_url": "https://x"}, cap)
+    assert (gate and gate[0]) == expected
+    if expected == "cap":
+        db.count_company_applications.assert_called_once_with("figma", 30)
+
+
+def test_queue_gate_builds_when_the_count_is_unavailable(mocker):
+    mocker.patch.object(resume_agent.job_liveness, "check", return_value="unknown")
+    mocker.patch.object(db, "count_company_applications", side_effect=RuntimeError("down"))
+    assert resume_agent._queue_gate({"id": 1, "company": "A", "job_url": "https://x"}, 3) is None
 
 
 def test_drain_preflight_failure_touches_no_rows(mocker):

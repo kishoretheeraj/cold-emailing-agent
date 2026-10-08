@@ -49,6 +49,7 @@ src/
 │   ├── api/applications/[id]/files/route.ts
 │   ├── api/applications/[id]/submit/route.ts
 │   ├── api/applications/[id]/reset-approval/route.ts
+│   ├── api/applications/today/route.ts
 │   ├── api/system-health/route.ts
 │   ├── api/login/route.ts
 │   ├── api/logout/route.ts
@@ -107,6 +108,8 @@ src/
     ├── operatorAuth.ts
     ├── approvalSignature.ts
     ├── loginNext.ts
+    ├── nyDay.ts
+    ├── dailyCap.ts
     ├── gmail-server.ts
     ├── cadence.ts
     ├── personalization.ts
@@ -181,10 +184,15 @@ verify. Missing key: `503` before any RPC.
 
 `ApprovalQueue.tsx` sits at the top of `/applications` (above the "All applications" table) and polls
 `GET /api/applications?view=queue` every 10 s (server: `automation_status` in ready_for_review,
-approved, submitting, needs_input, needs_confirmation, submitted; stage not withdrawn/rejected). It
-shows "N of 10 submitted" (ten segments, no inline styles), a **Needs you** list (needs_input reason +
+approved, submitting, needs_input, needs_confirmation, submitted; stage not withdrawn/rejected;
+submitted rows only from the last 14 days) and `GET /api/applications/today` (`{ submitted, cap }`:
+submit attempts since midnight America/New_York, `lib/nyDay.ts`, and the `daily_submit_cap` from the
+`job_search_preferences` prompts row, `lib/dailyCap.ts`, default 50, 0 = no cap; the Beelink's submit
+worker enforces the same cap). It shows "Today: N of CAP submitted" (ten segments, each a tenth of
+the cap, no inline styles; a note when the cap is reached), a **Needs you** list (needs_input reason +
 "Prepare again" -> requeue-preview; needs_confirmation -> "It went through"/"It did not" ->
-resolve-confirmation), **Ready to submit** cards (best `pick_score` first: answers, keyword coverage,
+resolve-confirmation), **Ready to submit** cards (best `pick_score` first: location · source · posted N
+days ago, answers, keyword coverage,
 posting link, "Show documents" -> signed links from `/files`, **Submit** and **Skip**), "On the way",
 and **Submitted** with proof links. Submit starts a 5-second countdown with Undo; only when it runs
 out is `POST /submit` sent with the card's `preview_revision_hash`; Undo or leaving the page sends
@@ -440,7 +448,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 86** (vitest: 847 across 58 files, playwright: 86; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`). Beelink M2 Task 9
+- **Current test count: 86** (vitest: 861 across 60 files, playwright: 86; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more

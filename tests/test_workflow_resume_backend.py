@@ -14,11 +14,12 @@ def _read(name):
         return f.read()
 
 
-def test_jobright_scoring_step_queues_for_the_beelink():
+def test_jobright_pull_no_longer_scores_on_the_paid_api():
+    # fifty-a-day F10: job_pick's judge billed the API from this workflow. Scoring now runs on the
+    # Beelink's job-pick.service on the Claude subscription; this workflow only pulls.
     workflow = _read("jobright_pull.yml")
-    step = workflow.split("- name: Score newly-discovered jobs", 1)[1].split("- name:", 1)[0]
-    assert "run: python job_pick.py" in step
-    assert "RESUME_CLAUDE_BACKEND: subscription" in step
+    assert "job_pick.py" not in workflow
+    assert "requirements-jobs.txt" not in workflow
 
 
 def test_no_workflow_holds_a_subscription_token():

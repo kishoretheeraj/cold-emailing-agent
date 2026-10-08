@@ -22,6 +22,9 @@ def _wired(mocker, tmp_path):
     mocker.patch.object(apply_worker.apply_agent, "preview_candidates", return_value=[])
     mocker.patch.object(apply_worker.apply_agent, "_process_one_preview", return_value="filled")
     mocker.patch.object(apply_worker.apply_agent, "submit")
+    mocker.patch.object(apply_worker.job_sourcing, "load_search_settings",
+                        return_value=(apply_worker.job_sourcing.job_filters.load_preferences({}), {}))
+    mocker.patch.object(apply_worker.db, "count_submit_attempts_since", return_value=0)
 
 
 def _jobs(*ids):
@@ -64,6 +67,22 @@ def test_prepare_processes_candidates_and_logs_each_outcome():
 
 def test_prepare_respects_the_limit():
     apply_worker.apply_agent.preview_candidates.return_value = _jobs(1, 2, 3)
+    apply_worker.run_prepare(limit=2)
+    assert apply_worker.apply_agent._process_one_preview.call_count == 2
+
+
+def test_skipped_rows_do_not_use_up_the_limit_or_the_run_log():
+    # fifty-a-day F4: rows the host can only skip used to fill the whole batch, every run.
+    apply_worker.apply_agent.preview_candidates.return_value = _jobs(1, 2, 3, 4, 5)
+    apply_worker.apply_agent._process_one_preview.side_effect = ["skipped", "skipped", "filled", "blocked", "filled"]
+    apply_worker.run_prepare(limit=2)
+    assert apply_worker.apply_agent._process_one_preview.call_count == 4
+    assert [c.kwargs["application_id"] for c in apply_worker.db.log_application_run.call_args_list] == [3, 4]
+
+
+def test_a_failed_row_counts_toward_the_limit():
+    apply_worker.apply_agent.preview_candidates.return_value = _jobs(1, 2, 3)
+    apply_worker.apply_agent._process_one_preview.side_effect = [RuntimeError("x"), "filled", "filled"]
     apply_worker.run_prepare(limit=2)
     assert apply_worker.apply_agent._process_one_preview.call_count == 2
 
@@ -214,3 +233,54 @@ def test_main_returns_the_error_count(mocker):
     mocker.patch.object(apply_worker, "run_prepare", return_value=2)
     assert apply_worker.main(["--prepare"]) == 2
     apply_worker.run_prepare.assert_called_once_with(config.APPLY_PREPARE_BATCH)
+
+
+
+# ── daily cap (fifty-a-day F14) ────────────────────────────────────────────────
+
+def _cap(cap):
+    prefs = apply_worker.job_sourcing.job_filters.load_preferences({})
+    prefs["daily_submit_cap"] = cap
+    apply_worker.job_sourcing.load_search_settings.return_value = (prefs, {})
+
+
+def test_submit_stops_at_the_daily_cap(armed):
+    _cap(50)
+    apply_worker.db.get_approved_application_ids.return_value = [1, 2, 3]
+    apply_worker.db.count_submit_attempts_since.return_value = 50
+    assert apply_worker.run_submit(limit=3) == 0
+    apply_worker.apply_agent.submit.assert_not_called()
+
+
+def test_submit_takes_only_what_is_left_of_the_day(armed):
+    _cap(50)
+    apply_worker.db.get_approved_application_ids.return_value = [1, 2, 3]
+    apply_worker.db.count_submit_attempts_since.return_value = 49
+    apply_worker.run_submit(limit=3)
+    assert [c.args[0] for c in apply_worker.apply_agent.submit.call_args_list] == [1]
+
+
+def test_the_day_starts_at_midnight_new_york(armed):
+    _cap(50)
+    apply_worker.db.get_approved_application_ids.return_value = [1]
+    apply_worker.run_submit(limit=1)
+    since = apply_worker.db.count_submit_attempts_since.call_args.args[0]
+    from zoneinfo import ZoneInfo
+    local = since.astimezone(ZoneInfo("America/New_York"))
+    assert (local.hour, local.minute) == (0, 0) and since.utcoffset().total_seconds() == 0
+
+
+def test_an_unreadable_count_submits_nothing(armed):
+    _cap(50)
+    apply_worker.db.get_approved_application_ids.return_value = [1]
+    apply_worker.db.count_submit_attempts_since.side_effect = RuntimeError("db down")
+    apply_worker.run_submit(limit=1)
+    apply_worker.apply_agent.submit.assert_not_called()
+
+
+def test_a_cap_of_zero_means_no_cap(armed):
+    _cap(0)
+    apply_worker.db.get_approved_application_ids.return_value = [1, 2]
+    apply_worker.run_submit(limit=2)
+    assert apply_worker.apply_agent.submit.call_count == 2
+    apply_worker.db.count_submit_attempts_since.assert_not_called()

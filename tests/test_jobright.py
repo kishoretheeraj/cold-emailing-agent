@@ -23,6 +23,7 @@ def _fake_response(body_dict):
 @pytest.fixture(autouse=True)
 def no_real_calls(mocker):
     mocker.patch.object(db, "record_run")
+    mocker.patch.object(db, "load_prompts", return_value={})
     mocker.patch.object(config, "JOBRIGHT_EMAIL", "test@example.com")
     mocker.patch.object(config, "JOBRIGHT_PASSWORD", "test-password")
     mocker.patch.object(config, "JOBRIGHT_RETRY_BACKOFF_SECONDS", 0)
@@ -256,8 +257,8 @@ def test_run_counts_dedup_skip_separately_from_saved(mocker):
 
 def test_run_isolates_one_postings_persist_failure_from_the_rest(mocker):
     mocker.patch.object(jobright, "fetch_recommended_jobs", return_value=[
-        {"title": "First", "location": "", "url": "https://x/1", "description": "", "company": "Acme", "source": "jobright"},
-        {"title": "Second", "location": "", "url": "https://x/2", "description": "", "company": "Acme", "source": "jobright"},
+        {"title": "Product Manager", "location": "", "url": "https://x/1", "description": "", "company": "Acme", "source": "jobright"},
+        {"title": "Product Analyst", "location": "", "url": "https://x/2", "description": "", "company": "Acme", "source": "jobright"},
     ])
     mocker.patch.object(db, "create_job_application", side_effect=[RuntimeError("boom"), {"id": 2}])
     jobright.run()
@@ -273,3 +274,16 @@ def test_run_with_no_jobs_records_success_and_does_nothing(mocker):
     create.assert_not_called()
     args, kwargs = db.record_run.call_args
     assert args[0] == "success"
+
+
+def test_run_skips_postings_our_filters_reject(mocker):
+    mocker.patch.object(jobright, "fetch_recommended_jobs", return_value=[
+        {"title": "Senior Product Manager", "location": "Remote", "url": "https://x/1", "description": "", "company": "A"},
+        {"title": "Product Manager", "location": "London, UK", "url": "https://x/2", "description": "", "company": "B"},
+        {"title": "Product Manager", "location": "Boston, MA", "url": "https://x/3", "description": "", "company": "C"},
+    ])
+    create = mocker.patch.object(db, "create_job_application", return_value={"id": 1})
+    jobright.run()
+    assert [c.kwargs["company"] for c in create.call_args_list] == ["C"]
+    args, _ = db.record_run.call_args
+    assert args[1:3] == (1, 2)

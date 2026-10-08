@@ -24,6 +24,11 @@ _EXPECTED_ELIGIBILITY_KEYS = ("work_authorized_us", "requires_visa_sponsorship",
 _ATTENTION = ("needs_input", "failed_retryable", "needs_confirmation", "failed_terminal",
               "unsupported")
 _ACTIVE = ("preparing", "ready_for_review", "approved", "submitting")
+# Only what the report reads (posting snapshots and previews are large), every row in pages.
+_COLUMNS = ("id,company,role,job_url,stage,automation_status,pick_verdict,resume_file_ref,"
+            "cover_letter_file_ref,resume_error,apply_blocked_reason,source")
+# Per-row listings stop here; at fifty a day they would otherwise run to thousands of lines.
+_LIST_LIMIT = 50
 
 
 def _one_line(value, limit):
@@ -109,6 +114,7 @@ def summarize(rows, eligibility_raw, detail, runs=None):
                             collections.Counter(r.get("automation_status") or "none" for r in rows))
     open_rows = [r for r in rows if r.get("stage") in ("saved", "ready_to_submit")]
     lines += _counter_lines("Open rows by platform:", collections.Counter(_platform(r) for r in open_rows))
+    lines += _counter_lines("Open rows by source:", collections.Counter(r.get("source") or "none" for r in open_rows))
 
     f = funnel(rows)
     lines.append("First-10 funnel (Greenhouse/Ashby/Lever):")
@@ -127,7 +133,7 @@ def summarize(rows, eligibility_raw, detail, runs=None):
         lines.append("(per-row detail hidden: repo is not confirmed private)")
         return lines
 
-    for r in attention:
+    for r in attention[:_LIST_LIMIT]:
         lines.append(
             f"  #{r.get('id')} | {_one_line(r.get('company'), 40)} | {_one_line(r.get('role'), 60)} | "
             f"{r.get('automation_status')} | {_one_line(r.get('apply_blocked_reason'), 200)}"
@@ -135,8 +141,10 @@ def summarize(rows, eligibility_raw, detail, runs=None):
     pipeline = [r for r in rows if _supported(r) and (
         r.get("automation_status") in _ACTIVE
         or (r.get("pick_verdict") == "strong" and r.get("stage") in ("saved", "ready_to_submit")))]
+    if len(attention) > _LIST_LIMIT:
+        lines.append(f"  ... and {len(attention) - _LIST_LIMIT} more")
     lines.append(f"Supported pipeline rows: {len(pipeline)}")
-    for r in pipeline:
+    for r in pipeline[:_LIST_LIMIT]:
         docs = "docs" if r.get("resume_file_ref") and r.get("cover_letter_file_ref") else "no-docs"
         if r.get("resume_error"):
             docs = "resume-error: " + _one_line(r.get("resume_error"), 80)
@@ -144,13 +152,15 @@ def summarize(rows, eligibility_raw, detail, runs=None):
             f"  #{r.get('id')} | {_one_line(r.get('company'), 40)} | {_one_line(r.get('role'), 60)} | "
             f"{_platform(r)} | {r.get('stage')} | {r.get('automation_status')} | {docs}"
         )
+    if len(pipeline) > _LIST_LIMIT:
+        lines.append(f"  ... and {len(pipeline) - _LIST_LIMIT} more")
     return lines
 
 
 def main():
     detail = os.environ.get("REPO_PRIVATE") == "true"
     try:
-        rows = db.get_job_applications()
+        rows = db.get_all_job_applications(_COLUMNS)
         eligibility_raw = db.load_prompts().get("applicant_eligibility")
     except Exception as exc:
         print(f"apply_status: database read failed: {type(exc).__name__}: {exc}")

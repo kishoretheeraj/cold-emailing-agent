@@ -40,6 +40,10 @@ def test_every_expected_unit_exists():
         "chrome-profile@.service",
         "job-linkedin-ingest.service",
         "job-linkedin-ingest.timer",
+        "job-pick.service",
+        "job-pick.timer",
+        "job-sourcing.service",
+        "job-sourcing.timer",
         "notify-failure@.service",
         "novnc@.service",
         "resume-worker.service",
@@ -242,7 +246,7 @@ def test_resume_worker_runs_drain_as_jobagent_with_its_own_token_file():
 def test_only_the_workers_that_call_claude_load_the_claude_token():
     # apply-submit never calls Claude (it replays the reviewed answers), so it must not hold it.
     for path in _unit_paths():
-        if os.path.basename(path) not in ("resume-worker.service", "apply-prepare.service"):
+        if os.path.basename(path) not in ("resume-worker.service", "apply-prepare.service", "job-pick.service"):
             assert "claude.env" not in _read(path), path
 
 
@@ -351,7 +355,9 @@ def test_memory_fits_with_the_apply_worker_running():
     total = (sum(_memory_max_bytes(os.path.join(_SYSTEMD, n)) for n in stack + ("chrome-profile@.service",))
              + sum(_memory_max_bytes(os.path.join(_SYSTEMD, n)) for n in stack)
              + max(_memory_max_bytes(_PREPARE), _memory_max_bytes(_SUBMIT))
-             + _memory_max_bytes(os.path.join(_SYSTEMD, "resume-worker.service")))
+             + _memory_max_bytes(os.path.join(_SYSTEMD, "resume-worker.service"))
+             + _memory_max_bytes(os.path.join(_SYSTEMD, "job-pick.service"))
+             + _memory_max_bytes(os.path.join(_SYSTEMD, "job-sourcing.service")))
     assert total <= int(10.5 * 2**30)
 
 
@@ -376,3 +382,42 @@ def test_provision_creates_the_vault_env_template_but_never_a_key():
     code = _provision_code()
     assert "vault.env.example" in code
     assert "Fernet.generate_key" not in code and "VAULT_KEY=" not in code
+
+
+# ── Sourcing and scoring (fifty-a-day) ─────────────────────────────────────────
+
+def test_sourcing_needs_no_model_and_no_secrets_beyond_base():
+    unit = _directives(os.path.join(_SYSTEMD, "job-sourcing.service"))
+    assert "ExecStart=/opt/job-agent/.venv/bin/python job_sourcing.py" in unit
+    assert [l for l in unit.splitlines() if l.startswith("EnvironmentFile=")] == ["EnvironmentFile=/etc/job-agent/base.env"]
+
+
+def test_job_pick_judges_on_the_subscription_and_skips_unsubmittable_sites():
+    unit = _directives(os.path.join(_SYSTEMD, "job-pick.service"))
+    assert "ExecStart=/opt/job-agent/.venv/bin/python job_pick.py" in unit
+    for line in ("EnvironmentFile=/etc/job-agent/claude.env", "Environment=JOB_PICK_BACKEND=subscription",
+                 "Environment=RESUME_CLAUDE_BACKEND=subscription", "Environment=APPLY_GENERIC_ADAPTER=none"):
+        assert line in unit
+
+
+def test_the_resume_worker_skips_sites_nothing_here_can_submit():
+    # fifty-a-day F15: documents were built for Oracle/iCIMS rows the apply worker can never send.
+    assert "Environment=APPLY_GENERIC_ADAPTER=none" in _directives(os.path.join(_SYSTEMD, "resume-worker.service"))
+
+
+def test_scoring_runs_after_sourcing_every_two_hours():
+    sourcing = _read(os.path.join(_SYSTEMD, "job-sourcing.timer"))
+    pick = _read(os.path.join(_SYSTEMD, "job-pick.timer"))
+    assert "OnCalendar=*-*-* 00/2:13:00" in sourcing and "OnCalendar=*-*-* 00/2:43:00" in pick
+
+
+def test_provision_never_enables_the_sourcing_or_pick_timers():
+    code = _provision_code()
+    assert "enable --now job-sourcing" not in code and "enable --now job-pick" not in code
+
+
+def test_beelink_requirements_install_cpu_only_torch_for_job_pick():
+    with open(os.path.join(_ROOT, "requirements-beelink.txt")) as f:
+        lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    assert "--extra-index-url https://download.pytorch.org/whl/cpu" in lines
+    assert lines.index("torch") < lines.index("sentence-transformers>=3.0.0")

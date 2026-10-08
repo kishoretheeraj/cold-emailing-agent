@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import logging
 import re
 import time
@@ -26,6 +26,7 @@ def _create_patched(supabase_url, supabase_key, options=None):
 
 from supabase import create_client as _orig_create_client
 import config
+import job_identity
 from config import SUPABASE_URL, SUPABASE_ANON_KEY
 
 _client = None
@@ -33,15 +34,20 @@ _client = None
 # Retry wrapper for Supabase calls — same shape as emailer._call_claude.
 # Network blips and 5xx are rare but kill the whole run when get_all_contacts
 # is the first call out of the gate.
-def _retry(fn):
+def _retry(fn, give_up=None):
     for attempt in range(3):
         try:
             return fn()
-        except Exception:
-            if attempt < 2:
+        except Exception as exc:
+            if attempt < 2 and not (give_up and give_up(exc)):
                 time.sleep(2 ** (attempt + 1))
                 continue
             raise
+
+
+def _is_unique_violation(exc):
+    # A unique violation is an answer, not a blip: retrying the same insert only loses again.
+    return getattr(exc, "code", None) == "23505" or "23505" in str(exc)
 
 def get_client():
     global _client
@@ -540,15 +546,84 @@ def get_all_company_intel_names():
 
 # ── Job application tracking (Phase 1 of full-fledged buildout) ─────────────────
 
-def create_job_application(company, role, job_url=None, source=None, contact_id=None,
-                            applied_date=None, notes=None, posting_snapshot=None):
-    """Create a new job application row at stage 'saved'. Returns None if job_url is
-    already present on another row (dedup) or if the insert returns no row."""
+# Rows that mean "already have this role": anything at the same company with the same title
+# identity within this window, whatever its stage (a skipped role is not offered again).
+DUPLICATE_ROLE_DAYS = 45
+# A role this candidate applied to is not applied to again within this window when the posting is
+# the same text (a repost), or when there is no text to tell.
+REPOST_DAYS = 180
+_APPLIED_STAGES = {"applied", "phone_screen", "onsite", "offer", "rejected", "accepted"}
+_SENT_STATUSES = {"approved", "submitting", "submitted", "needs_confirmation"}
+_DEDUP_COLUMNS = "id,job_url,job_key,stage,automation_status,created_at,jd_fingerprint"
+
+
+def _identity_fields(company, role, job_url, posting_snapshot):
+    ident = job_identity.identify(job_url) if job_url else {}
+    description = posting_snapshot.get("description") if isinstance(posting_snapshot, dict) else None
+    return {
+        "job_key": ident.get("job_key"),
+        "platform": ident.get("platform"),
+        "company_key": job_identity.company_key(company) or None,
+        "title_key": job_identity.title_key(role) or None,
+        "jd_fingerprint": job_identity.fingerprint(description) or None,
+    }
+
+
+def _dedup_rows(fields, job_url):
+    def query():
+        return get_client().table("job_applications").select(_DEDUP_COLUMNS)
+    rows = []
+    if fields["job_key"]:
+        rows += _retry(lambda: query().eq("job_key", fields["job_key"]).limit(5).execute()).data or []
     if job_url:
-        existing = _retry(lambda: get_client().table("job_applications")
-                           .select("id").eq("job_url", job_url).execute())
-        if existing.data:
-            return None
+        rows += _retry(lambda: query().eq("job_url", job_url).limit(5).execute()).data or []
+    if fields["company_key"] and fields["title_key"]:
+        rows += _retry(lambda: query().eq("company_key", fields["company_key"])
+                       .eq("title_key", fields["title_key"])
+                       .order("created_at", desc=True).limit(50).execute()).data or []
+    return rows
+
+
+def _created(row):
+    try:
+        value = datetime.fromisoformat(str(row.get("created_at")).replace("Z", "+00:00"))
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def duplicate_reason(fields, job_url, rows, now=None):
+    """Why a new posting is already covered by an existing row ('same_job', 'same_role',
+    'repost_of_applied'), or None. Pure: the caller passes the candidate rows."""
+    now = now or datetime.now(timezone.utc)
+    for row in rows:
+        if (fields.get("job_key") and row.get("job_key") == fields["job_key"]) or (
+                job_url and row.get("job_url") == job_url):
+            return "same_job"
+    for row in rows:
+        created = _created(row)
+        age_days = (now - created).days if created else 0
+        if age_days <= DUPLICATE_ROLE_DAYS:
+            return "same_role"
+        applied = row.get("stage") in _APPLIED_STAGES or row.get("automation_status") in _SENT_STATUSES
+        if applied and age_days <= REPOST_DAYS:
+            mine, theirs = fields.get("jd_fingerprint"), row.get("jd_fingerprint")
+            if not mine or not theirs or job_identity.similarity(mine, theirs) >= job_identity.REPOST_SIMILARITY:
+                return "repost_of_applied"
+    return None
+
+
+def save_job_application(company, role, job_url=None, source=None, contact_id=None,
+                         applied_date=None, notes=None, posting_snapshot=None, location=None,
+                         posted_at=None):
+    """Insert a posting at stage 'saved' unless it duplicates an existing row. Returns
+    (row, None) on insert, or (None, reason) -- reason is a duplicate_reason value, 'conflict'
+    when another writer inserted the same job first, or 'no_row' when the insert returned nothing."""
+    fields = _identity_fields(company, role, job_url, posting_snapshot)
+    if job_url or (fields["company_key"] and fields["title_key"]):
+        reason = duplicate_reason(fields, job_url, _dedup_rows(fields, job_url))
+        if reason:
+            return None, reason
     payload = {
         "company": company,
         "role": role,
@@ -559,9 +634,131 @@ def create_job_application(company, role, job_url=None, source=None, contact_id=
         "notes": notes,
         "posting_snapshot": posting_snapshot,
         "stage": "saved",
+        "location": location,
+        "posted_at": posted_at,
+        **fields,
     }
-    result = _retry(lambda: get_client().table("job_applications").insert(payload).execute())
-    return result.data[0] if result.data else None
+    try:
+        result = _retry(lambda: get_client().table("job_applications").insert(payload).execute(),
+                        give_up=_is_unique_violation)
+    except Exception as exc:
+        if _is_unique_violation(exc):
+            return None, "conflict"
+        raise
+    return (result.data[0], None) if result.data else (None, "no_row")
+
+
+def create_job_application(company, role, job_url=None, source=None, contact_id=None,
+                           applied_date=None, notes=None, posting_snapshot=None, location=None,
+                           posted_at=None):
+    """Create a new job application row at stage 'saved'. Returns None when the posting duplicates
+    an existing row (same job under any URL spelling, the same role at the same company recently,
+    or a repost of one already applied to), when another writer inserted it first, or when the
+    insert returns no row. See save_job_application for the reason."""
+    return save_job_application(company, role, job_url=job_url, source=source, contact_id=contact_id,
+                                applied_date=applied_date, notes=notes, posting_snapshot=posting_snapshot,
+                                location=location, posted_at=posted_at)[0]
+
+
+def get_preview_candidates(limit, exclude_platforms=()):
+    """Saved rows with both documents built that a preview may claim (idle or failed_retryable,
+    under the attempt limit), best pick_score first. The filters run in the database: reading
+    every saved row let the 1000-row response cap hide ready rows behind newer saved ones.
+    Rows whose platform is not known yet (saved before job identity) are included."""
+    def query():
+        q = (get_client().table("job_applications").select("*")
+             .eq("stage", "saved").not_.is_("resume_file_ref", "null").not_.is_("cover_letter_file_ref", "null")
+             .in_("automation_status", list(config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES))
+             .lt("prepare_attempts", config.APPLY_PREPARE_MAX_ATTEMPTS))
+        if exclude_platforms:
+            q = q.or_(f"platform.is.null,platform.not.in.({','.join(exclude_platforms)})")
+        return q.order("pick_score", desc=True, nullsfirst=False).order("created_at", desc=False).limit(limit)
+    return _retry(lambda: query().execute()).data or []
+
+
+# ── Job sourcing: board registry and identity backfill (fifty-a-day §3.3) ──────
+
+def get_sourcing_boards(limit):
+    """Enabled, live boards, least recently scanned first (never-scanned boards lead)."""
+    result = _retry(lambda: get_client().table("job_boards").select("*")
+                    .eq("enabled", True).is_("dead_at", "null")
+                    .order("last_scanned_at", desc=False, nullsfirst=True).limit(limit).execute())
+    return result.data or []
+
+
+def add_job_boards(boards):
+    """Insert boards not seen before; existing (platform, board) pairs are left untouched."""
+    rows = [{"platform": b["platform"], "board": b["board"], "company": b.get("company"),
+             "source": b.get("source")} for b in boards]
+    for start in range(0, len(rows), 200):
+        chunk = rows[start:start + 200]
+        _retry(lambda: get_client().table("job_boards")
+               .upsert(chunk, on_conflict="platform,board", ignore_duplicates=True).execute())
+    return len(rows)
+
+
+def record_board_scan(board, status, job_count, dead_after):
+    """Record one sweep of a board. Only a board that says it does not exist ('missing') counts
+    toward being marked dead; a transient error just rotates it to the back of the queue."""
+    failures = (board.get("consecutive_failures") or 0) + 1 if status == "missing" else 0
+    update = {"last_scanned_at": datetime.utcnow().isoformat(), "consecutive_failures": failures}
+    if status == "ok":
+        update["last_job_count"] = job_count
+    if failures >= dead_after:
+        update["dead_at"] = datetime.utcnow().isoformat()
+    _retry(lambda: get_client().table("job_boards").update(update).eq("id", board["id"]).execute())
+
+
+def get_rows_missing_identity(limit):
+    """Rows saved before job identity existed (job_key NULL) that have a URL to derive it from."""
+    result = _retry(lambda: get_client().table("job_applications")
+                    .select("id,company,role,job_url,stage,automation_status,posting_snapshot,created_at")
+                    .is_("job_key", "null").not_.is_("job_url", "null")
+                    .order("created_at", desc=False).limit(limit).execute())
+    return result.data or []
+
+
+def backfill_identity(row):
+    """Write job_identity's fields onto a legacy row. When another row already owns the key, this
+    row is a duplicate: an untouched one (saved, idle) is withdrawn with a pointer to the original;
+    one already in flight keeps a NULL key and is reported. Returns 'set', 'withdrawn' or 'kept'."""
+    fields = _identity_fields(row.get("company"), row.get("role"), row.get("job_url"), row.get("posting_snapshot"))
+    owner = None
+    if fields["job_key"]:
+        found = _retry(lambda: get_client().table("job_applications").select("id")
+                       .eq("job_key", fields["job_key"]).neq("id", row["id"]).limit(1).execute())
+        owner = (found.data or [None])[0]
+    if owner is None:
+        try:
+            _retry(lambda: get_client().table("job_applications").update(fields).eq("id", row["id"]).execute(),
+                   give_up=_is_unique_violation)
+            return "set"
+        except Exception as exc:
+            if not _is_unique_violation(exc):
+                raise
+    no_key = dict(fields, job_key=None)
+    if row.get("stage") == "saved" and (row.get("automation_status") or "idle") == "idle":
+        reason = f"Duplicate of application #{owner['id']}" if owner else "Duplicate of another application"
+        _retry(lambda: get_client().table("job_applications")
+               .update({**no_key, "stage": "withdrawn", "apply_blocked_reason": reason})
+               .eq("id", row["id"]).execute())
+        return "withdrawn"
+    _retry(lambda: get_client().table("job_applications").update(no_key).eq("id", row["id"]).execute())
+    return "kept"
+
+
+def get_all_job_applications(columns="*", page_size=1000):
+    """Every job_applications row (the given columns), read in pages: one request is capped at
+    1000 rows by PostgREST, so a plain select silently undercounts past that."""
+    rows, offset = [], 0
+    while True:
+        result = _retry(lambda offset=offset: get_client().table("job_applications").select(columns)
+                        .order("id").range(offset, offset + page_size - 1).execute())
+        page = result.data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += page_size
 
 
 def get_job_applications(stage=None):
@@ -588,12 +785,21 @@ def get_job_application(application_id):
     return result.data
 
 
-def get_unscored_saved_applications():
-    """Fetch job_applications rows at stage='saved' that job_pick.py hasn't scored yet."""
-    result = _retry(lambda: get_client().table("job_applications")
-                     .select("*").eq("stage", "saved").is_("pick_verdict", "null")
-                     .order("created_at", desc=True).execute())
+def get_unscored_saved_applications(limit=None):
+    """Fetch job_applications rows at stage='saved' that job_pick.py hasn't scored yet, newest first."""
+    def query():
+        q = (get_client().table("job_applications").select("*").eq("stage", "saved")
+             .is_("pick_verdict", "null").order("created_at", desc=True))
+        return q.limit(limit) if limit else q
+    result = _retry(lambda: query().execute())
     return result.data or []
+
+
+def set_pick_attempts(application_id, attempts):
+    """Record a failed fit judgment, so the row is retried a bounded number of times."""
+    _retry(lambda: get_client().table("job_applications")
+           .update({"pick_attempts": attempts, "updated_at": datetime.utcnow().isoformat()})
+           .eq("id", application_id).execute())
 
 
 def set_pick_verdict(application_id, verdict, score, reasoning):
@@ -774,6 +980,13 @@ def get_approved_application_ids():
     return [row["id"] for row in result.data or []]
 
 
+def count_submit_attempts_since(since):
+    """Rows whose Submit was attempted at or after `since` (UTC): what the daily cap counts."""
+    result = _retry(lambda: get_client().table("job_applications").select("id", count="exact")
+                    .gte("submit_attempted_at", since.isoformat()).execute())
+    return result.count or 0
+
+
 def get_answer_bank_rows(limit=200):
     """Previews the operator approved, newest approval first: the source of the answer bank."""
     result = _retry(lambda: get_client().table("job_applications")
@@ -834,25 +1047,43 @@ def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref
     return result.data[0] if result.data else None
 
 
-def get_strong_applications_without_resume(limit):
+def _strong_queue(query, exclude_platforms):
+    query = (query.eq("pick_verdict", "strong").eq("stage", "saved")
+             .is_("resume_file_ref", "null").is_("resume_error", "null"))
+    if exclude_platforms:
+        query = query.or_(f"platform.is.null,platform.not.in.({','.join(exclude_platforms)})")
+    return query
+
+
+def get_strong_applications_without_resume(limit, exclude_platforms=()):
     """Rows at stage='saved' that job_pick.py scored 'strong', with no built resume and no
-    recorded resume_error, oldest first -- the Beelink resume worker's queue
-    (resume_agent.py --drain). Applied/rejected/withdrawn rows are never rebuilt."""
-    result = _retry(lambda: get_client().table("job_applications")
-                     .select("*").eq("pick_verdict", "strong").eq("stage", "saved")
-                     .is_("resume_file_ref", "null").is_("resume_error", "null")
-                     .order("created_at", desc=False).limit(limit).execute())
+    recorded resume_error -- the Beelink resume worker's queue (resume_agent.py --drain). Best
+    pick_score first, then oldest; rows on platforms this host cannot submit are left out.
+    Applied/rejected/withdrawn rows are never rebuilt."""
+    result = _retry(lambda: _strong_queue(get_client().table("job_applications").select("*"), exclude_platforms)
+                    .order("pick_score", desc=True, nullsfirst=False)
+                    .order("created_at", desc=False).limit(limit).execute())
     return result.data or []
 
 
-def count_stale_strong_without_resume(hours):
+def count_stale_strong_without_resume(hours, exclude_platforms=()):
     """Count queued strong rows (same filters as get_strong_applications_without_resume) not
     touched for over `hours` -- the alarm that the Beelink resume worker is not consuming."""
     cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-    result = _retry(lambda: get_client().table("job_applications")
-                     .select("id", count="exact").eq("pick_verdict", "strong").eq("stage", "saved")
-                     .is_("resume_file_ref", "null").is_("resume_error", "null")
-                     .lt("updated_at", cutoff).execute())
+    result = _retry(lambda: _strong_queue(get_client().table("job_applications").select("id", count="exact"),
+                                          exclude_platforms)
+                    .lt("updated_at", cutoff).execute())
+    return result.count or 0
+
+
+def count_company_applications(company_key, days):
+    """Rows at this company in the last `days` that got documents built or went toward a
+    submission: what the per-company cap counts."""
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    result = _retry(lambda: get_client().table("job_applications").select("id", count="exact")
+                    .eq("company_key", company_key).gte("created_at", cutoff)
+                    .or_("resume_file_ref.not.is.null,automation_status.in.(approved,submitting,submitted,needs_confirmation)")
+                    .execute())
     return result.count or 0
 
 

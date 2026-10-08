@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { JobApplication } from "@/lib/types";
 
-export const GOAL = 10;
 export const UNDO_SECONDS = 5;
+const SEGMENTS = 10;
 export const QUEUE_POLL_MS = 10_000;
 
 type Pending = { id: string; secondsLeft: number };
+type Today = { submitted: number; cap: number };
 type DocLinks = { resume_url: string | null; cover_letter_url: string | null };
 
 const NEEDS_REVIEW = "NEEDS HUMAN REVIEW";
@@ -20,6 +21,20 @@ function answersOf(app: JobApplication): [string, string][] {
     ...Object.entries(preview.screening_answers ?? {}),
     ...Object.entries(preview.eligibility_answers ?? {}),
   ].filter(([, v]) => typeof v === "string" && v.trim() !== "");
+}
+
+function postedAgo(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const days = Math.floor((Date.now() - Date.parse(iso)) / 86_400_000);
+  if (!Number.isFinite(days) || days < 0) return null;
+  return days === 0 ? "posted today" : days === 1 ? "posted yesterday" : `posted ${days} days ago`;
+}
+
+function cardMeta(app: JobApplication): string {
+  const snapshot = (app.posting_snapshot ?? {}) as Record<string, unknown>;
+  const location = app.location ?? (typeof snapshot.location === "string" ? snapshot.location : null);
+  const posted = postedAgo(app.posted_at ?? (typeof snapshot.posted_at === "string" ? snapshot.posted_at : null));
+  return [location, app.source, posted].filter(Boolean).join(" · ");
 }
 
 function byPickThenNewest(a: JobApplication, b: JobApplication) {
@@ -35,6 +50,7 @@ export function ApprovalQueue() {
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [docs, setDocs] = useState<Record<string, DocLinks>>({});
+  const [today, setToday] = useState<Today | null>(null);
   const countdown = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
@@ -43,6 +59,8 @@ export function ApprovalQueue() {
       if (!res.ok) return;
       const body = (await res.json()) as { applications?: JobApplication[] };
       setRows(body.applications ?? []);
+      const todayRes = await fetch("/api/applications/today");
+      if (todayRes.ok) setToday((await todayRes.json()) as Today);
     } catch {
       // the next poll tries again
     } finally {
@@ -148,21 +166,31 @@ export function ApprovalQueue() {
   const inFlight = rows.filter((r) => r.automation_status === "approved" || r.automation_status === "submitting");
   const needsYou = rows.filter((r) => r.automation_status === "needs_input" || r.automation_status === "needs_confirmation");
   const submitted = rows.filter((r) => r.automation_status === "submitted");
-  const done = Math.min(submitted.length, GOAL);
+  const cap = today?.cap ?? 0;
+  const sentToday = today?.submitted ?? 0;
+  // Ten segments whatever the cap: each one is a tenth of the day's budget.
+  const lit = cap > 0 ? Math.min(SEGMENTS, Math.floor((sentToday / cap) * SEGMENTS)) : 0;
 
   return (
     <section aria-label="Approval queue" className="flex flex-col gap-4">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-base font-medium text-fg">
-          {submitted.length} of {GOAL} submitted
-        </h2>
-        <div role="progressbar" aria-valuemin={0} aria-valuemax={GOAL} aria-valuenow={done}
-          className="grid w-full max-w-md grid-cols-10 gap-1">
-          {Array.from({ length: GOAL }, (_, i) => (
-            <div key={i} className={`h-2 rounded-full ${i < done ? "bg-emerald-500" : "bg-surface-2"}`} />
-          ))}
+      {today && (
+        <div className="flex flex-col gap-2">
+          <h2 className="text-base font-medium text-fg">
+            {cap > 0 ? `Today: ${sentToday} of ${cap} submitted` : `Today: ${sentToday} submitted`}
+          </h2>
+          {cap > 0 && (
+            <div role="progressbar" aria-valuemin={0} aria-valuemax={cap} aria-valuenow={Math.min(sentToday, cap)}
+              className="grid w-full max-w-md grid-cols-10 gap-1">
+              {Array.from({ length: SEGMENTS }, (_, i) => (
+                <div key={i} className={`h-2 rounded-full ${i < lit ? "bg-emerald-500" : "bg-surface-2"}`} />
+              ))}
+            </div>
+          )}
+          {cap > 0 && sentToday >= cap && ready.length > 0 && (
+            <p className="text-sm text-amber-300">Today&apos;s cap is reached. Anything you approve now goes out tomorrow.</p>
+          )}
         </div>
-      </div>
+      )}
 
       {loaded && ready.length === 0 && inFlight.length === 0 && needsYou.length === 0 && (
         <p className="text-sm text-fg-dim">Nothing is waiting for you. New applications appear here once they are prepared.</p>
@@ -213,6 +241,7 @@ export function ApprovalQueue() {
                   <div>
                     <p className="text-base font-medium text-fg">{app.company}</p>
                     <p className="text-sm text-fg-muted">{app.role}</p>
+                    {cardMeta(app) && <p className="text-xs text-fg-dim">{cardMeta(app)}</p>}
                   </div>
                   <div className="flex gap-2 text-xs">
                     {app.apply_preview?.platform && (
@@ -292,7 +321,7 @@ export function ApprovalQueue() {
 
       {submitted.length > 0 && (
         <div className="flex flex-col gap-1 text-sm">
-          <h3 className="font-medium text-fg">Submitted</h3>
+          <h3 className="font-medium text-fg">Submitted in the last two weeks ({submitted.length})</h3>
           {submitted.map((app) => {
             const proof = app.submission_evidence;
             return (

@@ -25,6 +25,8 @@ import urllib.request
 
 import config
 import db
+import job_filters
+import job_sourcing
 
 log = logging.getLogger(__name__)
 
@@ -157,8 +159,16 @@ def run():
 
     jobs = fetch_recommended_jobs()
     log.info(f"[JOBRIGHT] | START | jobs_fetched={len(jobs)}")
+    # JobRight applies the account's own saved filter; this applies ours (titles, seniority,
+    # location, age, sponsorship) so nothing off-target costs a fit judgment or a resume.
+    prefs, eligibility = job_sourcing.load_search_settings()
 
     for job in jobs:
+        reason = job_filters.reject_reason(job, prefs, eligibility)
+        if reason:
+            log.info(f"[JOBRIGHT] | {job.get('company')} | {job.get('title')} | skipped: {reason}")
+            skipped += 1
+            continue
         try:
             result = db.create_job_application(
                 company=job["company"] or "Unknown",

@@ -1,0 +1,42 @@
+<!doctype html><html><head><title>Greenhouse lookalike</title></head><body>
+<h1>Associate Product Manager</h1><p>Own the roadmap for lending products.</p>
+<form id="apply">
+  <div id="errors"></div>
+  <label for="first_name">First Name *</label><input id="first_name" name="first_name" required>
+  <label for="last_name">Last Name *</label><input id="last_name" name="last_name" required>
+  <label for="email">Email *</label><input id="email" name="email" type="email" required>
+  <label for="phone">Phone</label><input id="phone" name="phone" type="tel">
+  <label for="resume">Resume/CV *</label><input id="resume" name="resume" type="file" required>
+  <label for="cover_letter">Cover Letter</label><input id="cover_letter" name="cover_letter" type="file">
+  <label for="linkedin">LinkedIn Profile</label><input id="linkedin" name="linkedin">
+
+  <div class="field"><label for="q_why">Why do you want to work here? *</label>
+    <textarea id="q_why" name="q_why" required></textarea></div>
+  <div class="field"><label for="q_hear">How did you hear about us? *</label>
+    <select id="q_hear" name="q_hear" required><option value="">Select...</option>
+      <option>LinkedIn</option><option>Company website</option><option>Referral</option></select></div>
+  <div class="field"><label for="q_sponsor">Will you now or in the future require visa sponsorship? *</label>
+    <select id="q_sponsor" name="q_sponsor" required><option value="">Select...</option>
+      <option>Yes</option><option>No</option></select></div>
+  <div class="field"><label for="q_auth">Are you legally authorized to work in the United States? *</label>
+    <select id="q_auth" name="q_auth" required><option value="">Select...</option>
+      <option>Yes</option><option>No</option></select></div>
+
+  <button type="submit">Submit application</button>
+</form>
+<script>
+  // Submit validates like a real board: every required field (files included) must be set.
+  document.getElementById('apply').addEventListener('submit', (event) => {
+    event.preventDefault();
+    window.submits = (window.submits || 0) + 1;
+    const missing = [...document.querySelectorAll('[required]')].filter(el =>
+      el.type === 'file' ? !el.files.length : !el.value);
+    if (missing.length) {
+      document.getElementById('errors').textContent = 'Please complete all required fields.';
+      return;
+    }
+    window.uploaded = [...document.querySelectorAll('input[type=file]')].map(el => el.files[0] && el.files[0].name);
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+  });
+</script>
+</body></html>

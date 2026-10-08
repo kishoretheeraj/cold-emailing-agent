@@ -6,6 +6,8 @@ import sys
 import types
 from unittest.mock import MagicMock
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 import apply_agent
@@ -53,13 +55,44 @@ def _job(i=1, url="https://boards.greenhouse.io/acme/jobs/1", **kw):
 
 # ── preview queue ──────────────────────────────────────────────────────────────
 
-def test_preview_candidates_need_both_documents_and_a_claimable_status(mocker):
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
-        _job(1), _job(2, resume_file_ref=None), _job(3, cover_letter_file_ref=None),
-        _job(4, automation_status="failed_retryable"), _job(5, automation_status="needs_input"),
-        _job(6, automation_status=None)])
+def test_preview_candidates_come_from_the_server_side_query(mocker):
+    query = mocker.patch("apply_agent.db.get_preview_candidates", return_value=[_job(1), _job(4), _job(6)])
+    mocker.patch.object(apply_agent.config, "APPLY_GENERIC_ADAPTER", "browser_use")
+    mocker.patch.object(apply_agent.config, "APPLY_WORKDAY_ENABLED", False)
     assert [j["id"] for j in apply_agent.preview_candidates()] == [1, 4, 6]
-    apply_agent.db.get_job_applications.assert_called_once_with(stage="saved")
+    query.assert_called_once_with(apply_agent.config.APPLY_PREVIEW_POOL, exclude_platforms=[])
+
+
+def test_platforms_this_host_can_only_skip_are_excluded_in_the_query(mocker):
+    # fifty-a-day F4: five generic-platform rows used to fill every batch and starve the rest.
+    query = mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
+        _job(1, job_url="https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/C/job/1", platform=None),
+        _job(2, job_url="https://jobs.lever.co/a/0a1b2c3d-1111-2222-3333-444455556666", platform=None),
+        _job(3, platform="workday")])
+    mocker.patch.object(apply_agent.config, "APPLY_GENERIC_ADAPTER", "none")
+    mocker.patch.object(apply_agent.config, "APPLY_WORKDAY_ENABLED", True)
+    mocker.patch.object(apply_agent.config, "VAULT_KEY", None)
+    assert [j["id"] for j in apply_agent.preview_candidates()] == [2]
+    excluded = query.call_args.kwargs["exclude_platforms"]
+    assert set(excluded) == {"generic", "smartrecruiters", "workable", "oracle", "icims", "workday"}
+
+
+@pytest.mark.parametrize("attempts,minutes_ago,eligible", [
+    (1, 29, False), (1, 31, True), (2, 59, False), (2, 61, True), (3, 500, True),
+])
+def test_a_failed_row_waits_a_doubling_backoff(mocker, attempts, minutes_ago, eligible):
+    now = datetime(2026, 10, 9, 12, tzinfo=timezone.utc)
+    row = _job(1, automation_status="failed_retryable", prepare_attempts=attempts,
+               updated_at=(now - timedelta(minutes=minutes_ago)).isoformat())
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[row])
+    mocker.patch.object(apply_agent.config, "APPLY_GENERIC_ADAPTER", "browser_use")
+    assert bool(apply_agent.preview_candidates(now=now)) is eligible
+
+
+def test_preview_candidates_honour_a_limit(mocker):
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[_job(i) for i in range(10)])
+    mocker.patch.object(apply_agent.config, "APPLY_GENERIC_ADAPTER", "browser_use")
+    assert len(apply_agent.preview_candidates(limit=3)) == 3
 
 
 # ── browser launch ─────────────────────────────────────────────────────────────

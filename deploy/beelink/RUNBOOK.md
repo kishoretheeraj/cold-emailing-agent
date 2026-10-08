@@ -267,3 +267,39 @@ sudo systemctl enable --now apply-submit.timer
 Approve one application in the contact-manager and watch `journalctl -u apply-submit -f` and display
 :1. A submit that cannot verify the approval signature puts the row back in `needs_input` before any
 browser opens; a missing `approval.env` key stops the run without touching the approval.
+
+## 11. Sourcing and scoring (fifty a day)
+
+`job-sourcing` finds postings every 2 hours. It reads the Simplify new-grad feed and sweeps the
+company boards in `job_boards` (Greenhouse, Ashby and Lever whole boards, plus a Workday search).
+It drops off-target titles, senior roles, non-US locations, stale postings and roles that refuse
+sponsorship, and saves the rest without duplicates. It makes no model calls and needs only
+`base.env`.
+
+`job-pick` scores the new rows 30 minutes later. It runs the same filters, then a local embedding,
+then the fit judge on the Claude subscription, 10 postings per call. `jobright_pull.yml` no longer
+scores anything.
+
+Migration `20261009000000` must be pushed (`db_migrate.yml`) before either unit runs. The queues
+read its columns.
+
+**Watched first run:**
+
+```bash
+sudo systemctl start job-sourcing && journalctl -u job-sourcing -f
+tail -f /opt/job-agent/job_sourcing.log      # one DONE line with counts per outcome
+sudo systemctl start job-pick && journalctl -u job-pick -f
+```
+
+Expected: the sourcing `DONE` line shows `saved=…`, `skipped_location=…`, `duplicate_…` and
+`boards_ok=…` counts. A second immediate `start` saves 0 (everything is a duplicate). `job-pick`
+writes verdicts, and strong rows wait for `resume-worker`. Then:
+
+```bash
+sudo systemctl enable --now job-sourcing.timer job-pick.timer
+```
+
+Search preferences live in the `job_search_preferences` row of the Prompts page (JSON: titles,
+seniority words, locations, posting age, per-company cap, daily submit cap). A bad value falls
+back to its default. `job_pick` needs CPU-only torch. `requirements-beelink.txt` installs it from
+PyTorch's CPU index, so reprovision or `pip install -r requirements-beelink.txt` after pulling.

@@ -6,7 +6,7 @@ import db
 def _client(mocker, data):
     client = mocker.MagicMock()
     chain = client.table.return_value
-    for name in ("select", "eq", "is_", "order", "limit", "update"):
+    for name in ("select", "eq", "is_", "order", "limit", "update", "or_", "gte"):
         getattr(chain, name).return_value = chain
     chain.execute.return_value = mocker.MagicMock(data=data)
     mocker.patch.object(db, "get_client", return_value=client)
@@ -20,8 +20,23 @@ def test_get_strong_applications_without_resume_filters_and_limits(mocker):
     assert ("pick_verdict", "strong") in eq_calls and ("stage", "saved") in eq_calls
     is_calls = {c.args for c in chain.is_.call_args_list}
     assert ("resume_file_ref", "null") in is_calls and ("resume_error", "null") in is_calls
-    chain.order.assert_called_with("created_at", desc=False)
+    assert [c.args for c in chain.order.call_args_list] == [("pick_score",), ("created_at",)]
     chain.limit.assert_called_with(2)
+    chain.or_.assert_not_called()
+
+
+def test_strong_queue_leaves_out_platforms_this_host_cannot_submit(mocker):
+    chain = _client(mocker, [])
+    db.get_strong_applications_without_resume(5, exclude_platforms=["oracle", "generic"])
+    chain.or_.assert_called_once_with("platform.is.null,platform.not.in.(oracle,generic)")
+
+
+def test_count_company_applications(mocker):
+    chain = _client(mocker, [])
+    chain.execute.return_value = mocker.MagicMock(data=[], count=2)
+    assert db.count_company_applications("figma", 30) == 2
+    chain.eq.assert_called_with("company_key", "figma")
+    assert "resume_file_ref.not.is.null" in chain.or_.call_args.args[0]
 
 
 def test_set_resume_error_truncates(mocker):

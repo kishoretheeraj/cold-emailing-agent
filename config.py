@@ -52,6 +52,27 @@ ATS_MAX_SLUG_CANDIDATES = 2
 # just the single best match for one contact's role — this cap is deliberately higher
 # than ATS_MAX_JOBS (which sizes a research-brief snippet, not a discovery scan).
 ATS_DISCOVERY_MAX_JOBS = 25
+# job_discovery reads a whole board before filtering titles (fifty-a-day F9).
+ATS_DISCOVERY_FETCH_ALL = 2000
+
+# ── Job sourcing (spec 2026-10-08 fifty-a-day §3.3) ───────────────────────────
+# job_sourcing.py runs on the Beelink every 2 hours. Zero-token: public, no-auth sources only.
+SOURCING_SIMPLIFY_URL = ("https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/"
+                         ".github/scripts/listings.json")
+SOURCING_SIMPLIFY_CATEGORIES = ("Product",)
+SOURCING_TIMEOUT_SECONDS = 20
+SOURCING_MAX_DESCRIPTION_CHARS = 6000
+# Boards swept per run, least recently scanned first: about 200 boards every 2 hours keeps each
+# board fresh within a day without bursting any one ATS.
+SOURCING_MAX_BOARDS_PER_RUN = 200
+SOURCING_BOARD_DELAY_SECONDS = 0.5
+SOURCING_BOARD_DEAD_AFTER_FAILURES = 3
+SOURCING_WORKDAY_MAX_PAGES = 3
+SOURCING_WORKDAY_PAGE_DELAY_SECONDS = 0.25
+SOURCING_WORKDAY_SEARCH_TERMS = ("product manager", "product analyst", "product owner", "program manager",
+                                 "business analyst")
+# Legacy rows without a job_key are backfilled this many at a time per run.
+SOURCING_BACKFILL_BATCH = 200
 
 # ── Email verification pre-flight (Phase 5, full-fledged buildout) ─────────────
 
@@ -540,7 +561,10 @@ APPLY_CLAUDE_BACKEND = os.environ.get("APPLY_CLAUDE_BACKEND", "api")
 APPLY_MODEL = RESUME_MODEL
 CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH", "claude")
 CLAUDE_CLI_TIMEOUT_SECONDS = 300
-RESUME_WORKER_BATCH = 3
+RESUME_WORKER_BATCH = 5
+# The drain reads this many candidates per batch slot: rows it parks (closed posting, company cap)
+# don't use up the batch.
+RESUME_QUEUE_POOL_FACTOR = 4
 RESUME_QUEUE_STALE_HOURS = 24
 
 # ── Model pricing (system-wide cost tracking) ───────────────────────────────────
@@ -592,6 +616,11 @@ JOB_PICK_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 # conservative gate. Tune based on real false-negative reports, not guesswork.
 JOB_PICK_EMBEDDING_THRESHOLD = 0.35
 JOB_PICK_MODEL = EMAIL_MODEL
+# "subscription" on the Beelink's job-pick.service (claude -p); "api" elsewhere.
+JOB_PICK_BACKEND = os.environ.get("JOB_PICK_BACKEND", "api")
+JOB_PICK_JUDGE_BATCH = 10
+JOB_PICK_MAX_ATTEMPTS = 3
+JOB_PICK_MAX_PER_RUN = 300
 
 APPLY_AGENT_HAND_MAPPED_PLATFORMS = ("greenhouse", "ashby", "lever")
 # Per-field fill/attach timeout: Playwright's 30s default x every missing field made each job
@@ -614,10 +643,18 @@ TAKEOVER_KINDS = ("captcha", "sms_code", "email_verification", "login", "unrecog
 # Chrome on display :1, no generic adapter (browser-use needs a paid API key), and takeover on.
 APPLY_BROWSER_HEADLESS = os.environ.get("APPLY_BROWSER_HEADLESS", "1") != "0"
 APPLY_BROWSER_CHANNEL = os.environ.get("APPLY_BROWSER_CHANNEL") or None
+# A specific browser binary (tests and hosts whose Chromium is not Playwright's bundled revision).
+APPLY_BROWSER_EXECUTABLE = os.environ.get("APPLY_BROWSER_EXECUTABLE") or None
 APPLY_GENERIC_ADAPTER = os.environ.get("APPLY_GENERIC_ADAPTER", "browser_use")
 APPLY_TAKEOVER_ENABLED = os.environ.get("APPLY_TAKEOVER_ENABLED") == "1"
 APPLY_TAKEOVER_TIMEOUT_SECONDS = 1800
 APPLY_TAKEOVER_POLL_SECONDS = 10
+# After the Submit click: seconds to wait for confirmation copy or a confirmation URL.
+APPLY_CONFIRMATION_POLLS = 30
+# A site holding the submission for an emailed code (Greenhouse spam protection): who sends it and
+# how long to wait for it in the receipt inbox.
+APPLY_EMAIL_CODE_SENDERS = ("greenhouse.io", "greenhouse-mail.io", "ashbyhq.com", "lever.co", "hire.lever.co")
+APPLY_EMAIL_CODE_WAIT_SECONDS = 180
 APPLY_DISPLAY_LOCK = os.environ.get("APPLY_DISPLAY_LOCK", "/var/lib/job-agent/display1.lock")
 APPLY_SUBMIT_LOCK_WAIT_SECONDS = 600
 APPLY_PREPARE_BATCH = 5
@@ -639,6 +676,12 @@ WORKDAY_VERIFICATION_SENDERS = ("myworkday.com", "myworkdayjobs.com", "workday.c
 APPLY_AGENT_LEASE_STALE_SECONDS = 1800
 # Statuses a preview worker may claim a saved row from.
 APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES = ("idle", "failed_retryable")
+# A row is prepared at most this many times (claim_application counts attempts); a failed attempt
+# waits APPLY_PREPARE_BACKOFF_MINUTES x 2^(attempts-1) before the next. "Prepare again" resets it.
+APPLY_PREPARE_MAX_ATTEMPTS = 3
+APPLY_PREPARE_BACKOFF_MINUTES = 30
+# Candidate rows read per preview pass (best pick_score first); the batch size is separate.
+APPLY_PREVIEW_POOL = 100
 APPLY_AGENT_AGGREGATOR_DOMAINS = (
     "indeed.com",
     "ziprecruiter.com",

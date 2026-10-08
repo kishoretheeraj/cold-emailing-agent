@@ -7,3 +7,8 @@ playwright==1.60.0
 # credential_vault.py (Fernet). Already pulled in by supabase's auth client; pinned here because
 # the vault must never depend on a transitive dependency staying put.
 cryptography>=42.0.0
+# job_pick.py (job-pick.service): sentence-transformers on CPU-only torch. The default Linux torch
+# wheel pulls the CUDA build (gigabytes) for a box with no NVIDIA GPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+sentence-transformers>=3.0.0

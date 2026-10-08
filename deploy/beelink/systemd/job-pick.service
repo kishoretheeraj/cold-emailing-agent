@@ -1,0 +1,30 @@
+# Scores newly sourced postings (job_pick.py): filters, a local embedding, then the fit judge on
+# the Claude subscription, ten postings per call. A short-lived oneshot on purpose: torch is never
+# resident next to a long-lived browser on this box.
+[Unit]
+Description=Job pick: score sourced postings on the Claude subscription
+After=network-online.target
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/job-agent
+EnvironmentFile=/etc/job-agent/base.env
+EnvironmentFile=/etc/job-agent/claude.env
+Environment=HOME=/var/lib/job-agent
+Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
+Environment=JOB_PICK_BACKEND=subscription
+Environment=RESUME_CLAUDE_BACKEND=subscription
+Environment=APPLY_GENERIC_ADAPTER=none
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/opt/job-agent/.venv/bin/python job_pick.py
+TimeoutStartSec=3600
+MemoryMax=2048M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/job-agent /var/lib/job-agent

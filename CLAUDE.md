@@ -43,6 +43,11 @@ resume_build.py
 resume_scrub.py
 resume/
 candidate_profile.py
+job_identity.py
+job_filters.py
+job_sources.py
+job_sourcing.py
+job_liveness.py
 approval_signature.py
 apply_worker.py
 takeover.py
@@ -87,7 +92,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -460,13 +465,9 @@ Seven workflows live in `.github/workflows/`:
   a manual-by-default JobRight puller that runs on an explicit daily schedule per
   the user's override of the original manual-only rule (see
   `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, "JobRight scheduling").
-  Pulls fresh recommendations via `jobright.py`, then runs `job_pick.py` to score
-  every newly-saved row through three stages (structured filters, embedding similarity,
-  LLM judge) and queue `strong` verdicts for the Beelink resume worker: the scoring step sets
-  `RESUME_CLAUDE_BACKEND: subscription` (switched 2026-10-06, after the worker was live-verified on
-  the Beelink). Removing that line rolls back to the old api/zero-tap path, which can't build here
-  anyway: GitHub Actions has no LibreOffice, so those builds always failed at `soffice` (see
-  `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
+  Pulls fresh recommendations via `jobright.py` (through `job_filters`) and nothing else: scoring
+  moved to the Beelink's `job-pick.service` on the Claude subscription (2026-10-08, fifty-a-day F10;
+  the judge used to bill the API from here). Installs `requirements.txt` only.
 - **`apply_agent_preview.yml`** (named "Apply Agent Preview") — daily (`37 12 * * *`,
   off the hour), runs `python apply_agent.py --preview` unattended: fills every eligible
   job application's form (Greenhouse/Ashby/Lever hand-mapped, or `browser-use` for
@@ -515,8 +516,8 @@ Python version: **3.11**. Dependencies are split so the frequently-run workflows
   `monitor.yml`, `visa_intel_ingest.yml`.
 - **`requirements-jobs.txt`** (`-r requirements.txt` + `sentence-transformers`) — `job_pick.py`
   imports `sentence_transformers` at **module level**, so anything importing `job_pick` needs this.
-  Installed by `jobright_pull.yml`, and by `requirements-dev.txt` (the test suite imports
-  `job_pick`).
+  Installed by `requirements-dev.txt` (the test suite imports `job_pick`); on the Beelink,
+  `requirements-beelink.txt` installs it on CPU-only torch for `job-pick.service`.
 - **`requirements-apply.txt`** (`-r requirements.txt` + `playwright` + `browser-use`) — installed
   by `apply_agent_preview.yml` / `apply_agent_submit.yml` only. Both libraries are imported
   **lazily inside functions** in `apply_agent.py`, never at module level, which is why the test
@@ -604,6 +605,10 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_claude_subscription.py` — `claude_subscription.complete()` argv, env allowlist, process-group kill on timeout, error mapping (all subprocess mocked).
 - `tests/test_resume_subscription_migration.py` — static SQL assertions for migration `20261005000000` (`billing` CHECK, `resume_error` grants).
 - `tests/test_db_resume_queue.py` — `db.py`'s resume-queue accessors (`count_stale_strong_without_resume` etc.).
+- `tests/test_job_identity.py`, `tests/test_job_filters.py`, `tests/test_job_sources.py`, `tests/test_job_sourcing.py`,
+  `tests/test_job_liveness.py`, `tests/test_job_identity_migration.py` (+ `supabase/tests/job_identity_queue_dryrun.sql`),
+  `tests/test_submit_control.py` (real DOM), `tests/test_screening_batch.py`, `tests/test_apply_load.py`,
+  `tests/test_stress_local.py` — fifty-a-day sourcing, dedup, triage, queues and the submit tail.
 - `tests/test_engagement_report.py` — the report's `db.py` accessors (following `test_db_draft_history.py`'s mock pattern), the contact join, distinct-contact grouping, NULL-renders-as-"unknown", small-`n` rate suppression, and a malformed-row never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
@@ -1091,7 +1096,7 @@ third-party tool was fetched or integrated for that purpose.
 **Subscription transport (2026-10-04).** `resume_agent._call_claude` can run on the operator's
 Claude subscription via `claude_subscription.complete()` (`claude -p`), selected by
 `config.RESUME_CLAUDE_BACKEND` (read from the `RESUME_CLAUDE_BACKEND` env var, default `"api"`;
-`resume-worker.service` and `jobright_pull.yml`'s scoring step set `"subscription"`; live since 2026-10-06).
+`resume-worker.service` and `job-pick.service` set `"subscription"`; live since 2026-10-06).
 Every call strips ambient context (empty cwd + empty `CLAUDE_CONFIG_DIR`, `--strict-mcp-config
 --setting-sources ""`, `--tools ""`; measured ~224K -> ~6.5K tokens per call) and passes the CLI an
 env **allowlist** (`_ENV_ALLOW`), not a denylist: Claude Code prefers an API key, auth token, base
@@ -1145,8 +1150,8 @@ submits real application forms). See docs/superpowers/specs/2026-08-30-phase2.5-
 for the full design and docs/superpowers/plans/2026-08-30-phase2.5-auto-apply.md for the
 implementation plan.
 
-**`job_pick.py`'s three-stage scoring funnel** (run() is wired into `jobright_pull.yml`, after
-`jobright.py`'s pull): a cheap structured keyword filter on the job title short-circuits obvious
+**`job_pick.py`'s three-stage scoring funnel** (run by the Beelink's `job-pick.service` every 2 hours,
+after `job-sourcing`): `job_filters` (title, seniority, location, age, sponsorship) short-circuits obvious
 mismatches at zero cost -> a local `sentence-transformers` embedding-similarity check against the
 user's real resume/project text (no API key, no cost) short-circuits below-threshold jobs before
 any Claude call -> a Claude judge (`strong`/`maybe`/`no` + reasoning) only for jobs that survive
@@ -1578,6 +1583,77 @@ instead of the posting page. `requeue_preview` (migration `20261006000000`) also
 **Known follow-up, still not fixed**: a *cover-letter* attach failure is non-blocking (only the
 resume is required); required attachments are no longer silently swallowed. The ARMED/approval gates
 remain the actual safety boundary.
+
+## Fifty a day: sourcing, dedup, triage, throughput (2026-10-08)
+
+Spec: docs/superpowers/specs/2026-10-08-fifty-a-day-design.md (F1-F15 are the failures it fixes, each
+reproduced first). Plan: docs/superpowers/plans/2026-10-08-fifty-a-day.md.
+
+- **Job identity** (`job_identity.py`, pure): `identify(url)` classifies by **hostname, never substring**
+  (`clever.com` is not Lever) and returns a canonical `job_key`: `greenhouse:<id>` (ids are global, so a
+  company page's `?gh_jid=` is the same job), `lever:<uuid>`, `ashby:<uuid>`, `workday:<tenant>:<req>`
+  (one requisition can sit on several sites of a tenant), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
+  ids, else `url:<canonical>` with tracking parameters dropped. `apply_url` is where the browser goes
+  (Ashby `/application`, Lever `/apply`, the Greenhouse embed for a `gh_jid` page). `ats_platform.classify`
+  delegates to it. `company_key`/`title_key` ("title identity" = the set of title words) and a 64-bit
+  SimHash `fingerprint` of the description come from Career-Ops (MIT), ported.
+- **Dedup at insert** (`db.save_job_application`, wrapped by `create_job_application`): same `job_key` or
+  URL -> `same_job`; same company + title identity within `DUPLICATE_ROLE_DAYS` (45, any stage, so a
+  skipped role is not offered again) -> `same_role`; same role already applied to within `REPOST_DAYS`
+  (180) with a matching (or missing) fingerprint -> `repost_of_applied`. A unique partial index on
+  `job_key` (migration `20261009000000`) is the race backstop; a unique violation returns
+  `(None, "conflict")` at once (`_retry(give_up=_is_unique_violation)`), never retried.
+- **Triage** (`job_filters.py`, pure): `reject_reason(job, prefs, eligibility)` -> `seniority`, `title`,
+  `location`, `stale`, `no_sponsorship` or None. Preferences are the `job_search_preferences` prompts
+  row (JSON, defaults in `DEFAULT_PREFERENCES`; invalid parts fall back): title include/exclude,
+  `seniority_exclude`/`seniority_allow`, Career-Ops location tiers (`block_hard` > `always_allow` > `block`
+  > `allow`, word boundaries, US-state expansion, Workday URL location, remote-title rescue),
+  `max_posting_age_days`, `per_company_cap_30d`, `daily_submit_cap` (0 = no cap), `skip_no_sponsorship`.
+  Used by `job_sourcing`, `jobright.run` and `job_pick`.
+- **Sources** (`job_sources.py`, stdlib, never raises): the SimplifyJobs New-Grad listings.json feed
+  (`SOURCING_SIMPLIFY_CATEGORIES`), whole Greenhouse/Ashby/Lever boards, Workday CXS search per
+  `SOURCING_WORKDAY_SEARCH_TERMS`; Greenhouse and Workday lists carry no description, so `add_detail`
+  fetches it only for postings that pass the cheap cuts. `board_from_url` learns a company's board from
+  every feed URL into `job_boards` (dead after 3 consecutive "missing", never on transient errors).
+- **Runner** (`job_sourcing.py`, Beelink `job-sourcing.timer` every 2 h, zero tokens): backfills identity
+  onto legacy rows (`db.backfill_identity`; a duplicate that is still saved+idle is withdrawn with
+  "Duplicate of application #N"), Simplify, a sweep of `SOURCING_MAX_BOARDS_PER_RUN` boards, triage, save.
+  One `agent_runs` row per run (`source='job_sourcing'`). Respects the pause switch.
+- **Liveness** (`job_liveness.check`, never raises): Greenhouse per-job API, Ashby board listing, Workday
+  CXS detail; a Lever 404 is `unknown` (confidential postings). Only `closed` drops a row.
+- **Queues.** `db.get_preview_candidates` filters in the database (the 1000-row cap used to hide ready
+  rows), excludes `ats_platform.unpreparable_platforms()` (generic sites when `APPLY_GENERIC_ADAPTER=none`,
+  Workday without a vault key) in the query, best `pick_score` first. `claim_application` counts
+  `prepare_attempts` (RPC-owned column); candidates stop at `APPLY_PREPARE_MAX_ATTEMPTS` (3) and a
+  `failed_retryable` row waits `APPLY_PREPARE_BACKOFF_MINUTES x 2^(attempts-1)`; `requeue_preview` (now
+  also from `failed_retryable`) resets it. `run_prepare` counts only rows it worked on toward `limit`.
+  The resume queue orders preparable platforms by `pick_score`, and `resume_agent._queue_gate` marks a
+  closed posting `unsupported` and parks a company at its 30-day cap in `resume_error` before any spend
+  (`RESUME_WORKER_BATCH` 5, pool x4).
+- **Scoring on the subscription.** `JOB_PICK_BACKEND=subscription` (job-pick.service) judges
+  `JOB_PICK_JUDGE_BATCH` (10) postings per `claude -p` call; an unparseable judgment leaves the row
+  unscored (`pick_attempts`), then `maybe` after `JOB_PICK_MAX_ATTEMPTS`. The profile vector is computed
+  once per run. `count_stale_strong_without_resume` excludes the same unpreparable platforms.
+- **Applying.** Attachments go up as named byte payloads (`<Name>_Resume.pdf`, `<Name>_Cover_Letter.pdf`
+  from `master.json`), no temp files. `_resolve_submit_control` finds exactly one visible, enabled
+  "Submit (your) application" button **before** `clicked = True` (else pre-click `failed_retryable`).
+  `_submission_confirmed` polls `APPLY_CONFIRMATION_POLLS` (30) seconds for confirmation copy or a
+  confirmation URL, rejection copy first. A site holding the submission for an emailed code
+  (`_email_code_requested`: code prompt text and a visible code field) gets the code from the receipt
+  inbox (`APPLY_EMAIL_CODE_SENDERS`, mail after the click), typed into the field(s), then the form's own
+  Submit, which is the same held submission; no code -> `email_verification` takeover. Screening
+  questions go to the model in one batched call per form (`_SCREENING_BATCH_PROMPT`), single calls for
+  anything it leaves out. `apply_worker.run_submit` stops at `daily_submit_cap` per America/New_York
+  day (`db.count_submit_attempts_since`; an unreadable count submits nothing). `APPLY_BROWSER_EXECUTABLE`
+  pins a browser binary.
+- **Grants.** Migration `20261009000000` revokes DELETE/TRUNCATE/TRIGGER on `job_applications` from
+  anon and authenticated (a deleted submitted row would free its `job_key` and let the same job be
+  applied to again); `job_boards` gets SELECT/INSERT/UPDATE only.
+- **Pressure tests.** `tests/test_stress_local.py` (skipped unless `STRESS_SUPABASE_URL`): the real
+  `db.py` against Postgres 16 + PostgREST 12 with the 1000-row cap (`scripts/stress/up.sh`).
+  `tests/test_apply_load.py`: real preview + armed submit passes in real Chromium against local
+  Greenhouse/Lever/Ashby lookalike forms (`tests/fixtures/ats_forms`), `APPLY_LOAD_ROWS=50` for the
+  full run (50 + 50 in ~5 min, no leaked browsers or temp files).
 
 ## System-wide Claude API cost tracking
 

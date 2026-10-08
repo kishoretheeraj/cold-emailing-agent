@@ -1,7 +1,7 @@
 import { test, expect, type Route } from "@playwright/test";
 import { mockSupabase } from "./helpers";
 
-// The one-tap approval queue at the top of /applications: progress toward ten, a ready card
+// The one-tap approval queue at the top of /applications: today's submissions against the cap, a ready card
 // with its answers, Submit with a 5-second Undo, and a row that needs the operator.
 const base = {
   contact_id: null, source: "jobright", source_channel: null, applied_date: null, notes: null,
@@ -11,6 +11,7 @@ const base = {
 };
 const queue = [
   { ...base, id: "41", company: "Northwind", role: "Product Manager, Payments", job_url: "https://jobs.lever.co/northwind/1",
+    location: "New York, NY", posted_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     stage: "ready_to_submit", automation_status: "ready_for_review", pick_verdict: "strong", pick_score: 0.91,
     preview_revision_hash: "d".repeat(64), apply_blocked_reason: null,
     apply_preview: { platform: "lever", field_values: {},
@@ -37,6 +38,8 @@ async function routes(page: import("@playwright/test").Page, submits: string[]) 
   };
   await page.route("**/api/applications", list);
   await page.route("**/api/applications?*", list);
+  await page.route("**/api/applications/today", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ submitted: 18, cap: 50 }) }));
   await page.route("**/api/system-health", (r) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ health: [] }) }));
   await page.route("**/api/applications/41/submit", async (r) => {
@@ -53,8 +56,9 @@ test.describe("Approval queue", () => {
     await page.goto("/applications");
 
     const queueSection = page.getByRole("region", { name: "Approval queue" });
-    await expect(queueSection.getByRole("heading", { name: "1 of 10 submitted" })).toBeVisible({ timeout: 10_000 });
+    await expect(queueSection.getByRole("heading", { name: "Today: 18 of 50 submitted" })).toBeVisible({ timeout: 10_000 });
     const card = queueSection.getByRole("article", { name: "Northwind Product Manager, Payments" });
+    await expect(card.getByText("New York, NY · jobright · posted 2 days ago")).toBeVisible();
     await expect(card.getByText("Why Northwind?")).toBeVisible();
     await expect(queueSection.getByText("Preview couldn't fill required questions: Application Questions: Desired salary")).toBeVisible();
     // Nothing widens the page past the phone's width (the nav and the table scroll in place).
@@ -76,7 +80,7 @@ test.describe("Approval queue", () => {
   test("desktop layout", async ({ page }) => {
     await routes(page, []);
     await page.goto("/applications");
-    await expect(page.getByRole("heading", { name: "1 of 10 submitted" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Today: 18 of 50 submitted" })).toBeVisible({ timeout: 10_000 });
     await page.screenshot({ path: "tests/e2e/screenshots/21-queue-desktop.png", fullPage: true });
   });
 });

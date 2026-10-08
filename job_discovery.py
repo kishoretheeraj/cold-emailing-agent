@@ -92,13 +92,15 @@ def run():
 
     for company in universe:
         try:
-            jobs = ats.fetch_jobs(company, max_jobs=config.ATS_DISCOVERY_MAX_JOBS)
+            # Every posting first, then the title match, then the cap: capping first kept only the
+            # board's first 25 postings, so a large employer's matching roles were never seen.
+            jobs = ats.fetch_jobs(company, max_jobs=config.ATS_DISCOVERY_FETCH_ALL)
         except Exception as exc:
             log.warning(f"[DISCOVERY] | {company} | fetch_jobs error: {exc}")
             errors += 1
             continue
 
-        matched = [j for j in jobs if _matches_target_roles(j, role_token_sets)]
+        matched = [j for j in jobs if _matches_target_roles(j, role_token_sets)][:config.ATS_DISCOVERY_MAX_JOBS]
         for job in matched:
             try:
                 result = db.create_job_application(

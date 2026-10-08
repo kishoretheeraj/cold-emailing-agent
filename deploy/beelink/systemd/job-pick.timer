@@ -1,0 +1,10 @@
+[Unit]
+Description=Score sourced postings every 2 hours, after sourcing
+
+[Timer]
+OnCalendar=*-*-* 00/2:43:00
+RandomizedDelaySec=300
+Unit=job-pick.service
+
+[Install]
+WantedBy=timers.target
