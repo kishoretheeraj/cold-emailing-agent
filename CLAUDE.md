@@ -43,6 +43,7 @@ resume_build.py
 resume_scrub.py
 resume/
 candidate_profile.py
+approval_signature.py
 claude_subscription.py
 usage_tracking.py
 supabase/migrations/
@@ -590,6 +591,7 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_automation_status_migration.py` — static assertions over the automation_status migration's SQL text (status CHECK, old-overload drop, anon grants never covering the hash columns or `approved_at`, trigger, RPC guards); there is no live DB in the test suite.
 - `tests/test_lifecycle_rpcs_migration.py` — static SQL assertions for the 2026-10-04 lifecycle RPCs/grants (functional checks live in `supabase/tests/lifecycle_rpcs_dryrun.sql`).
 - `tests/test_application_leases_db.py` — `db.py` lifecycle RPC wrappers (exact RPC names/params, claim re-read recovery, never `table().update`).
+- `tests/test_application_runs_migration.py` / `tests/test_application_runs_db.py` — migration `20261008000000` (run log, takeover RPCs, evidence bucket, `record_submission(p_evidence)`) and its `db.py` wrappers; functional checks in `supabase/tests/application_runs_takeover_dryrun.sql`.
 - `tests/test_requeue_preview_migration.py` — static SQL assertions for migration `20261006000000` (`requeue_preview` from `ready_for_review`).
 - `tests/test_submission_reconciler.py` / `tests/test_gmail_inbox_receipts.py` — receipt matching (window, reply skip, ambiguity, escalation) and the read-only All Mail fetch.
 - `tests/test_claude_subscription.py` — `claude_subscription.complete()` argv, env allowlist, process-group kill on timeout, error mapping (all subprocess mocked).
@@ -1090,6 +1092,11 @@ URL or cloud provider over the subscription. A timeout kills the whole process g
 `os.killpg`). **Never `--bare`**: it ignores OAuth. Auth is `CLAUDE_CODE_OAUTH_TOKEN`
 (`claude setup-token`). Rows are logged with `api_usage_log.billing='subscription'`, `cost_usd=0`
 (assumes paid usage credits are off for the account).
+- **Apply-side answers (2026-10-08).** `config.APPLY_CLAUDE_BACKEND` (env `APPLY_CLAUDE_BACKEND`, default `"api"`)
+  routes `apply_agent._generate_screening_answers` through the same `claude_subscription.complete()`
+  (model `config.APPLY_MODEL`, usage logged `billing='subscription'`). A `ClaudeSubscriptionError` (usage
+  limit, missing token, broken CLI) is never swallowed per question: the row is released `failed_retryable`
+  and `run_preview()` stops. Tests: `tests/test_apply_subscription.py`.
 - **Queue, not zero-tap.** On the subscription backend `job_pick.run()` writes nothing for `strong` rows (the
   queue is the row filters: `stage='saved'`, strong verdict, no resume, no `resume_error`) and
   returns a stale count after `RESUME_QUEUE_STALE_HOURS` (24); nonzero fails closed (exit 1). The
@@ -1347,6 +1354,18 @@ clears neither, with no partial-failure window and no separate write for the rou
   and `_llm_judge` degrades to `"maybe"` (visible, human-reviewable -- not a silent `"no"`,
   and never an unsupported `"strong"` that would zero-tap real resume spend) instead of judging
   fit with no candidate evidence at all.
+
+**Signed approvals (2026-10-08, migration `20261008000001`)**: the anon key is public, so
+`approve_application(p_id, p_revision_hash, p_signature, p_signed_at_ms)` (2-arg dropped) now
+stores an HMAC the contact-manager's submit route computes behind the operator login with
+`APPROVAL_SIGNING_KEY`, and refuses a malformed signature or a timestamp more than 120 s from
+`now()`. `submit()` refuses before claiming when the key is missing (`approval_signature.key_configured`)
+and, after the claim and hash check, releases to `needs_input` (approval cleared) on
+`approval_signature.verify(job)` failure: wrong HMAC, unsigned, or signed more than 300 s from
+`approved_at` (replay). The key lives in Vercel's server env, the `APPROVAL_SIGNING_KEY` GitHub
+secret (`apply_agent_submit.yml` only) and later the Beelink submit unit. Tests:
+`tests/test_approval_signature.py`, `tests/test_signed_approval_migration.py`,
+`supabase/tests/signed_approval_dryrun.sql`.
 
 **Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
 `20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:

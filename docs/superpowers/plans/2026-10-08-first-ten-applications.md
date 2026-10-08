@@ -35,33 +35,42 @@ Checkboxes are the progress record.
 Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migration.py`, and a
 `supabase/tests/*_dryrun.sql` functional test run through `db_migrate.yml`.
 
-- [ ] Migration: `application_runs` table (spec §8), anon/authenticated SELECT only, inserts via
+- [x] Migration: `application_runs` table (spec §8), anon/authenticated SELECT only, inserts via
       `log_application_run(...)` SECURITY DEFINER with argument validation.
-- [ ] Migration: `job_applications.takeover JSONB` written only by `request_takeover(id, lease,
+- [x] Migration: `job_applications.takeover JSONB` written only by `request_takeover(id, lease,
       reason)` (lease-checked) and `takeover_continue(id)` (UI; sets `continue_at` only when a
       takeover is open) and cleared by `clear_takeover(id, lease)`.
-- [ ] Migration: private bucket `application-evidence`; `record_submission` gains
+- [x] Migration: private bucket `application-evidence`; `record_submission` gains
       `p_evidence JSONB` (new signature, old one dropped, same transition guards).
-- [ ] `db.py` wrappers + tests (exact RPC names and params, never `table().update`).
+- [x] `db.py` wrappers + tests (exact RPC names and params, never `table().update`).
+      Functional dry run passed against a local Postgres 16 built from `setup_supabase.sql` + every
+      migration (Supabase roles/storage stubbed); 11 mutations of the migration all caught.
+- [ ] Operator: `db_migrate.yml mode=dryrun migration=20261008000000_application_runs_takeover_evidence.sql
+      test=application_runs_takeover_dryrun.sql`, then `mode=push confirm=push`.
 
 ## Phase C: apply-side AI on the subscription
 
-- [ ] `config.APPLY_CLAUDE_BACKEND` (`api` default, `subscription` on the Beelink units).
-- [ ] `apply_agent._generate_screening_answers` dispatches through `claude_subscription.complete`
+- [x] `config.APPLY_CLAUDE_BACKEND` (`api` default, `subscription` on the Beelink units).
+- [x] `apply_agent._generate_screening_answers` dispatches through `claude_subscription.complete`
       on the subscription backend; usage logged with `billing='subscription'`, cost 0. Tests mirror
       `tests/test_claude_subscription.py` (subprocess mocked).
-- [ ] A usage-limit error stops the prepare loop without marking the row (resume-worker pattern).
+- [x] A usage-limit error stops the prepare loop (resume-worker pattern); the row is released
+      `failed_retryable` with a "usage limit" reason, so the next run picks it up again.
 
 ## Phase C2: approval authenticity (spec §9.1) -- before any armed Beelink unit
 
-- [ ] contact-manager: Supabase Auth single-operator login (signup off, pinned user id), middleware
-      on every page and API route; vitest for allowed/denied/unauthenticated.
-- [ ] Migration: `approval_signature` column (RPC-only), `approve_application(p_id, p_revision_hash,
-      p_signature)`; old 2-arg dropped. Static + dry-run tests.
-- [ ] Submit route computes the HMAC server-side (`APPROVAL_SIGNING_KEY`, server env only).
-- [ ] `apply_agent.submit()` verifies the HMAC after the claim; mismatch -> `failed_terminal`
-      before any browser launch. Tests: missing key, wrong id, wrong hash, tampered signature.
-- [ ] Resumes/evidence served only via signed URLs from authenticated routes.
+- [x] contact-manager: single-operator login (`OPERATOR_PASSWORD` + HMAC session cookie, not Supabase
+      Auth: signup is open on the project), `src/proxy.ts` on every page and API route; vitest + e2e.
+- [x] Migration `20261008000001`: `approval_signature`/`approval_signed_at_ms` (RPC-only),
+      `approve_application(p_id, p_revision_hash, p_signature, p_signed_at_ms)`; 2-arg dropped.
+      Static + dry-run tests (local Postgres; 6 mutations caught).
+- [x] Submit route computes the HMAC server-side (`APPROVAL_SIGNING_KEY`, server env only).
+- [x] `apply_agent.submit()` verifies the HMAC after the claim; mismatch -> `needs_input` (clears the
+      approval) before any browser launch; missing key refuses before the claim.
+- [ ] Resumes/evidence served only via signed URLs from authenticated routes (the files route is
+      covered by the proxy once login is configured; the `resumes` bucket's anon read policy is still open).
+- [ ] Operator: set `OPERATOR_PASSWORD`, `SESSION_SECRET`, `APPROVAL_SIGNING_KEY` in Vercel and the
+      `APPROVAL_SIGNING_KEY` GitHub secret; then dry-run + push `20261008000001` (after the route deploys).
 
 ## Phase D: Beelink units and takeover
 

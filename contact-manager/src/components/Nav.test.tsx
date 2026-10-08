@@ -71,6 +71,12 @@ describe("Nav — static structure", () => {
     expect(screen.getByRole("link", { name: /^visa$/i })).toHaveAttribute("href", "/visa-review");
   });
 
+  it("renders nothing on the login page", () => {
+    vi.mocked(usePathname).mockReturnValue("/login");
+    const { container } = render(<Nav />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it("highlights the active route link", async () => {
     vi.mocked(usePathname).mockReturnValue("/queue");
     render(<Nav />);

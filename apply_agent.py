@@ -13,11 +13,14 @@ import logging
 import re
 from datetime import date
 
+import approval_signature
 import ats_fillers
 import ats_platform
 import candidate_profile
+import claude_subscription
 import config
 import db
+import usage_tracking
 from emailer import _call_claude
 
 log = logging.getLogger(__name__)
@@ -262,6 +265,15 @@ def _eligibility_value_for(label, answers):
 
 # ── Screening questions ────────────────────────────────────────────────────────
 
+def _screening_completion(prompt, job_id):
+    if config.APPLY_CLAUDE_BACKEND == "subscription":
+        text, usage = claude_subscription.complete(prompt, model=config.APPLY_MODEL)
+        usage_tracking.log_usage("apply_agent", "screening_question", config.APPLY_MODEL, usage,
+                                 job_application_id=job_id, billing="subscription")
+        return text
+    return _call_claude(prompt, module="apply_agent", action="screening_question", contact_id=None)
+
+
 def _generate_screening_answers(page, job):
     """Generates grounded answers for the form's required, still-empty questions via Claude --
     generation only, this never fills the page. Called exactly once, in the preview pass;
@@ -270,6 +282,8 @@ def _generate_screening_answers(page, job):
     preview rather than a freshly (and differently) generated answer. Questions the
     applicant_eligibility answers cover are left to _fill_eligibility_answers, and optional
     questions are left blank. Keyed by the question's label."""
+    if config.APPLY_CLAUDE_BACKEND not in ("api", "subscription"):
+        raise ValueError(f"unknown APPLY_CLAUDE_BACKEND {config.APPLY_CLAUDE_BACKEND!r} -- use 'subscription' or 'api'")
     answers = {}
     inventory = _form_inventory(page) or []
 
@@ -290,12 +304,14 @@ def _generate_screening_answers(page, job):
             continue
         options = field.get("options") or []
         options_block = _OPTIONS_BLOCK.format(options="\n".join(options)) if options else ""
+        prompt = _SCREENING_PROMPT.format(question=label, profile_summary=profile_summary,
+                                          options_block=options_block)
         try:
-            answer = _call_claude(
-                _SCREENING_PROMPT.format(question=label, profile_summary=profile_summary,
-                                         options_block=options_block),
-                module="apply_agent", action="screening_question", contact_id=None,
-            ).strip()
+            answer = _screening_completion(prompt, job.get("id")).strip()
+        except claude_subscription.ClaudeSubscriptionError:
+            # Usage limit, missing token or a broken CLI affects every question; skipping one would
+            # only resurface later as a misleading "required question blank".
+            raise
         except Exception as exc:
             log.info(f"[APPLY-AGENT] | screening question skipped: {exc}")
             continue
@@ -634,6 +650,10 @@ class FormChangedError(Exception):
     pass
 
 
+class ApprovalSignatureError(Exception):
+    pass
+
+
 # Never reads el.id: SPA frameworks generate ids like ":r3:" that differ on every load.
 _FORM_FIELDS_JS = """() => {
   const skip = ['hidden', 'submit', 'button', 'reset', 'image'];
@@ -763,8 +783,12 @@ def _process_one_preview(job):
         finally:
             _close_page(page)
     except Exception as exc:
+        if isinstance(exc, claude_subscription.ClaudeUsageLimitError):
+            reason = f"Claude usage limit reached; will retry on a later run: {exc}"
+        else:
+            reason = f"preview pass error: {exc}"
         try:
-            db.release_application(job_id, lease, "failed_retryable", f"preview pass error: {exc}")
+            db.release_application(job_id, lease, "failed_retryable", reason[:900])
         except Exception:
             pass
         raise
@@ -792,6 +816,11 @@ def run_preview():
                 errors += 1
             else:
                 filled += 1
+        except claude_subscription.ClaudeSubscriptionError as exc:
+            # Same posture as resume_agent.drain(): every later row would fail the same way.
+            log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | Claude subscription unavailable, stopping: {exc}")
+            errors += 1
+            break
         except Exception as exc:
             log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | error: {exc}")
             errors += 1
@@ -831,6 +860,11 @@ def submit(job_id):
         except Exception:
             pass
         raise ValueError(reason)
+
+    # A worker without the key cannot tell a real approval from a forged one. Refuse before the
+    # claim, so the operator's approval survives until the worker is configured.
+    if not approval_signature.key_configured():
+        raise RuntimeError("APPROVAL_SIGNING_KEY is not configured; refusing to submit")
 
     lease = db.claim_application(job_id, "submitting")
     if lease is None:
@@ -880,6 +914,12 @@ def submit(job_id):
                 f"automation_status={job.get('automation_status')} | "
                 f"hash_match={job.get('approved_revision_hash') == job.get('preview_revision_hash')}"
             )
+
+        # The hash proves which revision was approved; the signature proves the operator's
+        # logged-in contact-manager approved it, not someone calling the RPC with the anon key.
+        problem = approval_signature.verify(job)
+        if problem:
+            raise ApprovalSignatureError(f"Refusing to submit: {problem}; approve it again")
 
         page = _launch_page(_application_url(job.get("job_url")))
         try:
@@ -955,7 +995,8 @@ def submit(job_id):
     except Exception as exc:
         log.warning(f"[APPLY-SUBMIT] | {job.get('company') if job else job_id} | error: {exc}")
         to_status = ("needs_confirmation" if clicked
-                     else "needs_input" if isinstance(exc, FormChangedError) else "failed_retryable")
+                     else "needs_input" if isinstance(exc, (FormChangedError, ApprovalSignatureError))
+                     else "failed_retryable")
         try:
             db.release_application(job_id, lease, to_status, str(exc))
         except Exception:

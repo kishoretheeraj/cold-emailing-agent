@@ -532,6 +532,10 @@ RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0
 # Defaults to "api" so merging changes nothing; only resume-worker.service sets "subscription",
 # and GitHub Actions opts in by setting it in jobright_pull.yml once the worker is proven.
 RESUME_CLAUDE_BACKEND = os.environ.get("RESUME_CLAUDE_BACKEND", "api")
+# Same switch for apply_agent's screening answers (first-ten-applications Phase C); the Beelink's
+# apply units set "subscription". The GitHub Actions preview keeps "api".
+APPLY_CLAUDE_BACKEND = os.environ.get("APPLY_CLAUDE_BACKEND", "api")
+APPLY_MODEL = RESUME_MODEL
 CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH", "claude")
 CLAUDE_CLI_TIMEOUT_SECONDS = 300
 RESUME_WORKER_BATCH = 3
@@ -596,6 +600,13 @@ AUTOMATION_STATUSES = (
     "idle", "preparing", "needs_input", "ready_for_review", "approved", "submitting",
     "submitted", "needs_confirmation", "failed_retryable", "failed_terminal", "unsupported",
 )
+# Mirrored by migration 20261008000000's CHECK constraints and request_takeover's guard.
+APPLICATION_RUN_KINDS = ("prepare", "submit", "bakeoff", "dryrun")
+APPLICATION_RUN_OUTCOMES = (
+    "ready", "needs_input", "takeover_timeout", "submitted", "needs_confirmation",
+    "failed_retryable", "failed_terminal", "unsupported", "skipped", "scored",
+)
+TAKEOVER_KINDS = ("captcha", "sms_code", "email_verification", "login", "unrecognized_page", "other")
 # 1800s exceeds the submit workflow's 15-minute timeout and the per-row preview budget, so only a dead worker's lease goes stale.
 APPLY_AGENT_LEASE_STALE_SECONDS = 1800
 # Statuses a preview worker may claim a saved row from.

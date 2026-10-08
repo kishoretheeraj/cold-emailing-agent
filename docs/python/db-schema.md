@@ -405,6 +405,32 @@ CREATE TABLE job_applications (
   `stage='applied'` plus `source_channel`/`applied_date` together, since a partial failure between
   two separate calls would leave the row `applied` with neither field recorded, or vice versa.
 
+- **Run log, takeover, evidence (migration `20261008000000`, first-ten-applications Phase B):**
+  `application_runs` (append-only: `run_id`, `application_id` nullable for bake-off fixtures, `kind`
+  prepare/submit/bakeoff/dryrun, `adapter`, `host`, `started_at`/`ended_at`, `outcome`, `stop_reason`,
+  `fields_filled`/`fields_missing`, `takeovers`, `model_calls`, `error_class`, `details` JSONB <= 16 KB).
+  API roles get SELECT only; rows are written by `log_application_run(...)` (validates lengths, counts,
+  future timestamps). `job_applications.takeover JSONB` (`{kind, reason, lease, requested_at, continue_at}`,
+  RPC-only): `request_takeover(p_id, p_lease, p_kind, p_reason)` (live lease, `preparing`/`submitting`
+  only), `takeover_continue(p_id)` (UI "I'm done"; only an open request whose `lease` equals the row's
+  current `worker_lease_id`, so a request from an earlier lease is stale), `clear_takeover(p_id, p_lease)`.
+  `record_submission` is now `(p_id, p_lease, p_source_channel, p_applied_date, p_evidence JSONB DEFAULT
+  NULL)` (4-arg version dropped, not overloaded): evidence is merged with `source`/`at` server-owned and
+  `message_id` stripped (reserved for receipt proof), and it clears `takeover`. Private bucket
+  `application-evidence` (5 MB, png/jpeg/text/json) with an anon INSERT-only policy; there is no read
+  policy, evidence is shown only through signed URLs from an authenticated route (spec §9.1).
+  `db.py`: `log_application_run` (best-effort, returns id or None), `request_takeover`, `clear_takeover`,
+  `takeover_state(id, lease)` -> `continued`/`waiting`/`none`/`lost`, `record_submission(..., evidence=None)`
+  (omits `p_evidence` when None). Vocabularies: `config.APPLICATION_RUN_KINDS`/`_OUTCOMES`/`TAKEOVER_KINDS`.
+  Tests: `tests/test_application_runs_migration.py`, `tests/test_application_runs_db.py`,
+  `supabase/tests/application_runs_takeover_dryrun.sql`.
+
+- **Signed approvals (migration `20261008000001`):** `approval_signature TEXT` and
+  `approval_signed_at_ms BIGINT` (RPC-only). `approve_application(p_id, p_revision_hash, p_signature,
+  p_signed_at_ms)` replaces the 2-arg version: signature must be 64 lowercase hex, signing time within
+  120 s of `now()`. The HMAC itself is checked by the submit worker (`approval_signature.py`), since the
+  database never holds the key.
+
 ## api_usage_log (system-wide cost tracking, added 2026-08-29)
 
 Append-only ledger covering every Claude API call anywhere in the codebase, not just

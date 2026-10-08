@@ -29,6 +29,10 @@ def _lease_defaults(mocker):
     # tests that aren't about questions don't trip the required-question gate.
     mocker.patch("apply_agent._form_inventory", return_value=[])
     mocker.patch("apply_agent.db.load_prompts", return_value={})
+    # The approval-signature gate has its own tests (tests/test_approval_signature.py); here every
+    # approved fixture row counts as validly signed.
+    mocker.patch("apply_agent.approval_signature.key_configured", return_value=True)
+    mocker.patch("apply_agent.approval_signature.verify", return_value=None)
 
 
 def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):

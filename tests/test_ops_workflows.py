@@ -113,3 +113,13 @@ def test_dryrun_ids_are_passed_through_env():
     _, doc = _load("apply_dryrun.yml")
     probe = next(s for s in doc["jobs"]["dryrun"]["steps"] if s["name"] == "Probe application forms")
     assert probe["env"]["JOB_IDS"] == "${{ inputs.job_ids }}"
+
+
+def test_submit_workflow_passes_the_approval_signing_key_and_only_it_is_armed():
+    text, doc = _load("apply_agent_submit.yml")
+    step = next(s for s in doc["jobs"]["submit"]["steps"] if s["name"] == "Submit the approved application")
+    assert step["env"]["APPROVAL_SIGNING_KEY"] == "${{ secrets.APPROVAL_SIGNING_KEY }}"
+    assert step["env"]["APPLY_AGENT_ARMED"] == "1"
+    # The preview workflow never needs the key: it can only prepare, never approve or submit.
+    preview_text, _ = _load("apply_agent_preview.yml")
+    assert "APPROVAL_SIGNING_KEY" not in preview_text

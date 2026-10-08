@@ -690,12 +690,73 @@ def release_application(application_id, lease_id, to_status, reason=None):
         "p_id": application_id, "p_lease": lease_id, "p_to": to_status, "p_reason": reason})))
 
 
-def record_submission(application_id, lease_id, source_channel, applied_date):
+def record_submission(application_id, lease_id, source_channel, applied_date, evidence=None):
     """Atomically flip a row to 'applied'/'submitted' and record how/when it was actually filed,
-    in one RPC -- a partial failure between two writes would leave a half-recorded row."""
-    return bool(_retry(lambda: _rpc("record_submission", {
-        "p_id": application_id, "p_lease": lease_id, "p_source_channel": source_channel,
-        "p_applied_date": applied_date})))
+    in one RPC -- a partial failure between two writes would leave a half-recorded row.
+    `evidence` (confirmation URL, text, screenshot path) is merged under the server's own keys."""
+    params = {"p_id": application_id, "p_lease": lease_id, "p_source_channel": source_channel,
+              "p_applied_date": applied_date}
+    # Omitted rather than sent as null, so the call also resolves before 20261008000000 is live.
+    if evidence is not None:
+        params["p_evidence"] = evidence
+    return bool(_retry(lambda: _rpc("record_submission", params)))
+
+
+# ── Run log and takeover (migration 20261008000000) ───────────────────────────
+
+def _clip(text, limit):
+    return text[:limit] if isinstance(text, str) else text
+
+
+def log_application_run(application_id, kind, adapter, host, started_at, outcome, stop_reason=None,
+                        fields_filled=None, fields_missing=None, takeovers=0, model_calls=0,
+                        error_class=None, details=None, run_id=None):
+    """Append one row to application_runs. Best-effort: returns the row id, or None on any
+    failure -- a lost log row must never fail the run it describes."""
+    if kind not in config.APPLICATION_RUN_KINDS or outcome not in config.APPLICATION_RUN_OUTCOMES:
+        log.warning(f"log_application_run | {application_id} | unknown kind/outcome {kind}/{outcome}")
+        return None
+    params = {
+        "p_run_id": run_id or str(uuid.uuid4()), "p_application_id": application_id,
+        "p_kind": kind, "p_adapter": _clip(adapter, 64), "p_host": _clip(host, 255),
+        "p_started_at": started_at.isoformat(), "p_outcome": outcome,
+        "p_stop_reason": _clip(stop_reason, 500), "p_fields_filled": fields_filled,
+        "p_fields_missing": fields_missing, "p_takeovers": takeovers, "p_model_calls": model_calls,
+        "p_error_class": _clip(error_class, 128), "p_details": details,
+    }
+    try:
+        return _retry(lambda: _rpc("log_application_run", params))
+    except Exception as exc:
+        log.warning(f"log_application_run | {application_id} | {exc}")
+        return None
+
+
+def request_takeover(application_id, lease_id, kind, reason):
+    """Ask a human to take over the browser. Only the live lease of a preparing/submitting row
+    can ask; returns False otherwise."""
+    if kind not in config.TAKEOVER_KINDS:
+        raise ValueError(f"unknown takeover kind: {kind}")
+    return bool(_retry(lambda: _rpc("request_takeover", {
+        "p_id": application_id, "p_lease": lease_id, "p_kind": kind, "p_reason": _clip(reason, 500)})))
+
+
+def clear_takeover(application_id, lease_id):
+    """Close this lease's takeover request (resolved, or the worker gave up waiting)."""
+    return bool(_retry(lambda: _rpc("clear_takeover", {"p_id": application_id, "p_lease": lease_id})))
+
+
+def takeover_state(application_id, lease_id):
+    """'continued' once the human pressed I'm done, 'waiting' while the request is open, 'none'
+    with no request, 'lost' when this lease no longer owns the row."""
+    result = _retry(lambda: get_client().table("job_applications").select("worker_lease_id,takeover")
+                    .eq("id", application_id).execute())
+    row = (result.data or [None])[0]
+    if not row or row.get("worker_lease_id") != lease_id:
+        return "lost"
+    takeover = row.get("takeover")
+    if not takeover or takeover.get("lease") != lease_id:
+        return "none"
+    return "continued" if takeover.get("continue_at") else "waiting"
 
 
 def mark_unsupported(application_id, reason):

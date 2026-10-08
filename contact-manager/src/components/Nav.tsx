@@ -115,6 +115,8 @@ export function Nav() {
 
   const isPaused = pauseScope !== "none";
 
+  if (pathname === "/login") return null;
+
   return (
     <>
       <nav className="h-16 border-b border-border flex items-center px-4 sm:px-6 gap-3">

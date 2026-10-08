@@ -50,6 +50,9 @@ src/
 │   ├── api/applications/[id]/submit/route.ts
 │   ├── api/applications/[id]/reset-approval/route.ts
 │   ├── api/system-health/route.ts
+│   ├── api/login/route.ts
+│   ├── api/logout/route.ts
+│   ├── login/page.tsx
 │   ├── applications/page.tsx
 │   ├── import/page.tsx
 │   ├── lab/page.tsx
@@ -94,9 +97,14 @@ src/
 │   ├── ApplicationsPage.tsx
 │   ├── ApplicationDetailSheet.tsx
 │   ├── SystemHealthStrip.tsx
+│   ├── LoginForm.tsx
 │   └── Field.tsx
+├── proxy.ts
 └── lib/
     ├── supabase.ts
+    ├── operatorAuth.ts
+    ├── approvalSignature.ts
+    ├── loginNext.ts
     ├── gmail-server.ts
     ├── cadence.ts
     ├── personalization.ts
@@ -150,6 +158,23 @@ tests/
   `500` for unexpected SDK errors.
 - Strip ` ```json` code fences from Claude responses before `JSON.parse`.
 
+### Operator login and signed approvals (2026-10-08)
+
+`src/proxy.ts` (Next 16's renamed middleware, Node.js runtime) gates every page and API route
+behind an operator session once `OPERATOR_PASSWORD` (16+ chars) and `SESSION_SECRET` (32+ chars)
+are set: pages redirect to `/login?next=...`, API calls get `401`. Unset, the app behaves as
+before. `POST /api/login` (`{ password }`) sets `cm_session` (expiry + HMAC under
+`SESSION_SECRET`, HttpOnly, Secure, SameSite=Strict, 30 days); a wrong password waits 750 ms and
+returns `401`; unconfigured returns `503`. `POST /api/logout` clears it. `Nav` renders nothing on
+`/login`. `safeNextPath` (`lib/loginNext.ts`, client-safe) only allows same-origin paths.
+
+The anon key ships in the browser bundle, so anyone holding it can call `approve_application`.
+That is why `POST /api/applications/[id]/submit` checks the session itself (`isOperatorRequest`,
+not just the proxy) and signs `approval:v1:<id>:<hash>:<signed_at_ms>` with
+`APPROVAL_SIGNING_KEY` (`lib/approvalSignature.ts`, mirrored by the root `approval_signature.py`
+with a shared test vector). The submit worker refuses any approval whose signature it cannot
+verify. Missing key: `503` before any RPC.
+
 ### `/api/agent-config` — pause control
 
 **GET** — returns `{ scope: "none" | "agent" | "all" }` from `system_config` table.
@@ -184,8 +209,10 @@ apply_preview?: JobApplicationApplyPreview }`. Validates `stage` against
 (`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js 16's route handler
 convention.
 
-**POST `/api/applications/[id]/submit`** — no body. Calls the `approve_application` Postgres
-RPC (`supabase.rpc("approve_application", { p_id })`) before dispatching — this is a
+**POST `/api/applications/[id]/submit`** — body `{ revision_hash }`; requires the operator
+session (401) and `APPROVAL_SIGNING_KEY` (503). Calls the `approve_application` Postgres
+RPC (`{ p_id, p_revision_hash, p_signature, p_signed_at_ms }`, see "Operator login and signed
+approvals" above) before dispatching — this is a
 `SECURITY DEFINER` function and the only way `approved_at` can ever be set, since the anon
 key's table-level UPDATE grant excludes that column. If the RPC rejects the row (wrong stage,
 missing `apply_preview`, etc.), returns `409` with the RPC's error message and never
@@ -383,7 +410,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 81** (vitest: 713 across 47 files, playwright: 81). Beelink M2 Task 9
+- **Current test count: 83** (vitest: 813 across 54 files, playwright: 83; 2026-10-08 added `19-login.spec.ts`). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more
@@ -441,7 +468,8 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
   `NEXT_PUBLIC_BEELINK_VNC_URL` (optional — M2/U14, see `/api/system-health` above; not yet
   set in the real deployment, pending a known Beelink LAN/Tailscale address).
-- Env vars (server-only): `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
+- Env vars (server-only): `OPERATOR_PASSWORD`, `SESSION_SECRET`, `APPROVAL_SIGNING_KEY` (same value as the
+  GitHub secret and the Beelink's), `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
 - `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.
 - Gmail OAuth vars: run `cd contact-manager && npx tsx scripts/capture-gmail-token.mts` once
