@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+import uuid
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
@@ -332,6 +333,33 @@ def _screening_completion(prompt, job_id):
     return _call_claude(prompt, module="apply_agent", action="screening_question", contact_id=None)
 
 
+# Short, factual answers only: anything longer was written for one job.
+_BANK_MAX_ANSWER = 120
+
+
+def _answer_bank():
+    """{normalized question: answer} from approved previews, newest first wins. Skips answers
+    that name their company, long answers and unanswered (NEEDS HUMAN REVIEW) ones. Never raises."""
+    try:
+        rows = db.get_answer_bank_rows()
+    except Exception as exc:
+        log.info(f"[APPLY-AGENT] | answer bank unavailable: {exc}")
+        return {}
+    bank = {}
+    for row in rows:
+        company = application_quality._company_core(row.get("company"))
+        answers = ((row.get("apply_preview") or {}).get("screening_answers") or {})
+        for question, answer in answers.items():
+            if (not isinstance(answer, str) or not answer.strip() or len(answer) > _BANK_MAX_ANSWER
+                    or answer.startswith(_NEEDS_REVIEW_PREFIX)):
+                continue
+            norm = _norm_label(question)
+            if company and (company in norm or company in answer.lower()):
+                continue
+            bank.setdefault(norm, answer.strip())
+    return bank
+
+
 def _generate_screening_answers(page, job):
     """Generates grounded answers for the form's required, still-empty questions via Claude --
     generation only, this never fills the page. Called exactly once, in the preview pass;
@@ -343,6 +371,7 @@ def _generate_screening_answers(page, job):
     if config.APPLY_CLAUDE_BACKEND not in ("api", "subscription"):
         raise ValueError(f"unknown APPLY_CLAUDE_BACKEND {config.APPLY_CLAUDE_BACKEND!r} -- use 'subscription' or 'api'")
     answers = {}
+    bank = None
     inventory = _form_inventory(page) or []
 
     # Merge review 2026-09-28, finding 3: this used to pass job.get("role", "") as
@@ -363,6 +392,15 @@ def _generate_screening_answers(page, job):
         options = field.get("options") or []
         if field.get("kind") == "listbox" and not options:
             options = _listbox_options(page, field)
+        # An answer the operator already approved for this exact question comes first.
+        if bank is None:
+            bank = _answer_bank()
+        banked = bank.get(_norm_label(label))
+        if banked:
+            reuse = _pick_option(options, banked) if options else banked
+            if reuse:
+                answers[label] = reuse
+                continue
         options_block = _OPTIONS_BLOCK.format(options="\n".join(options)) if options else ""
         prompt = _SCREENING_PROMPT.format(question=label, profile_summary=profile_summary,
                                           options_block=options_block)
@@ -494,6 +532,42 @@ _CONFIRMATION_TEXT_PATTERN = re.compile(
     r"|\byour application (has been|was) (successfully )?(submitted|received)\b",
     re.IGNORECASE,
 )
+
+
+def _capture_evidence(page, job_id, upload=True):
+    """Proof of a confirmed submission: the page URL, a text excerpt and (uploaded) a screenshot.
+    Never raises; whatever could not be captured is simply absent."""
+    evidence = {}
+    try:
+        evidence["url"] = page.url
+    except Exception:
+        pass
+    try:
+        text = re.sub(r"\s+", " ", page.inner_text("body", timeout=5_000)).strip()
+        match = _CONFIRMATION_TEXT_PATTERN.search(text)
+        start = max(0, match.start() - 200) if match else 0
+        evidence["text"] = text[start:start + 1000]
+    except Exception:
+        pass
+    if upload:
+        try:
+            shot = page.screenshot(full_page=True)
+            path = f"{job_id}/{uuid.uuid4()}/confirmation.png"
+            evidence["screenshot"] = db.upload_evidence(path, shot, "image/png")
+        except Exception as exc:
+            log.info(f"[APPLY-SUBMIT] | {job_id} | confirmation screenshot not saved: {exc}")
+    return evidence
+
+
+def _record_submission(job_id, lease, platform, applied_date, evidence):
+    # Evidence needs migration 20261008000000; on an older database record without it rather than
+    # leave a confirmed submission looking unconfirmed.
+    if evidence:
+        try:
+            return db.record_submission(job_id, lease, platform, applied_date, evidence=evidence)
+        except Exception as exc:
+            log.warning(f"[APPLY-SUBMIT] | {job_id} | recording with evidence failed, recording without: {exc}")
+    return db.record_submission(job_id, lease, platform, applied_date)
 
 
 def _submission_confirmed(page):
@@ -911,6 +985,14 @@ def _launch_for(job, platform):
     return _launch_page(_application_url(job.get("job_url")))
 
 
+def _page_text(page):
+    try:
+        text = page.inner_text("body", timeout=5_000)
+    except Exception:
+        return ""
+    return text if isinstance(text, str) else ""
+
+
 def _quality_report(job):
     if not config.APPLY_QUALITY_GATE:
         return {"problems": [], "coverage": None}
@@ -948,6 +1030,12 @@ def _process_one_preview(job):
         return "skipped"
 
     try:
+        # A posting this candidate cannot take (e.g. no sponsorship when it is needed) leaves for good.
+        knockouts = application_quality.knockout_reasons(application_quality.posting_text(job), _eligibility_answers())
+        if knockouts:
+            reason = "Knock-out: " + "; ".join(knockouts)
+            log.info(f"[APPLY-PREVIEW] | {job.get('company')} | {reason}")
+            return "blocked" if db.release_application(job_id, lease, "unsupported", reason) else "lost"
         # Documents first: a resume that would fail an ATS never costs a browser session.
         quality = _quality_report(job)
         if quality["problems"]:
@@ -955,6 +1043,11 @@ def _process_one_preview(job):
         page = _launch_for(job, platform)
         try:
             _handle_challenge(page, job_id, lease, "CAPTCHA on the application page")
+            closed = application_quality.posting_closed_reason(_page_text(page))
+            if closed:
+                reason = f"Posting closed: {closed}"
+                log.info(f"[APPLY-PREVIEW] | {job.get('company')} | {reason}")
+                return "blocked" if db.release_application(job_id, lease, "unsupported", reason) else "lost"
             if platform == "workday":
                 return _prepare_workday(job, job_id, lease, page, quality)
             signature = _form_signature(page)
@@ -1262,7 +1355,8 @@ def submit(job_id):
                     f"no confirmation on the page afterward -- treating this as a failed submission "
                     f"and leaving the stage unchanged so a human can investigate before any retry."
                 )
-            recorded = db.record_submission(job_id, lease, platform, date.today().isoformat())
+            recorded = _record_submission(job_id, lease, platform, date.today().isoformat(),
+                                          _capture_evidence(page, job_id))
             if not recorded:
                 log.warning(
                     f"[APPLY-SUBMIT] | {job.get('company')} | submission confirmed but our lease was "

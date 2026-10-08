@@ -71,3 +71,34 @@ def _no_real_quality_gate(request):
         yield
     finally:
         apply_agent._quality_report = original
+
+
+@pytest.fixture(autouse=True)
+def _no_real_evidence_capture(request):
+    # Capturing proof screenshots a page and uploads to Storage; only the evidence tests exercise
+    # it. Everywhere else a submit records no evidence (the four-argument record_submission).
+    if "evidence" in request.module.__name__:
+        yield
+        return
+    import apply_agent
+    original = apply_agent._capture_evidence
+    apply_agent._capture_evidence = lambda page, job_id, upload=True: {}
+    try:
+        yield
+    finally:
+        apply_agent._capture_evidence = original
+
+
+@pytest.fixture(autouse=True)
+def _no_real_answer_bank(request):
+    # The answer bank reads approved previews from the database; only its own tests use it.
+    if "answer_bank" in request.module.__name__:
+        yield
+        return
+    import apply_agent
+    original = apply_agent._answer_bank
+    apply_agent._answer_bank = lambda: {}
+    try:
+        yield
+    finally:
+        apply_agent._answer_bank = original

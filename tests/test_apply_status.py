@@ -6,8 +6,16 @@ answer values must never print unless the repo is confirmed private."""
 import json
 import sys
 
+import pytest
+
 sys.path.insert(0, "scripts")
 import apply_status  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_run_log(mocker):
+    # main() also reads application_runs; tests that care override this.
+    mocker.patch("db.get_recent_application_runs", return_value=[])
 
 
 def _row(i, **kw):
@@ -130,3 +138,43 @@ def test_main_returns_nonzero_when_the_database_read_fails(mocker, capsys):
     mocker.patch("db.get_job_applications", side_effect=RuntimeError("boom"))
     mocker.patch("db.load_prompts", return_value={})
     assert apply_status.main() == 1
+
+
+# ── application_runs (the Beelink worker's run log) ────────────────────────────
+
+def _run(i, kind="prepare", outcome="ready", **kw):
+    run = {"application_id": i, "kind": kind, "adapter": "deterministic", "outcome": outcome,
+           "stop_reason": None, "error_class": None, "takeovers": 0, "ended_at": f"2026-10-08T0{i}:00:00+00:00"}
+    run.update(kw)
+    return run
+
+
+_RUNS = [_run(1), _run(2, outcome="needs_input", stop_reason="Quality check: Company2 cover letter too short"),
+         _run(3, kind="submit", outcome="submitted", takeovers=1),
+         _run(4, outcome="failed_retryable", error_class="TimeoutError", stop_reason="https://company4.example/apply timed out")]
+
+
+def test_run_summary_counts_outcomes_takeovers_and_error_classes():
+    text = "\n".join(apply_status.summarize([], None, detail=False, runs=_RUNS))
+    assert "Recent apply runs: 4" in text
+    assert "prepare/ready: 1" in text and "prepare/needs_input: 1" in text and "submit/submitted: 1" in text
+    assert "Takeovers requested: 1" in text
+    assert "TimeoutError: 1" in text
+
+
+def test_run_reasons_print_only_when_private():
+    public = "\n".join(apply_status.summarize([], None, detail=False, runs=_RUNS))
+    assert "Company2" not in public and "company4.example" not in public
+    private = "\n".join(apply_status.summarize([], None, detail=True, runs=_RUNS))
+    assert "Quality check: Company2 cover letter too short" in private
+
+
+def test_main_reports_runs_and_survives_a_missing_run_log(mocker, capsys):
+    mocker.patch("db.get_job_applications", return_value=[])
+    mocker.patch("db.load_prompts", return_value={})
+    mocker.patch("db.get_recent_application_runs", return_value=_RUNS)
+    assert apply_status.main() == 0
+    assert "Recent apply runs: 4" in capsys.readouterr().out
+    mocker.patch("db.get_recent_application_runs", side_effect=RuntimeError("relation application_runs does not exist"))
+    assert apply_status.main() == 0
+    assert "application_runs: unavailable (RuntimeError)" in capsys.readouterr().out

@@ -183,3 +183,62 @@ def test_evaluate_checks_identity_from_master_json(mocker):
                           "cover_letter_file_ref": "c.pdf"})
     assert any("name" in p for p in report["problems"])
     assert any("email" in p for p in report["problems"])
+
+
+# ── closed postings and knock-outs ─────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "Sorry, this job is no longer accepting applications.",
+    "The position has been filled.",
+    "This job posting has expired.",
+    "The job you are looking for is no longer available.",
+    "Page not found. The job may have been removed.",
+])
+def test_closed_posting_is_recognized(text):
+    assert aq.posting_closed_reason(f"Acme Careers\n{text}\nSearch jobs")
+
+
+@pytest.mark.parametrize("text", [
+    "Apply for this job. We are accepting applications on a rolling basis.",
+    "Applications are no longer accepted by mail; apply online below.",
+    "",
+])
+def test_open_posting_is_not_closed(text):
+    assert aq.posting_closed_reason(text) is None
+
+
+NEEDS_SPONSOR = {"requires_visa_sponsorship": "Yes", "work_authorized_us": "Yes"}
+NO_SPONSOR = {"requires_visa_sponsorship": "No", "work_authorized_us": "Yes"}
+
+
+@pytest.mark.parametrize("jd,expected", [
+    ("We are unable to sponsor employment visas for this role.", "does not sponsor visas"),
+    ("Visa sponsorship is not available.", "does not sponsor visas"),
+    ("No sponsorship available.", "does not sponsor visas"),
+    ("Candidates must be authorized to work in the US without current or future sponsorship.", "does not sponsor visas"),
+    ("Must be a U.S. citizen.", "requires U.S. citizenship"),
+    ("US citizenship is required for this position.", "requires U.S. citizenship"),
+    ("Active Secret security clearance required.", "requires a security clearance"),
+    ("Green card holders only.", "requires U.S. citizenship or permanent residency"),
+])
+def test_knockouts_for_a_candidate_who_needs_sponsorship(jd, expected):
+    assert expected in aq.knockout_reasons(jd, NEEDS_SPONSOR)
+
+
+@pytest.mark.parametrize("jd", [
+    "We sponsor visas and welcome international candidates.",
+    "Visa sponsorship is available for this role.",
+    "We are happy to provide sponsorship.",
+    "Experience with security tooling and clearance of tickets.",
+])
+def test_no_knockout_when_the_posting_allows_it(jd):
+    assert aq.knockout_reasons(jd, NEEDS_SPONSOR) == []
+
+
+def test_sponsorship_refusal_is_no_knockout_for_a_candidate_who_needs_none():
+    assert aq.knockout_reasons("We are unable to sponsor employment visas.", NO_SPONSOR) == []
+
+
+def test_unknown_sponsorship_need_never_knocks_out():
+    # No answer on file is not a "yes": nothing is dropped on a guess.
+    assert aq.knockout_reasons("We are unable to sponsor visas. Must be a US citizen.", {}) == []

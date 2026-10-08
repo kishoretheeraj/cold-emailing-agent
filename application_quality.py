@@ -150,7 +150,8 @@ def keyword_coverage(jd_text, docs_text, vocabulary):
     return {"covered": sorted(set(covered)), "missing": sorted(set(missing))}
 
 
-def _jd_text(job):
+def posting_text(job):
+    """The posting's description, responsibilities and qualifications as one text."""
     snapshot = job.get("posting_snapshot") or {}
     parts = []
     for key in ("description", "responsibilities", "qualifications"):
@@ -174,5 +175,45 @@ def evaluate(job, name=None, email=None):
         email = email or (master.get("contact") or {}).get("email")
     problems = [f"Resume: {p}" for p in check_resume(resume_text, resume_pages, name, email)]
     problems += [f"Cover letter: {p}" for p in check_cover_letter(cover_text, job.get("company"), job.get("role"))]
-    coverage = keyword_coverage(_jd_text(job), resume_text + "\n" + cover_text, _vocabulary())
+    coverage = keyword_coverage(posting_text(job), resume_text + "\n" + cover_text, _vocabulary())
     return {"problems": problems, "coverage": coverage}
+
+
+# ── Closed postings and knock-outs ────────────────────────────────────────────
+
+_CLOSED = re.compile(
+    r"no longer accepting applications|position has been filled|job (posting )?has (expired|closed)"
+    r"|this (job|posting|position) (has )?expired|(job|position|posting) (you are looking for )?is no longer available"
+    r"|job may have been removed|(job|posting) (has been|was) removed|requisition (is )?closed",
+    re.IGNORECASE)
+
+# Each (reason, pattern) applies only to a candidate who needs visa sponsorship.
+_SPONSORSHIP_KNOCKOUTS = (
+    ("does not sponsor visas", re.compile(
+        r"(unable|not able|cannot|can't|will not|won't|do not|does not|are not able) (to )?(provide |offer )?"
+        r"(visa |employment )?sponsor"
+        r"|(visa )?sponsorship (is )?(not |un)available|no (visa )?sponsorship"
+        r"|without (the need for )?(current or future |any )?(visa )?sponsorship", re.IGNORECASE)),
+    ("requires U.S. citizenship", re.compile(
+        r"must be (a )?u\.?s\.? citizen|u\.?s\.? citizenship (is )?required|(only|must be) u\.?s\.? citizens", re.IGNORECASE)),
+    ("requires U.S. citizenship or permanent residency", re.compile(
+        r"green card holders? only|(u\.?s\.? )?(citizens|citizenship) or (lawful )?permanent residen", re.IGNORECASE)),
+    ("requires a security clearance", re.compile(
+        r"(secret|ts/sci|top secret|security) clearance (is )?(required|needed)|active (secret|ts/sci|top secret) clearance"
+        r"|(must|able to) (obtain|hold|maintain) (a |an )?(active )?(secret |top secret )?(security )?clearance", re.IGNORECASE)),
+)
+
+
+def posting_closed_reason(page_text):
+    """The closed-posting phrase on the page, or None while it still takes applications."""
+    match = _CLOSED.search(page_text or "")
+    return match.group(0) if match else None
+
+
+def knockout_reasons(jd_text, eligibility):
+    """Hard disqualifiers in the posting for this candidate. Only applied when the operator's
+    applicant_eligibility says sponsorship is needed; an unknown answer never drops a job."""
+    needs = str((eligibility or {}).get("requires_visa_sponsorship", "")).strip().lower()
+    if not needs.startswith("y"):
+        return []
+    return [reason for reason, pattern in _SPONSORSHIP_KNOCKOUTS if pattern.search(jd_text or "")]

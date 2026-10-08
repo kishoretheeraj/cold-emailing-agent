@@ -67,3 +67,28 @@ def test_the_gate_can_be_switched_off(mocker):
     mocker.patch.object(apply_agent, "_launch_page", return_value=MagicMock())
     assert apply_agent._process_one_preview(_job()) == "filled"
     evaluate.assert_not_called()
+
+
+def test_a_knockout_drops_the_row_before_anything_is_downloaded_or_opened(mocker):
+    apply_agent.db.load_prompts.return_value = {"applicant_eligibility": '{"requires_visa_sponsorship": "Yes"}'}
+    evaluate = mocker.patch.object(apply_agent.application_quality, "evaluate")
+    launch = mocker.patch.object(apply_agent, "_launch_page")
+    job = dict(_job(), posting_snapshot={"qualifications": ["We are unable to sponsor visas for this role."]})
+    assert apply_agent._process_one_preview(job) == "blocked"
+    evaluate.assert_not_called()
+    launch.assert_not_called()
+    args = apply_agent.db.release_application.call_args[0]
+    assert args[:3] == (5, "lease-1", "unsupported")
+    assert args[3] == "Knock-out: does not sponsor visas"
+
+
+def test_a_closed_posting_is_dropped_without_filling(mocker):
+    mocker.patch.object(apply_agent.application_quality, "evaluate", return_value={"problems": [], "coverage": None})
+    page = MagicMock()
+    page.inner_text.return_value = "Acme Careers\nThis job is no longer accepting applications."
+    mocker.patch.object(apply_agent, "_launch_page", return_value=page)
+    assert apply_agent._process_one_preview(_job()) == "blocked"
+    apply_agent.ats_fillers.fill_greenhouse.assert_not_called()
+    args = apply_agent.db.release_application.call_args[0]
+    assert args[2] == "unsupported" and args[3].startswith("Posting closed:")
+    apply_agent.db.complete_preview.assert_not_called()

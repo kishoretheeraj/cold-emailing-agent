@@ -127,17 +127,24 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
 
 ## Phase F2: quality gates (spec §6.2, §6.3)
 
-- [ ] Liveness sweep before prepare (closed posting -> `withdrawn` with reason).
-- [ ] Knock-out pre-scan (sponsorship, clearance, years, degree, location) -> downgrade to `maybe`.
+- [x] Liveness check at prepare (closed posting -> `unsupported`, "Posting closed: ..."; a separate
+      sweep of saved rows is not needed while every row is checked before filling).
+- [x] Knock-out pre-scan (sponsorship, citizenship, permanent residency, clearance; only when the
+      operator needs sponsorship) -> `unsupported` before any download or browser. Years/degree/
+      location are left to the fit judge.
 - [x] `application_quality.py`: resume PDF text checks, cover-letter word/role/company checks (a
       paragraph count is not reliable from extracted PDF text, so it is not gated), JD keyword
       coverage report; failures block `ready_for_review` with the reason.
-- [ ] Answer bank: store approved/edited answers by normalized question; reuse before any model call.
+- [x] Answer bank: approved previews' short factual answers, by normalized question, reused before any
+      model call (never company-specific or long answers).
 
 ## Phase G: evidence and the approval queue
 
 - [ ] Preview screenshot stored and referenced in `apply_preview` (hash covers it).
-- [ ] Confirmation screenshot, text and URL through `record_submission(p_evidence)`.
+- [x] Confirmation screenshot, text and URL through `record_submission(p_evidence)` (falls back to
+      recording without evidence on a database that lacks the migration).
+- [ ] Decide how the operator views evidence screenshots (the bucket is insert-only for anon by
+      design; options: an authenticated read via Supabase Auth, or a server route with a scoped key).
 - [x] Queue UI (spec §9): cards, Submit with 5 s undo, Skip, live status, takeover card, proof
       links, "N of 10". vitest for every state; Playwright e2e (phone and desktop) with screenshots
       checked by eye; the page no longer scrolls sideways on a phone.

@@ -516,6 +516,8 @@ RULES FOR USING THIS CONTEXT:
 # ── Resume intelligence (Phase 3, full-fledged buildout) ────────────────────────
 
 RESUME_STORAGE_BUCKET = "resumes"
+# Private bucket for submission proof (migration 20261008000000); anon may insert, never read.
+APPLY_EVIDENCE_BUCKET = "application-evidence"
 RESUME_MODEL = EMAIL_MODEL
 # 90: each conversion starts a fresh throwaway LibreOffice profile, adding first-run setup time.
 RESUME_SOFFICE_TIMEOUT_SECONDS = 90

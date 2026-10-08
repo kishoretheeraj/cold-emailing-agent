@@ -1448,6 +1448,30 @@ retryable). A passing preview records `keyword_coverage` ({covered, missing} ski
 `skills.json` the JD names), a report for the card, never a reason to add a skill. `conftest.py`
 stubs `_quality_report` for every test module whose name lacks "quality". Tests:
 `tests/test_application_quality.py` (real PDFs built in the test), `tests/test_apply_agent_quality_gate.py`.
+Before the gate, `application_quality.knockout_reasons(posting_text(job), eligibility)` drops a row to
+`unsupported` ("Knock-out: ...") when `applicant_eligibility.requires_visa_sponsorship` starts with
+"y" and the posting refuses sponsorship or requires citizenship, permanent residency or a clearance;
+an unknown answer never drops a job. After the page loads, `posting_closed_reason(page text)` drops
+a closed posting to `unsupported` ("Posting closed: ...") before any field is filled.
+
+**Submission evidence (2026-10-08)**: after `_submission_confirmed`, `submit()` records
+`_capture_evidence(page, job_id)` -- the page URL, a 1000-char text excerpt around the confirmation
+copy, and a full-page screenshot uploaded with `db.upload_evidence` to the private
+`application-evidence` bucket (`config.APPLY_EVIDENCE_BUCKET`, insert-only, never upsert, a fresh
+uuid path per run). Capture never raises. `_record_submission` passes it as `evidence=`; if that call
+fails (a database without migration `20261008000000`) it records once more without evidence, so a
+confirmed submission is never left looking unconfirmed. `conftest.py` stubs `_capture_evidence` for
+test modules whose names lack "evidence". The bucket has no read policy, so the screenshots are not
+viewable from the contact-manager yet (that needs a read path decision; see the plan).
+Tests: `tests/test_submission_evidence.py` (includes a real-browser capture).
+
+**Answer bank (2026-10-08)**: `_generate_screening_answers` first looks the question up in
+`_answer_bank()`, built from `db.get_answer_bank_rows()` (previews with `approved_at` set, newest
+first): `{normalized question: answer}` keeping only answers of at most 120 characters that are not
+`NEEDS HUMAN REVIEW` and do not name their own company (in the question or the answer). A banked
+answer is used only if it matches one of this field's options (when it has options); otherwise the
+model answers as before. Never raises. `conftest.py` stubs `_answer_bank` outside
+`tests/test_answer_bank.py`.
 
 **Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
 `20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:

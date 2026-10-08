@@ -731,6 +731,13 @@ def log_application_run(application_id, kind, adapter, host, started_at, outcome
         return None
 
 
+def get_recent_application_runs(limit=50):
+    """The newest application_runs rows (read-only), for the apply_status report."""
+    result = _retry(lambda: get_client().table("application_runs").select("*")
+                    .order("ended_at", desc=True).limit(limit).execute())
+    return result.data or []
+
+
 def request_takeover(application_id, lease_id, kind, reason):
     """Ask a human to take over the browser. Only the live lease of a preparing/submitting row
     can ask; returns False otherwise."""
@@ -765,6 +772,15 @@ def get_approved_application_ids():
                     .eq("automation_status", "approved").is_("worker_lease_id", "null")
                     .order("approved_at", desc=False).execute())
     return [row["id"] for row in result.data or []]
+
+
+def get_answer_bank_rows(limit=200):
+    """Previews the operator approved, newest approval first: the source of the answer bank."""
+    result = _retry(lambda: get_client().table("job_applications")
+                    .select("company,automation_status,approved_at,apply_preview")
+                    .not_.is_("approved_at", "null")
+                    .order("approved_at", desc=True).limit(limit).execute())
+    return result.data or []
 
 
 def mark_unsupported(application_id, reason):
@@ -855,6 +871,15 @@ def upload_resume_file(storage_path, file_bytes, content_type):
     unlike the rest of this module's best-effort accessors, a failed upload must not look like success."""
     get_client().storage.from_(config.RESUME_STORAGE_BUCKET).upload(
         storage_path, file_bytes, {"content-type": content_type, "upsert": "true"},
+    )
+    return storage_path
+
+
+def upload_evidence(storage_path, file_bytes, content_type):
+    """Upload submission proof to the private application-evidence bucket (anon may only insert,
+    so never upsert: each run writes under its own path). Raises on failure."""
+    get_client().storage.from_(config.APPLY_EVIDENCE_BUCKET).upload(
+        storage_path, file_bytes, {"content-type": content_type, "upsert": "false"},
     )
     return storage_path
 
