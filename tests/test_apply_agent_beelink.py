@@ -13,6 +13,8 @@ import config
 import takeover
 
 _OK_FIELDS = {"first_name": True, "last_name": True, "email": True}
+# Captured before the autouse fixture below replaces it, for the test of the real function.
+_REAL_FILL_SCREENING = apply_agent._fill_screening_questions
 _OK_ATTACH = {"resume": True, "cover_letter": True}
 
 
@@ -213,3 +215,16 @@ def test_launch_keeps_the_debugging_port_for_browser_use(mocker, fake_playwright
     mocker.patch.object(config, "APPLY_GENERIC_ADAPTER", "browser_use")
     apply_agent._launch_page("https://x/apply")
     assert fake_playwright.chromium.launch.call_args.kwargs["args"] == ["--remote-debugging-port=54321"]
+
+
+def test_screening_replay_can_skip_questions_not_on_this_step(mocker):
+    # Workday shows one step at a time; an answer for another step must not wait out a label
+    # search here (nor land on a look-alike question).
+    apply_agent._form_inventory.return_value = [
+        {"label": "Why us?", "kind": "textarea", "selector": "#why", "required": True, "filled": False}]
+    fill = mocker.patch("apply_agent._fill_field", return_value=True)
+    by_label = mocker.patch("apply_agent._set_field_by_label", return_value=True)
+    report = _REAL_FILL_SCREENING(MagicMock(), {"Why us?": "Because.", "Salary?": "100k"}, only_present=True)
+    assert report == {"Why us?": True}
+    fill.assert_called_once()
+    by_label.assert_not_called()

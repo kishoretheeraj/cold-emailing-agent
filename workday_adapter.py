@@ -274,3 +274,60 @@ def advance(page, timeout_seconds=10):
             return True
         page.wait_for_timeout(250)
     raise WorkdayStop("unrecognized_page", "The next Workday step did not load")
+
+
+# ── Wizard steps ───────────────────────────────────────────────────────────────
+
+# Contact fields Workday names by data-automation-id in both UI generations. Filled only when
+# empty: a value the tenant prefilled (from the account or a resume parse) is left as it is.
+_KNOWN_FIELDS = (
+    ("first_name", ("legalNameSection_firstName", "legalName--firstName")),
+    ("last_name", ("legalNameSection_lastName", "legalName--lastName")),
+    ("phone_local", ("phone-number", "phoneNumber--phoneNumber")),
+    ("city", ("addressSection_city", "address--city")),
+)
+
+
+def fill_known_fields(page, values):
+    """Fill the empty contact fields this step shows. Returns the keys it filled."""
+    filled = []
+    for key, ids in _KNOWN_FIELDS:
+        value = values.get(key)
+        if not value:
+            continue
+        for aid in ids:
+            field = page.locator(f"input[data-automation-id='{aid}']:visible, "
+                                 f"[data-automation-id='formField-{aid}'] input:visible").first
+            try:
+                if field.count() and not field.input_value().strip():
+                    field.fill(str(value))
+                    filled.append(key)
+                    break
+            except Exception as exc:
+                log.info(f"[APPLY-WORKDAY] | {key} not fillable: {exc}")
+    return filled
+
+
+def step_label(page):
+    """The active step's name from the step bar, or None."""
+    try:
+        active = page.locator(f"[data-automation-id='progressBar'] [data-automation-id='{ACTIVE_STEP}']").first
+        return active.inner_text(timeout=2_000).strip() or None
+    except Exception:
+        return None
+
+
+def submit_button(page):
+    """The Review step's Submit button. Raises WorkdayStop anywhere else, or when the button on
+    Review does not read exactly Submit."""
+    position = progress(page)
+    if position is None or position[0] != position[1] - 1:
+        raise WorkdayStop("unrecognized_page", "Not on the Workday Review step")
+    button = page.locator(NEXT_BUTTON).first
+    try:
+        label = button.inner_text(timeout=2_000).strip()
+    except Exception:
+        raise WorkdayStop("unrecognized_page", "No button on the Workday Review step") from None
+    if not re.fullmatch(r"submit( application)?", label, re.IGNORECASE):
+        raise WorkdayStop("unrecognized_page", f"The Review step's button reads {label!r}, not Submit")
+    return button

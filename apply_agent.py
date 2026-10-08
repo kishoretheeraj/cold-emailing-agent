@@ -11,17 +11,22 @@ import hashlib
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, datetime, timezone
+from urllib.parse import urlparse
 
 import approval_signature
 import ats_fillers
+import ats_sessions
 import ats_platform
 import candidate_profile
 import claude_subscription
 import config
+import credential_vault
 import db
+import email_verification
 import takeover
 import usage_tracking
+import workday_adapter
 from emailer import _call_claude
 
 log = logging.getLogger(__name__)
@@ -158,6 +163,17 @@ _FORM_INVENTORY_JS = r"""() => {
     } else { f.filled = (el.value || '').trim() !== ''; }
     out.push(f);
   }
+  // Workday-style listboxes: a button that opens a role=listbox popup. Options are read when it
+  // is opened (_fill_field), so only the question, the required flag and the current text count.
+  for (const el of document.querySelectorAll('button[aria-haspopup="listbox"]')) {
+    if (el.disabled || !visible(el)) continue;
+    const raw = rawLabel(el);
+    const text = (el.innerText || '').trim();
+    out.push({key: sel(el) || ('listbox:' + out.length), selector: sel(el), label: clean(raw),
+              kind: 'listbox', options: [],
+              required: el.getAttribute('aria-required') === 'true' || starred(raw),
+              filled: text !== '' && !/^select one$/i.test(text)});
+  }
   for (const g of Object.values(groups)) delete g._starred;
   return out;
 }"""
@@ -210,6 +226,44 @@ def _pick_option(options, value):
     return None
 
 
+def _listbox_options(page, field):
+    # Opens the popup only to read its options, then closes it again.
+    timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
+    try:
+        page.locator(field["selector"]).first.click(timeout=timeout)
+        options = page.locator("[role='listbox']:visible [role='option']")
+        options.first.wait_for(state="visible", timeout=timeout)
+        labels = [t.strip() for t in options.all_inner_texts() if t.strip()]
+    except Exception:
+        labels = []
+    page.keyboard.press("Escape")
+    if page.locator("[role='listbox']:visible").count():
+        page.mouse.click(1, 1)
+    return labels
+
+
+def _pick_listbox_option(page, field, value, timeout):
+    # Open the popup, choose the option that matches exactly as _pick_option rules allow, and
+    # confirm the button now shows it. No match closes the popup and reports False: a listbox
+    # is never answered with a guess.
+    button = page.locator(field["selector"]).first
+    button.click(timeout=timeout)
+    options = page.locator("[role='listbox']:visible [role='option']")
+    try:
+        options.first.wait_for(state="visible", timeout=timeout)
+    except Exception:
+        return False
+    labels = [t.strip() for t in options.all_inner_texts()]
+    choice = _pick_option(labels, value)
+    if choice is None:
+        page.keyboard.press("Escape")
+        if page.locator("[role='listbox']:visible").count():
+            page.mouse.click(1, 1)
+        return False
+    options.nth(labels.index(choice)).click(timeout=timeout)
+    return _norm_option(button.inner_text(timeout=timeout)) == _norm_option(choice)
+
+
 def _fill_field(page, field, value):
     kind = field.get("kind")
     timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
@@ -241,6 +295,8 @@ def _fill_field(page, field, value):
             box.click(timeout=timeout)
             box.fill(str(value), timeout=timeout)
             page.keyboard.press("Enter")
+        elif kind == "listbox":
+            return _pick_listbox_option(page, field, value, timeout)
         else:
             return False
         return True
@@ -304,6 +360,8 @@ def _generate_screening_answers(page, job):
             answers[label] = _NO_PROFILE_ANSWER
             continue
         options = field.get("options") or []
+        if field.get("kind") == "listbox" and not options:
+            options = _listbox_options(page, field)
         options_block = _OPTIONS_BLOCK.format(options="\n".join(options)) if options else ""
         prompt = _SCREENING_PROMPT.format(question=label, profile_summary=profile_summary,
                                           options_block=options_block)
@@ -348,13 +406,14 @@ def _set_field_by_label(page, label_pattern, value):
     return False
 
 
-def _fill_screening_questions(page, answers):
+def _fill_screening_questions(page, answers, only_present=False):
     """Writes pre-computed screening-question answers into the page. Each stored label is
     matched to a control in the form inventory and filled by its selector; a label with no
     match falls back to _set_field_by_label. An answer still flagged NEEDS HUMAN REVIEW is
     never typed into the form. Used right after generation in the preview pass, and again
     during submit to replay a stored (possibly human-edited) preview's answers verbatim.
-    Returns {label: filled}."""
+    With only_present (multi-step forms), answers whose question is not on this page are left for
+    a later page instead of searched for by label. Returns {label: filled}."""
     report = {}
     by_label = {_norm_label(f["label"]): f for f in (_form_inventory(page) or [])}
     for question_text, answer in (answers or {}).items():
@@ -362,6 +421,8 @@ def _fill_screening_questions(page, answers):
             report[question_text] = False
             continue
         field = by_label.get(_norm_label(question_text))
+        if field is None and only_present:
+            continue
         ok = _fill_field(page, field, answer) if field else _set_field_by_label(page, question_text, answer)
         if not ok:
             log.info(f"[APPLY-AGENT] | screening field not fillable: {question_text[:60]!r}")
@@ -455,7 +516,8 @@ def _submission_confirmed(page):
 
 
 _RESUME_INPUTS = ["#resume", "input[type='file'][name='resume']", "#_systemfield_resume",
-                  "input[type='file'][id*='resume' i]", "input[type='file'][name*='resume' i]"]
+                  "input[type='file'][id*='resume' i]", "input[type='file'][name*='resume' i]",
+                  "input[type='file'][data-automation-id='file-upload-input-ref']"]
 _COVER_INPUTS = ["#cover_letter", "input[type='file'][id*='cover' i]", "input[type='file'][name*='cover' i]"]
 
 
@@ -555,7 +617,7 @@ def _free_local_port():
         return s.getsockname()[1]
 
 
-def _launch_page(job_url):
+def _launch_page(job_url, storage_state=None):
     from playwright.sync_api import sync_playwright
     playwright = sync_playwright().start()
     # Only browser-use's CDP bridge needs a debugging port; without it, nothing else on the host
@@ -565,7 +627,10 @@ def _launch_page(job_url):
         headless=config.APPLY_BROWSER_HEADLESS, channel=config.APPLY_BROWSER_CHANNEL,
         args=[f"--remote-debugging-port={debug_port}"] if debug_port else []
     )
-    page = browser.new_page()
+    if storage_state:
+        page = browser.new_context(storage_state=storage_state).new_page()
+    else:
+        page = browser.new_page()
     page.goto(job_url)
     _OPEN_SESSIONS[id(page)] = (browser, playwright)
     if debug_port:
@@ -696,7 +761,8 @@ _FORM_FIELDS_JS = """() => {
 
 def _form_signature(page):
     try:
-        page.wait_for_selector("input, select, textarea", timeout=15000)
+        # :visible -- a hidden field (an auth panel left in the DOM) must not satisfy the wait.
+        page.wait_for_selector("input:visible, select:visible, textarea:visible", timeout=15000)
         raw = page.evaluate(_FORM_FIELDS_JS)
         idents = sorted({re.sub(r"\s+", " ", str(x)).strip().lower() for x in (raw or [])})
         if not idents:
@@ -720,17 +786,144 @@ def _log_inventory(job, inventory):
 
 # ── Preview pass ───────────────────────────────────────────────────────────────
 
+# ── Workday (Beelink only: APPLY_WORKDAY_ENABLED) ──────────────────────────────
+
+def _workday_values(field_values):
+    digits = re.sub(r"\D", "", field_values.get("phone", ""))
+    # Workday asks for the local number; the country code is its own dropdown.
+    local = digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+    city = (field_values.get("location") or "").split(",")[0].strip()
+    return {"first_name": field_values.get("first_name"), "last_name": field_values.get("last_name"),
+            "phone_local": local, "city": city}
+
+
+def _workday_session(job):
+    tenant = ats_sessions.tenant_key(job.get("job_url"))
+    if not tenant:
+        raise workday_adapter.WorkdayStop("unrecognized_page", "Not a Workday tenant URL")
+    return tenant, credential_vault.Vault(config.APPLY_VAULT_PATH, config.VAULT_KEY)
+
+
+def _workday_reach_wizard(page, job_id, lease, tenant, vault, email, login_url):
+    # A small state machine over Workday's screens. A WorkdayStop becomes a takeover where a human
+    # can help (the Beelink); after "I'm done" the screen is re-read, since the human may have
+    # signed in, verified or moved on themselves.
+    for _ in range(6):
+        try:
+            kind = workday_adapter.page_kind(page)
+            if kind == "wizard":
+                return
+            if kind == "already_applied":
+                raise workday_adapter.WorkdayStop("already_applied", "Workday says this job was already applied to")
+            if kind == "verify":
+                raise workday_adapter.WorkdayStop("email_verification", "Workday is waiting for an email verification code")
+            if kind == "auth":
+                since = datetime.now(timezone.utc)
+                host = urlparse(login_url).hostname or ""
+
+                def verify():
+                    return email_verification.wait_for_verification(
+                        config.WORKDAY_VERIFICATION_SENDERS, since, timeout_seconds=120,
+                        allowed_link_hosts=(host,))
+
+                workday_adapter.authenticate(page, vault, tenant, email, login_url, verify)
+                continue
+            workday_adapter.enter_apply_flow(page)
+        except workday_adapter.WorkdayStop as stop:
+            if stop.kind == "already_applied" or not config.APPLY_TAKEOVER_ENABLED:
+                raise
+            if not takeover.await_human(job_id, lease, stop.kind, str(stop)[:480]):
+                raise TakeoverTimeout(f"{stop}: nobody took over within "
+                                      f"{config.APPLY_TAKEOVER_TIMEOUT_SECONDS // 60} minutes") from None
+    raise workday_adapter.WorkdayStop("unrecognized_page", "Could not reach the Workday application")
+
+
+def _walk_workday(page, job, job_id, lease, field_values, eligibility, replay=None):
+    """Fill each wizard step and press Next until Review. Returns (answers, steps, missing,
+    attachments); `missing` is non-empty when a step's required questions are still blank, and the
+    walk stops on that step. `replay` (submit) refills reviewed answers instead of generating."""
+    answers, steps, attach = {}, [], {"resume": None, "cover_letter": None}
+    values = _workday_values(field_values)
+    for _ in range(20):
+        position = workday_adapter.progress(page)
+        if position and position[0] == position[1] - 1:
+            return answers, steps, [], attach
+        db.heartbeat_application(job_id, lease)
+        label = workday_adapter.step_label(page) or f"Step {len(steps) + 1}"
+        workday_adapter.fill_known_fields(page, values)
+        for key, ok in _attach_resume_and_cover_letter(page, job).items():
+            if ok is not None:
+                attach[key] = attach[key] or ok
+        _fill_eligibility_answers(page, eligibility)
+        if replay is None:
+            step_answers = _generate_screening_answers(page, job)
+            _fill_screening_questions(page, step_answers, only_present=True)
+            answers.update(step_answers)
+        else:
+            _fill_screening_questions(page, replay, only_present=True)
+        missing = _required_unfilled(_form_inventory(page))
+        if missing:
+            return answers, steps, [f"{label}: {m}" for m in missing], attach
+        steps.append(label)
+        if not workday_adapter.advance(page):
+            return answers, steps, [], attach
+    raise workday_adapter.WorkdayStop("unrecognized_page", "Too many Workday steps")
+
+
+def _prepare_workday(job, job_id, lease, page):
+    tenant, vault = _workday_session(job)
+    field_values = _standard_field_values(job)
+    _workday_reach_wizard(page, job_id, lease, tenant, vault, field_values["email"], job.get("job_url"))
+    ats_sessions.save_state(page.context, tenant)
+    signature = _form_signature(page)
+    eligibility = _eligibility_answers()
+    answers, steps, missing, attach = _walk_workday(page, job, job_id, lease, field_values, eligibility)
+    _log_inventory(job, _form_inventory(page))
+    if missing:
+        reason = ("Preview couldn't fill required questions: " + "; ".join(missing))[:900]
+        reason += (". To answer one every time, add it to applicant_eligibility on the Prompts "
+                   "page, keyed by a word from the question, then Re-prepare.")
+        log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | {reason}")
+        if not db.release_application(job_id, lease, "needs_input", reason):
+            return "lost"
+        return "blocked"
+    _handle_challenge(page, job_id, lease, "CAPTCHA after filling the form")
+    preview = {
+        "platform": "workday",
+        "field_values": field_values,
+        "eligibility_answers": eligibility,
+        "screening_answers": answers,
+        "workday_steps": steps,
+        "fill_report": {"attachments": attach, "required_unfilled": []},
+    }
+    if not db.complete_preview(job_id, lease, preview, signature):
+        log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded")
+        return "lost"
+    return "filled"
+
+
+def _launch_for(job, platform):
+    if platform == "workday":
+        state = ats_sessions.state_path(ats_sessions.tenant_key(job.get("job_url")) or "")
+        return _launch_page(job.get("job_url"), storage_state=state)
+    return _launch_page(_application_url(job.get("job_url")))
+
+
 def _process_one_preview(job):
     job_id = job["id"]
     platform = ats_platform.classify(job.get("job_url"))
 
-    if platform == "workday":
-        db.mark_unsupported(job_id, "workday -- permanently excluded, see spec's Rejected section")
+    if platform == "workday" and not config.APPLY_WORKDAY_ENABLED:
+        db.mark_unsupported(job_id, "workday -- needs the Beelink worker (a human may have to take over)")
         return "blocked"
+    if platform == "workday" and not config.VAULT_KEY:
+        log.info(f"[APPLY-PREVIEW] | {job.get('company')} | skipped: no VAULT_KEY for Workday accounts")
+        return "skipped"
     if platform == "aggregator":
         db.mark_unsupported(job_id, "aggregator/listing link, not a real application page")
         return "blocked"
-    if platform not in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS and config.APPLY_GENERIC_ADAPTER == "none":
+    if (platform not in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS and platform != "workday"
+            and config.APPLY_GENERIC_ADAPTER == "none"):
         # Left idle, not unsupported: a generic adapter for this host is still to come (Phase F).
         log.info(f"[APPLY-PREVIEW] | {job.get('company')} | skipped: no generic-platform adapter on this host")
         return "skipped"
@@ -741,9 +934,11 @@ def _process_one_preview(job):
         return "skipped"
 
     try:
-        page = _launch_page(_application_url(job.get("job_url")))
+        page = _launch_for(job, platform)
         try:
             _handle_challenge(page, job_id, lease, "CAPTCHA on the application page")
+            if platform == "workday":
+                return _prepare_workday(job, job_id, lease, page)
             signature = _form_signature(page)
             if not signature:
                 raise ValueError("Could not fingerprint the application form; preview must be prepared again")
@@ -814,7 +1009,7 @@ def _process_one_preview(job):
         to_status = "failed_retryable"
         if isinstance(exc, claude_subscription.ClaudeUsageLimitError):
             reason = f"Claude usage limit reached; will retry on a later run: {exc}"
-        elif isinstance(exc, TakeoverTimeout):
+        elif isinstance(exc, (TakeoverTimeout, workday_adapter.WorkdayStop)):
             to_status, reason = "needs_input", str(exc)
         else:
             reason = f"preview pass error: {exc}"
@@ -888,7 +1083,7 @@ def submit(job_id):
         raise ValueError(f"submit() called on a nonexistent job_applications row: id={job_id}")
 
     platform = ats_platform.classify(job.get("job_url"))
-    if platform in ("workday", "aggregator"):
+    if platform == "aggregator" or (platform == "workday" and not config.APPLY_WORKDAY_ENABLED):
         reason = f"submit() called on a permanently-excluded platform: {platform}"
         log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | error: {reason}")
         try:
@@ -897,8 +1092,11 @@ def submit(job_id):
             pass
         raise ValueError(reason)
 
-    if platform not in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS and config.APPLY_GENERIC_ADAPTER == "none":
+    if (platform not in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS and platform != "workday"
+            and config.APPLY_GENERIC_ADAPTER == "none"):
         raise ValueError(f"submit() has no adapter for platform {platform!r} on this host; approval left intact")
+    if platform == "workday" and not config.VAULT_KEY:
+        raise RuntimeError("VAULT_KEY is not configured; Workday accounts are unreadable, refusing to submit")
 
     # A worker without the key cannot tell a real approval from a forged one. Refuse before the
     # claim, so the operator's approval survives until the worker is configured.
@@ -960,44 +1158,59 @@ def submit(job_id):
         if problem:
             raise ApprovalSignatureError(f"Refusing to submit: {problem}; approve it again")
 
-        page = _launch_page(_application_url(job.get("job_url")))
+        page = _launch_for(job, platform)
         try:
             _handle_challenge(page, job_id, lease, "CAPTCHA on the application page")
+            if platform == "workday":
+                tenant, vault = _workday_session(job)
+                _workday_reach_wizard(page, job_id, lease, tenant, vault,
+                                      _standard_field_values(job)["email"], job.get("job_url"))
+                ats_sessions.save_state(page.context, tenant)
             expected_signature = job.get("form_signature")
             if not expected_signature:
                 log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | no preview form_signature, drift check skipped")
             elif _form_signature(page) != expected_signature:
                 raise FormChangedError("Form changed after approval")
             field_values = _standard_field_values(job)
-
-            fields_report = None
-            if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
-                fields_report = {"greenhouse": ats_fillers.fill_greenhouse,
-                                 "ashby": ats_fillers.fill_ashby,
-                                 "lever": ats_fillers.fill_lever}[platform](page, field_values)
-            else:
-                # generic-platform fill runs an LLM browser agent against the real page before
-                # the ARMED gate below -- restrained only by the task-string instruction not to
-                # click Submit, not a hard guarantee. See the Phase 2.5 review notes.
-                _fill_generic_via_browser_use(page, job, field_values)
-            db.heartbeat_application(job_id, lease)
-
-            attach_report = _attach_resume_and_cover_letter(page, job)
-            # Reuse the stored preview's answers verbatim -- never regenerate here. The human
-            # approved what's in apply_preview when they tapped "Approve & Submit"; a fresh
-            # Claude call at submit time could produce a different answer than the one they saw,
-            # and any screening/eligibility question the preview pass couldn't fill would
-            # otherwise go out blank instead of being retried from the same known values.
-            preview = job.get("apply_preview") or {}
-            _fill_eligibility_answers(page, preview.get("eligibility_answers"))
-            _fill_screening_questions(page, preview.get("screening_answers"))
-            db.heartbeat_application(job_id, lease)
-
-            if fields_report is not None:
-                missing = _missing_required({"fields": fields_report, "attachments": attach_report,
-                                             "required_unfilled": _required_unfilled(_form_inventory(page))})
+            if platform == "workday":
+                # Walk the wizard again from the reviewed answers; Submit only on Review.
+                preview = job.get("apply_preview") or {}
+                _, _, missing, _ = _walk_workday(page, job, job_id, lease, field_values,
+                                                 preview.get("eligibility_answers") or {},
+                                                 replay=preview.get("screening_answers") or {})
                 if missing:
-                    raise ValueError("Refusing to submit: required fields not filled: " + ", ".join(missing))
+                    raise ValueError("Refusing to submit: required fields not filled: " + "; ".join(missing))
+                submit_control = workday_adapter.submit_button(page)
+            else:
+                fields_report = None
+                if platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
+                    fields_report = {"greenhouse": ats_fillers.fill_greenhouse,
+                                     "ashby": ats_fillers.fill_ashby,
+                                     "lever": ats_fillers.fill_lever}[platform](page, field_values)
+                else:
+                    # generic-platform fill runs an LLM browser agent against the real page before
+                    # the ARMED gate below -- restrained only by the task-string instruction not to
+                    # click Submit, not a hard guarantee. See the Phase 2.5 review notes.
+                    _fill_generic_via_browser_use(page, job, field_values)
+                db.heartbeat_application(job_id, lease)
+
+                attach_report = _attach_resume_and_cover_letter(page, job)
+                # Reuse the stored preview's answers verbatim -- never regenerate here. The human
+                # approved what's in apply_preview when they tapped "Approve & Submit"; a fresh
+                # Claude call at submit time could produce a different answer than the one they saw,
+                # and any screening/eligibility question the preview pass couldn't fill would
+                # otherwise go out blank instead of being retried from the same known values.
+                preview = job.get("apply_preview") or {}
+                _fill_eligibility_answers(page, preview.get("eligibility_answers"))
+                _fill_screening_questions(page, preview.get("screening_answers"))
+                db.heartbeat_application(job_id, lease)
+
+                if fields_report is not None:
+                    missing = _missing_required({"fields": fields_report, "attachments": attach_report,
+                                                 "required_unfilled": _required_unfilled(_form_inventory(page))})
+                    if missing:
+                        raise ValueError("Refusing to submit: required fields not filled: " + ", ".join(missing))
+                submit_control = page.get_by_role("button", name=_SUBMIT_BUTTON_NAME)
 
             if os.environ.get("APPLY_AGENT_ARMED") != "1":
                 log.info(f"[APPLY-SUBMIT] | {job.get('company')} | not armed -- filled but did not submit")
@@ -1013,7 +1226,7 @@ def submit(job_id):
 
             # from here on the site may have the application -- any failure is needs_confirmation, never retryable.
             clicked = True
-            page.get_by_role("button", name=_SUBMIT_BUTTON_NAME).click()
+            submit_control.click()
             # The click succeeding is not proof the application landed -- a client-side validation
             # error commonly leaves the button's own click handler a no-op with the form still on
             # screen. Do not advance the stage until the site itself confirms it.

@@ -52,6 +52,8 @@
       S.generation === "old" ? ["contactInformationPage", "myExperiencePage", "applicationQuestionsPage", "voluntaryDisclosuresPage", "reviewPage"][step]
                              : (step === 0 ? "applyFlowMyInfoPage" : "applyFlowPage"));
     document.getElementById("stepTitle").textContent = S.steps[step];
+    document.getElementById("stepFields").innerHTML = (S.fields || DEFAULT_FIELDS)[step] || "";
+    for (const b of document.querySelectorAll("button[aria-haspopup=listbox]")) wireListbox(b);
     // On the last (Review) step the SAME footer button turns into Submit, as on real tenants.
     const last = step === S.steps.length - 1;
     document.getElementById("next").textContent = last ? "Submit" : "Save and Continue";
@@ -106,13 +108,80 @@
     if (code !== S.expectedCode) { authError("Invalid verification code."); return; }
     step = 0; renderWizard();
   }
+  function missingRequired() {
+    const out = [];
+    for (const el of document.querySelectorAll("#stepFields [aria-required=true]")) {
+      const empty = el.tagName === "BUTTON" ? /^\s*select one\s*$/i.test(el.textContent)
+        : el.type === "checkbox" ? !el.checked : el.type === "file" ? !(el.files && el.files.length) : !el.value.trim();
+      if (empty) out.push(el.getAttribute("data-automation-id"));
+    }
+    return out;
+  }
   function next() {
     if (step === S.steps.length - 1) { submitApp(); return; }
     window.LOG.push("next:" + step);
-    if (S.errorOnNext === step) { document.getElementById("errorBanner").classList.remove("hidden"); return; }
+    const missing = missingRequired();
+    if (S.errorOnNext === step || missing.length) {
+      window.LOG.push("blocked:" + missing.join(","));
+      document.getElementById("errorBanner").classList.remove("hidden");
+      return;
+    }
     step += 1; renderWizard();
   }
-  function submitApp() { window.LOG.push("SUBMIT"); }
+  function submitApp() {
+    window.LOG.push("SUBMIT");
+    document.getElementById("wizard").innerHTML =
+      "<h2 data-automation-id='applicationSubmitted'>Application Submitted</h2><p>Thank you for applying.</p>";
+  }
+  // Workday-style listbox: a button that opens a role=listbox popup of role=option rows.
+  function wireListbox(button) {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[role=listbox]").forEach((l) => l.remove());
+      const list = document.createElement("ul");
+      list.setAttribute("role", "listbox");
+      for (const label of JSON.parse(button.getAttribute("data-options"))) {
+        const li = document.createElement("li");
+        li.setAttribute("role", "option");
+        li.textContent = label;
+        li.addEventListener("click", () => { button.textContent = label; list.remove(); });
+        list.appendChild(li);
+      }
+      button.after(list);
+    });
+  }
+  // Like the real widget: Escape or a click outside closes an open popup.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") document.querySelectorAll("[role=listbox]").forEach((l) => l.remove());
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (!e.target.closest("[role=listbox], button[aria-haspopup=listbox]"))
+      document.querySelectorAll("[role=listbox]").forEach((l) => l.remove());
+  });
+  const opts = (a) => JSON.stringify(a).replace(/"/g, "&quot;");
+  const listbox = (id, label, options, required, value) =>
+    `<div data-automation-id="formField-${id}"><label id="lbl-${id}">${label}${required ? " *" : ""}</label>` +
+    `<button type="button" id="btn-${id}" aria-haspopup="listbox" aria-labelledby="lbl-${id}" data-automation-id="${id}"` +
+    `${required ? ' aria-required="true"' : ""} data-options="${opts(options)}">${value || "Select One"}</button></div>`;
+  const text = (id, label, required, tag) =>
+    `<div data-automation-id="formField-${id}"><label for="in-${id}">${label}${required ? " *" : ""}</label>` +
+    (tag === "textarea" ? `<textarea id="in-${id}" data-automation-id="${id}"${required ? ' aria-required="true"' : ""}></textarea>`
+                        : `<input id="in-${id}" data-automation-id="${id}"${required ? ' aria-required="true"' : ""}>`) + `</div>`;
+  const DEFAULT_FIELDS = [
+    listbox("countryDropdown", "Country", ["United States of America", "Canada", "India"], true, "United States of America") +
+    text("legalNameSection_firstName", "Given Name(s)", true) +
+    text("legalNameSection_lastName", "Family Name", true) +
+    text("phone-number", "Phone Number", true) +
+    listbox("sourceDropdown", "How Did You Hear About Us?", ["Company Website", "LinkedIn", "Referral"], true),
+    `<div data-automation-id="resumeSection"><label for="resumeFile">Resume/CV *</label>` +
+    `<input type="file" id="resumeFile" data-automation-id="file-upload-input-ref" aria-required="true" style="display:none"></div>`,
+    listbox("authorizedToWork", "Are you legally authorized to work in the United States?", ["Yes", "No"], true) +
+    listbox("requiresSponsorship", "Will you now or in the future require sponsorship for employment visa status?", ["Yes", "No"], true) +
+    text("whyUs", "Why do you want to work at Fixture Tenant?", true, "textarea"),
+    listbox("gender", "Gender", ["Male", "Female", "I do not wish to answer"], false) +
+    listbox("veteranStatus", "Veteran Status", ["I am not a protected veteran", "I am a protected veteran", "I do not wish to self-identify"], false) +
+    `<label><input type="checkbox" id="agree" data-automation-id="agreementCheckbox" aria-required="true"> I have read and agree *</label>`,
+    "<p>Review your application.</p>",
+  ];
 </script>
 
 <div id="alreadyApplied" class="hidden" data-automation-id="alreadyApplied">You've already applied for this job.</div>
@@ -165,7 +234,7 @@
   <div data-automation-id="applyFlowPage">
     <ol data-automation-id="progressBar" id="bar"></ol>
     <div id="wizardPage"><h2 id="stepTitle"></h2>
-      <label>Legal First Name <input data-automation-id="legalNameSection_firstName"></label>
+      <div id="stepFields"></div>
     </div>
     <div id="errorBanner" class="hidden" data-automation-id="errorBanner" role="alert">Errors found: Legal First Name is required.</div>
     <div data-automation-id="pageFooter">

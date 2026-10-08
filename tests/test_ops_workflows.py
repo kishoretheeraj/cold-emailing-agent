@@ -123,3 +123,14 @@ def test_submit_workflow_passes_the_approval_signing_key_and_only_it_is_armed():
     # The preview workflow never needs the key: it can only prepare, never approve or submit.
     preview_text, _ = _load("apply_agent_preview.yml")
     assert "APPROVAL_SIGNING_KEY" not in preview_text
+
+
+def test_no_workflow_enables_workday_or_takeover():
+    # Workday signups and CAPTCHAs need a human at the Beelink's display; a headless Actions runner
+    # has nobody to take over, so these stay Beelink-only.
+    for path in sorted(os.listdir(_WF)):
+        if path.endswith((".yml", ".yaml")):
+            with open(os.path.join(_WF, path)) as f:
+                text = f.read()
+            assert not re.search(r"APPLY_WORKDAY_ENABLED\s*:\s*['\"]?1", text), path
+            assert not re.search(r"APPLY_TAKEOVER_ENABLED\s*:\s*['\"]?1", text), path

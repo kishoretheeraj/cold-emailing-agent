@@ -1265,7 +1265,7 @@ def _sig_page(idents=None, evaluate_raises=None, wait_raises=None):
 def test_form_signature_waits_for_fields_before_evaluating():
     page = _sig_page(["text:name"])
     apply_agent._form_signature(page)
-    page.wait_for_selector.assert_called_once_with("input, select, textarea", timeout=15000)
+    page.wait_for_selector.assert_called_once_with("input:visible, select:visible, textarea:visible", timeout=15000)
 
 
 def test_form_signature_ignores_order_case_and_whitespace():

@@ -27,6 +27,7 @@ Environment=APPLY_BROWSER_HEADLESS=0
 Environment=APPLY_BROWSER_CHANNEL=chrome
 Environment=APPLY_GENERIC_ADAPTER=none
 Environment=APPLY_TAKEOVER_ENABLED=1
+Environment=APPLY_WORKDAY_ENABLED=1
 Environment=APPLY_DISPLAY_LOCK=/var/lib/job-agent/display1.lock
 Environment=APPLY_AGENT_ARMED=
 ExecStart=/opt/job-agent/.venv/bin/python apply_worker.py --prepare

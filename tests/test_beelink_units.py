@@ -280,6 +280,7 @@ def test_apply_units_drive_headful_chrome_on_display_1(path):
                  "Requires=xvfb@1.service", "JoinsNamespaceOf=xvfb@1.service",
                  "Environment=APPLY_BROWSER_HEADLESS=0", "Environment=APPLY_BROWSER_CHANNEL=chrome",
                  "Environment=APPLY_GENERIC_ADAPTER=none", "Environment=APPLY_TAKEOVER_ENABLED=1",
+                 "Environment=APPLY_WORKDAY_ENABLED=1", "EnvironmentFile=/etc/job-agent/vault.env",
                  "EnvironmentFile=/etc/job-agent/base.env", "OnFailure=notify-failure@%n.service"):
         assert line in unit, (path, line)
     # PrivateTmp gives each unit its own /tmp, so the shared lock must live elsewhere.

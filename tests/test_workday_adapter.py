@@ -176,7 +176,7 @@ def test_password_never_reaches_the_logs(open_tenant, vault, caplog):
 
 @pytest.mark.parametrize("generation", ["new", "old"])
 def test_walks_every_step_and_stops_at_review_without_submitting(open_tenant, generation):
-    page = open_tenant(start="wizard", generation=generation)
+    page = open_tenant(start="wizard", generation=generation, fields=[])
     moves = 0
     while workday_adapter.advance(page):
         moves += 1
@@ -215,3 +215,11 @@ def test_a_next_button_that_reads_like_submit_is_refused_even_mid_flow(open_tena
 ])
 def test_page_kind(open_tenant, scenario, kind):
     assert workday_adapter.page_kind(open_tenant(**scenario)) == kind
+
+
+def test_next_with_a_required_field_empty_shows_the_banner_and_stops(open_tenant):
+    page = open_tenant(start="wizard")
+    with pytest.raises(WorkdayStop) as stop:
+        workday_adapter.advance(page)
+    assert "errors on this step" in str(stop.value)
+    assert workday_adapter.progress(page) == (0, 5)

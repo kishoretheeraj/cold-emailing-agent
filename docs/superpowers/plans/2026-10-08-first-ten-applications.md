@@ -104,9 +104,11 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
 - [x] `workday_adapter.py` prelude (spec §6.1): entry (Apply -> Apply Manually only), sign-in,
       signup with vault-write-before-typing, `click_filter` overlay, verification code, wizard
       advance only while the step bar shows a later step. Fixture pages for each branch.
-- [ ] Wire Workday into `apply_agent` (prepare: reach the wizard, fill each step, stop at Review;
-      submit: replay, then press Submit on Review only) behind `APPLY_WORKDAY_ENABLED`, and remove it
-      from the excluded platforms only on the Beelink.
+- [x] Wire Workday into `apply_agent` (prepare: reach the wizard, fill each step, stop at Review;
+      submit: replay, then press Submit on Review only) behind `APPLY_WORKDAY_ENABLED` (Beelink units
+      only), with listbox support in the inventory and filler. Real-browser tests on the fixture tenant.
+- [ ] Capture one real Workday tenant's pages read-only (`apply_dryrun.yml` cannot reach Workday's
+      auth; do it on the Beelink with a watched prepare) and turn them into fixtures.
 - [ ] `ats_auth.py`: auth-wall detection, login with vault entry, automatic signup, verification,
       takeover escalation; never reset, never a second account. Fixture pages for each path.
 

@@ -621,6 +621,8 @@ APPLY_SUBMIT_LOCK_WAIT_SECONDS = 600
 APPLY_PREPARE_BATCH = 5
 APPLY_SUBMIT_BATCH = 3
 APPLY_WORKER_ADAPTER = "deterministic"
+# Workday applications (workday_adapter.py): only where a human can take over (the Beelink).
+APPLY_WORKDAY_ENABLED = os.environ.get("APPLY_WORKDAY_ENABLED") == "1"
 # Per-tenant logged-in browser state (ats_sessions.py) and the encrypted password vault
 # (credential_vault.py). VAULT_KEY comes from /etc/job-agent/vault.env, loaded only by the apply units.
 APPLY_SESSIONS_DIR = os.environ.get("APPLY_SESSIONS_DIR", "/var/lib/job-agent/sessions")

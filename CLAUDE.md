@@ -1156,8 +1156,9 @@ strategy-review gate, but only for this auto-pick path.
 **`apply_agent.py`'s platform routing** (`ats_platform.classify(job_url)` -> one of six strings):
 Greenhouse/Ashby/Lever get hand-mapped, deterministic Playwright fillers (`ats_fillers.py`);
 anything else with a real application page gets `browser-use` (an LLM-driven browser agent);
-Workday and job-board aggregator links (Indeed, ZipRecruiter, LinkedIn Jobs, etc.) are
-**permanently excluded** -- blocked before any fill attempt is even tried, `apply_blocked_reason`
+Workday runs only on the Beelink (`APPLY_WORKDAY_ENABLED=1`, see "Workday in apply_agent" below)
+and is excluded everywhere else; job-board aggregator links (Indeed, ZipRecruiter, LinkedIn Jobs,
+etc.) are **permanently excluded** -- blocked before any fill attempt is even tried, `apply_blocked_reason`
 set, row stays at `stage='saved'` for the user to handle by hand. Both fill paths attach the
 resume/cover letter (headless `set_input_files`, no OS dialog), answer free-text screening
 questions via Claude (grounded only in the real profile, never fabricated), and fill fixed
@@ -1415,6 +1416,24 @@ while the step bar shows a later step and the label is Next/Continue/Save and Co
 False on Review; refuses anything reading like Submit). Tested against a real browser and
 `tests/fixtures/workday_tenant.html` (both UI generations; the Review step's footer button turns
 into "Submit" under the same id, as on real tenants).
+
+**Workday in apply_agent (2026-10-08)**: with `APPLY_WORKDAY_ENABLED=1` (Beelink units only;
+`tests/test_ops_workflows.py` fails if a workflow sets it) and a `VAULT_KEY` (else the row stays
+idle / submit refuses before claiming), `_launch_for` opens the job page with the tenant's saved
+`storage_state`; `_workday_reach_wizard` walks Workday's screens (job -> Apply Manually -> auth ->
+verify -> wizard), turning each `WorkdayStop` into a takeover and re-reading the screen after "I'm
+done"; `_walk_workday` fills each step (known contact fields by id, resume to
+`file-upload-input-ref`, eligibility, generated or replayed screening answers) and stops on the
+first step with a required question still blank (`needs_input`, step named). The preview stores
+`workday_steps`. `submit()` replays the reviewed answers through the same walk and presses
+`workday_adapter.submit_button(page)`, which exists only on the Review step and only when it reads
+"Submit". A `WorkdayStop` in prepare (including "already applied" or an account it has no password
+for) lands in `needs_input`. The form inventory and `_fill_field` now handle listbox buttons
+(`button[aria-haspopup=listbox]`, kind `listbox`): options are read by opening the popup
+(`_listbox_options`, also used to give the screening prompt real options), a value must match an
+option or nothing is picked, and the popup is closed again. `_form_signature` waits for a
+*visible* field. Tests: `tests/test_apply_agent_workday.py` (real browser, fixture tenant),
+`tests/test_apply_agent_listbox.py`.
 
 **Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
 `20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:
