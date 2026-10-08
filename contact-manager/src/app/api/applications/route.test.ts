@@ -26,6 +26,20 @@ beforeEach(() => {
   mockFrom.mockReturnValue({ select: mockSelect, insert: mockInsert });
 });
 
+describe("GET /api/applications?takeover=open", () => {
+  it("returns only rows whose current worker is waiting for a human", async () => {
+    const waiting = { id: "1", worker_lease_id: "L", takeover: { kind: "captcha", reason: "x", lease: "L", requested_at: "t", continue_at: null } };
+    const stale = { id: "2", worker_lease_id: "M", takeover: { kind: "captcha", reason: "x", lease: "L", requested_at: "t", continue_at: null } };
+    const answered = { id: "3", worker_lease_id: "L", takeover: { kind: "captcha", reason: "x", lease: "L", requested_at: "t", continue_at: "t2" } };
+    const mockNot = vi.fn().mockReturnValue({ order: mockOrder, eq: mockEq });
+    mockSelect.mockReturnValue({ order: mockOrder, eq: mockEq, not: mockNot });
+    mockOrder.mockResolvedValue({ data: [waiting, stale, answered], error: null });
+    const res = await GET(new Request("http://test/api/applications?takeover=open"));
+    expect(mockNot).toHaveBeenCalledWith("takeover", "is", null);
+    expect((await res.json()).applications).toEqual([waiting]);
+  });
+});
+
 describe("GET /api/applications", () => {
   it("returns all applications", async () => {
     const res = await GET(new Request("http://test/api/applications"));

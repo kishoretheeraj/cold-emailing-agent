@@ -759,6 +759,14 @@ def takeover_state(application_id, lease_id):
     return "continued" if takeover.get("continue_at") else "waiting"
 
 
+def get_approved_application_ids():
+    """Unleased rows the operator approved, oldest approval first: the Beelink submit queue."""
+    result = _retry(lambda: get_client().table("job_applications").select("id")
+                    .eq("automation_status", "approved").is_("worker_lease_id", "null")
+                    .order("approved_at", desc=False).execute())
+    return [row["id"] for row in result.data or []]
+
+
 def mark_unsupported(application_id, reason):
     """Unleased 'unsupported' write for rows that can never be applied to automatically."""
     return bool(_retry(lambda: _rpc("mark_application_unsupported", {

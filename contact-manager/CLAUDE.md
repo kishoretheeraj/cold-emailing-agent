@@ -175,6 +175,18 @@ not just the proxy) and signs `approval:v1:<id>:<hash>:<signed_at_ms>` with
 with a shared test vector). The submit worker refuses any approval whose signature it cannot
 verify. Missing key: `503` before any RPC.
 
+### Takeover card (2026-10-08)
+
+`TakeoverBanner.tsx` (rendered under `SystemHealthStrip` on `/applications`) polls
+`GET /api/applications?takeover=open` every 15 s (server filters with `openTakeover`: the request's
+`lease` must equal the row's `worker_lease_id` and `continue_at` must be unset) and shows a "Needs
+you" card per waiting row, linking to `NEXT_PUBLIC_TAKEOVER_URL` (the Beelink's noVNC for display
+:1 over `tailscale serve`; plain text when unset). "I'm done" posts
+`/api/applications/[id]/takeover-continue` (`takeover_continue` RPC; 409 when nothing is waiting).
+`ApplicationsPage.test.tsx` mocks the banner because its polling tests count fetch calls.
+`APPLY_SUBMIT_HOST=beelink` (server env) makes the submit route approve without dispatching the
+GitHub workflow (`{ ok: true, queued: "beelink" }`); the Beelink's apply-submit timer picks it up.
+
 ### `/api/agent-config` — pause control
 
 **GET** — returns `{ scope: "none" | "agent" | "all" }` from `system_config` table.
@@ -410,7 +422,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 83** (vitest: 813 across 54 files, playwright: 83; 2026-10-08 added `19-login.spec.ts`). Beelink M2 Task 9
+- **Current test count: 84** (vitest: 832 across 57 files, playwright: 84; 2026-10-08 added `19-login.spec.ts` and `20-takeover.spec.ts`). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more
@@ -466,9 +478,9 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
   Running `vercel deploy --prod` from inside `contact-manager/` still fails (path resolves to
   `contact-manager/contact-manager`); always run from repo root.
 - Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-  `NEXT_PUBLIC_BEELINK_VNC_URL` (optional — M2/U14, see `/api/system-health` above; not yet
+  `NEXT_PUBLIC_TAKEOVER_URL` (optional, the takeover viewer), `NEXT_PUBLIC_BEELINK_VNC_URL` (optional — M2/U14, see `/api/system-health` above; not yet
   set in the real deployment, pending a known Beelink LAN/Tailscale address).
-- Env vars (server-only): `OPERATOR_PASSWORD`, `SESSION_SECRET`, `APPROVAL_SIGNING_KEY` (same value as the
+- Env vars (server-only): `APPLY_SUBMIT_HOST` (`beelink` once the Beelink submits), `OPERATOR_PASSWORD`, `SESSION_SECRET`, `APPROVAL_SIGNING_KEY` (same value as the
   GitHub secret and the Beelink's), `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
 - `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.

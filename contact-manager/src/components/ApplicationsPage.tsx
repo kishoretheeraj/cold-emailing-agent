@@ -14,6 +14,7 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Loader2 } from "lucide-react";
 import { ApplicationDetailSheet } from "@/components/ApplicationDetailSheet";
 import { SystemHealthStrip } from "@/components/SystemHealthStrip";
+import { TakeoverBanner } from "@/components/TakeoverBanner";
 import { pickVerdictVariant } from "@/lib/applicationBadges";
 import {
   JOB_APPLICATION_STAGES,
@@ -416,6 +417,8 @@ export function ApplicationsPage() {
       <h1 className="text-lg font-medium text-fg">Applications</h1>
 
       <SystemHealthStrip />
+
+      <TakeoverBanner />
 
       <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-sm text-fg-muted">

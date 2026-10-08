@@ -1,0 +1,10 @@
+[Unit]
+Description=Prepare job applications every 20 minutes
+
+[Timer]
+OnCalendar=*:0/20
+RandomizedDelaySec=120
+Unit=apply-prepare.service
+
+[Install]
+WantedBy=timers.target

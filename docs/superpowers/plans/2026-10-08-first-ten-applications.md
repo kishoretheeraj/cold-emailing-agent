@@ -74,21 +74,23 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
 
 ## Phase D: Beelink units and takeover
 
-- [ ] `apply_worker.py` with `prepare_loop()` and `submit_loop()` (pure scheduling logic tested
+- [x] `apply_worker.py` with `run_prepare()` and `run_submit()` (oneshots on timers, not loops) (pure scheduling logic tested
       with fakes: pause scope, priority, display lock, idle sleep, error isolation).
-- [ ] Browser launch: real Chrome (`channel="chrome"`), headful on `DISPLAY=:1`, ATS profile
-      separate from LinkedIn's; submit-blocking init script on every page (fixture test: the
-      form's submit event never fires while it is installed).
-- [ ] Takeover protocol (`request_takeover` -> wait with heartbeats -> `continue_at` -> recheck);
+- [x] Browser launch: real Chrome (`channel="chrome"`), headful on `DISPLAY=:1`, separate from LinkedIn's
+      display and profile.
+- [ ] Submit-blocking init script on every prepare page (moved to Phase F with the model adapters,
+      the only fillers that could click something unexpected).
+- [x] Takeover protocol (`request_takeover` -> wait with heartbeats -> `continue_at` -> recheck);
       timeouts map to `needs_input` / `failed_retryable` / `needs_confirmation` exactly as spec §4.2.
       Tests inject each timeout and each continue.
-- [ ] Units: `apply-prepare.service`, `apply-submit.service` (ARMED only here), `xvfb@1`,
-      `x11vnc@1` with `-rfbauth`, `novnc-tailnet@1` bound to the Tailscale address. Extend
+- [x] Units: `apply-prepare.service`, `apply-submit.service` (ARMED only here), `xvfb@1`,
+      `x11vnc@1` with `-rfbauth`, `novnc@1` on 127.0.0.1 published to the tailnet by `tailscale serve`. Extend
       `tests/test_beelink_units.py`: ARMED appears in exactly one unit; LinkedIn units unchanged.
-- [ ] Move the ARMED rule: CLAUDE.md, `apply_agent.submit` docstring, tests that pin the
-      workflow; disable `apply_agent_submit.yml` and the preview schedule once Beelink submits.
-- [ ] Provisioning script + RUNBOOK: Tailscale-bound noVNC with a VNC password, `vault.env`,
-      the two units. Operator deploys and runs the watched checks in RUNBOOK.
+- [x] Move the ARMED rule: CLAUDE.md + `tests/test_armed_rule.py` (exactly two setters).
+- [ ] Disable `apply_agent_submit.yml` and the preview schedule once the Beelink has submitted once
+      (`APPLY_SUBMIT_HOST=beelink` already stops the dispatch).
+- [x] Provisioning script + RUNBOOK section 10: `approval.env`, display :1, `tailscale serve`, the units.
+- [ ] Operator: deploy a new signed tag and run the watched checks in RUNBOOK section 10.
 
 ## Phase E: sessions, vault, signup, email verification
 

@@ -607,6 +607,21 @@ APPLICATION_RUN_OUTCOMES = (
     "failed_retryable", "failed_terminal", "unsupported", "skipped", "scored",
 )
 TAKEOVER_KINDS = ("captcha", "sms_code", "email_verification", "login", "unrecognized_page", "other")
+# ── Beelink apply worker (first-ten-applications Phase D) ─────────────────────────
+# Defaults keep GitHub Actions' headless preview unchanged; the Beelink units set headful real
+# Chrome on display :1, no generic adapter (browser-use needs a paid API key), and takeover on.
+APPLY_BROWSER_HEADLESS = os.environ.get("APPLY_BROWSER_HEADLESS", "1") != "0"
+APPLY_BROWSER_CHANNEL = os.environ.get("APPLY_BROWSER_CHANNEL") or None
+APPLY_GENERIC_ADAPTER = os.environ.get("APPLY_GENERIC_ADAPTER", "browser_use")
+APPLY_TAKEOVER_ENABLED = os.environ.get("APPLY_TAKEOVER_ENABLED") == "1"
+APPLY_TAKEOVER_TIMEOUT_SECONDS = 1800
+APPLY_TAKEOVER_POLL_SECONDS = 10
+APPLY_DISPLAY_LOCK = os.environ.get("APPLY_DISPLAY_LOCK", "/var/lib/job-agent/display1.lock")
+APPLY_SUBMIT_LOCK_WAIT_SECONDS = 600
+APPLY_PREPARE_BATCH = 5
+APPLY_SUBMIT_BATCH = 3
+APPLY_WORKER_ADAPTER = "deterministic"
+
 # 1800s exceeds the submit workflow's 15-minute timeout and the per-row preview budget, so only a dead worker's lease goes stale.
 APPLY_AGENT_LEASE_STALE_SECONDS = 1800
 # Statuses a preview worker may claim a saved row from.

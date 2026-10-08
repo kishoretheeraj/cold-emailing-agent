@@ -41,8 +41,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "APPROVAL_SIGNING_KEY is not configured" }, { status: 503 });
   }
 
+  // APPLY_SUBMIT_HOST=beelink: apply-submit.service on the Beelink polls approved rows, so the
+  // approval alone queues the submit and no GitHub workflow is dispatched.
+  const beelinkSubmits = process.env.APPLY_SUBMIT_HOST === "beelink";
   const token = process.env.GITHUB_DISPATCH_TOKEN;
-  if (!token) {
+  if (!beelinkSubmits && !token) {
     return Response.json(
       { error: "GITHUB_DISPATCH_TOKEN is not configured" },
       { status: 500 }
@@ -68,6 +71,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   });
   if (rpcError) {
     return Response.json({ error: rpcError.message }, { status: 409 });
+  }
+  if (beelinkSubmits) {
+    return Response.json({ ok: true, queued: "beelink" });
   }
 
   // C3: approve_application already set approved_at above. If the dispatch below fails --

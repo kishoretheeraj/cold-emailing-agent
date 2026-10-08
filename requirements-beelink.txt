@@ -1,0 +1,6 @@
+# The Beelink venv: the base set plus Playwright, which drives the system's real Chrome
+# (channel="chrome") for apply-prepare/apply-submit. No browser-use or langchain: generic
+# platforms are off on the Beelink (APPLY_GENERIC_ADAPTER=none) until a subscription-only
+# adapter replaces them, so no paid API key is ever needed here.
+-r requirements.txt
+playwright==1.60.0

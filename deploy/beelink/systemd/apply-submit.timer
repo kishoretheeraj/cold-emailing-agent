@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for approved applications every minute
+
+[Timer]
+OnCalendar=*:*:00
+AccuracySec=5s
+Unit=apply-submit.service
+
+[Install]
+WantedBy=timers.target

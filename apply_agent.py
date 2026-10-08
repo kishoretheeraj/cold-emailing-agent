@@ -20,6 +20,7 @@ import candidate_profile
 import claude_subscription
 import config
 import db
+import takeover
 import usage_tracking
 from emailer import _call_claude
 
@@ -557,14 +558,18 @@ def _free_local_port():
 def _launch_page(job_url):
     from playwright.sync_api import sync_playwright
     playwright = sync_playwright().start()
-    debug_port = _free_local_port()
+    # Only browser-use's CDP bridge needs a debugging port; without it, nothing else on the host
+    # can attach to this (possibly armed) browser.
+    debug_port = _free_local_port() if config.APPLY_GENERIC_ADAPTER == "browser_use" else None
     browser = playwright.chromium.launch(
-        headless=True, args=[f"--remote-debugging-port={debug_port}"]
+        headless=config.APPLY_BROWSER_HEADLESS, channel=config.APPLY_BROWSER_CHANNEL,
+        args=[f"--remote-debugging-port={debug_port}"] if debug_port else []
     )
     page = browser.new_page()
     page.goto(job_url)
     _OPEN_SESSIONS[id(page)] = (browser, playwright)
-    _CDP_PORTS[id(page)] = debug_port
+    if debug_port:
+        _CDP_PORTS[id(page)] = debug_port
     return page
 
 
@@ -654,6 +659,21 @@ class ApprovalSignatureError(Exception):
     pass
 
 
+class TakeoverTimeout(Exception):
+    pass
+
+
+def _handle_challenge(page, job_id, lease, reason):
+    # Beelink only: a human solves it over noVNC while this worker holds the lease. Never solved
+    # or bypassed here. Raises TakeoverTimeout when nobody does, TakeoverLost if the lease is gone.
+    if not config.APPLY_TAKEOVER_ENABLED or not takeover.challenge_present(page):
+        return False
+    if not takeover.await_human(job_id, lease, "captcha", reason):
+        raise TakeoverTimeout(f"{reason}: nobody solved it within "
+                              f"{config.APPLY_TAKEOVER_TIMEOUT_SECONDS // 60} minutes")
+    return True
+
+
 # Never reads el.id: SPA frameworks generate ids like ":r3:" that differ on every load.
 _FORM_FIELDS_JS = """() => {
   const skip = ['hidden', 'submit', 'button', 'reset', 'image'];
@@ -710,6 +730,10 @@ def _process_one_preview(job):
     if platform == "aggregator":
         db.mark_unsupported(job_id, "aggregator/listing link, not a real application page")
         return "blocked"
+    if platform not in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS and config.APPLY_GENERIC_ADAPTER == "none":
+        # Left idle, not unsupported: a generic adapter for this host is still to come (Phase F).
+        log.info(f"[APPLY-PREVIEW] | {job.get('company')} | skipped: no generic-platform adapter on this host")
+        return "skipped"
 
     lease = db.claim_application(job_id, "preparing")
     if lease is None:
@@ -719,6 +743,7 @@ def _process_one_preview(job):
     try:
         page = _launch_page(_application_url(job.get("job_url")))
         try:
+            _handle_challenge(page, job_id, lease, "CAPTCHA on the application page")
             signature = _form_signature(page)
             if not signature:
                 raise ValueError("Could not fingerprint the application form; preview must be prepared again")
@@ -767,6 +792,7 @@ def _process_one_preview(job):
                         return "lost"
                     return "blocked"
 
+            _handle_challenge(page, job_id, lease, "CAPTCHA after filling the form")
             preview = {
                 "platform": platform,
                 "field_values": field_values,
@@ -783,22 +809,32 @@ def _process_one_preview(job):
         finally:
             _close_page(page)
     except Exception as exc:
+        if isinstance(exc, takeover.TakeoverLost):
+            raise
+        to_status = "failed_retryable"
         if isinstance(exc, claude_subscription.ClaudeUsageLimitError):
             reason = f"Claude usage limit reached; will retry on a later run: {exc}"
+        elif isinstance(exc, TakeoverTimeout):
+            to_status, reason = "needs_input", str(exc)
         else:
             reason = f"preview pass error: {exc}"
         try:
-            db.release_application(job_id, lease, "failed_retryable", reason[:900])
+            db.release_application(job_id, lease, to_status, reason[:900])
         except Exception:
             pass
         raise
 
 
+def preview_candidates():
+    """Rows the preview pass may claim: saved, both documents built, idle or retryable."""
+    return [j for j in db.get_job_applications(stage="saved")
+            if j.get("resume_file_ref") and j.get("cover_letter_file_ref")
+            and (j.get("automation_status") or "idle") in config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES]
+
+
 def run_preview():
     db.recover_stale_leases(config.APPLY_AGENT_LEASE_STALE_SECONDS)
-    jobs = [j for j in db.get_job_applications(stage="saved")
-            if j.get("resume_file_ref") and j.get("cover_letter_file_ref")
-            and j.get("automation_status", "idle") in config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES]
+    jobs = preview_candidates()
     log.info(f"[APPLY-PREVIEW] | START | eligible_jobs={len(jobs)}")
     filled = 0
     blocked = 0
@@ -860,6 +896,9 @@ def submit(job_id):
         except Exception:
             pass
         raise ValueError(reason)
+
+    if platform not in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS and config.APPLY_GENERIC_ADAPTER == "none":
+        raise ValueError(f"submit() has no adapter for platform {platform!r} on this host; approval left intact")
 
     # A worker without the key cannot tell a real approval from a forged one. Refuse before the
     # claim, so the operator's approval survives until the worker is configured.
@@ -923,6 +962,7 @@ def submit(job_id):
 
         page = _launch_page(_application_url(job.get("job_url")))
         try:
+            _handle_challenge(page, job_id, lease, "CAPTCHA on the application page")
             expected_signature = job.get("form_signature")
             if not expected_signature:
                 log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | no preview form_signature, drift check skipped")
@@ -967,6 +1007,7 @@ def submit(job_id):
             # Filling may take minutes. A lease recovered during that time, or a document
             # rebuild invalidating the revision, must stop this worker before the external
             # action. Best-effort progress heartbeats cannot establish that permission.
+            _handle_challenge(page, job_id, lease, "CAPTCHA before Submit")
             if not db.renew_submission_lease(job_id, lease, job["approved_revision_hash"]):
                 raise RuntimeError("Submit stopped: worker lease or approved revision changed during preparation")
 
@@ -976,7 +1017,14 @@ def submit(job_id):
             # The click succeeding is not proof the application landed -- a client-side validation
             # error commonly leaves the button's own click handler a no-op with the form still on
             # screen. Do not advance the stage until the site itself confirms it.
-            if not _submission_confirmed(page):
+            confirmed = _submission_confirmed(page)
+            # A challenge after the click: a human finishes it. This worker never clicks Submit
+            # again; an unsolved one leaves the row in needs_confirmation (clicked is True).
+            if not confirmed and _handle_challenge(
+                    page, job_id, lease,
+                    "CAPTCHA after Submit (solve it, press Submit yourself only if the form asks again)"):
+                confirmed = _submission_confirmed(page)
+            if not confirmed:
                 raise RuntimeError(
                     f"submit() clicked Submit for job_id={job_id} ({job.get('company')}) but found "
                     f"no confirmation on the page afterward -- treating this as a failed submission "

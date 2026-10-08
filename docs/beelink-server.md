@@ -88,7 +88,7 @@ Kishore is new to Linux server administration and learning as he goes.
 ## 4. Rules
 
 1. **Never set `ANTHROPIC_API_KEY` globally** (shell profiles, `/etc/environment`, settings `env` blocks). It overrides subscription login and switches Claude Code and the Agent SDK to pay-as-you-go API billing. If one container genuinely needs a Console key, pass it to that container only, through a `chmod 600` env file that is never committed.
-   The resume worker is the one deliberate subscription-token holder: `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/job-agent/claude.env`, loaded only by `resume-worker.service`.
+   The resume worker and the apply-prepare worker are the deliberate subscription-token holders: `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/job-agent/claude.env`, loaded only by `resume-worker.service` and `apply-prepare.service`. `apply-submit.service` loads `/etc/job-agent/approval.env` (`APPROVAL_SIGNING_KEY`) instead and is the only armed unit.
 2. **Agents never run as `kishore`.** Membership in `sudo` or `docker` is root-equivalent, so a prompt-injected agent with either one owns the box. Agents get their own unprivileged users with no sudo and no docker group.
 3. **arm64 vs amd64.** The Mac (M4) builds arm64 images by default; the Beelink needs amd64. Use `docker buildx build --platform linux/amd64 ...` on the Mac, or build on the Beelink after `git pull`.
 4. **Hard memory limits on everything long-running** (`docker run --memory`, systemd `MemoryMax=`). Budget: 16 GB total, about 1–2 GB for the OS and Docker, and 1–2 GB per Xvfb + browser session, so plan for 3–4 concurrent browser sessions. RAM is the binding constraint, not CPU.
@@ -158,6 +158,13 @@ From the Mac, confirm passwords are refused: `ssh -o PubkeyAuthentication=no kis
 - [x] Copy Calibri to `/usr/local/share/fonts/calibri/` (2026-10-06)
 - [x] Put the subscription token in `/etc/job-agent/claude.env` (2026-10-06)
 - [x] Watched `systemctl start resume-worker`, then `systemctl enable --now resume-worker.timer` (2026-10-06)
+
+### Phase 2c: apply worker (first ten applications)
+
+- [ ] Re-provision at a new signed tag (installs `requirements-beelink.txt`, the apply units, display :1, `tailscale serve` for the takeover view).
+- [ ] Fill `/etc/job-agent/approval.env` (same `APPROVAL_SIGNING_KEY` as Vercel).
+- [ ] Watched `systemctl start apply-prepare` (RUNBOOK section 10), then enable `apply-prepare.timer`.
+- [ ] Set `APPLY_SUBMIT_HOST=beelink` in Vercel, then enable `apply-submit.timer`.
 
 ### Phase 3: first browser-automation workload
 

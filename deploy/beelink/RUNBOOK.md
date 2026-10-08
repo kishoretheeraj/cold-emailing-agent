@@ -220,3 +220,48 @@ systemctl list-timers job-linkedin-ingest.timer
 `[CU-LINKEDIN] | CAPTCHA or login challenge -- needs a human at the VNC console for display
 slot 0`. VNC in and solve it yourself, in the browser. Nothing in this system may ever solve,
 bypass, or work around it — not in code, not by retrying, not by switching tools.
+
+## 10. Apply worker (first-ten-applications Phase D)
+
+`apply-prepare` fills applications in real Chrome on display :1 and stops before Submit;
+`apply-submit` is the only Beelink unit with `APPLY_AGENT_ARMED=1` and submits only rows you
+approved in the contact-manager, whose signature it can verify. Provisioning installs both units
+and starts display :1 (`xvfb@1`, `x11vnc@1`, `novnc@1`) but never enables their timers.
+
+```bash
+# Beelink: the same signing key Vercel has as APPROVAL_SIGNING_KEY (32+ random characters)
+sudo nano /etc/job-agent/approval.env
+# Beelink: the takeover view, tailnet-only over HTTPS (provisioning already ran this; check it)
+sudo tailscale serve status
+```
+
+Set `NEXT_PUBLIC_TAKEOVER_URL` in Vercel to `https://<beelink tailnet name>:8443/vnc.html` so the
+"Needs you" card links straight to the browser; it opens from the Mac or the phone while either is
+on the tailnet. The VNC password from section 3 guards it.
+
+**Watched first prepare**, with nothing approved:
+
+```bash
+sudo systemctl start apply-prepare && journalctl -u apply-prepare -f
+tail -f /opt/job-agent/apply_worker.log   # apply_agent's own lines land here too
+```
+
+Watch display :1 while it runs. Expected: rows move to `ready_for_review` (or `needs_input` with a
+reason), each with an `application_runs` row (`apply_status.yml` shows them), and no Submit click.
+A CAPTCHA shows a "Needs you" card; solve it in the viewer, press I'm done, and the worker
+continues. Then:
+
+```bash
+sudo systemctl enable --now apply-prepare.timer
+```
+
+**Submit**, only after the prepare output looks right and `APPLY_SUBMIT_HOST=beelink` is set in
+Vercel (so approvals stop dispatching the GitHub workflow):
+
+```bash
+sudo systemctl enable --now apply-submit.timer
+```
+
+Approve one application in the contact-manager and watch `journalctl -u apply-submit -f` and display
+:1. A submit that cannot verify the approval signature puts the row back in `needs_input` before any
+browser opens; a missing `approval.env` key stops the run without touching the approval.

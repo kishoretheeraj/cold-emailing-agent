@@ -1,6 +1,8 @@
 export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
+import { openTakeover } from "@/lib/takeover";
+import type { JobApplication } from "@/lib/types";
 
 function getClient() {
   return createClient(
@@ -13,14 +15,18 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const stage = searchParams.get("stage");
   const source = searchParams.get("source");
+  // ?takeover=open: only rows where a Beelink worker is waiting for a human (the banner polls it).
+  const takeoverOpen = searchParams.get("takeover") === "open";
   try {
     const supabase = getClient();
     let query = supabase.from("job_applications").select("*");
     if (stage) query = query.eq("stage", stage);
     if (source) query = query.eq("source", source);
+    if (takeoverOpen) query = query.not("takeover", "is", null);
     const { data, error } = await query.order("created_at", { ascending: false });
     if (error) throw error;
-    return Response.json({ applications: data ?? [] });
+    const rows = (data ?? []) as JobApplication[];
+    return Response.json({ applications: takeoverOpen ? rows.filter((r) => openTakeover(r)) : rows });
   } catch (err) {
     return Response.json({ error: String(err) }, { status: 500 });
   }

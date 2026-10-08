@@ -159,7 +159,9 @@ prelude keyed on Workday's stable `data-automation-id` attributes, followed by t
 winner for the wizard pages. The selector inventory and flow are taken from MIT-licensed
 open-source work (credited in `workday_adapter.py`): `djwmobley/claude-interview-coach`
 (entry and auth ids verified read-only on live tenants on 2026-10-05), `amgenene/workday_auto`,
-`Prajay-vats/workday-autofill`.
+`Prajay-vats/workday-autofill`; also `ubangura/Workday-Application-Automator` and
+`amgenene/workday_auto` (no license: selector facts only, no code), and `JoseGonzCSE/PASScript`
+(why a per-site generated password is needed).
 
 - **Entry:** `adventureButton` (Apply), then `applyManually` only. Never `autofillWithResume`,
   `useMyLastApplication` or LinkedIn apply: they import data we did not review.
@@ -181,6 +183,19 @@ open-source work (credited in `workday_adapter.py`): `djwmobley/claude-interview
   (`multiSelectContainer`) are typed and confirmed through `promptOption`; date fields through
   `dateSectionMonth/Day/Year-display`. A required widget we cannot set parks the row in
   `needs_input` naming the question.
+- **Two UI generations.** Older tenants name pages `contactInformationPage`, `myExperiencePage`,
+  `voluntaryDisclosuresPage`, `selfIdentificationPage` and advance with
+  `bottom-navigation-next-button`; newer ones use `applyFlowMyInfoPage` and `pageFooterNextButton`.
+  Page detection and the Next control accept both. Section-scoped ids
+  (`legalNameSection_firstName`, `addressSection_city`, `phone-number`, `phone-device-type`) are
+  tried before label matching; repeatable sections (`workExperience-N`, `websitePanelSet-N`,
+  `educationSection`) grow through their own `Add` button. EEO prompts (`gender`,
+  `hispanicOrLatino`, `ethnicityDropdown`, `veteranStatus`) are chosen by option text from
+  `applicant_eligibility`; self-identification radios are matched by label, never by id (their ids
+  are tenant-specific).
+- **Never guessed.** A question without a known answer parks the row (`needs_input`); unlike some
+  open-source fillers, nothing picks a "negative" or the last option. An "account already exists"
+  error on signup with no vault entry is a takeover, never a blind sign-in or reset.
 - **Prefilled values:** a field the site prefilled (resume parse, saved draft) that is outside the
   sensitive classes (authorization, sponsorship, salary, EEO, criminal history, consent) is left
   and listed on the card; inside them it must equal our answer or the row parks.

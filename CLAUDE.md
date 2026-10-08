@@ -44,6 +44,8 @@ resume_scrub.py
 resume/
 candidate_profile.py
 approval_signature.py
+apply_worker.py
+takeover.py
 claude_subscription.py
 usage_tracking.py
 supabase/migrations/
@@ -1169,7 +1171,9 @@ apply to. That tap POSTs to `/api/applications/[id]/submit`, which fires a `work
 form fresh (never reuses the preview pass's browser session) and clicks Submit for real.
 
 **`APPLY_AGENT_ARMED` is the single hard safety rule of this entire feature. This environment
-variable must never be set anywhere except `apply_agent_submit.yml`'s own env block -- never a
+variable must never be set anywhere except `apply_agent_submit.yml`'s own env block and, since
+2026-10-08, the Beelink's `deploy/beelink/systemd/apply-submit.service` (`tests/test_armed_rule.py`
+scans every tracked non-doc file and fails on any third setter) -- never a
 repo secret, never in `build-continue.yml`'s environment, never in a local `.env`
 file** (`config.py`'s `load_dotenv()` would otherwise silently arm a local `--submit` run --
 document this explicitly if you ever touch `apply_agent.py`'s docstring or this rule). The one
@@ -1366,6 +1370,28 @@ and, after the claim and hash check, releases to `needs_input` (approval cleared
 secret (`apply_agent_submit.yml` only) and later the Beelink submit unit. Tests:
 `tests/test_approval_signature.py`, `tests/test_signed_approval_migration.py`,
 `supabase/tests/signed_approval_dryrun.sql`.
+
+**Beelink apply worker (2026-10-08, Phase D)**: `apply_worker.py --prepare|--submit`, each a oneshot on
+its own timer (`apply-prepare.timer` every 20 min, `apply-submit.timer` every minute; both enabled by
+hand after a watched run, RUNBOOK section 10). Both drive real Chrome headful on display :1
+(`APPLY_BROWSER_HEADLESS=0`, `APPLY_BROWSER_CHANNEL=chrome`), serialized by an `fcntl.flock` on
+`APPLY_DISPLAY_LOCK` (under `/var/lib/job-agent`, not `/tmp`, because of `PrivateTmp`). Prepare
+skips a run while the display is busy and yields between rows as soon as `db.get_approved_application_ids()`
+is non-empty; submit waits up to `APPLY_SUBMIT_LOCK_WAIT_SECONDS`. Every row's outcome (read back from
+the row's `automation_status`) goes to `application_runs`. `--submit` refuses unless `APPLY_AGENT_ARMED`
+is exactly `"1"`. `APPLY_GENERIC_ADAPTER=none` on the Beelink: generic-platform rows stay `idle` in
+prepare and `submit()` refuses them before claiming (browser-use needs a paid API key). **Takeover**
+(`takeover.py`, only with `APPLY_TAKEOVER_ENABLED=1`): `challenge_present(page)` detects a visible
+reCAPTCHA/hCaptcha/Turnstile (detection only; real-DOM tests in `tests/test_takeover.py`);
+`await_human` requests a takeover, heartbeats every `APPLY_TAKEOVER_POLL_SECONDS`, and returns on
+`continued`, raises `TakeoverLost` on a lost lease, returns False after 30 minutes. In
+`apply_agent`: checked on page load and after filling (prepare: unsolved -> `needs_input`), before
+the click (unsolved -> `failed_retryable`), and after the click when no confirmation shows (the human
+finishes; the worker never clicks Submit again; unsolved -> `needs_confirmation`). The contact-manager's
+`TakeoverBanner` polls `/api/applications?takeover=open` and posts `takeover-continue`. With
+`APPLY_SUBMIT_HOST=beelink` in Vercel the submit route approves without dispatching
+`apply_agent_submit.yml`. Tests: `tests/test_apply_worker.py`, `tests/test_takeover.py`,
+`tests/test_apply_agent_beelink.py`, `tests/test_beelink_units.py`, `tests/test_armed_rule.py`.
 
 **Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
 `20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:

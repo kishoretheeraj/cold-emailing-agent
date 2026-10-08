@@ -212,4 +212,16 @@ describe("POST /api/applications/[id]/submit", () => {
     expect(args.p_signature).toMatch(/^[0-9a-f]{64}$/);
     expect(args.p_signature).toBe(signApproval(KEY, args.p_id, args.p_revision_hash, args.p_signed_at_ms));
   });
+
+  // Once the Beelink submits (apply-submit.service polls approved rows), dispatching the GitHub
+  // workflow too would race it for the same row.
+  it("approves without dispatching when the Beelink is the submit host", async () => {
+    vi.stubEnv("APPLY_SUBMIT_HOST", "beelink");
+    vi.stubEnv("GITHUB_DISPATCH_TOKEN", "");
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, queued: "beelink" });
+    expect(mockRpc).toHaveBeenCalledWith("approve_application", APPROVE_ARGS);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

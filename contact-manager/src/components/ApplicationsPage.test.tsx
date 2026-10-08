@@ -14,6 +14,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// TakeoverBanner polls on its own (TakeoverBanner.test.tsx); here it would add fetch calls the
+// polling tests count.
+vi.mock("@/components/TakeoverBanner", () => ({ TakeoverBanner: () => null }));
+
 vi.mock("@/components/ui/Tooltip", () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));

@@ -323,6 +323,16 @@ export type SubmissionEvidence = {
   at?: string;
 };
 
+// Written only by the request_takeover / takeover_continue / clear_takeover RPCs. A request is
+// open only while its lease is the row's current worker_lease_id and continue_at is unset.
+export type TakeoverRequest = {
+  kind: string;
+  reason: string | null;
+  lease: string;
+  requested_at: string;
+  continue_at: string | null;
+};
+
 export type JobApplication = {
   id: string;
   contact_id: string | null;
@@ -352,6 +362,8 @@ export type JobApplication = {
   form_signature?: string | null;
   submit_attempted_at?: string | null;
   submission_evidence?: SubmissionEvidence | null;
+  worker_lease_id?: string | null;
+  takeover?: TakeoverRequest | null;
   created_at: string;
   updated_at: string;
 };
