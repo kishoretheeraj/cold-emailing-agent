@@ -1,0 +1,181 @@
+<!doctype html>
+<!-- A stand-in for a Workday tenant, built from the data-automation-id inventory in
+     docs/superpowers/specs/2026-10-08-first-ten-applications-design.md §6.1. Not a copy of
+     Workday's markup: only the ids, roles and behaviours the adapter relies on. The scenario is
+     chosen by window.SCENARIO (set by the test before load). -->
+<html>
+<head><meta charset="utf-8"><title>Fixture Tenant Careers</title>
+<style>
+  .hidden { display: none; }
+  .wrap { position: relative; display: inline-block; }
+  /* Workday's real submit button is aria-hidden under a transparent overlay that takes the click. */
+  [data-automation-id="click_filter"] { position: absolute; inset: 0; cursor: pointer; }
+</style>
+</head>
+<body>
+<script>
+  const S = Object.assign({
+    start: "job",            // job | auth | wizard
+    guest: false,            // Apply Manually goes straight to the wizard
+    authPanel: "create",     // which auth panel shows first
+    password: null,          // the password an existing account accepts
+    existingAccount: false,  // create account fails with "already in use"
+    verify: "code",          // code | none
+    expectedCode: "482913",
+    generation: "new",       // new | old (Next button id and page ids)
+    steps: ["My Information", "My Experience", "Application Questions", "Voluntary Disclosures", "Review"],
+    errorOnNext: null,       // step index whose Next shows an error banner
+    alreadyApplied: false,
+    captchaAtGate: false,
+  }, window.SCENARIO || {});
+  window.LOG = [];
+  const nextId = S.generation === "old" ? "bottom-navigation-next-button" : "pageFooterNextButton";
+  let step = 0;
+
+  function show(id) {
+    for (const el of document.querySelectorAll("section")) el.classList.add("hidden");
+    document.getElementById(id).classList.remove("hidden");
+  }
+  function renderWizard() {
+    show("wizard");
+    const bar = document.getElementById("bar");
+    bar.innerHTML = "";
+    S.steps.forEach((label, i) => {
+      const li = document.createElement("li");
+      li.textContent = label;
+      li.setAttribute("data-automation-id",
+        i === step ? "progressBarActiveStep" : i < step ? "progressBarCompletedStep" : "progressBarInactiveStep");
+      bar.appendChild(li);
+    });
+    const page = document.getElementById("wizardPage");
+    page.setAttribute("data-automation-id",
+      S.generation === "old" ? ["contactInformationPage", "myExperiencePage", "applicationQuestionsPage", "voluntaryDisclosuresPage", "reviewPage"][step]
+                             : (step === 0 ? "applyFlowMyInfoPage" : "applyFlowPage"));
+    document.getElementById("stepTitle").textContent = S.steps[step];
+    // On the last (Review) step the SAME footer button turns into Submit, as on real tenants.
+    const last = step === S.steps.length - 1;
+    document.getElementById("next").textContent = last ? "Submit" : "Save and Continue";
+    document.getElementById("errorBanner").classList.add("hidden");
+  }
+  function authError(text) {
+    const e = document.getElementById("authError");
+    e.textContent = text;
+    e.classList.remove("hidden");
+  }
+  function afterAuth() {
+    if (S.verify === "code") { show("verify"); return; }
+    step = 0; renderWizard();
+  }
+  window.addEventListener("DOMContentLoaded", () => {
+    if (S.alreadyApplied) { document.getElementById("alreadyApplied").classList.remove("hidden"); }
+    if (S.captchaAtGate) { document.getElementById("captcha").classList.remove("hidden"); }
+    if (S.start === "auth") { show("auth"); setPanel(S.authPanel); }
+    else if (S.start === "wizard") { renderWizard(); }
+    else { show("job"); }
+  });
+  function setPanel(p) {
+    document.getElementById("createPanel").classList.toggle("hidden", p !== "create");
+    document.getElementById("signinPanel").classList.toggle("hidden", p !== "signin");
+  }
+  function apply() { document.getElementById("modal").classList.remove("hidden"); }
+  function applyManually() {
+    window.LOG.push("applyManually");
+    document.getElementById("modal").classList.add("hidden");
+    if (S.guest) { step = 0; renderWizard(); } else { show("auth"); setPanel(S.authPanel); }
+  }
+  function autofill() { window.LOG.push("autofillWithResume"); }
+  function createAccount() {
+    const email = document.querySelector("#createPanel [data-automation-id=email]").value;
+    const pw = document.querySelector("#createPanel [data-automation-id=password]").value;
+    const pw2 = document.querySelector("#createPanel [data-automation-id=verifyPassword]").value;
+    const agreed = document.querySelector("[data-automation-id=createAccountCheckbox]").checked;
+    window.LOG.push("createAccount:" + email);
+    if (pw !== pw2 || !agreed) { authError("Please fix the errors on this page."); return; }
+    if (S.existingAccount) { authError("This email address is already in use. Sign in instead."); return; }
+    afterAuth();
+  }
+  function signIn() {
+    const pw = document.querySelector("#signinPanel [data-automation-id=password]").value;
+    window.LOG.push("signIn");
+    if (S.password !== null && pw !== S.password) { authError("Wrong email address or password."); return; }
+    step = 0; renderWizard();
+  }
+  function verifyCode() {
+    const code = document.querySelector("[data-automation-id=verificationCode]").value;
+    window.LOG.push("verify:" + code);
+    if (code !== S.expectedCode) { authError("Invalid verification code."); return; }
+    step = 0; renderWizard();
+  }
+  function next() {
+    if (step === S.steps.length - 1) { submitApp(); return; }
+    window.LOG.push("next:" + step);
+    if (S.errorOnNext === step) { document.getElementById("errorBanner").classList.remove("hidden"); return; }
+    step += 1; renderWizard();
+  }
+  function submitApp() { window.LOG.push("SUBMIT"); }
+</script>
+
+<div id="alreadyApplied" class="hidden" data-automation-id="alreadyApplied">You've already applied for this job.</div>
+<div id="captcha" class="hidden"><iframe src="https://newassets.hcaptcha.com/captcha/v1/x" width="300" height="80"></iframe></div>
+
+<section id="job" class="hidden">
+  <h1 data-automation-id="jobPostingHeader">Product Manager</h1>
+  <a href="#" data-automation-id="adventureButton" onclick="apply(); return false;">Apply</a>
+  <div id="modal" class="hidden" role="dialog">
+    <a href="#" data-automation-id="autofillWithResume" onclick="autofill(); return false;">Autofill with Resume</a>
+    <a href="#" data-automation-id="applyManually" onclick="applyManually(); return false;">Apply Manually</a>
+    <a href="#" data-automation-id="useMyLastApplication" onclick="window.LOG.push('useMyLastApplication'); return false;">Use My Last Application</a>
+  </div>
+</section>
+
+<section id="auth" class="hidden">
+  <div data-automation-id="signInContent">
+    <div id="authError" class="hidden" data-automation-id="errorMessage" role="alert"></div>
+    <div id="createPanel" data-automation-id="createAccountForm">
+      <h2>Create Account</h2>
+      <label>Email Address <input type="text" data-automation-id="email"></label>
+      <label>Password <input type="password" data-automation-id="password"></label>
+      <label>Verify New Password <input type="password" data-automation-id="verifyPassword"></label>
+      <label><input type="checkbox" data-automation-id="createAccountCheckbox"> I agree</label>
+      <div data-automation-id="noCaptchaWrapper" class="wrap">
+        <button aria-hidden="true" tabindex="-1" data-automation-id="createAccountSubmitButton">Create Account</button>
+        <div role="button" aria-label="Create Account" data-automation-id="click_filter" onclick="createAccount()"></div>
+      </div>
+      <button data-automation-id="signInLink" onclick="setPanel('signin')">Sign In</button>
+    </div>
+    <div id="signinPanel" class="hidden">
+      <h2>Sign In</h2>
+      <label>Email Address <input type="text" data-automation-id="email"></label>
+      <label>Password <input type="password" data-automation-id="password"></label>
+      <div data-automation-id="noCaptchaWrapper" class="wrap">
+        <button aria-hidden="true" tabindex="-1" data-automation-id="signInSubmitButton">Sign In</button>
+        <div role="button" aria-label="Sign In" data-automation-id="click_filter" onclick="signIn()"></div>
+      </div>
+      <button data-automation-id="createAccountLink" onclick="setPanel('create')">Create Account</button>
+    </div>
+  </div>
+</section>
+
+<section id="verify" class="hidden">
+  <label>Verification Code <input type="text" data-automation-id="verificationCode"></label>
+  <button data-automation-id="verifyButton" onclick="verifyCode()">Verify</button>
+</section>
+
+<section id="wizard" class="hidden">
+  <div data-automation-id="applyFlowPage">
+    <ol data-automation-id="progressBar" id="bar"></ol>
+    <div id="wizardPage"><h2 id="stepTitle"></h2>
+      <label>Legal First Name <input data-automation-id="legalNameSection_firstName"></label>
+    </div>
+    <div id="errorBanner" class="hidden" data-automation-id="errorBanner" role="alert">Errors found: Legal First Name is required.</div>
+    <div data-automation-id="pageFooter">
+      <button data-automation-id="pageFooterBackButton">Back</button>
+      <button id="next" onclick="next()">Save and Continue</button>
+    </div>
+  </div>
+</section>
+<script>
+  document.getElementById("next").setAttribute("data-automation-id", (window.SCENARIO || {}).generation === "old" ? "bottom-navigation-next-button" : "pageFooterNextButton");
+</script>
+</body>
+</html>

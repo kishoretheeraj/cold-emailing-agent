@@ -352,3 +352,26 @@ def test_memory_fits_with_the_apply_worker_running():
              + max(_memory_max_bytes(_PREPARE), _memory_max_bytes(_SUBMIT))
              + _memory_max_bytes(os.path.join(_SYSTEMD, "resume-worker.service")))
     assert total <= int(10.5 * 2**30)
+
+
+_VAULT_ENV_EXAMPLE = os.path.join(_ROOT, "deploy", "beelink", "env", "vault.env.example")
+
+
+def test_only_the_apply_units_load_the_vault_key():
+    for path in _unit_paths():
+        name = os.path.basename(path)
+        loads = "EnvironmentFile=/etc/job-agent/vault.env" in _directives(path)
+        assert loads == (name in ("apply-prepare.service", "apply-submit.service")), name
+        if name not in ("apply-prepare.service", "apply-submit.service"):
+            assert "vault.env" not in _read(path), name
+
+
+def test_vault_env_template_is_valueless_and_key_only():
+    lines = [l for l in _read(_VAULT_ENV_EXAMPLE).splitlines() if l and not l.startswith("#")]
+    assert lines == ["VAULT_KEY="]
+
+
+def test_provision_creates_the_vault_env_template_but_never_a_key():
+    code = _provision_code()
+    assert "vault.env.example" in code
+    assert "Fernet.generate_key" not in code and "VAULT_KEY=" not in code

@@ -231,6 +231,8 @@ and starts display :1 (`xvfb@1`, `x11vnc@1`, `novnc@1`) but never enables their 
 ```bash
 # Beelink: the same signing key Vercel has as APPROVAL_SIGNING_KEY (32+ random characters)
 sudo nano /etc/job-agent/approval.env
+# Beelink: the vault key for per-site passwords (generate it as the file's comment says; keep a copy)
+sudo nano /etc/job-agent/vault.env
 # Beelink: the takeover view, tailnet-only over HTTPS (provisioning already ran this; check it)
 sudo tailscale serve status
 ```

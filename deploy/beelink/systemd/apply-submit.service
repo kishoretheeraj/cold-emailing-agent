@@ -16,6 +16,7 @@ User=jobagent
 Group=jobagent
 WorkingDirectory=/opt/job-agent
 EnvironmentFile=/etc/job-agent/base.env
+EnvironmentFile=/etc/job-agent/vault.env
 EnvironmentFile=/etc/job-agent/approval.env
 Environment=HOME=/var/lib/job-agent
 Environment=DISPLAY=:1

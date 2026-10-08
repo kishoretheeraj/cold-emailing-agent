@@ -94,17 +94,19 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
 
 ## Phase E: sessions, vault, signup, email verification
 
-- [ ] `ats_sessions.py`: `tenant_key(url)`, load/save `storage_state` (0700 dir). Table-driven
+- [x] `ats_sessions.py`: `tenant_key(url)`, load/save `storage_state` (0700 dir). Table-driven
       URL tests.
-- [ ] `credential_vault.py`: Fernet-encrypted file, generated passwords (length and classes
+- [x] `credential_vault.py`: Fernet-encrypted file, generated passwords (length and classes
       tested), never logged (test captures logs and asserts absence).
-- [ ] `email_verification.py`: `wait_for_code(sender_domains, since, timeout)` over the receipt
+- [x] `email_verification.py`: `wait_for_code(sender_domains, since, timeout)` over the receipt
       inbox; tests for sender scoping, time window, code vs link extraction, allowed link hosts,
       timeout.
-- [ ] `workday_adapter.py` prelude (spec §6.1): entry (Apply -> Apply Manually only), sign-in,
+- [x] `workday_adapter.py` prelude (spec §6.1): entry (Apply -> Apply Manually only), sign-in,
       signup with vault-write-before-typing, `click_filter` overlay, verification code, wizard
-      advance only while the step bar shows a later step. Fixture pages for each branch;
-      remove `workday` from the excluded platforms only after the fixtures pass.
+      advance only while the step bar shows a later step. Fixture pages for each branch.
+- [ ] Wire Workday into `apply_agent` (prepare: reach the wizard, fill each step, stop at Review;
+      submit: replay, then press Submit on Review only) behind `APPLY_WORKDAY_ENABLED`, and remove it
+      from the excluded platforms only on the Beelink.
 - [ ] `ats_auth.py`: auth-wall detection, login with vault entry, automatic signup, verification,
       takeover escalation; never reset, never a second account. Fixture pages for each path.
 

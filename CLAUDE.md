@@ -46,6 +46,10 @@ candidate_profile.py
 approval_signature.py
 apply_worker.py
 takeover.py
+ats_sessions.py
+credential_vault.py
+email_verification.py
+workday_adapter.py
 claude_subscription.py
 usage_tracking.py
 supabase/migrations/
@@ -1392,6 +1396,25 @@ finishes; the worker never clicks Submit again; unsolved -> `needs_confirmation`
 `APPLY_SUBMIT_HOST=beelink` in Vercel the submit route approves without dispatching
 `apply_agent_submit.yml`. Tests: `tests/test_apply_worker.py`, `tests/test_takeover.py`,
 `tests/test_apply_agent_beelink.py`, `tests/test_beelink_units.py`, `tests/test_armed_rule.py`.
+
+**Sessions, vault, email verification, Workday prelude (2026-10-08, Phase E)**:
+`ats_sessions.tenant_key(url)` is the account boundary (host; host + company slug on shared hosts
+like Lever/Greenhouse/Ashby/Workable/SmartRecruiters; `myworkdaysite.com/recruiting/<tenant>`);
+`save_state`/`state_path`/`forget` keep a Playwright `storage_state` per tenant under
+`APPLY_SESSIONS_DIR` (0700/0600, hashed names). `credential_vault.Vault` (Fernet, `VAULT_KEY` from
+`/etc/job-agent/vault.env`, apply units only) holds one entry per tenant; `reserve()` generates a
+24-char password and writes it to disk BEFORE any typing and never replaces an entry; `mark()`
+records `active`/`rejected`. Passwords never appear in logs or reprs.
+`email_verification.wait_for_verification(sender_domains, since, ...)` reads only the receipt inbox
+(`gmail.fetch_inbox_since`), only matching senders after `since`, and returns a code (URLs stripped
+first; letter codes uppercase-only) or a link on an allowed host; never raises.
+`workday_adapter`: `enter_apply_flow` (Apply -> Apply Manually only), `authenticate` (vault sign-in,
+or signup with verification; "already in use", a refused login or a previously `rejected` entry
+raise `WorkdayStop("login")`, never a blind sign-in, reset or second account), `advance` (Next only
+while the step bar shows a later step and the label is Next/Continue/Save and Continue; returns
+False on Review; refuses anything reading like Submit). Tested against a real browser and
+`tests/fixtures/workday_tenant.html` (both UI generations; the Review step's footer button turns
+into "Submit" under the same id, as on real tenants).
 
 **Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
 `20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:

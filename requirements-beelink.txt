@@ -4,3 +4,6 @@
 # adapter replaces them, so no paid API key is ever needed here.
 -r requirements.txt
 playwright==1.60.0
+# credential_vault.py (Fernet). Already pulled in by supabase's auth client; pinned here because
+# the vault must never depend on a transitive dependency staying put.
+cryptography>=42.0.0

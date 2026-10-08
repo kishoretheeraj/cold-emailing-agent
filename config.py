@@ -621,6 +621,13 @@ APPLY_SUBMIT_LOCK_WAIT_SECONDS = 600
 APPLY_PREPARE_BATCH = 5
 APPLY_SUBMIT_BATCH = 3
 APPLY_WORKER_ADAPTER = "deterministic"
+# Per-tenant logged-in browser state (ats_sessions.py) and the encrypted password vault
+# (credential_vault.py). VAULT_KEY comes from /etc/job-agent/vault.env, loaded only by the apply units.
+APPLY_SESSIONS_DIR = os.environ.get("APPLY_SESSIONS_DIR", "/var/lib/job-agent/sessions")
+APPLY_VAULT_PATH = os.environ.get("APPLY_VAULT_PATH", "/var/lib/job-agent/vault.bin")
+VAULT_KEY = os.environ.get("VAULT_KEY")
+# Sender domains of Workday's account-verification mail (email_verification.py).
+WORKDAY_VERIFICATION_SENDERS = ("myworkday.com", "myworkdayjobs.com", "workday.com")
 
 # 1800s exceeds the submit workflow's 15-minute timeout and the per-row preview budget, so only a dead worker's lease goes stale.
 APPLY_AGENT_LEASE_STALE_SECONDS = 1800
