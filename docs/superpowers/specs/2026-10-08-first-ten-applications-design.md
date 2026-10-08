@@ -1,6 +1,6 @@
 # First ten applications: design
 
-**Status:** Draft for review. **Date:** 2026-10-08.
+**Status:** Draft for review. **Date:** 2026-10-08 (rev. 2: Workday in scope, quality bar, approval authenticity).
 **Goal:** ten real job applications submitted end to end, each one reviewed and released by the
 operator with a single tap, each with retained proof that the employer received it.
 **Builds on:** [the application reliability plan](../plans/2026-09-28-application-reliability-plan.md)
@@ -40,14 +40,14 @@ operator with a single tap, each with retained proof that the employer received 
 | Approve UX | Queue cards; one tap on Submit starts a 5-second undo bar; nothing is sent until it ends. |
 | CAPTCHA | Human takeover over noVNC, reachable from the Mac or phone through Tailscale. |
 | Merging | Codex reviews each PR (`@codex review`); merge after its review, green tests and, for migrations, a rolled-back dry run against the real database. |
+| Workday and other sites | In scope (operator, 2026-10-08, overriding the reliability plan's exclusion): Workday gets its own adapter (§6.1); any other site goes through the generic adapters. |
+| Autonomy | The Beelink reads the receipt inbox itself for verification codes and links (§5); a human is needed only for CAPTCHAs, SMS codes, and the Submit tap. |
 
 Two decisions are still open (§11): how code reaches the Beelink, and how to stay inside the
 GitHub Actions minutes quota once the repo is private.
 
 ## 3. Non-goals for the first ten
 
-- **Workday stays excluded**, as in the reliability plan: a Workday tenant needs a per-company
-  account and multi-step flows the bake-off has not covered. Rows stay `unsupported` and visible.
 - **No automated CAPTCHA solving, stealth patches or fingerprint spoofing.** Pacing and a real
   browser on a residential connection are the only measures; a challenge goes to a human.
 - **No submission without the operator's tap.** "Fully automatic queue" automates finding,
@@ -151,6 +151,61 @@ submit-labelled controls until `apply-submit` removes it at the final step.
    attached to the same Chrome over CDP, restricted to snapshot, type, select, check, click and
    file-upload tools, under the submit-blocking init script.
 
+### 6.1 Workday
+
+Workday is about a third of large-employer postings and every tenant
+(`<company>.wd<N>.myworkdayjobs.com/<site>`) is its own account. It gets a dedicated deterministic
+prelude keyed on Workday's stable `data-automation-id` attributes, followed by the bake-off
+winner for the wizard pages. The selector inventory and flow are taken from MIT-licensed
+open-source work (credited in `workday_adapter.py`): `djwmobley/claude-interview-coach`
+(entry and auth ids verified read-only on live tenants on 2026-10-05), `amgenene/workday_auto`,
+`Prajay-vats/workday-autofill`.
+
+- **Entry:** `adventureButton` (Apply), then `applyManually` only. Never `autofillWithResume`,
+  `useMyLastApplication` or LinkedIn apply: they import data we did not review.
+- **Auth gate** (`signInContent`, `signInFormContainer`, `createAccountForm`): tenant key is the
+  host plus site path. Vault entry present: `signInLink`, `email`, `password`, then click the
+  `click_filter` overlay inside `noCaptchaWrapper` (the real submit button is aria-hidden behind
+  it). Absent: the password is generated and **written to the vault before any typing**, so a
+  crash mid-signup never loses a password for an account that may exist; then `email`,
+  `password`, `verifyPassword`, `createAccountCheckbox`, overlay click. An `errorMessage` after
+  either goes to takeover, never to a reset or a second account.
+- **Verification:** a `verificationCode` field is filled from the receipt inbox (§5); a link-only
+  email is opened in the same browser context only if its host is the tenant's own host.
+- **Wizard:** pages advance only through `pageFooterNextButton`, and only when `progressBar`
+  shows a later step than `progressBarActiveStep`. On the last (Review) step the prepare pass
+  stops; the submit pass clicks Submit there. Resume goes to `file-upload-input-ref`.
+  `alreadyApplied` or an `errorBanner` that does not clear stops the run.
+- **Widgets:** listbox prompts (`button[aria-haspopup=listbox]` + `[role=option]`) are picked by
+  exact option text and verified from the committed value; multiselect prompts
+  (`multiSelectContainer`) are typed and confirmed through `promptOption`; date fields through
+  `dateSectionMonth/Day/Year-display`. A required widget we cannot set parks the row in
+  `needs_input` naming the question.
+- **Prefilled values:** a field the site prefilled (resume parse, saved draft) that is outside the
+  sensitive classes (authorization, sponsorship, salary, EEO, criminal history, consent) is left
+  and listed on the card; inside them it must equal our answer or the row parks.
+
+### 6.2 Lessons adopted from open-source apply agents
+
+From `santifer/career-ops` (MIT) `docs/APPLY_AUTOFILL.md` and `shankswhite/JobApplyAgent` (MIT):
+
+- **Liveness sweep** before preparing: a closed posting (404, "no longer accepting") goes to
+  `stage='withdrawn'` with a reason instead of a failed fill.
+- **Knock-out pre-scan** of the description for hard disqualifiers against the candidate's facts
+  (sponsorship refused, clearance, years, degree, on-site location). A hit downgrades the row to
+  `maybe` with the reason; it never reaches the queue as strong.
+- **Lever** shows hCaptcha after programmatic checkbox and radio clicks; those go through
+  label clicks with human-like pacing, and a challenge goes to takeover.
+- **React-select comboboxes** are typed character by character and the option list re-read
+  before choosing.
+- **Ashby** deduplicates candidates by email. Re-applying after a failed attempt is a takeover,
+  never a `+alias` address.
+- **Answer bank:** every answer the operator edits or approves is stored with its normalized
+  question (fuzzy containment match) and reused before any model call. Approved answers win over
+  generated ones; a model only answers what the bank cannot.
+- **Field ids:** the inventory stamps each control with a stable `data-cv-field-id` so a plan
+  made from one snapshot acts on the same element after a re-render.
+
 **Harness:** local HTML fixtures modelled on real Greenhouse, Lever and Ashby forms (captured
 with `apply_dryrun.yml --dump-html`), plus renamed fields, React comboboxes and multi-select
 chips, multi-page forms, validation errors, signup and login walls, an OTP page fed by a fake
@@ -161,6 +216,22 @@ duration. Deterministic parts run in CI with a fake model; model runs happen on 
 **Selection:** correctness and containment first, then completion, interventions, latency.
 Production uses the deterministic filler where it completes the form and the winner for
 everything it leaves empty.
+
+### 6.3 Application quality bar
+
+Published benchmarks the queue holds each application to (checked deterministically before a row
+can reach `ready_for_review`):
+
+| Item | Gate | Source |
+|---|---|---|
+| Resume parseable by an ATS | single column, no tables, text boxes or images; text extracted from the PDF contains name, email and every section header | MIT CAPD resume guide; Jobscan 2025 (about 98% of the Fortune 500 use an ATS) |
+| Resume length | one page | existing fitting ladder |
+| First-screen content | role-matching title and the top three JD skills in the first third of page one | Ladders eye-tracking study (about 7.4 s first scan) |
+| Keyword coverage | each hard skill named in the JD's requirements appears in the resume or cover letter, or is listed on the card as a gap; no fabricated skill (skills governance already enforces) | Jobscan keyword guidance |
+| Cover letter | 250 to 400 words, 3 to 5 paragraphs, addressed to the company, names the role, one quantified result, no em dashes, no attribution phrases | UVA and university career-office guidance; ResumeLab survey (most recruiters prefer under one page) |
+| Answers | every required question answered from the facts or the answer bank; salary from the operator's stated range; EEO and authorization from `applicant_eligibility` only | existing rules |
+
+A failed gate keeps the row out of the queue with the reason shown under "Needs your input".
 
 ## 7. Evidence
 
@@ -195,6 +266,25 @@ is how the cloud sees Beelink results, and it supplies the plan's metrics.
 - **Needs your input** section: required questions the worker could not answer, editable inline,
   with Save and re-prepare.
 
+### 9.1 Approval authenticity
+
+Today the contact-manager talks to Supabase with the public anon key and has no login, so anyone
+who has the key can call `approve_application`. That was acceptable while a submit needed a
+GitHub `workflow_dispatch` token; it is not once a Beelink unit submits every `approved` row on
+its own. Before `apply-submit` is enabled:
+
+- The contact-manager requires a single-operator login (Supabase Auth, signup disabled; the
+  allowed user id is pinned in server config), enforced in middleware for every page and API
+  route.
+- The Submit route computes `HMAC-SHA256(APPROVAL_SIGNING_KEY, id || ':' || rendered_hash)`
+  server-side and stores it through `approve_application`. The key lives only in Vercel's server
+  environment and `/etc/job-agent/vault.env` on the Beelink.
+- `apply-submit` recomputes the HMAC after its claim and refuses (`failed_terminal`, reason
+  "approval signature invalid") on mismatch. A forged approval made with the anon key therefore
+  never reaches a Submit click.
+- Resume, cover-letter and evidence objects are served only through signed URLs from
+  authenticated routes, not from anon-readable buckets.
+
 ## 10. Rollout and gates
 
 1. **M0 (this PR):** ops workflows. Then `apply_status.yml` shows the funnel and
@@ -204,13 +294,14 @@ is how the cloud sees Beelink results, and it supplies the plan's metrics.
    before `push`.
 3. **Subscription transport for apply-side AI:** screening answers and adapter calls through
    `claude_subscription`.
-4. **Beelink units and takeover:** `apply-prepare`, `apply-submit`, display `:1`, Tailscale
+4. **Approval authenticity (§9.1)** before any armed Beelink unit.
+5. **Beelink units and takeover:** `apply-prepare`, `apply-submit`, display `:1`, Tailscale
    noVNC.
-5. **Sessions, vault, signup, email verification:** built and tested on fixtures.
-6. **Adapters and bake-off:** harness in CI, model runs on the Beelink, winner selected.
-7. **Evidence and queue UI.**
-8. **Watched preparation on the Beelink:** preparation only, real postings, nothing approved.
-9. **Pilot:** the operator taps Submit one application at a time. Each outcome is checked
+6. **Sessions, vault, signup, email verification, Workday prelude:** built and tested on fixtures.
+7. **Adapters and bake-off:** harness in CI, model runs on the Beelink, winner selected.
+8. **Quality gates, evidence and queue UI.**
+9. **Watched preparation on the Beelink:** preparation only, real postings, nothing approved.
+10. **Pilot:** the operator taps Submit one application at a time. Each outcome is checked
    (confirmation, receipt, answers) before the next; any gate breach pauses everything.
 
 **Release gates (from the reliability plan):** no wrong answers, unapproved or duplicate

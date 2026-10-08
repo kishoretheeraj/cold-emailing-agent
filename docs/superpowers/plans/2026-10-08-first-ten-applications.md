@@ -52,6 +52,17 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
       `tests/test_claude_subscription.py` (subprocess mocked).
 - [ ] A usage-limit error stops the prepare loop without marking the row (resume-worker pattern).
 
+## Phase C2: approval authenticity (spec §9.1) -- before any armed Beelink unit
+
+- [ ] contact-manager: Supabase Auth single-operator login (signup off, pinned user id), middleware
+      on every page and API route; vitest for allowed/denied/unauthenticated.
+- [ ] Migration: `approval_signature` column (RPC-only), `approve_application(p_id, p_revision_hash,
+      p_signature)`; old 2-arg dropped. Static + dry-run tests.
+- [ ] Submit route computes the HMAC server-side (`APPROVAL_SIGNING_KEY`, server env only).
+- [ ] `apply_agent.submit()` verifies the HMAC after the claim; mismatch -> `failed_terminal`
+      before any browser launch. Tests: missing key, wrong id, wrong hash, tampered signature.
+- [ ] Resumes/evidence served only via signed URLs from authenticated routes.
+
 ## Phase D: Beelink units and takeover
 
 - [ ] `apply_worker.py` with `prepare_loop()` and `submit_loop()` (pure scheduling logic tested
@@ -79,6 +90,10 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
 - [ ] `email_verification.py`: `wait_for_code(sender_domains, since, timeout)` over the receipt
       inbox; tests for sender scoping, time window, code vs link extraction, allowed link hosts,
       timeout.
+- [ ] `workday_adapter.py` prelude (spec §6.1): entry (Apply -> Apply Manually only), sign-in,
+      signup with vault-write-before-typing, `click_filter` overlay, verification code, wizard
+      advance only while the step bar shows a later step. Fixture pages for each branch;
+      remove `workday` from the excluded platforms only after the fixtures pass.
 - [ ] `ats_auth.py`: auth-wall detection, login with vault entry, automatic signup, verification,
       takeover escalation; never reset, never a second account. Fixture pages for each path.
 
@@ -94,6 +109,14 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
       Deterministic adapter scored in CI; model adapters scored on the Beelink, results to
       `application_runs`.
 - [ ] Select the production composition; record the numbers in this plan.
+
+## Phase F2: quality gates (spec §6.2, §6.3)
+
+- [ ] Liveness sweep before prepare (closed posting -> `withdrawn` with reason).
+- [ ] Knock-out pre-scan (sponsorship, clearance, years, degree, location) -> downgrade to `maybe`.
+- [ ] `application_quality.py`: resume PDF text checks, cover-letter word/paragraph/role/company
+      checks, JD keyword coverage report; failures block `ready_for_review` with the reason.
+- [ ] Answer bank: store approved/edited answers by normalized question; reuse before any model call.
 
 ## Phase G: evidence and the approval queue
 
