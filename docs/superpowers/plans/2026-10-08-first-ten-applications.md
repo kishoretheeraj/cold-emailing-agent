@@ -129,8 +129,9 @@ Tests first: static SQL tests in the style of `tests/test_lifecycle_rpcs_migrati
 
 - [ ] Liveness sweep before prepare (closed posting -> `withdrawn` with reason).
 - [ ] Knock-out pre-scan (sponsorship, clearance, years, degree, location) -> downgrade to `maybe`.
-- [ ] `application_quality.py`: resume PDF text checks, cover-letter word/paragraph/role/company
-      checks, JD keyword coverage report; failures block `ready_for_review` with the reason.
+- [x] `application_quality.py`: resume PDF text checks, cover-letter word/role/company checks (a
+      paragraph count is not reliable from extracted PDF text, so it is not gated), JD keyword
+      coverage report; failures block `ready_for_review` with the reason.
 - [ ] Answer bank: store approved/edited answers by normalized question; reuse before any model call.
 
 ## Phase G: evidence and the approval queue

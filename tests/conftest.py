@@ -55,3 +55,19 @@ def _no_real_lease_recovery_in_monitor(request):
         yield
     finally:
         monitor.recover_stale_leases = original
+
+
+@pytest.fixture(autouse=True)
+def _no_real_quality_gate(request):
+    # The preview's quality gate downloads both PDFs from Storage; tests of the gate itself (module
+    # names containing "quality") exercise it, every other preview test sees a clean report.
+    if "quality" in request.module.__name__:
+        yield
+        return
+    import apply_agent
+    original = apply_agent._quality_report
+    apply_agent._quality_report = lambda job: {"problems": [], "coverage": None}
+    try:
+        yield
+    finally:
+        apply_agent._quality_report = original

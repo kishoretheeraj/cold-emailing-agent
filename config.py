@@ -621,6 +621,8 @@ APPLY_SUBMIT_LOCK_WAIT_SECONDS = 600
 APPLY_PREPARE_BATCH = 5
 APPLY_SUBMIT_BATCH = 3
 APPLY_WORKER_ADAPTER = "deterministic"
+# The pre-review document quality gate (application_quality.py). On by default; "0" turns it off.
+APPLY_QUALITY_GATE = os.environ.get("APPLY_QUALITY_GATE", "1") != "0"
 # Workday applications (workday_adapter.py): only where a human can take over (the Beelink).
 APPLY_WORKDAY_ENABLED = os.environ.get("APPLY_WORKDAY_ENABLED") == "1"
 # Per-tenant logged-in browser state (ats_sessions.py) and the encrypted password vault

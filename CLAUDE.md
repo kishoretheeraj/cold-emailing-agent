@@ -50,6 +50,7 @@ ats_sessions.py
 credential_vault.py
 email_verification.py
 workday_adapter.py
+application_quality.py
 claude_subscription.py
 usage_tracking.py
 supabase/migrations/
@@ -1434,6 +1435,19 @@ for) lands in `needs_input`. The form inventory and `_fill_field` now handle lis
 option or nothing is picked, and the popup is closed again. `_form_signature` waits for a
 *visible* field. Tests: `tests/test_apply_agent_workday.py` (real browser, fixture tenant),
 `tests/test_apply_agent_listbox.py`.
+
+**Document quality gate (2026-10-08, spec §6.3)**: `_process_one_preview` runs
+`application_quality.evaluate(job)` right after the claim and before any browser opens
+(`config.APPLY_QUALITY_GATE`, default on). It downloads both PDFs and extracts their text with pypdf
+(what an ATS reads): the resume must be one page with the candidate's `master.json` name and email
+and the EXPERIENCE/EDUCATION headers in the extracted text; the cover letter must be 180-450 words of
+extracted text, name the company (suffixes like Inc./LLC stripped) and most of the role's core
+words, and have no em dash; neither may contain a placeholder or AI-assistant wording. Any problem
+releases the row to `needs_input` with "Quality check: ..." (a storage failure raises and is
+retryable). A passing preview records `keyword_coverage` ({covered, missing} skills from
+`skills.json` the JD names), a report for the card, never a reason to add a skill. `conftest.py`
+stubs `_quality_report` for every test module whose name lacks "quality". Tests:
+`tests/test_application_quality.py` (real PDFs built in the test), `tests/test_apply_agent_quality_gate.py`.
 
 **Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
 `20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:

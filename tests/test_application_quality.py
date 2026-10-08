@@ -8,8 +8,12 @@ import pytest
 
 import application_quality as aq
 
-NAME = "Kishore Theeraj Vasudevan Jaya"
-EMAIL = "kishoretheerajvj@gmail.com"
+import json
+from pathlib import Path
+
+_MASTER = json.loads((Path(__file__).resolve().parent.parent / "resume" / "data" / "master.json").read_text())
+NAME = _MASTER["name"]
+EMAIL = _MASTER["contact"]["email"]  # the resume's address (forms use the receipt inbox's)
 
 
 def make_pdf(pages):
@@ -168,3 +172,14 @@ def test_evaluate_lets_a_download_failure_raise(mocker):
     mocker.patch.object(aq.db, "get_client", return_value=client)
     with pytest.raises(RuntimeError):
         aq.evaluate({"company": "N", "role": "PM", "resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"})
+
+
+def test_evaluate_checks_identity_from_master_json(mocker):
+    # The resume's own name and email come from resume/data/master.json; a resume missing them
+    # must fail even when the caller passes no identity.
+    stripped = [l for l in RESUME_LINES if l != NAME and EMAIL not in l]
+    mocker.patch.object(aq.db, "get_client", return_value=_storage(make_pdf(stripped), make_pdf(cover_lines())))
+    report = aq.evaluate({"company": "Northwind", "role": "Product Manager", "resume_file_ref": "r.pdf",
+                          "cover_letter_file_ref": "c.pdf"})
+    assert any("name" in p for p in report["problems"])
+    assert any("email" in p for p in report["problems"])

@@ -14,6 +14,7 @@ import re
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
+import application_quality
 import approval_signature
 import ats_fillers
 import ats_sessions
@@ -870,7 +871,7 @@ def _walk_workday(page, job, job_id, lease, field_values, eligibility, replay=No
     raise workday_adapter.WorkdayStop("unrecognized_page", "Too many Workday steps")
 
 
-def _prepare_workday(job, job_id, lease, page):
+def _prepare_workday(job, job_id, lease, page, quality=None):
     tenant, vault = _workday_session(job)
     field_values = _standard_field_values(job)
     _workday_reach_wizard(page, job_id, lease, tenant, vault, field_values["email"], job.get("job_url"))
@@ -895,6 +896,7 @@ def _prepare_workday(job, job_id, lease, page):
         "screening_answers": answers,
         "workday_steps": steps,
         "fill_report": {"attachments": attach, "required_unfilled": []},
+        "keyword_coverage": (quality or {}).get("coverage"),
     }
     if not db.complete_preview(job_id, lease, preview, signature):
         log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded")
@@ -907,6 +909,18 @@ def _launch_for(job, platform):
         state = ats_sessions.state_path(ats_sessions.tenant_key(job.get("job_url")) or "")
         return _launch_page(job.get("job_url"), storage_state=state)
     return _launch_page(_application_url(job.get("job_url")))
+
+
+def _quality_report(job):
+    if not config.APPLY_QUALITY_GATE:
+        return {"problems": [], "coverage": None}
+    return application_quality.evaluate(job)
+
+
+def _quality_blocked(job, job_id, lease, quality):
+    reason = ("Quality check: " + "; ".join(quality["problems"]))[:900]
+    log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | {reason}")
+    return "blocked" if db.release_application(job_id, lease, "needs_input", reason) else "lost"
 
 
 def _process_one_preview(job):
@@ -934,11 +948,15 @@ def _process_one_preview(job):
         return "skipped"
 
     try:
+        # Documents first: a resume that would fail an ATS never costs a browser session.
+        quality = _quality_report(job)
+        if quality["problems"]:
+            return _quality_blocked(job, job_id, lease, quality)
         page = _launch_for(job, platform)
         try:
             _handle_challenge(page, job_id, lease, "CAPTCHA on the application page")
             if platform == "workday":
-                return _prepare_workday(job, job_id, lease, page)
+                return _prepare_workday(job, job_id, lease, page, quality)
             signature = _form_signature(page)
             if not signature:
                 raise ValueError("Could not fingerprint the application form; preview must be prepared again")
@@ -993,6 +1011,7 @@ def _process_one_preview(job):
                 "field_values": field_values,
                 "eligibility_answers": eligibility_answers,
                 "screening_answers": screening_answers,
+                "keyword_coverage": quality.get("coverage"),
             }
             if fill_report is not None:
                 preview["fill_report"] = fill_report
