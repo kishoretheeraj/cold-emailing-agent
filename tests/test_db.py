@@ -20,6 +20,8 @@ def fake_client(mocker):
 def _execute_returns(client, data):
     """Make `client.table(..).select(..).is_(..).execute()` (and similar chains) return `data`."""
     client.table.return_value.select.return_value.is_.return_value.execute.return_value.data = data
+    # get_all_contacts pages: .order("id").range(a, b)
+    client.table.return_value.select.return_value.is_.return_value.order.return_value.range.return_value.execute.return_value.data = data
     # Chain with eq() + like() for filtered selects (get_sent_contacts)
     client.table.return_value.select.return_value.is_.return_value.eq.return_value.like.return_value.execute.return_value.data = (
         data

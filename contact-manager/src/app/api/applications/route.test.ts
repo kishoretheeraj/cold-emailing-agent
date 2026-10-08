@@ -9,6 +9,13 @@ const mockInsertSelect = vi.fn();
 const mockInsert = vi.fn();
 const mockFrom = vi.fn();
 
+const mockLinked = vi.fn();
+const mockKnown = vi.fn();
+vi.mock("@/lib/warmPathsData", () => ({
+  linkedCounts: (...a: unknown[]) => mockLinked(...a),
+  knownPeopleByCompany: (...a: unknown[]) => mockKnown(...a),
+}));
+
 vi.mock("@supabase/supabase-js", () => ({
   createClient: vi.fn(() => ({
     from: mockFrom,
@@ -24,6 +31,8 @@ beforeEach(() => {
   mockInsertSelect.mockReturnValue({ single: mockSingle });
   mockInsert.mockReturnValue({ select: mockInsertSelect });
   mockFrom.mockReturnValue({ select: mockSelect, insert: mockInsert });
+  mockLinked.mockResolvedValue(new Map());
+  mockKnown.mockResolvedValue(new Map());
 });
 
 describe("GET /api/applications?view=queue", () => {
@@ -42,6 +51,40 @@ describe("GET /api/applications?view=queue", () => {
     expect(filter.startsWith("automation_status.neq.submitted,updated_at.gte.")).toBe(true);
     const since = Date.parse(filter.split("updated_at.gte.")[1]);
     expect(Math.round((Date.now() - since) / 86_400_000)).toBe(14);
+  });
+});
+
+describe("GET /api/applications?view=queue -- people counts (warm paths)", () => {
+  function queueChain() {
+    const mockOr = vi.fn().mockReturnValue({ order: mockOrder });
+    const mockIn = vi.fn().mockReturnValue({ or: mockOr });
+    const mockNot = vi.fn().mockReturnValue({ in: mockIn });
+    mockSelect.mockReturnValue({ not: mockNot });
+  }
+
+  it("adds linked and known counts to each card", async () => {
+    queueChain();
+    mockOrder.mockResolvedValue({ data: [{ id: "7", company: "Acme, Inc." }, { id: "8", company: "Beta" }], error: null });
+    mockLinked.mockResolvedValue(new Map([[7, 2]]));
+    mockKnown.mockResolvedValue(new Map([["acme", 4]]));
+    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    expect(mockLinked.mock.calls[0][1]).toEqual([7, 8]);
+    expect(body.applications.map((a: { people: unknown }) => a.people)).toEqual([
+      { linked: 2, known: 4 }, { linked: 0, known: 0 },
+    ]);
+  });
+
+  it("still returns the queue when the counts fail", async () => {
+    queueChain();
+    mockKnown.mockRejectedValue(new Error("down"));
+    const res = await GET(new Request("http://test/api/applications?view=queue"));
+    expect(res.status).toBe(200);
+    expect((await res.json()).applications).toEqual([{ id: "1", company: "Acme" }]);
+  });
+
+  it("other views never pay for the counts", async () => {
+    await GET(new Request("http://test/api/applications"));
+    expect(mockKnown).not.toHaveBeenCalled();
   });
 });
 

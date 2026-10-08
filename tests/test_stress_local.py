@@ -196,3 +196,78 @@ def test_sourcing_twice_saves_nothing_new(live, mocker):
     assert second["saved"] == 0 and second["duplicate_same_job"] == 1
     assert psql("select platform||':'||board from job_boards order by 1") == "greenhouse:figma\nlever:acme\nlever:palantir"
     assert psql("select count(*) from job_applications") == "1"
+
+
+# ── Warm paths (spec 2026-10-08-warm-paths-design §5) ─────────────────────────
+
+def test_warm_paths_decisions_on_real_rows(live):
+    # 1,200 unrelated contacts push the contact list past PostgREST's cap; 50 applications at mixed
+    # stages each get 3 people (2 applied-mode, 1 networking). The agent's own read and decision
+    # pass must see every contact once and gate each applied-mode person on the real stage.
+    import agent
+    from datetime import date
+    psql("DELETE FROM contacts WHERE email LIKE '%@warm.example'")
+    psql("INSERT INTO contacts (name, email, company) SELECT 'Bulk ' || n, 'bulk' || n || '@warm.example', "
+         "'Bulkco' FROM generate_series(1, 1200) AS n")
+    stages = ["saved", "ready_to_submit", "applied", "phone_screen", "rejected", "withdrawn"]
+    psql("INSERT INTO job_applications (company, role, stage) SELECT 'Warmco ' || n, 'APM', "
+         f"(ARRAY{stages})[1 + n % {len(stages)}] FROM generate_series(1, 50) AS n")
+    # People are linked while the application is open; the stage moves on afterwards, as in life.
+    psql("UPDATE job_applications SET stage = 'saved' WHERE company LIKE 'Warmco %'")
+    psql("INSERT INTO contacts (name, email, company, mode, relationship, job_application_id) "
+         "SELECT 'P' || a.id || '-' || k, 'p' || a.id || '-' || k || '@warm.example', a.company, "
+         "CASE WHEN k < 3 THEN 'applied' ELSE 'networking' END, CASE WHEN k < 3 THEN 'hiring_manager' ELSE 'alum' END, a.id "
+         "FROM job_applications a, generate_series(1, 3) AS k WHERE a.company LIKE 'Warmco %'")
+    psql("UPDATE job_applications SET stage = (ARRAY" + str(stages) + ")[1 + split_part(company, ' ', 2)::int % "
+         f"{len(stages)}] WHERE company LIKE 'Warmco %'")
+
+    contacts = live.get_all_contacts()
+    ids = [c["id"] for c in contacts]
+    assert len(ids) == len(set(ids)) and len([c for c in contacts if c["email"].endswith("@warm.example")]) == 1350
+    agent._attach_applications(contacts)
+
+    today = date(2026, 10, 9)
+    drafted = {"applied": 0, "networking": 0}
+    for c in contacts:
+        if not c.get("job_application_id"):
+            continue
+        action = agent.decide_action(c, today)
+        app_stage = c["_application"]["stage"]
+        if c["mode"] == "applied":
+            expected = "send_applied_intro" if app_stage in ("applied", "phone_screen") else "skip"
+            assert action == expected, (app_stage, action)
+            if action == "skip":
+                reason = agent._skip_reason(c, today)
+                assert reason == ("application closed" if app_stage in ("rejected", "withdrawn")
+                                  else "application not submitted yet")
+        else:
+            assert action == "send_networking_first_touch"
+        drafted[c["mode"]] += action != "skip"
+    submitted = sum(1 for n in range(1, 51) if stages[n % len(stages)] in ("applied", "phone_screen"))
+    assert submitted == 17 and drafted == {"applied": 2 * submitted, "networking": 50}
+
+
+def test_warm_paths_trigger_holds_under_concurrent_links(live):
+    # Twelve threads race to link people to one application through the real db client; exactly
+    # three links may land.
+    psql("DELETE FROM contacts WHERE email LIKE '%@race.example'")
+    app_id = int(psql("INSERT INTO job_applications (company, role, stage) VALUES ('Raceco', 'APM', 'applied') RETURNING id").split()[0])
+    psql("INSERT INTO contacts (name, email, company, mode) SELECT 'R' || n, 'r' || n || '@race.example', 'Raceco', "
+         "'networking' FROM generate_series(1, 12) AS n")
+    contact_ids = [int(x) for x in psql("SELECT id FROM contacts WHERE email LIKE '%@race.example' ORDER BY id").split()]
+    results = []
+
+    def link(cid):
+        try:
+            res = live.get_client().table("contacts").update({"job_application_id": app_id}).eq("id", cid).execute()
+            results.append(bool(res.data))
+        except Exception as exc:
+            results.append("warm_paths" in str(exc) and "error")
+
+    threads = [threading.Thread(target=link, args=(cid,)) for cid in contact_ids]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(True) == 3 and results.count("error") == 9
+    assert psql(f"SELECT count(*) FROM contacts WHERE job_application_id = {app_id}") == "3"

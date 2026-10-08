@@ -11,3 +11,10 @@ export function startOfNewYorkDay(now: Date = new Date()): Date {
   const midnightUtc = Date.UTC(Number(get("year")), Number(get("month")) - 1, Number(get("day")));
   return new Date(midnightUtc - offsetMinutes * 60_000);
 }
+
+// Today's calendar date in New York as YYYY-MM-DD (a DATE column value).
+export function newYorkDate(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now);
+}

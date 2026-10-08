@@ -974,3 +974,54 @@ def test_run_prepares_multiple_contacts(mocker):
     assert [
         r["params"]["messages"][0]["content"] for r in created
     ] == ["prompt-1", "prompt-2"]
+
+
+# ── Warm paths: contacts linked to a job application (spec 2026-10-08) ────────
+
+def _run_mocks(mocker):
+    create_draft = mocker.patch("agent.create_draft", return_value=DraftResult("<mid@gmail.com>", None, 1))
+    mocker.patch("agent.apply_label_to_latest_draft")
+    update_contact = mocker.patch("agent.update_contact")
+    mocker.patch("agent.save_thread_info")
+    mocker.patch("agent.insert_email_message")
+    mocker.patch("agent.log_drafted_email")
+    mocker.patch("agent.time.sleep")
+    return create_draft, update_contact
+
+
+@pytest.mark.parametrize("app_stage,drafted", [("saved", False), ("ready_to_submit", False), ("applied", True),
+                                               ("phone_screen", True), ("rejected", False), ("withdrawn", False)])
+def test_run_drafts_a_linked_hiring_manager_only_after_submission(mocker, app_stage, drafted):
+    contact = _build_contact(mode="applied", job_application_id=7, relationship="hiring_manager")
+    mocker.patch("agent.get_all_contacts", return_value=[contact])
+    mocker.patch("agent.get_application_states", return_value={7: {
+        "id": 7, "stage": app_stage, "role": "Associate Product Manager", "company": "Clearbond",
+        "applied_date": "2026-10-08", "posting_description": "Own the lending roadmap."}})
+    prepare, _, _ = _mock_batch_pipeline(mocker, contact, "send_applied_intro", "s", "b")
+    create_draft, update_contact = _run_mocks(mocker)
+
+    agent.run()
+
+    assert create_draft.called is drafted
+    if drafted:
+        prepared = prepare.call_args.args[0]
+        assert prepared["job_title"] == "Associate Product Manager"
+        assert prepared["applied_date"] == "2026-10-08"
+        assert prepared["job_description"] == "Own the lending roadmap."
+        assert update_contact.call_args.args[1] == "applied_intro_drafted"
+    else:
+        update_contact.assert_not_called()
+
+
+def test_run_skips_linked_applied_contacts_when_the_lookup_fails(mocker):
+    linked = _build_contact(id=1, mode="applied", job_application_id=7)
+    plain = _build_contact(id=2, email="pat@example.com")
+    mocker.patch("agent.get_all_contacts", return_value=[linked, plain])
+    mocker.patch("agent.get_application_states", side_effect=RuntimeError("down"))
+    _mock_batch_pipeline(mocker, plain, "send_first_touch", "s", "b")
+    create_draft, _ = _run_mocks(mocker)
+
+    agent.run()
+
+    assert create_draft.call_count == 1
+    assert create_draft.call_args.args[0] == "pat@example.com"

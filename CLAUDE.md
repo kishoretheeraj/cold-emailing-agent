@@ -92,7 +92,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, `[WARM]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -124,6 +124,11 @@ script, above all project imports.
   `contacts.connection_context` (free text) when present; when empty, the
   prompt is instructed to degrade to a genuinely low-ask cold opener rather
   than fabricate a connection. See `docs/python/db-schema.md`.
+- **Warm paths** (contacts linked to a job application, see "Warm paths" below). Only `applied`-mode
+  contacts with a `job_application_id` are gated: skipped until the application's `stage` is
+  `applied`/`phone_screen`/`onsite`/`offer`/`accepted` ("application not submitted yet"), skipped once it is
+  `rejected`/`withdrawn` ("application closed"), skipped when the link can't be read ("linked application
+  unreadable"). Unlinked contacts, and every `outreach`/`networking` contact, decide exactly as before.
 
 ## Stage / template / label maps
 
@@ -609,6 +614,10 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
   `tests/test_job_liveness.py`, `tests/test_job_identity_migration.py` (+ `supabase/tests/job_identity_queue_dryrun.sql`),
   `tests/test_submit_control.py` (real DOM), `tests/test_screening_batch.py`, `tests/test_apply_load.py`,
   `tests/test_stress_local.py` — fifty-a-day sourcing, dedup, triage, queues and the submit tail.
+- `tests/test_warm_paths_agent.py`, `tests/test_warm_paths_db.py`, `tests/test_warm_paths_migration.py`
+  (+ `supabase/tests/warm_paths_dryrun.sql`, 12 mutations caught), `tests/test_reply_warm_paths.py`,
+  the warm-path cases at the end of `tests/test_agent.py`, `tests/test_engagement_report.py` and
+  `tests/test_stress_local.py` — warm paths.
 - `tests/test_engagement_report.py` — the report's `db.py` accessors (following `test_db_draft_history.py`'s mock pattern), the contact join, distinct-contact grouping, NULL-renders-as-"unknown", small-`n` rate suppression, and a malformed-row never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
@@ -747,6 +756,11 @@ threaded through `prepare_email` → `ctx` → `finalize_email` exactly like
 (`VOICE_INJECTION_FALLBACK` + `FIRST_TOUCH_ACTIONS`). Both sides must change
 together or the Prompt Lab preview silently diverges from production. The em-dash
 ban and `forbidden_phrases` still win over anything Voice DNA observes.
+
+**Known Lab gap (warm paths):** for a linked applied-mode contact with an empty `applied_date`, the
+agent fills it in memory from the application (`agent._with_application_fields`); the Lab preview does
+not mirror that and shows its usual fallback. `job_title`/`job_description` are persisted when the
+contact is created from the People panel, so those match.
 
 ## Decision-context tagging
 
@@ -1654,6 +1668,43 @@ reproduced first). Plan: docs/superpowers/plans/2026-10-08-fifty-a-day.md.
   `tests/test_apply_load.py`: real preview + armed submit passes in real Chromium against local
   Greenhouse/Lever/Ashby lookalike forms (`tests/fixtures/ats_forms`), `APPLY_LOAD_ROWS=50` for the
   full run (50 + 50 in ~5 min, no leaked browsers or temp files).
+
+## Warm paths: the cold-email agent and the application pipeline (2026-10-08)
+
+Spec: docs/superpowers/specs/2026-10-08-warm-paths-design.md (two advisor passes, every finding mapped in §7-§8).
+Referrals are the one well-measured lever (Burks et al. QJE 2015; Brown, Setren and Topa JOLE 2016), and they
+come from people who reply, so each application can grow up to three linked people the user picks.
+
+- **Schema** (migration `20261010000000`): `contacts.job_application_id` (FK, `ON DELETE SET NULL`),
+  `contacts.relationship` (`hiring_manager`/`leader`/`recruiter` -> `applied` mode; `alum`/`team_member`/`other`
+  -> `networking`), `job_applications.referral_hold_until`. `contacts` has RLS disabled and several anon writers,
+  so the rules live in the **`contacts_link_guard` trigger** (`SECURITY DEFINER`, locks the application row
+  `FOR UPDATE` before counting, also fires on `deleted_at`): link only an `applied`/`networking` contact at
+  `stage='new'`/`no_reply`, never onto a rejected/withdrawn application, at most 3 live people per application
+  (`config.WARM_MAX_PEOPLE_PER_APPLICATION`, mirrored in `warmPaths.ts`, static test). Unlinking is always allowed.
+- **Hold:** `referral_hold_until` has no column grant; only `hold_for_referral(p_id, p_days)` (1..14 days, only an
+  unapproved `ready_for_review` row, raises otherwise) and `release_referral_hold(p_id)`. Outside
+  `preview_revision_hash`. Held cards stay visible (sorted last, badge), and Submit still works on them.
+- **Agent:** `agent._attach_applications` (one `db.get_application_states` lookup per run, chunked; failure or a
+  missing id fails closed for linked applied-mode contacts, marker `[WARM]`), `_application_gate` in
+  `_decide_applied`/`_skip_reason`, `_with_application_fields` (applied mode only; fills empty
+  `job_title`/`applied_date`/`job_description` in memory, never persisted). `db.get_all_contacts` now pages with
+  `.order("id").range()` (it was silently capped at PostgREST's 1000 rows).
+- **Reply drafts:** `reply_drafter._application_context` appends an `APPLICATION CONTEXT` block for a linked
+  contact (first attempt and preflight retry): a referral ask before submission, a word to the hiring manager
+  after it, no ask once closed. An unreadable link only drops the block.
+- **Contact-manager:** `PeoplePanel` (queue card "People" + detail sheet on rows past `saved`): linked people,
+  known contacts at the company (`companyKey` mirrors `job_identity.company_key`; both test
+  `tests/fixtures/company_keys.json`), search links (the user's own browser; no LinkedIn automation), posting
+  emails, add-person (email guess only when 2 known addresses agree; a networking hook is offered as a
+  suggestion and written only when tapped; never names the role). Routes: `/api/applications/[id]/people`
+  (GET/POST), `.../people/link`, `.../people/unlink`, `.../hold` (POST/DELETE). Per-company cap
+  `outreach_per_company_30d` (default 5) and `referral_hold_days` (default 10) in `job_search_preferences`.
+  PATCH `stage: applied` records `applied_date` (New York date) when empty.
+- **Report:** `engagement_report.py` adds submitted applications with vs without outreach (reached = a linked
+  contact with `latest_message_id` or `classifier_status`), interview rate at n >= 5, reply rate by relationship,
+  and prints the selection and manual-stage caveats.
+- **Not built, deliberately:** people scraping, paid enrichment, auto-created contacts, LinkedIn DMs, a send path.
 
 ## System-wide Claude API cost tracking
 

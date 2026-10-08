@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { ApplicationDetailSheet } from "./ApplicationDetailSheet";
 import type { JobApplication } from "@/lib/types";
 
+// The People panel fetches on its own; PeoplePanel.test.tsx covers it.
+vi.mock("@/components/PeoplePanel", () => ({ PeoplePanel: () => <div data-testid="people-panel" /> }));
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -390,5 +393,17 @@ describe("ApplicationDetailSheet -- submission evidence", () => {
   it("renders no evidence block when submission_evidence is absent", () => {
     render(<ApplicationDetailSheet application={baseApplication} onClose={() => {}} />);
     expect(screen.queryByText(/submission evidence/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("ApplicationDetailSheet -- People (warm paths)", () => {
+  it.each(["ready_to_submit", "applied", "phone_screen"] as const)("shows People on a %s application", async (stage) => {
+    render(<ApplicationDetailSheet application={{ ...baseApplication, stage }} onClose={() => {}} />);
+    expect(await screen.findByTestId("people-panel")).toBeInTheDocument();
+  });
+
+  it("hides People on a saved row that has not been prepared", () => {
+    render(<ApplicationDetailSheet application={{ ...baseApplication, stage: "saved" }} onClose={() => {}} />);
+    expect(screen.queryByTestId("people-panel")).toBeNull();
   });
 });

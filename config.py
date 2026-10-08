@@ -772,3 +772,8 @@ CU_LINKEDIN_MAX_WAIT_SECONDS = 300
 # does nothing -- no IMAP, no escalation.
 RECEIPT_IMAP_ADDRESS = os.environ.get("RECEIPT_IMAP_ADDRESS")
 RECEIPT_IMAP_APP_PASSWORD = os.environ.get("RECEIPT_IMAP_APP_PASSWORD")
+
+# ── Warm paths (contacts linked to a job application) ──────────────────────────
+# Mirrored by the contacts_link_guard trigger (migration 20261010000000) and warmPaths.ts; a static
+# test fails if they drift.
+WARM_MAX_PEOPLE_PER_APPLICATION = 3

@@ -14,6 +14,8 @@ END \$\$" -c "GRANT anon, authenticated, service_role TO postgres" >/dev/null
 psql -q -c "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db" >/dev/null
 psql -q -v ON_ERROR_STOP=1 -d "$db" -f scripts/local_dryrun/supabase_stub.sql >/dev/null
 psql -q -v ON_ERROR_STOP=1 -d "$db" -f setup_supabase.sql >/dev/null 2>&1
+psql -q -v ON_ERROR_STOP=1 -d "$db" -f setup_prompts.sql >/dev/null 2>&1 || echo "setup_prompts.sql: some seed rows did not load (the prompts table exists)"
 for f in $(ls supabase/migrations/*.sql | sort); do
   psql -q -v ON_ERROR_STOP=1 -d "$db" -f "$f" >/dev/null 2>&1 || echo "skipped (base table missing locally): $(basename "$f")"
 done
+psql -q -v ON_ERROR_STOP=1 -d "$db" -f scripts/local_dryrun/prod_drift.sql >/dev/null

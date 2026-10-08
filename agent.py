@@ -28,7 +28,7 @@ from config import (
     EMAIL_MODEL, FOLLOWUP_DAYS, PREPARE_EMAIL_WORKERS,
 )
 from constants import TERMINAL_REPLY_STATUSES
-from db import get_all_contacts, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id, log_agent_event
+from db import get_all_contacts, get_application_states, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id, log_agent_event
 from emailer import generate_email, prepare_email, finalize_email, hash_prompt_set
 from gmail import create_draft, apply_label_to_latest_draft, find_sent_by_thread_id, find_sent_by_subject
 import email_verify
@@ -86,6 +86,8 @@ def _decide_outreach(contact, today):
 
 
 def _decide_applied(contact, today):
+    if _application_gate(contact):
+        return "skip"
     stage = contact.get("stage", "new")
     followup = _parse_date(contact.get("followup_date"))
 
@@ -115,6 +117,63 @@ def _decide_networking(contact, today):
         if stage == "networking_sent":
             return "send_networking_followup"
     return "skip"
+
+
+# ── Warm paths: contacts linked to a job application ───────────────────────────
+
+_APPLICATION_SUBMITTED_STAGES = {"applied", "phone_screen", "onsite", "offer", "accepted"}
+_APPLICATION_CLOSED_STAGES = {"rejected", "withdrawn"}
+WARM_JOB_DESCRIPTION_CHARS = 1500
+
+
+def _application_gate(contact):
+    # Applied-mode mail says "I applied", so it waits for the submission and stops when the
+    # application closes. Unreadable links fail closed; unlinked contacts never reach here.
+    if not contact.get("job_application_id"):
+        return None
+    application = contact.get("_application")
+    if contact.get("_application_error") or not application:
+        return "linked application unreadable"
+    app_stage = application.get("stage")
+    if app_stage in _APPLICATION_CLOSED_STAGES:
+        return "application closed"
+    if app_stage not in _APPLICATION_SUBMITTED_STAGES:
+        return "application not submitted yet"
+    return None
+
+
+def _attach_applications(contacts):
+    ids = sorted({c["job_application_id"] for c in contacts if c.get("job_application_id")})
+    if not ids:
+        return
+    linked = [c for c in contacts if c.get("job_application_id")]
+    try:
+        states = get_application_states(ids)
+    except Exception as exc:
+        log.warning(f"[WARM] | {len(ids)} linked applications | lookup failed, applied-mode links skipped: {exc}")
+        for contact in linked:
+            contact["_application_error"] = True
+        return
+    for contact in linked:
+        contact["_application"] = states.get(contact["job_application_id"])
+
+
+def _with_application_fields(contact):
+    # Only applied-mode prompts read these fields; outreach and networking prompts (and the
+    # outreach subject's "Role (if applied)") must stay byte-identical for linked contacts.
+    application = contact.get("_application")
+    if contact.get("mode") != "applied" or not contact.get("job_application_id") or not application:
+        return contact
+    filled = dict(contact)
+    defaults = {
+        "job_title": application.get("role"),
+        "applied_date": application.get("applied_date"),
+        "job_description": (application.get("posting_description") or "")[:WARM_JOB_DESCRIPTION_CHARS],
+    }
+    for key, value in defaults.items():
+        if not filled.get(key) and value:
+            filled[key] = value
+    return filled
 
 
 def _parse_date(value):
@@ -409,6 +468,7 @@ def run():
         raise ValueError(f"Output schema validation failed: {schema_errors}")
 
     contacts = get_all_contacts()
+    _attach_applications(contacts)
     outreach_count   = sum(1 for c in contacts if c.get("mode", "outreach") == "outreach")
     applied_count    = sum(1 for c in contacts if c.get("mode") == "applied")
     networking_count = sum(1 for c in contacts if c.get("mode") == "networking")
@@ -476,6 +536,7 @@ def run():
             thread_message_id = thread_info.get("latest_message_id") or thread_info.get("message_id")
             original_subject = thread_info.get("original_subject")
 
+        contact = _with_application_fields(contact)
         pending.append(
             (contact, action, thread_message_id, original_subject, mode_tag)
         )
@@ -647,6 +708,10 @@ def _skip_reason(contact, today):
         return "marked dead"
     if stage == "closed":
         return "closed"
+    if contact.get("mode") == "applied":
+        gate = _application_gate(contact)
+        if gate:
+            return gate
     if "drafted" in stage:
         return "draft pending — mark as sent in Supabase to continue"
     if followup and followup > today:

@@ -3,6 +3,9 @@ import { render, screen, waitFor, within, act, fireEvent } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { ApplicationsPage } from "./ApplicationsPage";
 
+// The People panel fetches on its own; PeoplePanel.test.tsx covers it.
+vi.mock("@/components/PeoplePanel", () => ({ PeoplePanel: () => <div data-testid="people-panel" /> }));
+
 // @testing-library/dom's waitFor/findBy* only detect Jest fake timers (it gates on
 // `typeof jest`), not Vitest's -- under vi.useFakeTimers() its fallback setInterval/setTimeout
 // polling is itself silently mocked and never fires, hanging forever even when the awaited

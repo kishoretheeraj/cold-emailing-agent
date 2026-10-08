@@ -234,3 +234,35 @@ describe("GET /api/applications/[id] (I8 -- single-row fetch for status polling)
     expect(res.status).toBe(500);
   });
 });
+
+describe("PATCH /api/applications/[id] -- applied_date when marked applied (warm paths)", () => {
+  const mockDated = vi.fn();
+  beforeEach(() => {
+    mockSelect.mockReturnValue({ single: mockSingle, maybeSingle: mockDated });
+  });
+
+  it("records today's New York date when a row is marked applied without one", async () => {
+    mockSingle.mockResolvedValue({ data: { id: "1", stage: "applied", applied_date: null }, error: null });
+    mockDated.mockResolvedValue({ data: { id: "1", stage: "applied", applied_date: "2026-10-09" }, error: null });
+    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "applied" }) });
+    const body = await (await PATCH(req, params("1"))).json();
+    expect(body.application.applied_date).toBe("2026-10-09");
+    expect(mockUpdate.mock.calls[1][0]).toEqual({ applied_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
+    expect(mockIs).toHaveBeenCalledWith("applied_date", null);
+  });
+
+  it("never overwrites an existing applied_date", async () => {
+    mockSingle.mockResolvedValue({ data: { id: "1", stage: "applied", applied_date: "2026-10-01" }, error: null });
+    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "applied" }) });
+    const body = await (await PATCH(req, params("1"))).json();
+    expect(body.application.applied_date).toBe("2026-10-01");
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("other stages leave the date alone", async () => {
+    mockSingle.mockResolvedValue({ data: { id: "1", stage: "onsite", applied_date: null }, error: null });
+    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
+    await PATCH(req, params("1"));
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+  });
+});

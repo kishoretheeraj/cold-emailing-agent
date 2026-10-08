@@ -10,7 +10,7 @@ from config import (
     ANTHROPIC_API_KEY, REPLY_RESPONSE_MODEL, SENDER_PROFILE,
     REPLY_RESPONSE_DEFAULT,
 )
-from db import log_agent_event, update_contact, insert_email_message, log_drafted_email
+from db import log_agent_event, update_contact, insert_email_message, log_drafted_email, get_application_states
 from emailer import _call_claude, _normalize_body, hash_prompt_set
 from gmail import create_draft, apply_label_to_latest_draft
 import content_trust
@@ -21,9 +21,48 @@ log = logging.getLogger(__name__)
 REPLY_LABEL = "Cold Outreach/Reply"
 DRAFTABLE_STATUSES = {"positive_reply", "soft_yes"}
 
+# ── Application context (warm paths) ───────────────────────────────────────────
+
+_SUBMITTED_STAGES = {"applied", "phone_screen", "onsite", "offer", "accepted"}
+_CLOSED_STAGES = {"rejected", "withdrawn"}
+
+
+def _application_context(contact):
+    # Referrals come from the people who reply. A linked contact's warm reply gets one concrete
+    # ask; a closed application gets none. Best-effort: an unreadable link only drops the block.
+    application_id = contact.get("job_application_id")
+    if not application_id:
+        return ""
+    try:
+        app = get_application_states([application_id]).get(application_id)
+    except Exception as exc:
+        log.warning(f"[REPLY-DRAFT] | {contact.get('name')} | {contact.get('company')} | application context skipped: {exc}")
+        return ""
+    if not app:
+        return ""
+    lines = [f"- Role: {app.get('role')} at {app.get('company')}"]
+    if app.get("job_url"):
+        lines.append(f"- Posting: {app['job_url']}")
+    stage = app.get("stage")
+    if stage in _CLOSED_STAGES:
+        lines.append("- Status: closed; the sender is no longer pursuing this role.")
+        instruction = "Do not mention the application and make no ask about it."
+    elif stage in _SUBMITTED_STAGES:
+        when = f" on {app['applied_date']}" if app.get("applied_date") else ""
+        lines.append(f"- Status: application submitted{when}.")
+        instruction = ("If their reply is warm, end with one specific, low-pressure ask: whether they would be "
+                       "willing to pass the application to the hiring manager or put in a word.")
+    else:
+        lines.append("- Status: not submitted yet.")
+        instruction = ("If their reply is warm, end with one specific, low-pressure ask: whether they would be "
+                       "comfortable referring the sender for this role, or pointing them to the right person.")
+    return ("\n\nAPPLICATION CONTEXT (the sender has an application open with this company):\n"
+            + "\n".join(lines) + f"\n{instruction} One ask only; do not repeat these details back to them.")
+
+
 # ── Body generation ────────────────────────────────────────────────────────────
 
-def _generate_reply_body(contact, reply_body_text, prompts):
+def _generate_reply_body(contact, reply_body_text, prompts, application_context=""):
     profile = prompts.get("sender_profile", SENDER_PROFILE)
     tpl = prompts.get("reply_response_prompt") or REPLY_RESPONSE_DEFAULT
     prompt = tpl.format(
@@ -32,7 +71,7 @@ def _generate_reply_body(contact, reply_body_text, prompts):
         company=contact.get("company", ""),
         role=contact.get("role", ""),
         reply_body=reply_body_text,
-    )
+    ) + application_context
     return _call_claude(prompt, model=REPLY_RESPONSE_MODEL, system=profile,
                          module="reply_drafter", action="reply_response", contact_id=contact.get("id"))
 
@@ -73,7 +112,8 @@ def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
         )
 
     try:
-        body = _normalize_body(_generate_reply_body(contact, reply_body_text, prompts))
+        application_context = _application_context(contact)
+        body = _normalize_body(_generate_reply_body(contact, reply_body_text, prompts, application_context))
 
         # Pre-flight: one retry on failure; no critic
         failures = preflight.check(body, contact, prompts)
@@ -90,7 +130,7 @@ def draft_reply(contact, reply_body_text, prompts, in_reply_to_mid=None):
                 company=contact.get("company", ""),
                 role=contact.get("role", ""),
                 reply_body=reply_body_text,
-            ) + f"\nREVISION INSTRUCTION:\n{'; '.join(failures)}"
+            ) + application_context + f"\nREVISION INSTRUCTION:\n{'; '.join(failures)}"
             try:
                 body = _normalize_body(_call_claude(
                     retry_full, model=REPLY_RESPONSE_MODEL, system=profile,

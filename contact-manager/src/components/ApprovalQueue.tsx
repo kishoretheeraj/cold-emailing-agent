@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { JobApplication } from "@/lib/types";
+import { PeoplePanel } from "@/components/PeoplePanel";
 
 export const UNDO_SECONDS = 5;
 const SEGMENTS = 10;
@@ -37,8 +38,23 @@ function cardMeta(app: JobApplication): string {
   return [location, app.source, posted].filter(Boolean).join(" · ");
 }
 
+function heldUntil(app: JobApplication, now = Date.now()): Date | null {
+  const until = app.referral_hold_until ? Date.parse(app.referral_hold_until) : NaN;
+  return Number.isFinite(until) && until > now ? new Date(until) : null;
+}
+
+// Cards waiting on a referral go last; the rest by pick score, then newest.
 function byPickThenNewest(a: JobApplication, b: JobApplication) {
-  return (b.pick_score ?? 0) - (a.pick_score ?? 0) || b.created_at.localeCompare(a.created_at);
+  return Number(Boolean(heldUntil(a))) - Number(Boolean(heldUntil(b)))
+    || (b.pick_score ?? 0) - (a.pick_score ?? 0) || b.created_at.localeCompare(a.created_at);
+}
+
+function peopleLine(app: JobApplication): string | null {
+  if (!app.people) return null;
+  const parts = [];
+  if (app.people.known > 0) parts.push(`You know ${app.people.known} ${app.people.known === 1 ? "person" : "people"} here`);
+  if (app.people.linked > 0) parts.push(`${app.people.linked} linked`);
+  return parts.length ? parts.join(" · ") : null;
 }
 
 // The one-tap approval queue (spec 2026-10-08 §9). Submit starts a 5-second bar with Undo; only
@@ -51,6 +67,7 @@ export function ApprovalQueue() {
   const [busy, setBusy] = useState<string | null>(null);
   const [docs, setDocs] = useState<Record<string, DocLinks>>({});
   const [today, setToday] = useState<Today | null>(null);
+  const [peopleOpen, setPeopleOpen] = useState<string | null>(null);
   const countdown = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
@@ -152,6 +169,15 @@ export function ApprovalQueue() {
       body: JSON.stringify({ submitted }),
     }, submitted ? `${app.company}: marked submitted` : `${app.company}: back in review`);
 
+  const hold = async (app: JobApplication) => {
+    await post(`/api/applications/${app.id}/hold`, { method: "POST" },
+      `${app.company}: waiting on a referral. Add the people to ask below.`);
+    setPeopleOpen(app.id);
+  };
+
+  const stopWaiting = (app: JobApplication) =>
+    post(`/api/applications/${app.id}/hold`, { method: "DELETE" }, `${app.company}: no longer waiting`);
+
   const loadDocs = async (app: JobApplication) => {
     try {
       const res = await fetch(`/api/applications/${app.id}/files`);
@@ -234,6 +260,7 @@ export function ApprovalQueue() {
             const coverage = app.apply_preview?.keyword_coverage;
             const counting = pending?.id === app.id;
             const links = docs[app.id];
+            const held = heldUntil(app);
             return (
               <article key={app.id} aria-label={`${app.company} ${app.role}`}
                 className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4">
@@ -242,6 +269,7 @@ export function ApprovalQueue() {
                     <p className="text-base font-medium text-fg">{app.company}</p>
                     <p className="text-sm text-fg-muted">{app.role}</p>
                     {cardMeta(app) && <p className="text-xs text-fg-dim">{cardMeta(app)}</p>}
+                    {peopleLine(app) && <p className="text-xs text-emerald-300">{peopleLine(app)}</p>}
                   </div>
                   <div className="flex gap-2 text-xs">
                     {app.apply_preview?.platform && (
@@ -271,6 +299,13 @@ export function ApprovalQueue() {
                   </p>
                 )}
 
+                {held && (
+                  <p role="note" className="flex flex-wrap items-center gap-2 text-sm text-amber-300">
+                    Waiting on a referral until {held.toLocaleDateString(undefined, { month: "short", day: "numeric" })}.
+                    <button type="button" onClick={() => stopWaiting(app)} className="text-fg-muted underline">Stop waiting</button>
+                  </p>
+                )}
+
                 <div className="flex flex-wrap items-center gap-3 text-sm">
                   {app.job_url && (
                     <a href={app.job_url} target="_blank" rel="noreferrer" className="text-indigo-300 underline">Posting</a>
@@ -283,7 +318,15 @@ export function ApprovalQueue() {
                   ) : (
                     <button type="button" onClick={() => loadDocs(app)} className="text-indigo-300 underline">Show documents</button>
                   )}
+                  <button type="button" onClick={() => setPeopleOpen(peopleOpen === app.id ? null : app.id)}
+                    aria-expanded={peopleOpen === app.id} className="text-indigo-300 underline">People</button>
+                  {!held && (
+                    <button type="button" onClick={() => hold(app)} disabled={!!pending}
+                      className="text-indigo-300 underline disabled:opacity-50">Ask for a referral first</button>
+                  )}
                 </div>
+
+                {peopleOpen === app.id && <PeoplePanel applicationId={app.id} onChange={load} />}
 
                 {counting ? (
                   <div role="status" className="flex items-center justify-between gap-3 rounded-md bg-indigo-600/20 px-3 py-2 text-sm text-fg">

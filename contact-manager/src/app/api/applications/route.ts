@@ -1,7 +1,9 @@
 export const runtime = "nodejs";
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { openTakeover } from "@/lib/takeover";
+import { companyKey } from "@/lib/warmPaths";
+import { knownPeopleByCompany, linkedCounts } from "@/lib/warmPathsData";
 import type { JobApplication } from "@/lib/types";
 
 function getClient() {
@@ -17,6 +19,22 @@ const QUEUE_STATUSES = [
 // Submitted rows stay in the queue's "Submitted" list for two weeks; at fifty a day an unbounded
 // list grows past what a phone can show and past the API's row cap.
 const SUBMITTED_DAYS = 14;
+
+// Each queue card shows who is linked and how many people the user knows at the company
+// (warm paths). Best-effort: a failed count leaves the cards without it, never the queue empty.
+async function withPeople(supabase: SupabaseClient, rows: JobApplication[]): Promise<JobApplication[]> {
+  try {
+    const [linked, known] = await Promise.all([
+      linkedCounts(supabase, rows.map((r) => Number(r.id))), knownPeopleByCompany(supabase),
+    ]);
+    return rows.map((r) => ({
+      ...r,
+      people: { linked: linked.get(Number(r.id)) ?? 0, known: known.get(companyKey(r.company)) ?? 0 },
+    }));
+  } catch {
+    return rows;
+  }
+}
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -43,6 +61,7 @@ export async function GET(req: Request) {
     const { data, error } = await query.order("created_at", { ascending: false });
     if (error) throw error;
     const rows = (data ?? []) as JobApplication[];
+    if (queueView) return Response.json({ applications: await withPeople(supabase, rows) });
     return Response.json({ applications: takeoverOpen ? rows.filter((r) => openTakeover(r)) : rows });
   } catch (err) {
     return Response.json({ error: String(err) }, { status: 500 });

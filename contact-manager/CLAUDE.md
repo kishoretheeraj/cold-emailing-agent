@@ -50,6 +50,8 @@ src/
 │   ├── api/applications/[id]/submit/route.ts
 │   ├── api/applications/[id]/reset-approval/route.ts
 │   ├── api/applications/today/route.ts
+│   ├── api/applications/[id]/people/route.ts (+ link/, unlink/)
+│   ├── api/applications/[id]/hold/route.ts
 │   ├── api/system-health/route.ts
 │   ├── api/login/route.ts
 │   ├── api/logout/route.ts
@@ -100,6 +102,7 @@ src/
 │   ├── SystemHealthStrip.tsx
 │   ├── LoginForm.tsx
 │   ├── ApprovalQueue.tsx
+│   ├── PeoplePanel.tsx
 │   ├── TakeoverBanner.tsx
 │   └── Field.tsx
 ├── proxy.ts
@@ -110,6 +113,8 @@ src/
     ├── loginNext.ts
     ├── nyDay.ts
     ├── dailyCap.ts
+    ├── warmPaths.ts
+    ├── warmPathsData.ts
     ├── gmail-server.ts
     ├── cadence.ts
     ├── personalization.ts
@@ -200,6 +205,38 @@ nothing; one countdown at a time. Skip PATCHes `stage: "withdrawn"`. `Applicatio
 mocks it (its polling tests count fetch calls). The nav's links and the applications table scroll
 inside their own containers so nothing widens the page on a phone (`21-approval-queue.spec.ts`
 asserts `scrollWidth <= 390`).
+
+### Warm paths: people for an application (2026-10-08)
+
+Spec: root `docs/superpowers/specs/2026-10-08-warm-paths-design.md`. `PeoplePanel.tsx` opens from a queue card's
+**People** link (and in `ApplicationDetailSheet` for any row past `saved`). It shows:
+- linked people, with Unlink;
+- live contacts at the same company (`companyKey`, a mirror of `job_identity.company_key`; both sides test
+  `tests/fixtures/company_keys.json`) with a Link button, or the reason one can't be linked;
+- LinkedIn/Google search links that open the user's own browser;
+- emails found in the posting (generic inboxes labeled);
+- the add-person form.
+
+Relationship sets the cold-email track: hiring manager, department lead and recruiter become `applied` mode, with
+`job_title`/`job_description` persisted. Alum, team member and other become `networking` mode. The networking
+hook is offered as a placeholder plus a "Use suggestion" button, and is never written unless tapped; that is the
+`connection_context` rule below. It never names the role, because the networking prompt forbids it. An email
+guess appears only when 2 known addresses at the company agree on a pattern.
+
+**Ask for a referral first** calls `POST /api/applications/[id]/hold` (`hold_for_referral`, days from
+`job_search_preferences.referral_hold_days`, default 10, clamped to 14). The card stays in Ready, sorted last,
+with a "Waiting on a referral until" badge and "Stop waiting" (`DELETE .../hold`). Submit still works on it.
+The queue route adds `people: { linked, known }` per row (best-effort; a failed count leaves it out).
+
+Routes: `GET/POST /api/applications/[id]/people`, `POST .../people/link` and `.../people/unlink` (`{ contact_id }`).
+- The database trigger `contacts_link_guard` is the real gate: stage `new`, applied/networking mode, at most 3,
+  not closed. Its `warm_paths:` errors and duplicate emails return 409.
+- A soft-deleted duplicate gets the existing restore message.
+- The per-company cap is `job_search_preferences.outreach_per_company_30d` (default 5).
+- Queries live in `lib/warmPathsData.ts`, so route tests mock one module. `warmPathsData.stress.test.ts` runs them
+  against the local Postgres + PostgREST stack (the 1000-row cap, the trigger under 6 concurrent links), and is
+  skipped without `STRESS_SUPABASE_URL`.
+- PATCH `stage: "applied"` also writes today's New York date into an empty `applied_date` (`newYorkDate`).
 
 ### Takeover card (2026-10-08)
 
@@ -448,7 +485,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 86** (vitest: 861 across 60 files, playwright: 86; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`). Beelink M2 Task 9
+- **Current test count: 87** (vitest: 986 across 64 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 87; warm paths added `22-warm-paths.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more

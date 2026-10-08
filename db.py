@@ -55,10 +55,46 @@ def get_client():
         _client = _create_patched(SUPABASE_URL, SUPABASE_ANON_KEY)
     return _client
 
+_CONTACT_PAGE = 1000
+
+
 def get_all_contacts():
-    """Fetch all contacts from Supabase."""
-    result = _retry(lambda: get_client().table("contacts").select("*").is_("deleted_at", "null").execute())
-    return result.data or []
+    """Fetch all live contacts, paged past PostgREST's row cap. Ordered by id so no row is skipped
+    or repeated between pages (a repeated contact could be drafted twice in one run)."""
+    rows = []
+    start = 0
+    while True:
+        result = _retry(lambda: get_client().table("contacts").select("*").is_("deleted_at", "null")
+                        .order("id").range(start, start + _CONTACT_PAGE - 1).execute())
+        page = result.data or []
+        rows.extend(page)
+        if len(page) < _CONTACT_PAGE:
+            return rows
+        start += _CONTACT_PAGE
+
+_APPLICATION_STATE_COLUMNS = "id,stage,role,company,applied_date,job_url,posting_snapshot"
+
+
+def get_application_states(application_ids):
+    """Stage and prompt fields of the job applications that contacts are linked to, keyed by id.
+    Raises on failure: the agent treats an unreadable link as a reason to skip (warm paths I4)."""
+    states = {}
+    ids = list(application_ids)
+    for start in range(0, len(ids), 200):
+        chunk = ids[start:start + 200]
+        result = _retry(lambda: get_client().table("job_applications").select(_APPLICATION_STATE_COLUMNS)
+                        .in_("id", chunk).execute())
+        for row in result.data or []:
+            snapshot = row.get("posting_snapshot")
+            description = snapshot.get("description") if isinstance(snapshot, dict) else None
+            states[row["id"]] = {
+                "id": row["id"], "stage": row.get("stage"), "role": row.get("role"),
+                "company": row.get("company"), "applied_date": row.get("applied_date"),
+                "job_url": row.get("job_url"),
+                "posting_description": description if isinstance(description, str) else "",
+            }
+    return states
+
 
 def update_contact(contact_id, stage, followup_days=None, template=None,
                    expected_stage=None, clear_followup_date=False):

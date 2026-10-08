@@ -500,3 +500,34 @@ the Simplify feed's URLs. A board is dead after 3 consecutive "does not exist" a
 errors only move it to the back of the queue. API roles: SELECT, INSERT, UPDATE.
 
 Functional checks: `supabase/tests/job_identity_queue_dryrun.sql`.
+
+## Warm paths (migration 20261010000000)
+
+Spec: `docs/superpowers/specs/2026-10-08-warm-paths-design.md`. Functional checks:
+`supabase/tests/warm_paths_dryrun.sql` (12 hand-made mutations of the migration each caught).
+
+- `contacts.job_application_id BIGINT NULL REFERENCES job_applications(id) ON DELETE SET NULL`, partial index.
+  One contact belongs to at most one application.
+- `contacts.relationship TEXT NULL`, CHECK in `hiring_manager`, `leader`, `recruiter`, `alum`, `team_member`, `other`.
+- `contacts.deleted_at` is restated with `ADD COLUMN IF NOT EXISTS` (it existed live without a migration).
+- Trigger `contacts_link_guard` (BEFORE INSERT OR UPDATE OF `job_application_id`, `deleted_at`; `SECURITY DEFINER`,
+  `search_path` pinned). On a new link: `mode` must be `applied` or `networking`, `stage='new'` and
+  `reply_status='no_reply'` (old and new values on UPDATE), the application not `rejected`/`withdrawn`. On a new link
+  or a restore (`deleted_at` -> NULL): the application row is locked `FOR UPDATE`, then at most 3 live linked people.
+  Errors start with `warm_paths:` (the contact-manager maps them to 409).
+- `job_applications.referral_hold_until TIMESTAMPTZ NULL`. No anon/authenticated column grant. Written by
+  `hold_for_referral(p_id BIGINT, p_days INTEGER) RETURNS timestamptz` (clamped 1..14, NULL -> 10; only
+  `automation_status='ready_for_review' AND approved_at IS NULL`; raises otherwise) and
+  `release_referral_hold(p_id BIGINT)` (raises on an unknown id). Both `SECURITY DEFINER`, EXECUTE to anon and
+  authenticated. Not part of `preview_revision_hash`; survives `requeue_preview`.
+
+New `db.py`: `get_application_states(ids)` (`{id: {stage, role, company, applied_date, job_url,
+posting_description}}`, chunks of 200, raises on failure). `get_all_contacts()` now pages
+(`.order("id").range()`, 1000 a page).
+
+`job_search_preferences` keys read by the contact-manager only: `referral_hold_days` (default 10, max 14) and
+`outreach_per_company_30d` (default 5).
+
+Local stacks: `scripts/local_dryrun/prod_drift.sql` adds the live-only `contacts` columns
+(`classifier_status`, `resume_url`, `deleted_at`) and `build_db.sh` loads `setup_prompts.sql`, so the stress
+stack can run the contact-manager's real queries.

@@ -8,6 +8,9 @@ vi.mock("sonner", () => {
 });
 import { toast } from "sonner";
 
+// The People panel fetches on its own; PeoplePanel.test.tsx covers it.
+vi.mock("@/components/PeoplePanel", () => ({ PeoplePanel: () => <div data-testid="people-panel" /> }));
+
 const HASH = "c".repeat(64);
 
 function row(over: Record<string, unknown>) {
@@ -215,5 +218,60 @@ describe("ApprovalQueue", () => {
     const before = calls.filter(([u]) => u === "/api/applications?view=queue").length;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(calls.filter(([u]) => u === "/api/applications?view=queue").length).toBe(before + 1);
+  });
+});
+
+describe("ApprovalQueue -- warm paths", () => {
+  const inDays = (d: number) => new Date(Date.now() + d * 86_400_000).toISOString();
+
+  it("shows who the user knows at the company", async () => {
+    queue = [row({ people: { linked: 1, known: 3 } })];
+    await renderQueue();
+    expect(screen.getByText("You know 3 people here · 1 linked")).toBeInTheDocument();
+  });
+
+  it("asks for a referral first: holds the row and opens People", async () => {
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Ask for a referral first" }));
+    const holdCall = calls.find(([url]) => url === "/api/applications/1/hold");
+    expect(holdCall?.[1]?.method).toBe("POST");
+    expect(screen.getByTestId("people-panel")).toBeInTheDocument();
+    expect(submitCalls()).toHaveLength(0);
+  });
+
+  it("puts held cards last with a badge, and Submit still works on them", async () => {
+    queue = [
+      row({ id: "1", company: "Held Co", pick_score: 0.99, referral_hold_until: inDays(5) }),
+      row({ id: "2", company: "Open Co", pick_score: 0.5 }),
+    ];
+    await renderQueue();
+    const cards = screen.getAllByRole("article");
+    expect(within(cards[0]).getByText("Open Co")).toBeInTheDocument();
+    expect(within(cards[1]).getByRole("note")).toHaveTextContent("Waiting on a referral until");
+    expect(within(cards[1]).queryByRole("button", { name: "Ask for a referral first" })).toBeNull();
+    expect(within(cards[1]).getByRole("button", { name: "Submit" })).toBeEnabled();
+  });
+
+  it("an expired hold is ignored", async () => {
+    queue = [row({ referral_hold_until: inDays(-1) })];
+    await renderQueue();
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(screen.getByRole("button", { name: "Ask for a referral first" })).toBeInTheDocument();
+  });
+
+  it("stops waiting", async () => {
+    queue = [row({ referral_hold_until: inDays(5) })];
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Stop waiting" }));
+    expect(calls.find(([url, init]) => url === "/api/applications/1/hold" && init?.method === "DELETE")).toBeTruthy();
+  });
+
+  it("People toggles the panel", async () => {
+    await renderQueue();
+    const toggle = screen.getByRole("button", { name: "People" });
+    await click(toggle);
+    expect(screen.getByTestId("people-panel")).toBeInTheDocument();
+    await click(toggle);
+    expect(screen.queryByTestId("people-panel")).toBeNull();
   });
 });

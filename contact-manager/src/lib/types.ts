@@ -55,6 +55,8 @@ export type Contact = {
   deleted_at: string | null;
   state?: string | null;
   company_intel_id?: number | null;
+  job_application_id?: number | null;
+  relationship?: string | null;
   company_intel?: Pick<CompanyIntel, "sponsors_h1b" | "h1b_recent_count" | "match_status"> | null;
 };
 
@@ -349,6 +351,10 @@ export type JobApplication = {
   source_channel: string | null;
   location?: string | null;
   posted_at?: string | null;
+  // Warm paths: waiting on a referral until this time (hold_for_referral), and the queue route's
+  // people counts (linked to this application; known at the company).
+  referral_hold_until?: string | null;
+  people?: { linked: number; known: number };
   stage: JobApplicationStage;
   applied_date: string | null;
   notes: string | null;
