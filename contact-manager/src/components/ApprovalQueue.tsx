@@ -49,6 +49,19 @@ function byPickThenNewest(a: JobApplication, b: JobApplication) {
     || (b.pick_score ?? 0) - (a.pick_score ?? 0) || b.created_at.localeCompare(a.created_at);
 }
 
+const VISA_TONE = {
+  good: "border-emerald-500/40 text-emerald-300",
+  review: "border-amber-500/40 text-amber-300",
+  none: "border-border text-fg-dim",
+} as const;
+
+function companyLine(app: JobApplication): { text: string; full: boolean } | null {
+  const c = app.company_30d;
+  if (!c || c.others === 0) return null;
+  const text = `${c.others} other ${c.others === 1 ? "application" : "applications"} here in 30 days`;
+  return { text: c.cap > 0 ? `${text} (cap ${c.cap})` : text, full: c.cap > 0 && c.others >= c.cap };
+}
+
 function peopleLine(app: JobApplication): string | null {
   if (!app.people) return null;
   const parts = [];
@@ -261,6 +274,7 @@ export function ApprovalQueue() {
             const counting = pending?.id === app.id;
             const links = docs[app.id];
             const held = heldUntil(app);
+            const company = companyLine(app);
             return (
               <article key={app.id} aria-label={`${app.company} ${app.role}`}
                 className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4">
@@ -270,13 +284,19 @@ export function ApprovalQueue() {
                     <p className="text-sm text-fg-muted">{app.role}</p>
                     {cardMeta(app) && <p className="text-xs text-fg-dim">{cardMeta(app)}</p>}
                     {peopleLine(app) && <p className="text-xs text-emerald-300">{peopleLine(app)}</p>}
+                    {company && (
+                      <p className={`text-xs ${company.full ? "text-amber-300" : "text-fg-dim"}`}>{company.text}</p>
+                    )}
                   </div>
-                  <div className="flex gap-2 text-xs">
+                  <div className="flex flex-wrap gap-2 text-xs">
                     {app.apply_preview?.platform && (
                       <span className="rounded-full border border-border px-2 py-0.5 text-fg-muted">{app.apply_preview.platform}</span>
                     )}
                     {app.pick_verdict && (
                       <span className="rounded-full border border-emerald-500/40 px-2 py-0.5 text-emerald-300">{app.pick_verdict} fit</span>
+                    )}
+                    {app.visa && (
+                      <span className={`rounded-full border px-2 py-0.5 ${VISA_TONE[app.visa.tone]}`}>{app.visa.label}</span>
                     )}
                   </div>
                 </header>

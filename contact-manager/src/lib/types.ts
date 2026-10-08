@@ -355,6 +355,11 @@ export type JobApplication = {
   // people counts (linked to this application; known at the company).
   referral_hold_until?: string | null;
   people?: { linked: number; known: number };
+  // Other applications at this company in the last 30 days that count toward the per-company cap.
+  company_30d?: { others: number; cap: number };
+  // H-1B signal for the company (lib/visaSignal.ts): never a negative unless a human confirmed it.
+  visa?: { label: string; tone: "good" | "review" | "none" };
+  company_key?: string | null;
   stage: JobApplicationStage;
   applied_date: string | null;
   notes: string | null;

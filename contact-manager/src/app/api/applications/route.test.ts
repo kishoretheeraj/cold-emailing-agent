@@ -11,9 +11,16 @@ const mockFrom = vi.fn();
 
 const mockLinked = vi.fn();
 const mockKnown = vi.fn();
-vi.mock("@/lib/warmPathsData", () => ({
+const mockAtCompany = vi.fn();
+const mockPrefs = vi.fn();
+const mockVisa = vi.fn();
+vi.mock("@/lib/warmPathsData", async () => ({
   linkedCounts: (...a: unknown[]) => mockLinked(...a),
   knownPeopleByCompany: (...a: unknown[]) => mockKnown(...a),
+  companyApplicationIds: (...a: unknown[]) => mockAtCompany(...a),
+  loadPreferences: (...a: unknown[]) => mockPrefs(...a),
+  visaRows: (...a: unknown[]) => mockVisa(...a),
+  perCompanyCap: (await vi.importActual<typeof import("@/lib/warmPathsData")>("@/lib/warmPathsData")).perCompanyCap,
 }));
 
 vi.mock("@supabase/supabase-js", () => ({
@@ -33,6 +40,9 @@ beforeEach(() => {
   mockFrom.mockReturnValue({ select: mockSelect, insert: mockInsert });
   mockLinked.mockResolvedValue(new Map());
   mockKnown.mockResolvedValue(new Map());
+  mockAtCompany.mockResolvedValue(new Map());
+  mockPrefs.mockResolvedValue(null);
+  mockVisa.mockResolvedValue({ intel: new Map(), stats: new Map() });
 });
 
 describe("GET /api/applications?view=queue", () => {
@@ -72,6 +82,42 @@ describe("GET /api/applications?view=queue -- people counts (warm paths)", () =>
     expect(body.applications.map((a: { people: unknown }) => a.people)).toEqual([
       { linked: 2, known: 4 }, { linked: 0, known: 0 },
     ]);
+  });
+
+  it("counts other applications at the company in 30 days, never the card itself", async () => {
+    queueChain();
+    mockOrder.mockResolvedValue({ data: [
+      { id: "7", company: "Acme, Inc.", company_key: "acme" }, { id: "8", company: "Beta", company_key: null },
+    ], error: null });
+    mockAtCompany.mockResolvedValue(new Map([["acme", [7, 3, 4]], ["beta", [8]]]));
+    mockPrefs.mockResolvedValue(JSON.stringify({ per_company_cap_30d: 2 }));
+    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    expect(mockAtCompany.mock.calls[0][1]).toEqual(["acme", "beta"]);
+    expect(body.applications.map((a: { company_30d: unknown }) => a.company_30d)).toEqual([
+      { others: 2, cap: 2 }, { others: 0, cap: 2 },
+    ]);
+  });
+
+  it("adds the H-1B signal by exact normalized name", async () => {
+    queueChain();
+    mockOrder.mockResolvedValue({ data: [{ id: "7", company: "Amazon Web Services, Inc." }, { id: "8", company: "Tiny Startup" }], error: null });
+    mockVisa.mockResolvedValue({
+      intel: new Map(),
+      stats: new Map([["amazon", { normalized_name: "amazon", lca_recent_2fy: 900, latest_filing_fy: 2026 }]]),
+    });
+    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    expect(mockVisa.mock.calls[0][1]).toEqual(["amazon", "tiny startup"]);
+    expect(body.applications.map((a: { visa: unknown }) => a.visa)).toEqual([
+      { label: "H-1B filings: 900 in 2 years", tone: "good" }, { label: "No H-1B data", tone: "none" },
+    ]);
+  });
+
+  it("leaves the signal out when the H-1B tables can't be read", async () => {
+    queueChain();
+    mockVisa.mockRejectedValue(new Error("down"));
+    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    expect(body.applications[0]).not.toHaveProperty("visa");
+    expect(body.applications[0]).toHaveProperty("people");
   });
 
   it("still returns the queue when the counts fail", async () => {

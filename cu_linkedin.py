@@ -32,6 +32,8 @@ import anthropic
 
 import config
 import db
+import job_filters
+import job_sourcing
 import usage_tracking
 
 log = logging.getLogger(__name__)
@@ -490,18 +492,30 @@ def extract_postings(text):
     return postings
 
 
-def persist_postings(postings):
+def persist_postings(postings, settings=None):
     """Write each posting into job_applications at stage='saved'. Returns
-    (saved, skipped, errors). One row's failure never stops the rest."""
+    (saved, skipped, errors). One row's failure never stops the rest. With `settings`
+    ((preferences, eligibility), as job_sourcing.load_search_settings returns), a posting
+    job_filters rejects is skipped before insert, the same triage every other source gets."""
     saved = skipped = errors = 0
     for posting in postings[:config.CU_LINKEDIN_MAX_POSTINGS_PER_SESSION]:
+        if settings is not None:
+            reason = job_filters.reject_reason(
+                {"title": posting.get("role"), "location": posting.get("location"),
+                 "url": posting.get("job_url"), "description": posting.get("description")}, *settings)
+            if reason:
+                skipped += 1
+                log.info(f"[CU-LINKEDIN] | {posting.get('role')} | {posting.get('company')} | skipped: {reason}")
+                continue
         try:
+            kwargs = {"location": posting["location"]} if settings is not None and posting.get("location") else {}
             row = db.create_job_application(
                 company=posting["company"],
                 role=posting["role"],
                 job_url=posting["job_url"],
                 source="linkedin",
                 posting_snapshot=posting,
+                **kwargs,
             )
             if row is None:
                 skipped += 1
@@ -594,7 +608,7 @@ def run():
                 # a debug dump), only its length.
                 log.info(f"[CU-LINKEDIN] | extraction yielded 0 postings from a non-empty reply "
                          f"| reply_len={len(text)}")
-            saved, skipped, persist_errors = persist_postings(postings)
+            saved, skipped, persist_errors = persist_postings(postings, settings=job_sourcing.load_search_settings())
             errors += persist_errors
     except Exception as exc:
         errors += 1

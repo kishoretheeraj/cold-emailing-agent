@@ -15,3 +15,22 @@ Without `STRESS_SUPABASE_URL` the module is skipped, so the normal suite never n
 
 Each scenario reproduced a real failure before its fix. The failures are numbered F1 to F5 in
 `docs/superpowers/specs/2026-10-08-fifty-a-day-design.md`.
+
+## Capacity model
+
+`python3 scripts/stress/capacity.py [--target 50] [--json]` reads every Beelink unit's `OnCalendar` and
+`TimeoutStartSec`, plus the batch sizes and caps in `config.py`. It walks the funnel backwards from the
+target. For each stage it prints its daily ceiling, what the target demands of it, and its utilization.
+It then names the bottleneck. Prepare and submit share display :1, so their seconds add up. The rates and
+per-row seconds are labeled assumptions; override them (`--strong-rate 0.4` ...) with a week of
+`apply_status` numbers. It exits 1 when the target is out of reach.
+
+The first run (2026-10-08, assumptions as shipped) says the machine is not the limit. Resume building is
+the busiest worker stage at 61%, and the display is busy about 4.7 h a day. The limit is supply: 50
+submissions need about 700 new postings a day at the assumed funnel rates.
+
+Measured the same day: the Simplify feed added 28 new Product postings in 14 days, and 23 passed the
+default triage. That is about 1.6 a day. Its Software, AI/ML/Data, Quant and Hardware postings are
+almost all engineering titles, and triage rejects them correctly. Board sweeps, JobRight and LinkedIn
+(at most about 75 postings viewed a day) supply the rest. That supply has to be measured on the
+Beelink, because this sandbox cannot reach the ATS APIs.

@@ -906,6 +906,10 @@ X11 display slot 0 through Anthropic's Computer Use API (`computer_toolset_20260
 `db.create_job_application` path `job_discovery.py`/`jobright.py` use. Log marker
 `[CU-LINKEDIN]`, own log file (`cu_linkedin.log`). Best-effort: never raises past `run()`.
 
+**Same triage as every source (2026-10-08).** `run()` loads `job_sourcing.load_search_settings()` once and
+`persist_postings(postings, settings=...)` skips anything `job_filters.reject_reason` rejects (title, seniority,
+location, sponsorship) before insert, logging `skipped: <reason>`; saved rows carry `location`.
+
 **Discovery only.** `linkedin.com/jobs` stays a permanently-excluded *apply* target in
 `config.APPLY_AGENT_AGGREGATOR_DOMAINS` -- both facts hold simultaneously.
 
@@ -1668,6 +1672,10 @@ reproduced first). Plan: docs/superpowers/plans/2026-10-08-fifty-a-day.md.
   `tests/test_apply_load.py`: real preview + armed submit passes in real Chromium against local
   Greenhouse/Lever/Ashby lookalike forms (`tests/fixtures/ats_forms`), `APPLY_LOAD_ROWS=50` for the
   full run (50 + 50 in ~5 min, no leaked browsers or temp files).
+- **Capacity model** (`scripts/stress/capacity.py`, `tests/test_capacity_model.py`): per-stage daily ceilings
+  from the real unit timers/timeouts and config, demand from the target walked back through labeled funnel
+  assumptions, the bottleneck. As shipped the machine has headroom; posting supply is the limit (Simplify
+  Product measured at about 1.6 passing postings a day, 2026-10-08).
 
 ## Warm paths: the cold-email agent and the application pipeline (2026-10-08)
 
@@ -1704,6 +1712,11 @@ come from people who reply, so each application can grow up to three linked peop
 - **Report:** `engagement_report.py` adds submitted applications with vs without outreach (reached = a linked
   contact with `latest_message_id` or `classifier_status`), interview rate at n >= 5, reply rate by relationship,
   and prints the selection and manual-stage caveats.
+- **Queue cards** also show other applications at the company in the last 30 days (the rows
+  `db.count_company_applications` counts, amber at `per_company_cap_30d`) and an H-1B badge
+  (`contact-manager/src/lib/visaSignal.ts`: `visaKey` mirrors `entity_resolution.normalize` +
+  `canonicalize_alias_group` via `tests/fixtures/visa_names.json`; exact names only; a human `/visa-review`
+  decision wins; no data reads "No H-1B data", never a negative).
 - **Not built, deliberately:** people scraping, paid enrichment, auto-created contacts, LinkedIn DMs, a send path.
 
 ## System-wide Claude API cost tracking

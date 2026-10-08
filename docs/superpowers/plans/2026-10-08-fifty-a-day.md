@@ -26,7 +26,7 @@ loop: write the failing test (or the stress scenario that reproduces the failure
   - daily and per-company caps (F14).
 - [x] 11. Stress harness:
   - `tests/test_stress_local.py` against the local stack;
-  - capacity model;
+  - capacity model (`scripts/stress/capacity.py`, written 2026-10-08 after this box was first checked by mistake);
   - a 50-row real-browser preview load test.
-- [x] 12. Contact-manager: the daily cap meter (`/api/applications/today`), location, source and posted date on queue cards, submitted list bounded to 14 days. (A per-company count on the card is still open; the cap itself is enforced before any documents are built.)
+- [x] 12. Contact-manager: the daily cap meter (`/api/applications/today`), location, source and posted date on queue cards, submitted list bounded to 14 days. (Each card also shows how many applications went to that company in the last 30 days.)
 - [x] 13. Docs (`CLAUDE.md`, `db-schema.md`, `beelink-server.md`, RUNBOOK) and memory.

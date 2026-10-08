@@ -259,6 +259,24 @@ describe("ApprovalQueue -- warm paths", () => {
     expect(screen.getByRole("button", { name: "Ask for a referral first" })).toBeInTheDocument();
   });
 
+  it("shows other applications at the company, amber at the cap", async () => {
+    queue = [row({ id: "1", company: "Acme", company_30d: { others: 1, cap: 3 } }),
+             row({ id: "2", company: "Beta", pick_score: 0.1, company_30d: { others: 3, cap: 3 } }),
+             row({ id: "3", company: "Gamma", pick_score: 0.05, company_30d: { others: 0, cap: 3 } })];
+    await renderQueue();
+    expect(screen.getByText("1 other application here in 30 days (cap 3)")).toHaveClass("text-fg-dim");
+    expect(screen.getByText("3 other applications here in 30 days (cap 3)")).toHaveClass("text-amber-300");
+    expect(screen.queryByText(/0 other/)).toBeNull();
+  });
+
+  it("shows the H-1B signal in its tone", async () => {
+    queue = [row({ id: "1", company: "Acme", visa: { label: "H-1B filings: 7 in 2 years", tone: "good" } }),
+             row({ id: "2", company: "Beta", pick_score: 0.1, visa: { label: "No H-1B data", tone: "none" } })];
+    await renderQueue();
+    expect(screen.getByText("H-1B filings: 7 in 2 years")).toHaveClass("text-emerald-300");
+    expect(screen.getByText("No H-1B data")).toHaveClass("text-fg-dim");
+  });
+
   it("stops waiting", async () => {
     queue = [row({ referral_hold_until: inDays(5) })];
     await renderQueue();

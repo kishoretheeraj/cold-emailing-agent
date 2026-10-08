@@ -115,6 +115,7 @@ src/
     ├── dailyCap.ts
     ├── warmPaths.ts
     ├── warmPathsData.ts
+    ├── visaSignal.ts
     ├── gmail-server.ts
     ├── cadence.ts
     ├── personalization.ts
@@ -226,7 +227,15 @@ guess appears only when 2 known addresses at the company agree on a pattern.
 **Ask for a referral first** calls `POST /api/applications/[id]/hold` (`hold_for_referral`, days from
 `job_search_preferences.referral_hold_days`, default 10, clamped to 14). The card stays in Ready, sorted last,
 with a "Waiting on a referral until" badge and "Stop waiting" (`DELETE .../hold`). Submit still works on it.
-The queue route adds `people: { linked, known }` per row (best-effort; a failed count leaves it out).
+The queue route adds, per row and best-effort (a failed read leaves the field out):
+- `people: { linked, known }`;
+- `company_30d: { others, cap }`: other rows at the same `company_key` in the last 30 days with documents
+  built or an approval/submission, the same rows `db.count_company_applications` counts. The card turns
+  amber at `per_company_cap_30d`;
+- `visa: { label, tone }` from `lib/visaSignal.ts`. `visaKey` mirrors `entity_resolution.normalize` +
+  `canonicalize_alias_group`, and both sides test `tests/fixtures/visa_names.json`. It does an exact lookup
+  in `company_intel` and `employer_h1b_stats`, and a human `/visa-review` decision wins. No data reads
+  "No H-1B data"; like `ContactsList`, the copy never says "does not sponsor".
 
 Routes: `GET/POST /api/applications/[id]/people`, `POST .../people/link` and `.../people/unlink` (`{ contact_id }`).
 - The database trigger `contacts_link_guard` is the real gate: stage `new`, applied/networking mode, at most 3,
@@ -485,7 +494,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 87** (vitest: 986 across 64 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 87; warm paths added `22-warm-paths.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`). Beelink M2 Task 9
+- **Current test count: 87** (vitest: 1032 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 87; warm paths added `22-warm-paths.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`). Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more

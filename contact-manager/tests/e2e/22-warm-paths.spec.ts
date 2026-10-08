@@ -19,9 +19,11 @@ function queueRows(held: boolean) {
   return [
     { ...base, id: "51", company: "Northwind", role: "Associate Product Manager", job_url: "https://boards.greenhouse.io/northwind/jobs/1",
       pick_score: 0.95, people: { linked: held ? 1 : 0, known: 2 },
+      company_30d: { others: 1, cap: 3 }, visa: { label: "H-1B filings: 12 in 2 years", tone: "good" },
       referral_hold_until: held ? new Date(Date.now() + 10 * 86_400_000).toISOString() : null },
     { ...base, id: "52", company: "Contoso", role: "Product Analyst", job_url: "https://jobs.lever.co/contoso/1",
-      pick_score: 0.6, people: { linked: 0, known: 0 }, referral_hold_until: null },
+      pick_score: 0.6, people: { linked: 0, known: 0 }, referral_hold_until: null,
+      visa: { label: "No H-1B data", tone: "none" } },
   ];
 }
 
@@ -85,6 +87,10 @@ test.describe("Warm paths", () => {
     const queue = page.getByRole("region", { name: "Approval queue" });
     const card = queue.getByRole("article", { name: "Northwind Associate Product Manager" });
     await expect(card.getByText("You know 2 people here")).toBeVisible({ timeout: 10_000 });
+    await expect(card.getByText("1 other application here in 30 days (cap 3)")).toBeVisible();
+    await expect(card.getByText("H-1B filings: 12 in 2 years")).toBeVisible();
+    await expect(queue.getByRole("article", { name: "Contoso Product Analyst" }).getByText("No H-1B data")).toBeVisible();
+    await page.screenshot({ path: "tests/e2e/screenshots/22-warm-paths-card.png" });
 
     await card.getByRole("button", { name: "Ask for a referral first" }).click();
     const panel = card.getByRole("region", { name: "People" });

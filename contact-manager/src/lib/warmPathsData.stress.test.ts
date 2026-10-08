@@ -8,6 +8,8 @@ import { execFileSync } from "node:child_process";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  companyApplicationIds,
+  visaRows,
   findByEmail,
   insertContact,
   knownPeopleByCompany,
@@ -114,6 +116,26 @@ describe.skipIf(!URL)("warm paths against PostgREST", () => {
     expect(await linkContact(db, fresh, id)).toBeNull();            // already linked: no row matches
     expect(await unlinkContact(db, fresh, id)).toBe(true);
     expect(await unlinkContact(db, fresh, id)).toBe(false);
+  });
+
+  it("counts the per-company cap the way db.count_company_applications does", async () => {
+    const key = `${RUN}capco`;
+    sql(`INSERT INTO job_applications (company, role, company_key, resume_file_ref, created_at) VALUES
+         ('${RUN} Capco', 'A', '${key}', 'r.pdf', now()),
+         ('${RUN} Capco', 'B', '${key}', NULL, now()),
+         ('${RUN} Capco', 'C', '${key}', 'r.pdf', now() - interval '40 days')`);
+    const ids = await companyApplicationIds(db, [key, key, ""]);
+    expect(ids.get(key)).toHaveLength(1);
+  });
+
+  it("reads H-1B rows by exact normalized name, past the anon grants", async () => {
+    const name = `${RUN} visaco`;
+    sql(`INSERT INTO employer_h1b_stats (normalized_name, display_name, lca_total, lca_recent_2fy, latest_filing_fy)
+         VALUES ('${name}', 'Visaco', 10, 4, 2026)`);
+    const { stats, intel } = await visaRows(db, [name, `${name} labs`]);
+    expect(stats.get(name)?.lca_recent_2fy).toBe(4);
+    expect(stats.has(`${name} labs`)).toBe(false);
+    expect(intel.size).toBe(0);
   });
 
   it("holds only through the clamped RPC", async () => {

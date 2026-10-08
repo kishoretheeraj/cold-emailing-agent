@@ -3,7 +3,10 @@ export const runtime = "nodejs";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { openTakeover } from "@/lib/takeover";
 import { companyKey } from "@/lib/warmPaths";
-import { knownPeopleByCompany, linkedCounts } from "@/lib/warmPathsData";
+import {
+  companyApplicationIds, knownPeopleByCompany, linkedCounts, loadPreferences, perCompanyCap, visaRows,
+} from "@/lib/warmPathsData";
+import { visaKey, visaSignal } from "@/lib/visaSignal";
 import type { JobApplication } from "@/lib/types";
 
 function getClient() {
@@ -24,12 +27,21 @@ const SUBMITTED_DAYS = 14;
 // (warm paths). Best-effort: a failed count leaves the cards without it, never the queue empty.
 async function withPeople(supabase: SupabaseClient, rows: JobApplication[]): Promise<JobApplication[]> {
   try {
-    const [linked, known] = await Promise.all([
+    const keyOf = (r: JobApplication) => r.company_key || companyKey(r.company);
+    const [linked, known, atCompany, prefs] = await Promise.all([
       linkedCounts(supabase, rows.map((r) => Number(r.id))), knownPeopleByCompany(supabase),
+      companyApplicationIds(supabase, rows.map(keyOf)), loadPreferences(supabase),
     ]);
+    const cap = perCompanyCap(prefs);
+    const visa = await visaRows(supabase, rows.map((r) => visaKey(r.company))).catch(() => null);
     return rows.map((r) => ({
       ...r,
       people: { linked: linked.get(Number(r.id)) ?? 0, known: known.get(companyKey(r.company)) ?? 0 },
+      ...(visa ? { visa: visaSignal(visa.intel.get(visaKey(r.company)), visa.stats.get(visaKey(r.company))) } : {}),
+      company_30d: {
+        others: (atCompany.get(keyOf(r)) ?? []).filter((id) => id !== Number(r.id)).length,
+        cap,
+      },
     }));
   } catch {
     return rows;
