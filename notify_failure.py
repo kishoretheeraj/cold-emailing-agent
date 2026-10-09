@@ -6,6 +6,7 @@ Uses GMAIL_APP_PASSWORD (already a repo secret) so no new credentials.
 """
 
 import os
+import shlex
 import smtplib
 import socket
 from email.message import EmailMessage
@@ -34,7 +35,7 @@ def _systemd_unit_failure(failed_unit):
     subject = f"[FAILED] {failed_unit} on {hostname}"
     body = (
         f"systemd unit {failed_unit} failed on {hostname}.\n\n"
-        f"Logs: journalctl -u {failed_unit}\n"
+        f"Logs: journalctl -u {shlex.quote(failed_unit)}\n"
     )
     return subject, body
 

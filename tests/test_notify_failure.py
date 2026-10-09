@@ -103,3 +103,20 @@ def test_main_logs_in_with_gmail_credentials(mocker, monkeypatch):
         notify_failure.os.environ["GMAIL_ADDRESS"],
         notify_failure.os.environ["GMAIL_APP_PASSWORD"],
     )
+
+
+def test_failed_unit_with_escaped_name_quotes_journal_hint(mocker, monkeypatch):
+    """systemd escapes odd characters in unit names as '\\xNN'. Pasted unquoted
+    into a shell, the backslash is eaten and journalctl queries the wrong unit,
+    so the hint must be shell-quoted. The subject keeps the raw name."""
+    _clear_failure_context(monkeypatch)
+    monkeypatch.setenv("FAILED_UNIT", "foo\\x20bar.service")
+    mocker.patch.object(notify_failure.socket, "gethostname", return_value="beelink")
+
+    smtp = _mock_smtp(mocker)
+    notify_failure.main()
+
+    sent_msg = smtp.__enter__.return_value.send_message.call_args.args[0]
+    assert "foo\\x20bar.service" in sent_msg["Subject"]
+    body = sent_msg.get_content()
+    assert "journalctl -u 'foo\\x20bar.service'" in body
