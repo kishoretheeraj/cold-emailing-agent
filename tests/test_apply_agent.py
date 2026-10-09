@@ -372,8 +372,19 @@ def test_fill_eligibility_answers_translates_known_keys_to_real_question_pattern
 
     report = apply_agent._fill_eligibility_answers(page, {"work_authorized_us": "Yes"})
 
-    fill_mock.assert_called_once_with(page, field, "Yes")
+    fill_mock.assert_called_once_with(page, field, "Yes", is_salary=False)
     assert report == {field["label"]: True}
+
+
+def test_fill_eligibility_answers_flags_only_the_salary_key_as_salary(mocker):
+    page = MagicMock()
+    field = _field("Desired salary", selector="#sal")
+    mocker.patch("apply_agent._form_inventory", return_value=[field])
+    fill_mock = mocker.patch("apply_agent._fill_field", return_value=True)
+
+    apply_agent._fill_eligibility_answers(page, {"salary": "$140,000 - $175,000"})
+
+    fill_mock.assert_called_once_with(page, field, "$140,000 - $175,000", is_salary=True)
 
 
 @pytest.mark.parametrize("key", list(apply_agent._ELIGIBILITY_QUESTION_PATTERNS))
@@ -537,19 +548,28 @@ def test_fill_field_combobox_types_and_presses_enter():
     ("$140,000 - $175,000", "157500"),
     ("Flexible, $100,000+ depending on location", "100000"),
     ("150000", "150000"),
+    ("$150,000.00 - $200,000.00", "175000"),
 ])
 def test_fill_field_number_input_gets_the_midpoint(value, expected):
     page = MagicMock()
     field = dict(_field("Desired salary", selector="#sal"), input_type="number")
-    assert apply_agent._fill_field(page, field, value) is True
+    assert apply_agent._fill_field(page, field, value, is_salary=True) is True
     page.locator.return_value.first.fill.assert_called_once_with(
         expected, timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+
+
+def test_fill_field_non_salary_number_input_is_filled_verbatim():
+    page = MagicMock()
+    field = dict(_field("GPA", selector="#gpa"), input_type="number")
+    assert apply_agent._fill_field(page, field, "3.5") is True
+    page.locator.return_value.first.fill.assert_called_once_with(
+        "3.5", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
 
 
 def test_fill_field_number_input_without_a_number_is_not_filled():
     page = MagicMock()
     field = dict(_field("Desired salary"), input_type="number")
-    assert apply_agent._fill_field(page, field, "Negotiable") is False
+    assert apply_agent._fill_field(page, field, "Negotiable", is_salary=True) is False
     page.locator.assert_not_called()
 
 

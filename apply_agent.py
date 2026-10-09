@@ -209,14 +209,15 @@ def _pick_option(options, value):
 
 def _numbers_in(value):
     # "$140,000 - $175,000" -> [140000, 175000]; a number-only box gets their midpoint.
-    return [int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", str(value or "")) if n.replace(",", "")]
+    return [int(float(n.replace(",", ""))) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", str(value or ""))]
 
 
-def _fill_field(page, field, value):
+def _fill_field(page, field, value, is_salary=False):
     kind = field.get("kind")
     timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
     try:
-        if kind == "input" and field.get("input_type") == "number":
+        # Only a salary range is collapsed to its midpoint; any other number (GPA, years) is verbatim.
+        if is_salary and kind == "input" and field.get("input_type") == "number":
             numbers = _numbers_in(value)
             if not numbers:
                 return False
@@ -256,19 +257,23 @@ def _fill_field(page, field, value):
         return False
 
 
-def _eligibility_value_for(label, answers):
+def _eligibility_match(label, answers):
     for key, value in (answers or {}).items():
         if not value:
             continue
         pattern = _ELIGIBILITY_QUESTION_PATTERNS.get(key)
         if pattern is not None:
             if pattern.search(label):
-                return value
+                return key, value
         elif _norm_label(key) and _norm_label(key) in _norm_label(label):
             # A key the user added to applicant_eligibility themselves (e.g. "desired salary")
             # matches any question label containing it.
-            return value
-    return None
+            return key, value
+    return None, None
+
+
+def _eligibility_value_for(label, answers):
+    return _eligibility_match(label, answers)[1]
 
 
 # ── Screening questions ────────────────────────────────────────────────────────
@@ -398,10 +403,10 @@ def _fill_eligibility_answers(page, answers):
     for field in _form_inventory(page) or []:
         if field.get("filled") or field.get("kind") == "file":
             continue
-        value = _eligibility_value_for(field.get("label") or "", answers)
+        key, value = _eligibility_match(field.get("label") or "", answers)
         if value is None:
             continue
-        ok = _fill_field(page, field, value)
+        ok = _fill_field(page, field, value, is_salary=(key == "salary"))
         if not ok:
             log.info(f"[APPLY-AGENT] | eligibility field not fillable: {field['label'][:60]!r}")
         report[field["label"]] = ok

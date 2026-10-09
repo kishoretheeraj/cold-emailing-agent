@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 import logging
+import os
 import re
 import time
 import uuid
@@ -29,6 +30,9 @@ import config
 from config import SUPABASE_URL, SUPABASE_ANON_KEY
 
 _client = None
+_admin_client = None
+# Service-role key: writes to RLS-locked tables (h1b_wage_stats). Soft-optional at import time.
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 # Retry wrapper for Supabase calls — same shape as emailer._call_claude.
 # Network blips and 5xx are rare but kill the whole run when get_all_contacts
@@ -48,6 +52,14 @@ def get_client():
     if _client is None:
         _client = _create_patched(SUPABASE_URL, SUPABASE_ANON_KEY)
     return _client
+
+def get_admin_client():
+    global _admin_client
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not set")
+    if _admin_client is None:
+        _admin_client = _create_patched(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    return _admin_client
 
 def get_all_contacts():
     """Fetch all contacts from Supabase."""
@@ -492,7 +504,7 @@ def upsert_h1b_wage_stats(rows):
         return True
     try:
         _retry(lambda: (
-            get_client()
+            get_admin_client()
             .table("h1b_wage_stats")
             .upsert(rows, on_conflict="normalized_name,role_family,worksite_state")
             .execute()
@@ -500,6 +512,22 @@ def upsert_h1b_wage_stats(rows):
         return True
     except Exception as exc:
         log.warning(f"[h1b_wage_stats] upsert failed for {len(rows)} rows: {exc}")
+        return False
+
+
+def delete_stale_h1b_wage_stats(cutoff):
+    """Delete h1b_wage_stats rows last written before cutoff (ISO timestamp). Best-effort."""
+    try:
+        _retry(lambda: (
+            get_admin_client()
+            .table("h1b_wage_stats")
+            .delete()
+            .lt("updated_at", cutoff)
+            .execute()
+        ))
+        return True
+    except Exception as exc:
+        log.warning(f"[h1b_wage_stats] stale delete failed: {exc}")
         return False
 
 

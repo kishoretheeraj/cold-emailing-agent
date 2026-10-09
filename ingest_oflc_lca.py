@@ -487,8 +487,16 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
         log.warning("[RESEARCH-C] visa_intel | no wage rows built from ingested files -- check the "
                     "JOB_TITLE/WAGE_RATE_OF_PAY_FROM/WAGE_UNIT_OF_PAY column aliases")
         errors += 1
+    wage_upserts_ok = True
     for i in range(0, len(wage_rows), batch_size):
         if not db.upsert_h1b_wage_stats(wage_rows[i:i + batch_size]):
+            errors += 1
+            wage_upserts_ok = False
+    if wage_rows and wage_upserts_ok:
+        # Every row just written carries this run's updated_at; anything older is an
+        # employer/state/family absent from the new data and would otherwise outrank fresh
+        # market rows forever. Skipped after a partial upsert so a failure never deletes data.
+        if not db.delete_stale_h1b_wage_stats(wage_rows[0]["updated_at"]):
             errors += 1
 
     status = "success" if errors == 0 else "success"  # partial FY misses are non-fatal

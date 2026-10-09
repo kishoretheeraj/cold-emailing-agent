@@ -141,6 +141,7 @@ def test_run_upserts_wage_rows_after_employer_rows(mocker, tmp_path):
     mocker.patch.object(ingest.db, "upsert_employer_h1b_stats", side_effect=lambda rows: calls.append("employers"))
     upsert_wages = mocker.patch.object(ingest.db, "upsert_h1b_wage_stats",
                                        side_effect=lambda rows: calls.append("wages") or True)
+    delete_stale = mocker.patch.object(ingest.db, "delete_stale_h1b_wage_stats", return_value=True)
     record = mocker.patch.object(ingest.db, "record_run")
 
     ingest.run(fiscal_years_back=1)
@@ -148,6 +149,7 @@ def test_run_upserts_wage_rows_after_employer_rows(mocker, tmp_path):
     assert calls == ["employers", "wages"]
     keys = {(r["normalized_name"], r["worksite_state"]) for r in upsert_wages.call_args[0][0]}
     assert keys == {("stripe", "CA"), ("stripe", "*"), ("*", "CA"), ("*", "*")}
+    delete_stale.assert_called_once_with(upsert_wages.call_args[0][0][0]["updated_at"])
     assert record.call_args[0][3] == 0  # errors
 
 
@@ -190,7 +192,20 @@ def fake_client(mocker):
     client = MagicMock(name="supabase_client")
     mocker.patch.object(db, "_client", client)
     mocker.patch.object(db, "get_client", return_value=client)
+    mocker.patch.object(db, "get_admin_client", return_value=client)
     return client
+
+
+def test_delete_stale_h1b_wage_stats_deletes_rows_older_than_the_cutoff(fake_client):
+    assert db.delete_stale_h1b_wage_stats("2026-10-07T00:00:00+00:00") is True
+    fake_client.table.assert_called_with("h1b_wage_stats")
+    fake_client.table.return_value.delete.return_value.lt.assert_called_once_with(
+        "updated_at", "2026-10-07T00:00:00+00:00")
+
+
+def test_delete_stale_h1b_wage_stats_is_best_effort(fake_client, mocker):
+    mocker.patch.object(db, "_retry", side_effect=RuntimeError("db down"))
+    assert db.delete_stale_h1b_wage_stats("2026-10-07T00:00:00+00:00") is False
 
 
 def test_upsert_h1b_wage_stats_uses_the_composite_key(fake_client):
@@ -239,6 +254,11 @@ def test_migration_creates_the_table_idempotently_with_the_upsert_key():
         assert column in _SQL
 
 
-def test_migration_grants_the_anon_writer_and_never_delete():
-    assert "GRANT SELECT, INSERT, UPDATE ON h1b_wage_stats TO anon, authenticated;" in _SQL
-    assert "DELETE" not in _SQL.upper().replace("ON DELETE", "")
+def test_migration_is_rls_locked_with_anon_read_only():
+    assert "ALTER TABLE h1b_wage_stats ENABLE ROW LEVEL SECURITY;" in _SQL
+    assert "CREATE POLICY h1b_wage_stats_anon_read ON h1b_wage_stats" in _SQL
+    assert "FOR SELECT TO anon USING (true)" in _SQL
+    assert "GRANT SELECT ON h1b_wage_stats TO anon;" in _SQL
+    assert not re.search(
+        r"GRANT[^;]*\b(INSERT|UPDATE|DELETE)\b[^;]*\bTO\b[^;]*\b(anon|authenticated)\b",
+        _SQL, re.IGNORECASE)

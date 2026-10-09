@@ -76,6 +76,18 @@ def test_uses_a_confirmed_company_intel_match_for_the_employer_key(mocker):
     assert "employer matched as 'axs group'" in result["basis"]
 
 
+def test_auto_company_intel_match_is_not_used(mocker):
+    mocker.patch("salary_estimate.db.get_company_intel_by_normalized_names", return_value=[
+        {"normalized_name": "axs", "match_status": "auto", "matched_employer_id": 7}])
+    lookup = mocker.patch("salary_estimate.db.get_employer_h1b_normalized_name")
+    get = mocker.patch("salary_estimate.db.get_h1b_wage_stats", return_value=[])
+
+    salary_estimate.estimate(_job(company="AXS"))
+
+    lookup.assert_not_called()
+    assert get.call_args[0][0] == ["*", "axs"]
+
+
 def test_needs_review_company_intel_match_is_not_used(mocker):
     mocker.patch("salary_estimate.db.get_company_intel_by_normalized_names", return_value=[
         {"normalized_name": "axs", "match_status": "needs_review", "matched_employer_id": 7}])
@@ -98,6 +110,9 @@ def test_never_raises(mocker):
     ("San Francisco, CA", "CA"),
     ("New York, NY, United States", "NY"),
     (["Chicago, IL", "Remote"], "IL"),
+    (["New York, NY", "Austin, TX"], None),
+    (["Austin, TX", "Austin, TX"], "TX"),
+    ("Remote, US", None),
     ("United States", None),
     ("Remote", None),
     (None, None),

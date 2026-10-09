@@ -10,9 +10,9 @@ every role family or no level has enough filings; the caller then keeps the oper
 applicant_eligibility answer. Never raises.
 
 The employer is matched by exact normalized name (the same normalize + alias-group pipeline as
-the visa gate), or through a company_intel row whose H-1B match is 'auto' or 'confirmed'. There is
-no fuzzy fallback: a wrong employer would anchor a salary on someone else's pay, so an unmatched
-employer degrades to market data, never to a guess.
+the visa gate), or through a company_intel row whose H-1B match is 'confirmed' (a human decision;
+'auto' fuzzy matches are not trusted). There is no fuzzy fallback: a wrong employer would anchor a
+salary on someone else's pay, so an unmatched employer degrades to market data, never to a guess.
 """
 import json
 import logging
@@ -26,14 +26,19 @@ import ingest_oflc_lca
 log = logging.getLogger(__name__)
 
 _STATE_RE = re.compile(r",\s*([A-Z]{2})\b")
+_US_STATES = frozenset(
+    "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM "
+    "NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split())
 _ROUND_TO = 5000
 
 
 def state_from_location(location):
+    # Several distinct states (or a USA-wide location) is ambiguous: None sends the walk to
+    # the employer-anywhere / national levels instead of guessing the first one listed.
     if isinstance(location, (list, tuple)):
-        location = location[0] if location else ""
-    match = _STATE_RE.search(str(location or ""))
-    return match.group(1) if match else None
+        location = "; ".join(str(item) for item in location if item)
+    states = {code for code in _STATE_RE.findall(str(location or "")) if code in _US_STATES}
+    return next(iter(states)) if len(states) == 1 else None
 
 
 def _posting_location(job):
@@ -51,7 +56,7 @@ def _employer_key(company):
     if not normalized:
         return None, None
     intel = (db.get_company_intel_by_normalized_names([normalized]) or [None])[0]
-    if intel and intel.get("match_status") in ("auto", "confirmed") and intel.get("matched_employer_id"):
+    if intel and intel.get("match_status") == "confirmed" and intel.get("matched_employer_id"):
         matched = db.get_employer_h1b_normalized_name(intel["matched_employer_id"])
         if matched:
             return matched, "matched"

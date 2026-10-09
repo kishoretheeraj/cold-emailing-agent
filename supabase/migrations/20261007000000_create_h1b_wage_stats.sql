@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS h1b_wage_stats (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_h1b_wage_stats_key
   ON h1b_wage_stats (normalized_name, role_family, worksite_state);
 
--- The ingester and the preview pass both use the anon key; authenticated mirrors it.
-GRANT SELECT, INSERT, UPDATE ON h1b_wage_stats TO anon, authenticated;
+-- Reads use the anon key (salary_estimate.py). Writes use the service-role key, which bypasses
+-- RLS, so anon and authenticated get no INSERT/UPDATE/DELETE.
+ALTER TABLE h1b_wage_stats ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS h1b_wage_stats_anon_read ON h1b_wage_stats;
+CREATE POLICY h1b_wage_stats_anon_read ON h1b_wage_stats FOR SELECT TO anon USING (true);
+GRANT SELECT ON h1b_wage_stats TO anon;
 GRANT USAGE, SELECT ON SEQUENCE h1b_wage_stats_id_seq TO anon, authenticated;
