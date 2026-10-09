@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Apply - Fixtureco</title></head>
+<body>
+<!-- A three-step wizard: My information -> Questions -> Review. Next refuses an empty required
+     field and shows an error; Review's only button is Submit. -->
+<h1 id="step-title">My information</h1>
+<div class="error" id="err" role="alert" hidden></div>
+<section id="s1">
+  <label for="fn">First Name *</label><input id="fn" name="first_name" required>
+  <label for="ln">Last Name *</label><input id="ln" name="last_name" required>
+  <label for="em">Email Address *</label><input id="em" name="email" required>
+  <label for="cv">Upload your resume *</label><input id="cv" type="file" name="cv" required>
+</section>
+<section id="s2" hidden>
+  <fieldset><legend>Will you now or in the future require visa sponsorship? *</legend>
+    <label><input type="radio" name="spons" value="yes" required> Yes</label>
+    <label><input type="radio" name="spons" value="no"> No</label></fieldset>
+  <label for="years">Years of product management experience *</label><input id="years" name="years" required>
+</section>
+<section id="s3" hidden><p>Review your application.</p></section>
+<div id="done" hidden>Thank you for applying! Your application has been submitted.</div>
+<footer><button id="back" type="button" hidden>Back</button><button id="next" type="button">Next</button></footer>
+<script>
+  window.__submitted = 0; window.__steps = [];
+  let step = 1;
+  const titles = {1: 'My information', 2: 'Questions', 3: 'Review'};
+  const req = (s) => Array.from(document.querySelectorAll('#s' + s + ' [required]'));
+  const empty = (el) => el.type === 'radio' ? !document.querySelector('input[name="' + el.name + '"]:checked')
+                        : el.type === 'file' ? !(el.files && el.files.length) : !el.value.trim();
+  function show() {
+    for (const s of [1, 2, 3]) document.getElementById('s' + s).hidden = s !== step;
+    document.getElementById('step-title').textContent = titles[step];
+    document.getElementById('next').textContent = step === 3 ? 'Submit' : 'Next';
+    window.__steps.push(step);
+  }
+  document.getElementById('next').addEventListener('click', () => {
+    const err = document.getElementById('err');
+    if (step === 3) { window.__submitted += 1; document.getElementById('s3').hidden = true;
+      document.getElementById('done').hidden = false; document.querySelector('footer').hidden = true; return; }
+    const missing = req(step).filter(empty);
+    if (missing.length) { err.textContent = 'Please complete all required fields.'; err.hidden = false; return; }
+    err.hidden = true; step += 1; setTimeout(show, 150);
+  });
+  show();
+</script>
+</body></html>

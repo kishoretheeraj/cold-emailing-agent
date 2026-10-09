@@ -584,6 +584,7 @@ def _get_by_text_matching(matching_pattern):
     def get_by_text(pattern):
         result = MagicMock()
         result.count.return_value = 1 if pattern is matching_pattern else 0
+        result.filter.return_value = result   # _submission_state counts visible text only
         return result
     return get_by_text
 
@@ -600,6 +601,7 @@ def test_submission_confirmed_false_when_rejection_text_present_even_if_it_also_
     exactly once (for the rejection pattern), never reaching the confirmation check at all."""
     page = MagicMock()
     page.get_by_text.return_value.count.return_value = 1
+    page.get_by_text.return_value.filter.return_value = page.get_by_text.return_value
 
     assert apply_agent._submission_confirmed(page) is False
     assert page.get_by_text.call_count == 1
@@ -608,6 +610,7 @@ def test_submission_confirmed_false_when_rejection_text_present_even_if_it_also_
 def test_submission_confirmed_false_when_no_confirmation_text(mocker):
     page = MagicMock()
     page.get_by_text.return_value.count.return_value = 0
+    page.get_by_text.return_value.filter.return_value = page.get_by_text.return_value
 
     assert apply_agent._submission_confirmed(page) is False
 

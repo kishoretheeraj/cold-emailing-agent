@@ -173,6 +173,12 @@ From the Mac, confirm passwords are refused: `ssh -o PubkeyAuthentication=no kis
 - [ ] Watched `systemctl start job-sourcing` then `job-pick` (RUNBOOK section 11), then enable both timers.
 - [ ] Optional: set `job_search_preferences` on the Prompts page (titles, locations, caps).
 
+### Phase 2e: every site (universal filler)
+
+- [ ] Run `scripts/form_recon.py --from-feed 3` (RUNBOOK section 12) and send the report back.
+- [ ] Watched `apply-prepare` run on a universal row, then one watched submit.
+- [ ] Grow `APPLY_UNIVERSAL_PLATFORMS` per platform as watched runs prove it.
+
 ### Phase 3: first browser-automation workload
 
 - Headful Chromium under Xvfb in a container, with `--memory` set. Headful holds up better against bot detection than headless. Playwright's official Docker images are a reasonable base.

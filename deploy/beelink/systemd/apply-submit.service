@@ -23,6 +23,10 @@ Environment=DISPLAY=:1
 Environment=APPLY_BROWSER_HEADLESS=0
 Environment=APPLY_BROWSER_CHANNEL=chrome
 Environment=APPLY_GENERIC_ADAPTER=none
+# The universal filler (one-page forms, spec 2026-10-09). The list grows as watched runs prove each platform;
+# keep it identical in apply-prepare, apply-submit, resume-worker and job-pick.
+Environment=APPLY_UNIVERSAL_ENABLED=1
+Environment=APPLY_UNIVERSAL_PLATFORMS=generic,workable,smartrecruiters
 Environment=APPLY_TAKEOVER_ENABLED=1
 Environment=APPLY_WORKDAY_ENABLED=1
 Environment=APPLY_DISPLAY_LOCK=/var/lib/job-agent/display1.lock

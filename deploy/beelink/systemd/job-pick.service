@@ -19,6 +19,10 @@ Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
 Environment=JOB_PICK_BACKEND=subscription
 Environment=RESUME_CLAUDE_BACKEND=subscription
 Environment=APPLY_GENERIC_ADAPTER=none
+# The universal filler (one-page forms, spec 2026-10-09). The list grows as watched runs prove each platform;
+# keep it identical in apply-prepare, apply-submit, resume-worker and job-pick.
+Environment=APPLY_UNIVERSAL_ENABLED=1
+Environment=APPLY_UNIVERSAL_PLATFORMS=generic,workable,smartrecruiters
 Environment=APPLY_AGENT_ARMED=
 ExecStart=/opt/job-agent/.venv/bin/python job_pick.py
 TimeoutStartSec=3600

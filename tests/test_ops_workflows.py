@@ -134,3 +134,6 @@ def test_no_workflow_enables_workday_or_takeover():
                 text = f.read()
             assert not re.search(r"APPLY_WORKDAY_ENABLED\s*:\s*['\"]?1", text), path
             assert not re.search(r"APPLY_TAKEOVER_ENABLED\s*:\s*['\"]?1", text), path
+            # The universal filler fills forms on arbitrary sites; workflow logs are public.
+            assert not re.search(r"APPLY_UNIVERSAL_ENABLED\s*:\s*['\"]?1", text), path
+            assert "APPLY_UNIVERSAL_PLATFORMS" not in text, path

@@ -421,3 +421,19 @@ def test_beelink_requirements_install_cpu_only_torch_for_job_pick():
         lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
     assert "--extra-index-url https://download.pytorch.org/whl/cpu" in lines
     assert lines.index("torch") < lines.index("sentence-transformers>=3.0.0")
+
+
+def test_the_universal_filler_platforms_match_across_every_unit_that_reads_them():
+    # apply-prepare fills, apply-submit sends, resume-worker builds documents and job-pick counts
+    # stale rows for the same platforms; a drifted list builds documents nobody can send, or skips
+    # rows the worker could fill.
+    lists = {}
+    for unit in ("apply-prepare", "apply-submit", "resume-worker", "job-pick"):
+        directives = _directives(os.path.join(_SYSTEMD, f"{unit}.service"))
+        assert "Environment=APPLY_UNIVERSAL_ENABLED=1" in directives, unit
+        lists[unit] = [d for d in directives.splitlines() if d.startswith("Environment=APPLY_UNIVERSAL_PLATFORMS=")]
+    assert len({tuple(v) for v in lists.values()}) == 1
+    assert len(lists["apply-prepare"]) == 1
+    platforms = lists["apply-prepare"][0].split("=", 2)[2].split(",")
+    import ats_platform
+    assert platforms and set(platforms) <= set(ats_platform.GENERIC_PLATFORMS)

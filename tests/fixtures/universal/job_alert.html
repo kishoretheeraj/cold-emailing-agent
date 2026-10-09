@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Apply - Alertco</title></head>
+<body>
+<!-- An application form beside a job-alert signup that also asks for an email (and a referrer
+     field inside the application). Only the application's own form may be filled. -->
+<aside><form id="alerts" action="/alerts" method="post">
+  <label for="ae">Email me new jobs *</label><input id="ae" name="alertEmail" type="email" required>
+  <button type="submit">Subscribe</button></form></aside>
+<form id="apply" action="/received" method="post">
+  <label for="fn">First name *</label><input id="fn" name="first" required>
+  <label for="ln">Last name *</label><input id="ln" name="last" required>
+  <label for="em">Email *</label><input id="em" name="email" type="email" required>
+  <label for="em2">Confirm email *</label><input id="em2" name="email2" type="email" required>
+  <label for="re">Referrer's email</label><input id="re" name="refEmail" type="email">
+  <label for="cv">Resume/CV *</label><input id="cv" name="cv" type="file" required>
+  <label for="tr">Transcript</label><input id="tr" name="tr" type="file">
+  <button type="submit">Submit application</button>
+</form>
+</body></html>

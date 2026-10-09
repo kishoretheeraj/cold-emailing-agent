@@ -19,14 +19,23 @@ def classify(job_url):
     return platform if platform in _ROUTED else "generic"
 
 
+def universal_platform(job_url):
+    """The job_identity platform when the universal filler handles this URL on this host, else None."""
+    platform = job_identity.identify(job_url)["platform"]
+    if config.APPLY_UNIVERSAL_ENABLED and platform in GENERIC_PLATFORMS and platform in config.APPLY_UNIVERSAL_PLATFORMS:
+        return platform
+    return None
+
+
 def unpreparable_platforms():
     """job_identity platforms this host can only skip: generic sites when no generic adapter is
-    configured, Workday when it is enabled but the account vault key is missing. Queues exclude
+    configured and the universal filler does not cover them, Workday when it is enabled but the account vault key is missing. Queues exclude
     them in the query itself, so a pile of them can never fill a batch and starve the rest, and the
     resume worker never builds documents nobody here can submit."""
     excluded = []
+    universal = config.APPLY_UNIVERSAL_PLATFORMS if config.APPLY_UNIVERSAL_ENABLED else ()
     if config.APPLY_GENERIC_ADAPTER == "none":
-        excluded += list(GENERIC_PLATFORMS)
+        excluded += [p for p in GENERIC_PLATFORMS if p not in universal]
     if config.APPLY_WORKDAY_ENABLED and not config.VAULT_KEY:
         excluded.append("workday")
     return excluded

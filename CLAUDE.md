@@ -48,6 +48,7 @@ job_filters.py
 job_sources.py
 job_sourcing.py
 job_liveness.py
+universal_filler.py
 application_outcomes.py
 approval_signature.py
 apply_worker.py
@@ -93,7 +94,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, `[WARM]`, `[OUTCOME]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, `[WARM]`, `[OUTCOME]`, `[APPLY-UNIVERSAL]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -1409,8 +1410,8 @@ hand after a watched run, RUNBOOK section 10). Both drive real Chrome headful on
 skips a run while the display is busy and yields between rows as soon as `db.get_approved_application_ids()`
 is non-empty; submit waits up to `APPLY_SUBMIT_LOCK_WAIT_SECONDS`. Every row's outcome (read back from
 the row's `automation_status`) goes to `application_runs`. `--submit` refuses unless `APPLY_AGENT_ARMED`
-is exactly `"1"`. `APPLY_GENERIC_ADAPTER=none` on the Beelink: generic-platform rows stay `idle` in
-prepare and `submit()` refuses them before claiming (browser-use needs a paid API key). **Takeover**
+is exactly `"1"`. `APPLY_GENERIC_ADAPTER=none` on the Beelink (browser-use needs a paid API key): generic-platform rows the
+universal filler does not cover stay `idle` in prepare and `submit()` refuses them before claiming (see "Universal filler"). **Takeover**
 (`takeover.py`, only with `APPLY_TAKEOVER_ENABLED=1`): `challenge_present(page)` detects a visible
 reCAPTCHA/hCaptcha/Turnstile (detection only; real-DOM tests in `tests/test_takeover.py`);
 `await_human` requests a takeover, heartbeats every `APPLY_TAKEOVER_POLL_SECONDS`, and returns on
@@ -1585,6 +1586,35 @@ applied again, so the queue's Undo (a PATCH back to `previous_stage`) sticks. Ma
 - with two open applications at one company, the email has to name the role.
 Anything uncertain changes nothing. Tests: `tests/test_application_outcomes.py`,
 `tests/test_application_outcomes_migration.py` (+ `supabase/tests/application_outcomes_dryrun.sql`).
+
+**Universal filler (2026-10-09, spec docs/superpowers/specs/2026-10-09-every-site-design.md, advisor-reviewed)**:
+`universal_filler.py` fills **one-page** forms on any site the hand-mapped fillers and Workday do not cover, with no
+model in the loop for navigation (screening answers still come from the subscription). It runs only where
+`APPLY_UNIVERSAL_ENABLED=1` (Beelink apply/resume/pick units; `tests/test_ops_workflows.py` fails if a workflow sets
+it) and only for job_identity platforms in `APPLY_UNIVERSAL_PLATFORMS` (identical in all four units,
+`tests/test_beelink_units.py`); `ats_platform.universal_platform(url)` decides, and `unpreparable_platforms()` keeps
+excluding the rest so the resume worker never builds documents for them. Safety rules, each with a mutation-checked
+real-browser test against a POST-counting server (`tests/test_universal_apply.py`):
+- `SUBMIT_GUARD` (a context init script, so new tabs and iframes get it) stops every native submission (submit
+  event, Enter, `form.submit()`, `requestSubmit()`) and counts it; a nonzero count or a missing guard fails the
+  preview. Only `submit()` lifts it, right before the one approved click.
+- Nothing is pressed but the entry control (once, on the landing page, never a third-party "Apply with ...") and,
+  in an armed `submit()`, the final control. A page with any Next-class control is multi-step and stops
+  (`Stop("multi_step")`, needs_input); the final control must be exactly one strict Submit/Apply label, stored in
+  `apply_preview.universal.final_label` and required to match at submit (`FormChangedError` otherwise).
+- Details are typed only on the posting's own registrable domain or a known ATS host (`allowed_host`).
+- The inventory is scoped to the application's `<form>` (`View.form_scope`, read by `_form_inventory`), contact
+  fields map by positive label rules (`contact_key`), a key two fields claim fills neither (email + confirm email
+  is the one pair), files go by label (`file_targets`), comboboxes are answered by clicking an option, never Enter
+  (`View.no_enter`).
+- A confirmation visible after filling releases `unsupported` ("may have received this application during preview").
+- A sign-in wall: saved cookies for that tenant first (`ats_sessions.restore_cookies`), then one takeover on the
+  Beelink; afterwards only that site's cookies are saved (`save_state(domain=)`). No password is ever typed.
+`_submission_state` now counts only visible confirmation/rejection text (pages ship hidden thank-you panels).
+`scripts/form_recon.py` is the read-only recon (presses only Apply, records labels/kinds/roles, never values); this
+cloud session's egress blocks job sites, so recon runs on the Beelink (RUNBOOK section 12).
+Tests: `tests/test_universal_contact.py`, `test_universal_buttons.py`, `test_universal_host.py`,
+`test_universal_pages.py`, `test_universal_plan.py`, `test_universal_apply.py`, `test_form_recon.py`.
 
 **Fill reports and the required-field gate (2026-10-06)**: `ats_fillers` locates fields by id/name
 selector first with a label-regex fallback, and each `fill_<platform>` returns `{field_key: bool}`;

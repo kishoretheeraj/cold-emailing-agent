@@ -303,3 +303,28 @@ Search preferences live in the `job_search_preferences` row of the Prompts page 
 seniority words, locations, posting age, per-company cap, daily submit cap). A bad value falls
 back to its default. `job_pick` needs CPU-only torch. `requirements-beelink.txt` installs it from
 PyTorch's CPU index, so reprovision or `pip install -r requirements-beelink.txt` after pulling.
+
+## 12. Every site: recon and the universal filler
+
+The universal filler (`universal_filler.py`, spec `docs/superpowers/specs/2026-10-09-every-site-design.md`)
+fills one-page application forms on sites without a hand-written filler. It runs only where
+`APPLY_UNIVERSAL_ENABLED=1` (the four apply/resume/pick units) and only for the platforms in
+`APPLY_UNIVERSAL_PLATFORMS` (shipped: `generic,workable,smartrecruiters`; keep the list identical in
+all four units). Multi-step forms, sign-in walls without a saved session, and Apply links that open
+another site stop with a reason in "Needs you".
+
+**Recon first** (read-only: it presses only "Apply", never types, never submits):
+
+```bash
+cd /opt/job-agent && sudo -u jobagent .venv/bin/python scripts/form_recon.py --from-feed 3 --out /tmp/recon.json
+```
+
+Send the JSON back to the session that builds adapters (it holds labels and button names only).
+Each report says per site whether the form is one page (`state: form`, a `submit` role and no
+`next` role), a wizard, a sign-in wall, or an iframe.
+
+**Watched preview:** with `apply-prepare.timer` stopped, `sudo systemctl start apply-prepare` and
+watch `journalctl -u apply-prepare -f` for `[APPLY-UNIVERSAL]` lines. A sign-in wall asks you in the
+contact-manager to sign in once on the takeover view; the session is then saved for that site (only
+that site's cookies). Add a platform to `APPLY_UNIVERSAL_PLATFORMS` (all four units, `daemon-reload`)
+only after its watched preview and one watched submit look right.

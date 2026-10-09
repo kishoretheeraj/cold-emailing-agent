@@ -9,6 +9,7 @@ not reveal where the operator applied).
 """
 
 import hashlib
+import json
 import os
 import re
 from urllib.parse import urlparse
@@ -55,8 +56,15 @@ def state_path(key):
     return path if os.path.isfile(path) else None
 
 
-def save_state(context, key):
-    """Write the context's cookies and storage for this tenant, atomically, readable only by us."""
+def _within(host, domain):
+    host = (host or "").lower().lstrip(".")
+    return host == domain or host.endswith("." + domain)
+
+
+def save_state(context, key, domain=None):
+    """Write the context's cookies and storage for this tenant, atomically, readable only by us.
+    With `domain`, only that site's cookies and origins are kept: a human who signed in with
+    Google during a takeover must not leave the operator's Google session in this file."""
     os.makedirs(config.APPLY_SESSIONS_DIR, mode=0o700, exist_ok=True)
     os.chmod(config.APPLY_SESSIONS_DIR, 0o700)
     path = _path(key)
@@ -64,7 +72,15 @@ def save_state(context, key):
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.close(fd)
-        context.storage_state(path=tmp)
+        if domain:
+            state = context.storage_state()
+            state = {"cookies": [c for c in state.get("cookies", []) if _within(c.get("domain"), domain)],
+                     "origins": [o for o in state.get("origins", [])
+                                 if _within(urlparse(o.get("origin", "")).hostname, domain)]}
+            with open(tmp, "w") as fh:
+                json.dump(state, fh)
+        else:
+            context.storage_state(path=tmp)
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     finally:
@@ -78,3 +94,20 @@ def forget(key):
         os.remove(_path(key))
     except FileNotFoundError:
         pass
+
+
+def restore_cookies(context, key):
+    """Add this tenant's saved cookies to an open context (the form opened on a host the browser
+    was not launched with). True when there were any."""
+    path = state_path(key)
+    if not path:
+        return False
+    try:
+        with open(path) as fh:
+            cookies = json.load(fh).get("cookies") or []
+    except (OSError, ValueError):
+        return False
+    if not cookies:
+        return False
+    context.add_cookies(cookies)
+    return True

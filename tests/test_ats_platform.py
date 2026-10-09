@@ -5,6 +5,7 @@ a jobright.py run)."""
 import pytest
 
 import ats_platform
+import config
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -50,3 +51,29 @@ def test_workday_variants_are_all_excluded(url):
 ])
 def test_classify_by_hostname(url, expected):
     assert ats_platform.classify(url) == expected
+
+
+# ── Universal filler routing (spec 2026-10-09) ─────────────────────────────────
+
+@pytest.mark.parametrize("enabled,platforms,url,expected", [
+    (True, ("generic",), "https://careers.fixtureco.com/jobs/1", "generic"),
+    (True, ("generic",), "https://apply.workable.com/fixtureco/j/ABC/", None),
+    (True, ("workable",), "https://apply.workable.com/fixtureco/j/ABC/", "workable"),
+    (False, ("generic",), "https://careers.fixtureco.com/jobs/1", None),
+    (True, ("generic", "greenhouse"), "https://boards.greenhouse.io/x/jobs/1", None),  # hand-mapped stays hand-mapped
+    (True, ("generic",), "https://www.linkedin.com/jobs/view/1", None),                # aggregators never
+])
+def test_universal_platform(mocker, enabled, platforms, url, expected):
+    mocker.patch.object(config, "APPLY_UNIVERSAL_ENABLED", enabled)
+    mocker.patch.object(config, "APPLY_UNIVERSAL_PLATFORMS", platforms)
+    assert ats_platform.universal_platform(url) == expected
+
+
+def test_unpreparable_keeps_only_the_platforms_the_universal_filler_does_not_cover(mocker):
+    mocker.patch.object(config, "APPLY_GENERIC_ADAPTER", "none")
+    mocker.patch.object(config, "APPLY_WORKDAY_ENABLED", False)
+    mocker.patch.object(config, "APPLY_UNIVERSAL_ENABLED", True)
+    mocker.patch.object(config, "APPLY_UNIVERSAL_PLATFORMS", ("generic", "workable"))
+    assert ats_platform.unpreparable_platforms() == ["smartrecruiters", "oracle", "icims"]
+    mocker.patch.object(config, "APPLY_UNIVERSAL_ENABLED", False)
+    assert ats_platform.unpreparable_platforms() == list(ats_platform.GENERIC_PLATFORMS)

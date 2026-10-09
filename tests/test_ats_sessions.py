@@ -98,3 +98,49 @@ def test_forget_removes_a_tenant_state(sessions_dir):
     ats_sessions.forget("t")
     assert ats_sessions.state_path("t") is None
     ats_sessions.forget("t")  # idempotent
+
+
+class _Context:
+    def __init__(self, state):
+        self.state, self.added = state, []
+
+    def storage_state(self, path=None):
+        if path:
+            with open(path, "w") as fh:
+                json.dump(self.state, fh)
+        return self.state
+
+    def add_cookies(self, cookies):
+        self.added.extend(cookies)
+
+
+_MIXED = {
+    "cookies": [{"name": "sid", "domain": "careers.fixtureco.com", "value": "a"},
+                {"name": "pref", "domain": ".fixtureco.com", "value": "b"},
+                {"name": "SID", "domain": ".google.com", "value": "operator-google-session"},
+                {"name": "x", "domain": "evilfixtureco.com", "value": "c"}],
+    "origins": [{"origin": "https://careers.fixtureco.com", "localStorage": []},
+                {"origin": "https://accounts.google.com", "localStorage": []}],
+}
+
+
+def test_a_domain_filtered_save_keeps_only_that_site(sessions_dir):
+    ats_sessions.save_state(_Context(_MIXED), "careers.fixtureco.com", domain="fixtureco.com")
+    with open(ats_sessions.state_path("careers.fixtureco.com")) as fh:
+        saved = json.load(fh)
+    assert [c["name"] for c in saved["cookies"]] == ["sid", "pref"]
+    assert [o["origin"] for o in saved["origins"]] == ["https://careers.fixtureco.com"]
+    assert stat.S_IMODE(os.stat(ats_sessions.state_path("careers.fixtureco.com")).st_mode) == 0o600
+
+
+def test_restore_cookies_adds_a_saved_tenant_to_an_open_context(sessions_dir):
+    ats_sessions.save_state(_Context(_MIXED), "careers.fixtureco.com", domain="fixtureco.com")
+    context = _Context({})
+    assert ats_sessions.restore_cookies(context, "careers.fixtureco.com") is True
+    assert {c["name"] for c in context.added} == {"sid", "pref"}
+
+
+def test_restore_cookies_without_a_saved_tenant_does_nothing(sessions_dir):
+    context = _Context({})
+    assert ats_sessions.restore_cookies(context, "nobody.example") is False
+    assert context.added == []

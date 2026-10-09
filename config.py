@@ -664,6 +664,12 @@ APPLY_WORKER_ADAPTER = "deterministic"
 APPLY_QUALITY_GATE = os.environ.get("APPLY_QUALITY_GATE", "1") != "0"
 # Workday applications (workday_adapter.py): only where a human can take over (the Beelink).
 APPLY_WORKDAY_ENABLED = os.environ.get("APPLY_WORKDAY_ENABLED") == "1"
+# The universal filler (universal_filler.py, spec 2026-10-09): one-page forms on any other site, no
+# paid model. Beelink units only (tests/test_ops_workflows.py fails if a workflow sets it), and only
+# for the job_identity platforms listed, which grow as watched runs prove each one.
+APPLY_UNIVERSAL_ENABLED = os.environ.get("APPLY_UNIVERSAL_ENABLED") == "1"
+APPLY_UNIVERSAL_PLATFORMS = tuple(p.strip() for p in os.environ.get("APPLY_UNIVERSAL_PLATFORMS", "").split(",")
+                                  if p.strip())
 # Per-tenant logged-in browser state (ats_sessions.py) and the encrypted password vault
 # (credential_vault.py). VAULT_KEY comes from /etc/job-agent/vault.env, loaded only by the apply units.
 APPLY_SESSIONS_DIR = os.environ.get("APPLY_SESSIONS_DIR", "/var/lib/job-agent/sessions")

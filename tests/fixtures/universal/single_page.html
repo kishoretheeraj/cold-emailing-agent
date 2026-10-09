@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Associate Product Manager - Fixtureco Careers</title></head>
+<body>
+<!-- A one-page application, shaped like the company-hosted forms in spec 2026-10-09 §1. -->
+<header><form role="search" id="site-search"><input type="search" name="q" aria-label="Search jobs"></form></header>
+<h1>Associate Product Manager</h1>
+<form id="apply" novalidate>
+  <label for="fn">First name *</label><input id="fn" name="firstName" required>
+  <label for="ln">Last name *</label><input id="ln" name="lastName" required>
+  <label for="em">Email *</label><input id="em" name="email" type="email" required>
+  <label for="ph">Phone</label><input id="ph" name="phone" type="tel">
+  <label for="li">LinkedIn profile</label><input id="li" name="linkedin">
+  <label for="ref">Referrer's email</label><input id="ref" name="referrerEmail" type="email">
+  <label for="cv">Resume *</label><input id="cv" name="resume" type="file" required>
+  <label for="auth">Are you legally authorized to work in the United States? *</label>
+  <select id="auth" name="workAuth" required><option value="">Select</option><option>Yes</option><option>No</option></select>
+  <label for="why">Why do you want to work at Fixtureco? *</label><textarea id="why" name="why" required></textarea>
+  <button type="submit" id="send">Submit application</button>
+</form>
+<div id="done" hidden>Thank you for applying! We have received your application.</div>
+<script>
+  window.__submitted = 0;
+  // Like a React form: its own handler posts the application with fetch.
+  document.getElementById('apply').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    window.__submitted += 1;
+    await fetch('/received', {method: 'POST', body: new FormData(e.target)});
+    document.getElementById('apply').hidden = true;
+    document.getElementById('done').hidden = false;
+  });
+</script>
+</body></html>
