@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Apply - Uploadco</title></head>
+<body>
+<!-- Like many real forms: an analytics beacon on load, and the resume uploaded by fetch the moment
+     it is chosen. The application itself is sent by fetch from the Submit handler. -->
+<form id="apply" novalidate>
+  <label for="fn">First name *</label><input id="fn" name="firstName" required>
+  <label for="ln">Last name *</label><input id="ln" name="lastName" required>
+  <label for="em">Email *</label><input id="em" name="email" type="email" required>
+  <label for="cv">Resume *</label><input id="cv" name="resume" type="file" required>
+  <button type="submit">Submit application</button>
+</form>
+<div id="done" hidden>Thank you for applying! Your application has been submitted.</div>
+<script>
+  window.__uploads = 0;
+  navigator.sendBeacon('/beacon', 'page-view');
+  document.getElementById('cv').addEventListener('change', async () => {
+    try { await fetch('/upload', {method: 'POST', body: 'resume'}); window.__uploads += 1; } catch (e) {}
+  });
+  document.getElementById('apply').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await fetch('/received', {method: 'POST', body: new FormData(e.target)});
+    document.getElementById('apply').hidden = true;
+    document.getElementById('done').hidden = false;
+  });
+</script>
+</body></html>

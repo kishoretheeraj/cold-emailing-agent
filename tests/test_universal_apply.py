@@ -4,6 +4,7 @@ submit fills and presses nothing; an armed submit sends exactly once. Database, 
 model are mocked; the browser, the pages and the server are real. These fixtures are built from
 platform shapes, not live recon (spec 2026-10-09 §5): they prove the safety rules, not a live site."""
 
+import hashlib
 import json
 import os
 import threading
@@ -18,6 +19,9 @@ import config
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "universal"
 ELIGIBILITY = {"work_authorized_us": "Yes", "requires_visa_sponsorship": "No"}
+PDF = b"%PDF-1.4 resume"
+# The submit pass re-hashes every document it uploads against the digest recorded at build time.
+DIGESTS = {"resume_sha256": hashlib.sha256(PDF).hexdigest(), "cover_letter_sha256": hashlib.sha256(PDF).hexdigest()}
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +95,7 @@ def env(browser, server, mocker, tmp_path):
     mocker.patch.object(apply_agent, "_screening_completion", return_value="LinkedIn")
     mocker.patch.object(apply_agent.db, "load_prompts", return_value={"applicant_eligibility": json.dumps(ELIGIBILITY)})
     storage = MagicMock()
-    storage.storage.from_.return_value.download.return_value = b"%PDF-1.4 resume"
+    storage.storage.from_.return_value.download.return_value = PDF
     mocker.patch.object(apply_agent.db, "get_client", return_value=storage)
     for name, value in (("claim_application", "lease-1"), ("heartbeat_application", None),
                         ("release_application", True), ("complete_preview", True),
@@ -233,7 +237,7 @@ def test_a_form_that_submits_itself_while_filling_is_not_previewed(env, server, 
 def _approved(server, page, preview):
     return _job(server, page, stage="ready_to_submit", automation_status="submitting",
                 approved_at="2026-10-09T03:00:00Z", apply_preview=preview,
-                preview_revision_hash="h1", approved_revision_hash="h1", form_signature=None)
+                preview_revision_hash="h1", approved_revision_hash="h1", form_signature=None, **DIGESTS)
 
 
 @pytest.fixture
@@ -330,3 +334,51 @@ def test_a_hidden_thank_you_panel_is_not_a_confirmation(env, server):
     form = env["pages"][0].context.pages[-1]
     assert form.locator("#done").is_hidden()
     assert apply_agent._submission_state(form) == "pending"
+
+
+def test_armed_submit_refuses_documents_that_do_not_match_the_approved_digest(approved, server, mocker):
+    approved("posting.html")
+    row = apply_agent.db.get_job_application.return_value
+    row["resume_sha256"] = hashlib.sha256(b"a different resume").hexdigest()
+    mocker.patch.dict("os.environ", {"APPLY_AGENT_ARMED": "1"})
+    with pytest.raises(apply_agent.DigestMismatch):
+        apply_agent.submit(41)
+    assert server["posts"] == []
+    assert _released()[2] == "failed_retryable"
+
+
+# ── network sends: blocked in the preview, allowed when the approved submit needs them ──
+
+def test_preview_blocks_network_sends_without_failing_the_preview(env, server):
+    assert apply_agent._process_one_preview(_job(server, "upload_on_select.html")) == "filled"
+    page = env["pages"][0]
+    assert server["posts"] == []                                   # no beacon, no upload, no application
+    assert apply_agent.universal_filler.network_count(page) >= 2   # the beacon and the upload were stopped
+    assert apply_agent.universal_filler.guard_count(page) == 0
+
+
+def test_armed_submit_lets_the_upload_through_and_sends_once(approved, server, mocker):
+    approved("upload_on_select.html")
+    mocker.patch.dict("os.environ", {"APPLY_AGENT_ARMED": "1"})
+    apply_agent.submit(41)
+    assert server["posts"].count("/received") == 1
+    assert "/upload" in server["posts"]
+    assert server["posts"].index("/upload") < server["posts"].index("/received")
+
+
+@pytest.mark.parametrize("job_url,for_submit,blocks", [
+    ("https://careers.fixtureco.com/jobs/1", False, True),
+    ("https://careers.fixtureco.com/jobs/1", True, False),
+    ("https://fixture.wd5.myworkdayjobs.com/en-US/External/job/X_R-1", False, False),
+    ("https://fixture.wd5.myworkdayjobs.com/en-US/External/job/X_R-1", True, False),
+    ("https://boards.greenhouse.io/fixtureco/jobs/123", False, True),
+    ("https://boards.greenhouse.io/fixtureco/jobs/123", True, False),
+])
+def test_which_launches_block_network_sends(mocker, job_url, for_submit, blocks):
+    mocker.patch.object(config, "APPLY_UNIVERSAL_ENABLED", True)
+    mocker.patch.object(config, "APPLY_UNIVERSAL_PLATFORMS", ("generic",))
+    launch = mocker.patch.object(apply_agent, "_launch_page")
+    platform = apply_agent.ats_platform.classify(job_url)
+    apply_agent._launch_for({"job_url": job_url}, platform, for_submit=for_submit)
+    script = launch.call_args.kwargs["init_script"]
+    assert script == apply_agent.universal_filler.submit_guard(block_network=blocks)

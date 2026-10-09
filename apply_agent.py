@@ -1180,9 +1180,10 @@ def _prepare_workday(job, job_id, lease, page, quality=None):
         "fill_report": {"attachments": attach, "required_unfilled": []},
         "keyword_coverage": (quality or {}).get("coverage"),
     }
-    blocked = universal_filler.guard_count(page)
-    if blocked:
-        log.info(f"[APPLY-PREVIEW] | {job.get('company')} | submit guard blocked {blocked} submission attempt(s) during fill")
+    blocked, sends = universal_filler.guard_count(page), universal_filler.network_count(page)
+    if blocked or sends:
+        log.info(f"[APPLY-PREVIEW] | {job.get('company')} | guard | form submissions stopped={blocked} "
+                 f"| network sends={sends}")
     if not db.complete_preview(job_id, lease, preview, signature):
         log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded")
         return "lost"
@@ -1361,26 +1362,30 @@ def _prepare_universal(job, job_id, lease, page, quality=None):
                       "contact_fields": report["contact_fields"]},
         "keyword_coverage": (quality or {}).get("coverage"),
     }
-    blocked = universal_filler.guard_count(page)
-    if blocked:
-        log.info(f"[APPLY-UNIVERSAL] | {company} | submit guard blocked {blocked} submission attempt(s) during fill")
+    sends = universal_filler.network_count(target)
+    if sends:
+        log.info(f"[APPLY-UNIVERSAL] | {company} | guard | network sends stopped during fill={sends}")
     if not db.complete_preview(job_id, lease, preview, signature):
         log.warning(f"[APPLY-UNIVERSAL] | {company} | lease lost, preview discarded")
         return "lost"
     return "filled"
 
 
-def _launch_for(job, platform):
+def _launch_for(job, platform, for_submit=False):
+    # The preview blocks network sends; the approved submit pass and Workday need them (sign-in,
+    # step saves, uploads on file choice). Native form submissions are blocked in every case
+    # until submit() lifts the guard for the one approved click.
     if ats_platform.universal_platform(job.get("job_url")):
         state = ats_sessions.state_path(ats_sessions.tenant_key(job.get("job_url")) or "")
-        return _launch_page(job.get("job_url"), storage_state=state, init_script=universal_filler.SUBMIT_GUARD)
+        return _launch_page(job.get("job_url"), storage_state=state,
+                            init_script=universal_filler.submit_guard(block_network=not for_submit))
     if platform == "workday":
         state = ats_sessions.state_path(ats_sessions.tenant_key(job.get("job_url")) or "")
         return _launch_page(job.get("job_url"), storage_state=state,
                             init_script=universal_filler.SUBMIT_GUARD_FORMS_ONLY)
-    # Hand-mapped platforms (greenhouse, lever, ashby): single-page forms, full guard.
+    # Hand-mapped platforms (greenhouse, lever, ashby): the same rule as the universal filler.
     return _launch_page(_application_url(job.get("job_url")),
-                        init_script=universal_filler.SUBMIT_GUARD)
+                        init_script=universal_filler.submit_guard(block_network=not for_submit))
 
 
 def _page_text(page):
@@ -1691,7 +1696,7 @@ def submit(job_id):
         if problem:
             raise ApprovalSignatureError(f"Refusing to submit: {problem}; approve it again")
 
-        page = _launch_for(job, platform)
+        page = _launch_for(job, platform, for_submit=True)
         try:
             _handle_challenge(page, job_id, lease, "CAPTCHA on the application page")
             target = page

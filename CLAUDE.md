@@ -1402,6 +1402,17 @@ secret (`apply_agent_submit.yml` only) and later the Beelink submit unit. Tests:
 `tests/test_approval_signature.py`, `tests/test_signed_approval_migration.py`,
 `supabase/tests/signed_approval_dryrun.sql`.
 
+**Content-bound documents and approval expiry (2026-10-09, Codex review, migration `20261012000000`)**:
+`db.upload_resume_file` stores each build under a content-addressed, never-overwritten path
+(`<root>-<sha256[:16]>.pdf`, upsert off; the anon UPDATE policy on the `resumes` bucket is dropped) and returns
+`(path, sha256)`; `set_resume_files` records `resume_sha256`/`cover_letter_sha256`. `preview_revision_hash` now
+covers those digests and the destination (`company`, `role`, `job_url`), so retargeting or swapping documents
+after approval invalidates it. At submit both attach paths re-hash the downloaded bytes
+(`_verify_document_digest`) and raise `DigestMismatch` (pre-click, `failed_retryable`) on a mismatch or a missing
+digest: rows built before the migration must be rebuilt. `approve_application` sets `approval_expires_at` (7 days)
+and `approval_signature.verify` refuses an expired or missing expiry. Workday submit refuses a failed attachment.
+`application_runs` and `job_boards` have RLS enabled. Functional check: `supabase/tests/document_digests_dryrun.sql`.
+
 **Beelink apply worker (2026-10-08, Phase D)**: `apply_worker.py --prepare|--submit`, each a oneshot on
 its own timer (`apply-prepare.timer` every 20 min, `apply-submit.timer` every minute; both enabled by
 hand after a watched run, RUNBOOK section 10). Both drive real Chrome headful on display :1
@@ -1595,9 +1606,14 @@ it) and only for job_identity platforms in `APPLY_UNIVERSAL_PLATFORMS` (identica
 `tests/test_beelink_units.py`); `ats_platform.universal_platform(url)` decides, and `unpreparable_platforms()` keeps
 excluding the rest so the resume worker never builds documents for them. Safety rules, each with a mutation-checked
 real-browser test against a POST-counting server (`tests/test_universal_apply.py`):
-- `SUBMIT_GUARD` (a context init script, so new tabs and iframes get it) stops every native submission (submit
-  event, Enter, `form.submit()`, `requestSubmit()`) and counts it; a nonzero count or a missing guard fails the
-  preview. Only `submit()` lifts it, right before the one approved click.
+- `submit_guard(block_network)` (a context init script, so new tabs and iframes get it) stops every native
+  submission (submit event, Enter, `form.submit()`, `requestSubmit()`) and counts it (`guard_count`); a nonzero
+  count or a missing guard fails the preview. Only `submit()` lifts it, right before the one approved click.
+  Non-GET/HEAD fetch, XHR and sendBeacon calls are counted (`network_count`, logged) and blocked only in the
+  universal **preview** (`_launch_for(..., for_submit=False)`): the approved submit pass and Workday (both
+  passes) must let them through, because real sites sign in, save wizard steps and upload a resume on file
+  choice that way (Codex review 2026-10-09 asked for network blocking; blocking it there broke Workday
+  sign-in/Next and uploads-on-select, `tests/test_universal_apply.py` covers both directions).
 - Nothing is pressed but the entry control (once, on the landing page, never a third-party "Apply with ...") and,
   in an armed `submit()`, the final control. A page with any Next-class control is multi-step and stops
   (`Stop("multi_step")`, needs_input); the final control must be exactly one strict Submit/Apply label, stored in

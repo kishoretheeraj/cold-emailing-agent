@@ -252,14 +252,17 @@ def allowed_host(job_url, url):
 # ── Submit guard ───────────────────────────────────────────────────────────────
 
 # Installed before any page script runs. Every native submission (a submit button, Enter in a
-# field, form.submit(), form.requestSubmit()) and every network submission (fetch, XMLHttpRequest
-# and navigator.sendBeacon with any method but GET/HEAD) is stopped and counted until
+# field, form.submit(), form.requestSubmit()) is stopped and counted in window.__ufBlocked until
 # window.__ufGuardOff is set, which only apply_agent.submit() does, right before the one approved
-# click. The network wrappers cover a button whose handler posts directly with no <form> involved.
-# Use this for single-page forms (universal, generic, dry-run) where any mutating request during
-# prepare is suspicious.
-SUBMIT_GUARD = r"""(() => {
+# click. Network sends (fetch, XMLHttpRequest and navigator.sendBeacon with any method but
+# GET/HEAD) are counted in window.__ufNetwork, and blocked only with block_network: the preview
+# blocks them (nothing reaches the site before the operator approves); the approved submit pass
+# and Workday must not, because real sites sign in, save wizard steps and upload a resume the
+# moment it is chosen through exactly these calls. A blocked native submission fails a preview;
+# network sends only show up in the log, since analytics pings make them routine on every page.
+_GUARD_JS = r"""((blockNetwork) => {
   window.__ufBlocked = 0;
+  window.__ufNetwork = 0;
   const blocked = () => !window.__ufGuardOff;
   const readOnly = (m) => { m = String(m || 'GET').toUpperCase(); return m === 'GET' || m === 'HEAD'; };
   window.addEventListener('submit', (e) => {
@@ -271,14 +274,16 @@ SUBMIT_GUARD = r"""(() => {
   proto.requestSubmit = function (b) {
     if (blocked()) { window.__ufBlocked += 1; return; } return requestSubmit.call(this, b);
   };
+  const stopSend = (method) => {
+    if (!blocked() || readOnly(method)) return false;
+    window.__ufNetwork += 1;
+    return blockNetwork;
+  };
   const realFetch = window.fetch;
   if (realFetch) {
     window.fetch = function (input, init) {
       const method = (init && init.method) || (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET');
-      if (blocked() && !readOnly(method)) {
-        window.__ufBlocked += 1;
-        return Promise.reject(new TypeError('blocked by submit guard'));
-      }
+      if (stopSend(method)) return Promise.reject(new TypeError('blocked by submit guard'));
       return realFetch.apply(this, arguments);
     };
   }
@@ -287,47 +292,46 @@ SUBMIT_GUARD = r"""(() => {
     const realOpen = xhr.open, realSend = xhr.send;
     xhr.open = function (method) { this.__ufMethod = method; return realOpen.apply(this, arguments); };
     xhr.send = function () {
-      if (blocked() && !readOnly(this.__ufMethod)) { window.__ufBlocked += 1; return; }
+      if (stopSend(this.__ufMethod)) return;
       return realSend.apply(this, arguments);
     };
   }
   if (navigator.sendBeacon) {
     const realBeacon = navigator.sendBeacon;
     navigator.sendBeacon = function () {
-      if (blocked()) { window.__ufBlocked += 1; return false; }
+      if (stopSend('POST')) return false;
       return realBeacon.apply(this, arguments);
     };
   }
-})();"""
+})(%s);"""
 
 
-# Forms-only variant for multi-step wizards (Workday). The wizard needs POSTs to log in, save
-# steps and upload attachments, so network requests are left alone; native <form> submissions
-# are still stopped and counted. The final Submit is a distinct button click that only
-# apply_agent.submit() performs, after lift_guard().
-SUBMIT_GUARD_FORMS_ONLY = r"""(() => {
-  window.__ufBlocked = 0;
-  const blocked = () => !window.__ufGuardOff;
-  window.addEventListener('submit', (e) => {
-    if (blocked()) { e.preventDefault(); e.stopImmediatePropagation(); window.__ufBlocked += 1; }
-  }, true);
-  const proto = HTMLFormElement.prototype;
-  const submit = proto.submit, requestSubmit = proto.requestSubmit;
-  proto.submit = function () { if (blocked()) { window.__ufBlocked += 1; return; } return submit.call(this); };
-  proto.requestSubmit = function (b) {
-    if (blocked()) { window.__ufBlocked += 1; return; } return requestSubmit.call(this, b);
-  };
-})();"""
+def submit_guard(block_network):
+    """The guard init script; see the comment above for when network sends are blocked."""
+    return _GUARD_JS % ("true" if block_network else "false")
 
 
-def guard_count(page):
-    """Submissions the guard stopped on this page (native form submits plus non-GET/HEAD
-    fetch, XMLHttpRequest and sendBeacon calls), or None when the guard is not installed."""
+SUBMIT_GUARD = submit_guard(block_network=True)
+# Native form submissions blocked, network sends counted but let through (Workday, approved submits).
+SUBMIT_GUARD_FORMS_ONLY = submit_guard(block_network=False)
+
+
+def _window_int(page, name):
     try:
-        value = page.evaluate("() => (typeof window.__ufBlocked === 'number' ? window.__ufBlocked : null)")
+        value = page.evaluate(f"() => (typeof window.{name} === 'number' ? window.{name} : null)")
     except Exception:
         return None
     return value if isinstance(value, int) else None
+
+
+def guard_count(page):
+    """Native form submissions the guard stopped on this page, or None when it is not installed."""
+    return _window_int(page, "__ufBlocked")
+
+
+def network_count(page):
+    """Non-GET/HEAD network sends seen (and, with block_network, stopped) on this page."""
+    return _window_int(page, "__ufNetwork")
 
 
 def lift_guard(page):

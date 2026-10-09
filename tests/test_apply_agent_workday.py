@@ -3,6 +3,7 @@
 Review; submit replays the reviewed answers and presses Submit only there. Database, storage,
 the inbox and the model are mocked; the browser and the page are real."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -46,9 +47,11 @@ def tenant(browser, mocker, tmp_path):
     """Opens the fixture for each _launch_page call with the scenario in `tenant.scenario`."""
     state = {"scenario": {}, "pages": [], "storage_states": [], "logs": [], "positions": []}
 
-    def launch(url, storage_state=None):
+    def launch(url, storage_state=None, init_script=None):
         state["storage_states"].append(storage_state)
         context = browser.new_context(storage_state=storage_state) if storage_state else browser.new_context()
+        if init_script:
+            context.add_init_script(init_script)
         page = context.new_page()
         page.add_init_script(f"window.SCENARIO = {json.dumps(state['scenario'])};")
         page.goto(FIXTURE)
@@ -171,10 +174,14 @@ def test_workday_without_a_vault_key_is_left_idle(tenant, mocker):
 
 # ── submit ─────────────────────────────────────────────────────────────────────
 
+_DIGEST = hashlib.sha256(b"%PDF-1.4 resume").hexdigest()
+
+
 def _approved_from(preview):
     return _job(stage="ready_to_submit", automation_status="submitting",
                 approved_at="2026-10-08T03:00:00Z", apply_preview=preview,
-                preview_revision_hash="h1", approved_revision_hash="h1", form_signature=None)
+                preview_revision_hash="h1", approved_revision_hash="h1", form_signature=None,
+                resume_sha256=_DIGEST, cover_letter_sha256=_DIGEST)
 
 
 def test_submit_replays_the_reviewed_answers_and_presses_submit_only_on_review(tenant, mocker):

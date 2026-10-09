@@ -12,6 +12,7 @@ APPLY_LOAD_ROWS sets the row count (default 6; the fifty-a-day check runs 50). S
 Playwright or Chromium is unavailable."""
 
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -112,9 +113,12 @@ def wired(mocker, site):
     return state
 
 
+_PDF_DIGEST = hashlib.sha256(b"%PDF-1.4\n%fixture\n").hexdigest()
+
+
 def _job(site, index):
     platform = _PLATFORMS[index % len(_PLATFORMS)]
-    return {"id": index + 1, "company": f"Company {index}", "role": "Associate Product Manager",
+    return {"resume_sha256": _PDF_DIGEST, "cover_letter_sha256": _PDF_DIGEST,"id": index + 1, "company": f"Company {index}", "role": "Associate Product Manager",
             "job_url": f"{site}/{platform}.html", "stage": "saved", "automation_status": "idle",
             "resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf",
             "posting_snapshot": {"description": "Own the lending roadmap with engineering and design."}}
