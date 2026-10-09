@@ -69,7 +69,10 @@ def probe(job_id, dump_html=False):
 
     page = None
     try:
-        page = apply_agent._launch_page(apply_agent._application_url(job.get("job_url")))
+        page = apply_agent._launch_page(
+            apply_agent._application_url(job.get("job_url")),
+            init_script=apply_agent.universal_filler.SUBMIT_GUARD,
+        )
         report["signature"] = bool(apply_agent._form_signature(page))
         if platform in _FILLERS:
             filler = getattr(ats_fillers, _FILLERS[platform])

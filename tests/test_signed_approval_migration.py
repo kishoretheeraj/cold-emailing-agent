@@ -33,8 +33,13 @@ def test_security_definer_pinned_path_and_grants():
 def test_signature_columns_are_rpc_only():
     for op in ("UPDATE", "INSERT"):
         for role in ("anon", "authenticated"):
-            assert (f"REVOKE {op} (approval_signature, approval_signed_at_ms) ON job_applications FROM {role}"
-                    in SQL_NO_COMMENTS)
+            assert (f"REVOKE {op} (approval_signature, approval_signed_at_ms, approval_expires_at) "
+                    f"ON job_applications FROM {role}" in SQL_NO_COMMENTS)
+
+
+def test_approval_expires_seven_days_after_approval():
+    assert "ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ" in SQL_NO_COMMENTS
+    assert "approval_expires_at = now() + interval '7 days'" in _body()
 
 
 def test_signature_shape_and_freshness_are_required():

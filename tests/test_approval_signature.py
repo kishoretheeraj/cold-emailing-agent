@@ -19,7 +19,8 @@ VECTOR = "813fb85b60f9e586a35ca8c3bff7a1636ace15b7aaa404167fbb7505fb1e751d"
 
 def _signed_job(**overrides):
     job = {"id": 42, "approved_revision_hash": HASH, "approval_signed_at_ms": SIGNED_AT_MS,
-           "approval_signature": VECTOR, "approved_at": "2026-10-08T03:00:01.250+00:00"}
+           "approval_signature": VECTOR, "approved_at": "2026-10-08T03:00:01.250+00:00",
+           "approval_expires_at": "2999-01-01T00:00:00+00:00"}
     job.update(overrides)
     return job
 
@@ -55,6 +56,27 @@ def test_verify_rejects(overrides, reason):
 def test_signed_at_ms_may_arrive_as_a_numeric_string():
     # PostgREST returns BIGINT as a JSON number, but a string must not break verification.
     assert approval_signature.verify(_signed_job(approval_signed_at_ms=str(SIGNED_AT_MS)), KEY) is None
+
+
+EXPIRES = "2026-10-15T03:00:01.250+00:00"
+EXPIRES_MS = 1792033201250
+
+
+def test_verify_accepts_before_expiry_and_rejects_after():
+    job = _signed_job(approval_expires_at=EXPIRES)
+    assert approval_signature.verify(job, KEY, now_ms=EXPIRES_MS) is None
+    assert "expired" in approval_signature.verify(job, KEY, now_ms=EXPIRES_MS + 1)
+
+
+@pytest.mark.parametrize("expires", [None, "", "not a date"])
+def test_verify_fails_closed_without_a_valid_expiry(expires):
+    assert "expired" in approval_signature.verify(_signed_job(approval_expires_at=expires), KEY)
+
+
+def test_a_thirty_day_old_approval_does_not_verify():
+    job = _signed_job(approval_expires_at=EXPIRES)
+    thirty_days_later = SIGNED_AT_MS + 30 * 24 * 3600 * 1000
+    assert "expired" in approval_signature.verify(job, KEY, now_ms=thirty_days_later)
 
 
 @pytest.mark.parametrize("key", [None, "", "short-key"])

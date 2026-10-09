@@ -258,16 +258,18 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     upload = mocker.patch.object(db, "upload_resume_file", side_effect=[
-        "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
+        ("resumes/1/resume-aaaa.pdf", "d1"), ("resumes/1/cover_letter-bbbb.pdf", "d2"),
     ])
     set_files = mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
 
     result = resume_agent.build(1)
 
-    assert result["resume_file_ref"] == "resumes/1/resume.pdf"
-    assert result["cover_letter_file_ref"] == "resumes/1/cover_letter.pdf"
+    assert result["resume_file_ref"] == "resumes/1/resume-aaaa.pdf"
+    assert result["cover_letter_file_ref"] == "resumes/1/cover_letter-bbbb.pdf"
     assert upload.call_count == 2
     set_files.assert_called_once()
+    assert set_files.call_args.kwargs["resume_sha256"] == "d1"
+    assert set_files.call_args.kwargs["cover_letter_sha256"] == "d2"
 
 
 def _mock_happy_build(mocker):
@@ -318,7 +320,7 @@ def test_build_refuses_to_upload_when_rendered_text_has_invisible_characters(moc
 def test_build_allows_pypdf_control_characters_in_rendered_text(mocker):
     _mock_happy_build(mocker)
     mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team\r\nBest\x0c")
-    upload = mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    upload = mocker.patch.object(db, "upload_resume_file", side_effect=[("a", "d1"), ("b", "d2")])
     mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
     result = resume_agent.build(1)
     assert upload.call_count == 2
@@ -357,7 +359,7 @@ def test_build_uses_a_per_build_workdir_and_removes_it_on_success(mocker):
     _mock_pdf_checks(mocker)
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
-    mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    mocker.patch.object(db, "upload_resume_file", side_effect=[("a", "d1"), ("b", "d2")])
     mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
     resume_agent.build(1)
     assert not seen["docx"].startswith("/tmp/resume_")
@@ -409,7 +411,7 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     mocker.patch.object(db, "upload_resume_file", side_effect=[
-        "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
+        ("resumes/1/resume-aaaa.pdf", "d1"), ("resumes/1/cover_letter-bbbb.pdf", "d2"),
     ])
     mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
 

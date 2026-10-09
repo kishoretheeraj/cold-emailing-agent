@@ -798,15 +798,27 @@ def _attachment_name(kind):
     return f"{name}_{'Resume' if kind == 'resume' else 'Cover_Letter'}.pdf"
 
 
-def _attach_resume_and_cover_letter(page, job):
+class DigestMismatch(ValueError):
+    pass
+
+
+def _verify_document_digest(kind, content, expected_digest):
+    """Fail closed: refuse unless the downloaded bytes hash to the digest recorded at build time."""
+    if not expected_digest:
+        raise DigestMismatch(f"Refusing to submit: no approved digest recorded for the {kind}")
+    if hashlib.sha256(content).hexdigest() != expected_digest:
+        raise DigestMismatch("Refusing to submit: document bytes do not match the approved digest")
+
+
+def _attach_resume_and_cover_letter(page, job, verify_digests=False):
     # The bytes go to the browser as a named payload: no temp file to leak, and the employer sees
     # Firstname_Lastname_Resume.pdf. Works headlessly, with no OS dialog.
     client = db.get_client()
     report = {}
-    for report_key, field_ref_key, selectors, fallback in (
-        ("resume", "resume_file_ref", _RESUME_INPUTS,
+    for report_key, field_ref_key, digest_key, selectors, fallback in (
+        ("resume", "resume_file_ref", "resume_sha256", _RESUME_INPUTS,
          ["input[type='file']:not([id*='cover' i]):not([name*='cover' i])"]),
-        ("cover_letter", "cover_letter_file_ref", _COVER_INPUTS, []),
+        ("cover_letter", "cover_letter_file_ref", "cover_letter_sha256", _COVER_INPUTS, []),
     ):
         report[report_key] = None
         storage_path = job.get(field_ref_key)
@@ -818,9 +830,13 @@ def _attach_resume_and_cover_letter(page, job):
                 log.info(f"[APPLY-AGENT] | {report_key} attach skipped: no file input on the form")
                 continue
             content = client.storage.from_(config.RESUME_STORAGE_BUCKET).download(storage_path)
+            if verify_digests:
+                _verify_document_digest(report_key, content, job.get(digest_key))
             payload = {"name": _attachment_name(report_key), "mimeType": "application/pdf", "buffer": content}
             locator.set_input_files(payload, timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
             report[report_key] = True
+        except DigestMismatch:
+            raise
         except Exception as exc:
             report[report_key] = False
             log.info(f"[APPLY-AGENT] | {report_key} attach skipped: {exc}")
@@ -1097,6 +1113,14 @@ def _workday_reach_wizard(page, job_id, lease, tenant, vault, email, login_url):
     raise workday_adapter.WorkdayStop("unrecognized_page", "Could not reach the Workday application")
 
 
+def _refuse_on_failed_attachments(attach):
+    """Raise when a required document failed to attach: a failed resume upload must block
+    submission, not be silently skipped. None means 'no file input on this step' (not a failure)."""
+    failed = [k for k, v in (attach or {}).items() if v is False]
+    if failed:
+        raise ValueError(f"Refusing to submit: attachments failed: {', '.join(failed)}")
+
+
 def _walk_workday(page, job, job_id, lease, field_values, eligibility, replay=None):
     """Fill each wizard step and press Next until Review. Returns (answers, steps, missing,
     attachments); `missing` is non-empty when a step's required questions are still blank, and the
@@ -1156,6 +1180,9 @@ def _prepare_workday(job, job_id, lease, page, quality=None):
         "fill_report": {"attachments": attach, "required_unfilled": []},
         "keyword_coverage": (quality or {}).get("coverage"),
     }
+    blocked = universal_filler.guard_count(page)
+    if blocked:
+        log.info(f"[APPLY-PREVIEW] | {job.get('company')} | submit guard blocked {blocked} submission attempt(s) during fill")
     if not db.complete_preview(job_id, lease, preview, signature):
         log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded")
         return "lost"
@@ -1227,20 +1254,25 @@ def _universal_open(page, job, job_id, lease):
     raise universal_filler.Stop("no_form", "Could not reach the application form")
 
 
-def _attach_universal(view, job, inventory):
+def _attach_universal(view, job, inventory, verify_digests=False):
     client = db.get_client()
     targets = universal_filler.file_targets(inventory)
     report = {}
-    for key, ref in (("resume", "resume_file_ref"), ("cover_letter", "cover_letter_file_ref")):
+    for key, ref, digest_key in (("resume", "resume_file_ref", "resume_sha256"),
+                                 ("cover_letter", "cover_letter_file_ref", "cover_letter_sha256")):
         report[key] = None
         if not job.get(ref) or key not in targets:
             continue
         try:
             content = client.storage.from_(config.RESUME_STORAGE_BUCKET).download(job[ref])
+            if verify_digests:
+                _verify_document_digest(key, content, job.get(digest_key))
             view.locator(targets[key]).first.set_input_files(
                 {"name": _attachment_name(key), "mimeType": "application/pdf", "buffer": content},
                 timeout=config.APPLY_AGENT_FIELD_TIMEOUT_MS)
             report[key] = True
+        except DigestMismatch:
+            raise
         except Exception as exc:
             report[key] = False
             log.info(f"[APPLY-UNIVERSAL] | {key} attach failed: {exc}")
@@ -1262,7 +1294,7 @@ def _universal_fill(target, job, job_id, lease, field_values, eligibility, repla
             continue
         ok = True if field.get("filled") else _fill_field(view, field, values[key])
         contact[key] = contact.get(key, True) and ok
-    attachments = _attach_universal(view, job, inventory)
+    attachments = _attach_universal(view, job, inventory, verify_digests=replay is not None)
     db.heartbeat_application(job_id, lease)
     _fill_eligibility_answers(view, eligibility)
     if replay is None:
@@ -1329,6 +1361,9 @@ def _prepare_universal(job, job_id, lease, page, quality=None):
                       "contact_fields": report["contact_fields"]},
         "keyword_coverage": (quality or {}).get("coverage"),
     }
+    blocked = universal_filler.guard_count(page)
+    if blocked:
+        log.info(f"[APPLY-UNIVERSAL] | {company} | submit guard blocked {blocked} submission attempt(s) during fill")
     if not db.complete_preview(job_id, lease, preview, signature):
         log.warning(f"[APPLY-UNIVERSAL] | {company} | lease lost, preview discarded")
         return "lost"
@@ -1341,7 +1376,7 @@ def _launch_for(job, platform):
         return _launch_page(job.get("job_url"), storage_state=state, init_script=universal_filler.SUBMIT_GUARD)
     if platform == "workday":
         state = ats_sessions.state_path(ats_sessions.tenant_key(job.get("job_url")) or "")
-        return _launch_page(job.get("job_url"), storage_state=state)
+        return _launch_page(job.get("job_url"), storage_state=state, init_script=universal_filler.SUBMIT_GUARD)
     return _launch_page(_application_url(job.get("job_url")))
 
 
@@ -1673,11 +1708,12 @@ def submit(job_id):
             if platform == "workday":
                 # Walk the wizard again from the reviewed answers; Submit only on Review.
                 preview = job.get("apply_preview") or {}
-                _, _, missing, _ = _walk_workday(page, job, job_id, lease, field_values,
-                                                 preview.get("eligibility_answers") or {},
-                                                 replay=preview.get("screening_answers") or {})
+                _, _, missing, attach = _walk_workday(page, job, job_id, lease, field_values,
+                                                      preview.get("eligibility_answers") or {},
+                                                      replay=preview.get("screening_answers") or {})
                 if missing:
                     raise ValueError("Refusing to submit: required fields not filled: " + "; ".join(missing))
+                _refuse_on_failed_attachments(attach)
                 submit_control = workday_adapter.submit_button(page)
             elif universal:
                 # Replay the reviewed answers only; the final button must still be the one approved.
@@ -1708,7 +1744,7 @@ def submit(job_id):
                     _fill_generic_via_browser_use(page, job, field_values)
                 db.heartbeat_application(job_id, lease)
 
-                attach_report = _attach_resume_and_cover_letter(page, job)
+                attach_report = _attach_resume_and_cover_letter(page, job, verify_digests=True)
                 # Reuse the stored preview's answers verbatim -- never regenerate here. The human
                 # approved what's in apply_preview when they tapped "Approve & Submit"; a fresh
                 # Claude call at submit time could produce a different answer than the one they saw,
@@ -1738,7 +1774,7 @@ def submit(job_id):
             if not db.renew_submission_lease(job_id, lease, job["approved_revision_hash"]):
                 raise RuntimeError("Submit stopped: worker lease or approved revision changed during preparation")
 
-            if universal:
+            if universal or platform == "workday":
                 # The guard has stopped every submission until now; only this approved click goes through.
                 universal_filler.lift_guard(target)
 

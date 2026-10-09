@@ -1612,3 +1612,13 @@ def test_preview_returns_lost_when_needs_input_release_returns_none(mocker):
     _preview_mocks(mocker, {"resume": None, "cover_letter": None})
     mocker.patch("apply_agent.db.release_application", return_value=None)
     assert apply_agent._process_one_preview(_preview_job()) == "lost"
+
+
+def test_refuse_on_failed_attachments_raises_only_for_failed():
+    with pytest.raises(ValueError, match="attachments failed: resume"):
+        apply_agent._refuse_on_failed_attachments({"resume": False, "cover_letter": True})
+    # None means "no file input on this step" — not a failure.
+    apply_agent._refuse_on_failed_attachments({"resume": None, "cover_letter": None})
+    apply_agent._refuse_on_failed_attachments({"resume": True})
+    apply_agent._refuse_on_failed_attachments({})
+    apply_agent._refuse_on_failed_attachments(None)

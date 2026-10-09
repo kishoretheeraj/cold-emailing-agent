@@ -4,17 +4,16 @@ import { authConfig, SESSION_COOKIE, verifySessionToken } from "@/lib/operatorAu
 
 const PUBLIC_PATHS = new Set(["/login", "/api/login", "/api/logout"]);
 
-// Gates every page and API route behind the operator session once OPERATOR_PASSWORD and
-// SESSION_SECRET are set. Until then the app behaves as before; the submit route still checks
-// the session itself and refuses without one, so approvals fail closed either way.
+// Gates every page and API route behind the operator session. Fails closed: when OPERATOR_PASSWORD
+// and SESSION_SECRET are unset or too short, only the public paths are reachable, so a missing env
+// var on a deploy can never expose the mutating routes (send-draft and the rest).
 export function proxy(request: NextRequest) {
   const config = authConfig();
-  if (!config) return NextResponse.next();
 
   const { pathname, search } = request.nextUrl;
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 
-  if (verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value, config.secret)) {
+  if (config && verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value, config.secret)) {
     return NextResponse.next();
   }
   if (pathname.startsWith("/api/")) {

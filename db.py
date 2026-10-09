@@ -1,5 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import logging
+import posixpath
 import re
 import time
 import uuid
@@ -1091,15 +1093,20 @@ def set_resume_strategy(application_id, strategy):
     return result.data[0] if result.data else None
 
 
-def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref=None, resume_variant=None):
+def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref=None, resume_variant=None,
+                     resume_sha256=None, cover_letter_sha256=None):
     """Write built-file references onto a job_applications row after a successful build."""
-    # Fixed storage paths mean refs alone don't change on a rebuild; a fresh version changes the
-    # trigger-owned preview hash, so a rebuild after approval invalidates it.
+    # The digests bind the approval to the exact bytes (storage paths alone can be overwritten);
+    # a fresh documents_version also changes the trigger-owned preview hash on every build.
     payload = {"updated_at": datetime.utcnow().isoformat(), "documents_version": str(uuid.uuid4())}
     if resume_file_ref is not None:
         payload["resume_file_ref"] = resume_file_ref
     if cover_letter_file_ref is not None:
         payload["cover_letter_file_ref"] = cover_letter_file_ref
+    if resume_sha256 is not None:
+        payload["resume_sha256"] = resume_sha256
+    if cover_letter_sha256 is not None:
+        payload["cover_letter_sha256"] = cover_letter_sha256
     if resume_variant is not None:
         payload["resume_variant"] = resume_variant
     result = _retry(lambda: get_client().table("job_applications")
@@ -1158,12 +1165,22 @@ def set_resume_error(application_id, message):
 
 
 def upload_resume_file(storage_path, file_bytes, content_type):
-    """Upload a built file to the resumes Storage bucket. Returns storage_path. Raises on failure --
-    unlike the rest of this module's best-effort accessors, a failed upload must not look like success."""
-    get_client().storage.from_(config.RESUME_STORAGE_BUCKET).upload(
-        storage_path, file_bytes, {"content-type": content_type, "upsert": "true"},
-    )
-    return storage_path
+    """Upload a built file to the resumes Storage bucket under a content-addressed path
+    (<root>-<sha256[:16]><ext>), never overwriting. Returns (storage_path, sha256_hex). Raises on
+    failure -- unlike the rest of this module's best-effort accessors, a failed upload must not look
+    like success."""
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    root, ext = posixpath.splitext(storage_path)
+    addressed = f"{root}-{digest[:16]}{ext}"
+    try:
+        get_client().storage.from_(config.RESUME_STORAGE_BUCKET).upload(
+            addressed, file_bytes, {"content-type": content_type, "upsert": "false"},
+        )
+    except Exception as exc:
+        # The name embeds the digest, so an existing object at this path already holds these bytes.
+        if "already exists" not in str(exc).lower() and "duplicate" not in str(exc).lower():
+            raise
+    return addressed, digest
 
 
 def upload_evidence(storage_path, file_bytes, content_type):

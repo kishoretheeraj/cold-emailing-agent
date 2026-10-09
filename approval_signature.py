@@ -6,14 +6,15 @@ The submit route signs `approval:v1:<id>:<revision_hash>:<signed_at_ms>` with HM
 APPROVAL_SIGNING_KEY (server-side only, never in the browser) and passes the signature and
 epoch-ms to approve_application, which stores them. A worker recomputes the HMAC from the row and
 also requires the signing time to sit within MAX_SKEW_SECONDS of approved_at, so an old signature
-replayed into a later approval is refused. Mirrored by contact-manager/src/lib/approvalSignature.ts;
+replayed into a later approval is refused. An approval is also refused once past its
+approval_expires_at (7 days after approval, set by the RPC). Mirrored by contact-manager/src/lib/approvalSignature.ts;
 both test files pin the same vector.
 """
 
 import hashlib
 import hmac
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 MAX_SKEW_SECONDS = 300
 _MIN_KEY_LENGTH = 32
@@ -52,7 +53,7 @@ def _epoch_ms(timestamp):
         return None
 
 
-def verify(job, key=None):
+def verify(job, key=None, now_ms=None):
     """None when the row's approval is validly signed, else a short reason."""
     key = _key(key)
     if not key_configured(key):
@@ -67,4 +68,8 @@ def verify(job, key=None):
     approved_ms = _epoch_ms(job.get("approved_at"))
     if approved_ms is None or abs(approved_ms - signed_at_ms) > MAX_SKEW_SECONDS * 1000:
         return "approval signature is stale"
+    expires_ms = _epoch_ms(job.get("approval_expires_at"))
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000) if now_ms is None else now_ms
+    if expires_ms is None or now_ms > expires_ms:
+        return "approval has expired"
     return None

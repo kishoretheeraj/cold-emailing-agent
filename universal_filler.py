@@ -252,11 +252,14 @@ def allowed_host(job_url, url):
 # ── Submit guard ───────────────────────────────────────────────────────────────
 
 # Installed before any page script runs. Every native submission (a submit button, Enter in a
-# field, form.submit(), form.requestSubmit()) is stopped and counted until window.__ufGuardOff is
-# set, which only apply_agent.submit() does, right before the one approved click.
+# field, form.submit(), form.requestSubmit()) and every network submission (fetch, XMLHttpRequest
+# and navigator.sendBeacon with any method but GET/HEAD) is stopped and counted until
+# window.__ufGuardOff is set, which only apply_agent.submit() does, right before the one approved
+# click. The network wrappers cover a button whose handler posts directly with no <form> involved.
 SUBMIT_GUARD = r"""(() => {
   window.__ufBlocked = 0;
   const blocked = () => !window.__ufGuardOff;
+  const readOnly = (m) => { m = String(m || 'GET').toUpperCase(); return m === 'GET' || m === 'HEAD'; };
   window.addEventListener('submit', (e) => {
     if (blocked()) { e.preventDefault(); e.stopImmediatePropagation(); window.__ufBlocked += 1; }
   }, true);
@@ -266,11 +269,39 @@ SUBMIT_GUARD = r"""(() => {
   proto.requestSubmit = function (b) {
     if (blocked()) { window.__ufBlocked += 1; return; } return requestSubmit.call(this, b);
   };
+  const realFetch = window.fetch;
+  if (realFetch) {
+    window.fetch = function (input, init) {
+      const method = (init && init.method) || (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET');
+      if (blocked() && !readOnly(method)) {
+        window.__ufBlocked += 1;
+        return Promise.reject(new TypeError('blocked by submit guard'));
+      }
+      return realFetch.apply(this, arguments);
+    };
+  }
+  const xhr = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+  if (xhr) {
+    const realOpen = xhr.open, realSend = xhr.send;
+    xhr.open = function (method) { this.__ufMethod = method; return realOpen.apply(this, arguments); };
+    xhr.send = function () {
+      if (blocked() && !readOnly(this.__ufMethod)) { window.__ufBlocked += 1; return; }
+      return realSend.apply(this, arguments);
+    };
+  }
+  if (navigator.sendBeacon) {
+    const realBeacon = navigator.sendBeacon;
+    navigator.sendBeacon = function () {
+      if (blocked()) { window.__ufBlocked += 1; return false; }
+      return realBeacon.apply(this, arguments);
+    };
+  }
 })();"""
 
 
 def guard_count(page):
-    """Submissions the guard stopped on this page, or None when the guard is not installed."""
+    """Submissions the guard stopped on this page (native form submits plus non-GET/HEAD
+    fetch, XMLHttpRequest and sendBeacon calls), or None when the guard is not installed."""
     try:
         value = page.evaluate("() => (typeof window.__ufBlocked === 'number' ? window.__ufBlocked : null)")
     except Exception:

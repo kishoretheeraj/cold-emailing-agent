@@ -431,11 +431,14 @@ def build(application_id):
         _verify_clean_pdf(cl_pdf_path, "cover letter")
 
         with open(pdf_path, "rb") as f:
-            resume_ref = db.upload_resume_file(f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
+            resume_ref, resume_digest = db.upload_resume_file(
+                f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
         with open(cl_pdf_path, "rb") as f:
-            cl_ref = db.upload_resume_file(f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
+            cl_ref, cl_digest = db.upload_resume_file(
+                f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
 
-        db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref)
+        db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref,
+                            resume_sha256=resume_digest, cover_letter_sha256=cl_digest)
         log.info(f"[RESUME] | {application_id} | {job.get('company')} | build complete")
         return {"resume_file_ref": resume_ref, "cover_letter_file_ref": cl_ref}
     finally:

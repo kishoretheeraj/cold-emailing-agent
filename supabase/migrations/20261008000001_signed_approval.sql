@@ -7,22 +7,28 @@
 -- HMAC-SHA256 under APPROVAL_SIGNING_KEY, a server-only secret; the worker verifies it before
 -- any browser opens (approval_signature.py). This RPC stores the signature, requires it to be
 -- well-formed and its timestamp current, so an old signature (readable by anon) cannot be
--- replayed into a later approval. The database cannot check the HMAC itself: it never holds
+-- replayed into a later approval. Each approval also expires 7 days after it is made
+-- (approval_expires_at, set by the RPC); the worker refuses an expired or unexpiring one.
+-- The database cannot check the HMAC itself: it never holds
 -- the key.
 
 ALTER TABLE job_applications
   ADD COLUMN IF NOT EXISTS approval_signature TEXT,
-  ADD COLUMN IF NOT EXISTS approval_signed_at_ms BIGINT;
+  ADD COLUMN IF NOT EXISTS approval_signed_at_ms BIGINT,
+  ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ;
 
 COMMENT ON COLUMN job_applications.approval_signature IS
   'Hex HMAC-SHA256 from the contact-manager submit route over approval:v1:<id>:<approved_revision_hash>:<approval_signed_at_ms>. Written only by approve_application; verified by the submit worker.';
 COMMENT ON COLUMN job_applications.approval_signed_at_ms IS
   'Epoch milliseconds the submit route signed at. approve_application requires it within 2 minutes of now().';
 
-REVOKE UPDATE (approval_signature, approval_signed_at_ms) ON job_applications FROM anon;
-REVOKE INSERT (approval_signature, approval_signed_at_ms) ON job_applications FROM anon;
-REVOKE UPDATE (approval_signature, approval_signed_at_ms) ON job_applications FROM authenticated;
-REVOKE INSERT (approval_signature, approval_signed_at_ms) ON job_applications FROM authenticated;
+COMMENT ON COLUMN job_applications.approval_expires_at IS
+  'Set by approve_application to now() + 7 days. The submit worker refuses an approval past this time (a missing value reads as expired).';
+
+REVOKE UPDATE (approval_signature, approval_signed_at_ms, approval_expires_at) ON job_applications FROM anon;
+REVOKE INSERT (approval_signature, approval_signed_at_ms, approval_expires_at) ON job_applications FROM anon;
+REVOKE UPDATE (approval_signature, approval_signed_at_ms, approval_expires_at) ON job_applications FROM authenticated;
+REVOKE INSERT (approval_signature, approval_signed_at_ms, approval_expires_at) ON job_applications FROM authenticated;
 
 -- A CREATE OR REPLACE with a new argument list would leave the unsigned 2-arg version callable.
 DROP FUNCTION IF EXISTS approve_application(BIGINT, TEXT);
@@ -46,6 +52,7 @@ BEGIN
       approved_revision_hash = preview_revision_hash,
       approval_signature = p_signature,
       approval_signed_at_ms = p_signed_at_ms,
+      approval_expires_at = now() + interval '7 days',
       automation_status = 'approved',
       apply_blocked_reason = NULL
   WHERE id = p_id

@@ -45,6 +45,14 @@ REVOKE ALL ON application_runs FROM anon, authenticated;
 GRANT SELECT ON application_runs TO anon, authenticated;
 REVOKE ALL ON SEQUENCE application_runs_id_seq FROM anon, authenticated;
 
+-- Grants alone are the only control without RLS; enable it and allow reads only. Writes go through
+-- log_application_run (SECURITY DEFINER), which bypasses RLS.
+ALTER TABLE application_runs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS application_runs_anon_read ON application_runs;
+CREATE POLICY application_runs_anon_read ON application_runs FOR SELECT TO anon USING (true);
+DROP POLICY IF EXISTS application_runs_authenticated_read ON application_runs;
+CREATE POLICY application_runs_authenticated_read ON application_runs FOR SELECT TO authenticated USING (true);
+
 CREATE OR REPLACE FUNCTION log_application_run(p_run_id UUID, p_application_id BIGINT, p_kind TEXT, p_adapter TEXT, p_host TEXT, p_started_at TIMESTAMPTZ, p_outcome TEXT, p_stop_reason TEXT DEFAULT NULL, p_fields_filled INT DEFAULT NULL, p_fields_missing INT DEFAULT NULL, p_takeovers INT DEFAULT 0, p_model_calls INT DEFAULT 0, p_error_class TEXT DEFAULT NULL, p_details JSONB DEFAULT NULL)
 RETURNS BIGINT
 LANGUAGE plpgsql

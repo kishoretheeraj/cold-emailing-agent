@@ -144,6 +144,16 @@ REVOKE ALL ON job_boards FROM anon, authenticated;
 GRANT SELECT, INSERT, UPDATE ON job_boards TO anon, authenticated;
 GRANT USAGE ON SEQUENCE job_boards_id_seq TO anon, authenticated;
 
+-- job_sourcing.py reads and writes boards with the anon key (no RPC), so RLS needs policies that
+-- mirror exactly the grants above. No DELETE policy: a missing policy denies it.
+ALTER TABLE job_boards ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS job_boards_anon_select ON job_boards;
+CREATE POLICY job_boards_anon_select ON job_boards FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS job_boards_anon_insert ON job_boards;
+CREATE POLICY job_boards_anon_insert ON job_boards FOR INSERT TO anon, authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS job_boards_anon_update ON job_boards;
+CREATE POLICY job_boards_anon_update ON job_boards FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
+
 -- The API roles still held table-level DELETE and TRUNCATE on job_applications from Supabase's
 -- bootstrap grants (20260925000000 narrowed only INSERT/UPDATE). Nothing deletes application rows,
 -- and a delete is not harmless: removing a submitted row frees its job_key, so the same job could

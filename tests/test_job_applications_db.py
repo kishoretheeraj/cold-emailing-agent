@@ -247,14 +247,47 @@ def test_set_resume_files_writes_fresh_documents_version_each_call(fake_client):
     assert str(uuid.UUID(versions[0])) == versions[0]
 
 
+def test_set_resume_files_stores_digests_only_when_provided(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.set_resume_files(1, resume_file_ref="r.pdf")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert "resume_sha256" not in updated and "cover_letter_sha256" not in updated
+    db.set_resume_files(1, resume_file_ref="r.pdf", cover_letter_file_ref="c.pdf",
+                        resume_sha256="aa", cover_letter_sha256="bb")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["resume_sha256"] == "aa"
+    assert updated["cover_letter_sha256"] == "bb"
+
+
+def test_upload_resume_file_is_content_addressed_immutable_and_returns_digest(fake_client):
+    import hashlib
+    digest = hashlib.sha256(b"filebytes").hexdigest()
+    path, got_digest = db.upload_resume_file("resumes/1/resume.pdf", b"filebytes", "application/pdf")
+    fake_client.storage.from_.assert_called_with(config.RESUME_STORAGE_BUCKET)
+    fake_client.storage.from_.return_value.upload.assert_called_once()
+    args, kwargs = fake_client.storage.from_.return_value.upload.call_args
+    assert args[0] == f"resumes/1/resume-{digest[:16]}.pdf"
+    assert args[1] == b"filebytes"
+    assert args[2]["upsert"] == "false"
+    assert (path, got_digest) == (f"resumes/1/resume-{digest[:16]}.pdf", digest)
+
+
+def test_upload_resume_file_treats_existing_identical_object_as_success(fake_client):
+    fake_client.storage.from_.return_value.upload.side_effect = RuntimeError("The resource already exists")
+    path, digest = db.upload_resume_file("resumes/1/resume.pdf", b"same", "application/pdf")
+    assert digest[:16] in path
+
+
 def test_upload_resume_file_calls_storage_and_returns_path(fake_client):
+    import hashlib
+    digest = hashlib.sha256(b"filebytes").hexdigest()
     result = db.upload_resume_file("resumes/1/resume.pdf", b"filebytes", "application/pdf")
     fake_client.storage.from_.assert_called_with(config.RESUME_STORAGE_BUCKET)
     fake_client.storage.from_.return_value.upload.assert_called_once()
     args, kwargs = fake_client.storage.from_.return_value.upload.call_args
-    assert args[0] == "resumes/1/resume.pdf"
+    assert args[0] == f"resumes/1/resume-{digest[:16]}.pdf"
     assert args[1] == b"filebytes"
-    assert result == "resumes/1/resume.pdf"
+    assert result == (f"resumes/1/resume-{digest[:16]}.pdf", digest)
 
 
 def test_upload_resume_file_raises_on_failure(fake_client):

@@ -19,11 +19,14 @@ function request(path: string, cookie?: string) {
 const passesThrough = (res: Response) => res.headers.get("x-middleware-next") === "1";
 
 describe("proxy", () => {
-  it("passes everything through while login is not configured", () => {
+  it("fails closed while login is not configured", async () => {
     vi.stubEnv("OPERATOR_PASSWORD", "");
     vi.stubEnv("SESSION_SECRET", "");
-    expect(passesThrough(proxy(request("/applications")))).toBe(true);
-    expect(passesThrough(proxy(request("/api/applications")))).toBe(true);
+    expect(proxy(request("/applications")).status).toBe(307);
+    const api = proxy(request("/api/send-draft"));
+    expect(api.status).toBe(401);
+    expect(await api.json()).toEqual({ error: "Sign in required" });
+    expect(passesThrough(proxy(request("/login")))).toBe(true);
   });
 
   it("redirects pages to /login with the original path", () => {

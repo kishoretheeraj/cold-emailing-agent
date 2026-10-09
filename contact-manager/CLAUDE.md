@@ -173,8 +173,8 @@ tests/
 
 `src/proxy.ts` (Next 16's renamed middleware, Node.js runtime) gates every page and API route
 behind an operator session once `OPERATOR_PASSWORD` (16+ chars) and `SESSION_SECRET` (32+ chars)
-are set: pages redirect to `/login?next=...`, API calls get `401`. Unset, the app behaves as
-before. `POST /api/login` (`{ password }`) sets `cm_session` (expiry + HMAC under
+are set: pages redirect to `/login?next=...`, API calls get `401`. Unset, everything except
+`/login`, `/api/login` and `/api/logout` is denied (fail closed). `POST /api/login` (`{ password }`) sets `cm_session` (expiry + HMAC under
 `SESSION_SECRET`, HttpOnly, Secure, SameSite=Strict, 30 days); a wrong password waits 750 ms and
 returns `401`; unconfigured returns `503`. `POST /api/logout` clears it. `Nav` renders nothing on
 `/login`. `safeNextPath` (`lib/loginNext.ts`, client-safe) only allows same-origin paths.
