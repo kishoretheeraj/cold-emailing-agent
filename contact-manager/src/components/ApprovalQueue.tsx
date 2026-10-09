@@ -355,6 +355,12 @@ export function ApprovalQueue() {
                   </dl>
                 )}
 
+                {app.apply_preview?.salary_basis && (
+                  <p className="text-xs text-fg-muted">
+                    Salary based on {app.apply_preview.salary_basis}
+                  </p>
+                )}
+
                 {coverage && (coverage.covered.length > 0 || coverage.missing.length > 0) && (
                   <p className="text-xs text-fg-muted">
                     {coverage.covered.length > 0 && <>Your documents cover: {coverage.covered.join(", ")}. </>}

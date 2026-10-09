@@ -500,7 +500,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 88** (vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`). Beelink M2 Task 9
+- **Current test count: 88** (vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more

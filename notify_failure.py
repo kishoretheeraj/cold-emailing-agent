@@ -1,17 +1,18 @@
 """
-Send a self-email when a GitHub Actions workflow step fails.
-Invoked from `if: failure()` steps in daily_agent.yml and monitor.yml.
+Send a self-email when a workflow step or systemd unit fails.
+Invoked from `if: failure()` steps in the GitHub Actions workflows, and from
+the Beelink's `notify-failure@.service` (OnFailure= target, FAILED_UNIT=%i).
 Uses GMAIL_APP_PASSWORD (already a repo secret) so no new credentials.
 """
 
 import os
+import shlex
 import smtplib
+import socket
 from email.message import EmailMessage
 
 
-def main():
-    gmail = os.environ["GMAIL_ADDRESS"]
-    password = os.environ["GMAIL_APP_PASSWORD"]
+def _github_actions_failure():
     workflow = os.environ.get("GITHUB_WORKFLOW", "Cold Email Agent")
     run_id = os.environ.get("GITHUB_RUN_ID", "?")
     repo = os.environ.get("GITHUB_REPOSITORY", "?")
@@ -19,16 +20,41 @@ def main():
     branch = os.environ.get("GITHUB_REF_NAME", "?")
     run_url = f"{server}/{repo}/actions/runs/{run_id}"
 
-    msg = EmailMessage()
-    msg["Subject"] = f"[FAILED] {workflow} | run {run_id}"
-    msg["From"] = gmail
-    msg["To"] = gmail
-    msg.set_content(
+    subject = f"[FAILED] {workflow} | run {run_id}"
+    body = (
         f"Workflow {workflow} failed.\n\n"
         f"Repo:   {repo}\n"
         f"Branch: {branch}\n"
         f"Run:    {run_url}\n"
     )
+    return subject, body
+
+
+def _systemd_unit_failure(failed_unit):
+    hostname = socket.gethostname()
+    subject = f"[FAILED] {failed_unit} on {hostname}"
+    body = (
+        f"systemd unit {failed_unit} failed on {hostname}.\n\n"
+        f"Logs: journalctl -u {shlex.quote(failed_unit)}\n"
+    )
+    return subject, body
+
+
+def main():
+    gmail = os.environ["GMAIL_ADDRESS"]
+    password = os.environ["GMAIL_APP_PASSWORD"]
+
+    failed_unit = os.environ.get("FAILED_UNIT")
+    if failed_unit:
+        subject, body = _systemd_unit_failure(failed_unit)
+    else:
+        subject, body = _github_actions_failure()
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = gmail
+    msg["To"] = gmail
+    msg.set_content(body)
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
         s.login(gmail, password)

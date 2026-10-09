@@ -33,6 +33,7 @@ def _lease_defaults(mocker):
     # approved fixture row counts as validly signed.
     mocker.patch("apply_agent.approval_signature.key_configured", return_value=True)
     mocker.patch("apply_agent.approval_signature.verify", return_value=None)
+    mocker.patch("apply_agent.salary_estimate.estimate", return_value=None)
 
 
 def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
@@ -375,8 +376,19 @@ def test_fill_eligibility_answers_translates_known_keys_to_real_question_pattern
 
     report = apply_agent._fill_eligibility_answers(page, {"work_authorized_us": "Yes"})
 
-    fill_mock.assert_called_once_with(page, field, "Yes")
+    fill_mock.assert_called_once_with(page, field, "Yes", is_salary=False)
     assert report == {field["label"]: True}
+
+
+def test_fill_eligibility_answers_flags_only_the_salary_key_as_salary(mocker):
+    page = MagicMock()
+    field = _field("Desired salary", selector="#sal")
+    mocker.patch("apply_agent._form_inventory", return_value=[field])
+    fill_mock = mocker.patch("apply_agent._fill_field", return_value=True)
+
+    apply_agent._fill_eligibility_answers(page, {"salary": "$140,000 - $175,000"})
+
+    fill_mock.assert_called_once_with(page, field, "$140,000 - $175,000", is_salary=True)
 
 
 @pytest.mark.parametrize("key", list(apply_agent._ELIGIBILITY_QUESTION_PATTERNS))
@@ -407,10 +419,32 @@ def test_user_added_eligibility_key_matches_any_label_containing_it():
     assert apply_agent._eligibility_value_for("Desired Salary", {"desired salary": ""}) is None
 
 
-def test_short_salary_key_matches_real_live_salary_questions():
-    answers = {"salary": "150000"}
-    for label in ("What is your desired annual salary?", "What is your desired base salary?"):
-        assert apply_agent._eligibility_value_for(label, answers) == "150000"
+@pytest.mark.parametrize("label", [
+    "What is your desired annual salary?",     # nCino, live 2026-10-06
+    "What is your desired base salary?*",      # AXS, live 2026-10-06
+    "Salary expectations",
+    "What are your compensation requirements?",
+    "Expected pay",
+    "What salary are you looking for?",
+])
+def test_salary_key_fills_desired_pay_questions(label):
+    assert apply_agent._eligibility_value_for(label, {"salary": "$150,000"}) == "$150,000"
+
+
+@pytest.mark.parametrize("label", [
+    "What is your current salary?",
+    "What is your current base salary? (desired too)",
+    "Salary history",
+    "Previous compensation",
+    "What was your salary at your last job?",
+    "Prior pay expected",
+    "Salary",                                   # ambiguous: not clearly desired pay
+    "Are you comfortable with the posted salary range?",
+])
+def test_salary_key_never_fills_current_or_ambiguous_pay_questions(label):
+    """Regression: a substring match on "salary" would put the desired range into "current
+    salary" -- a false statement on the application."""
+    assert apply_agent._eligibility_value_for(label, {"salary": "$150,000"}) is None
 
 
 def test_inventory_js_gives_name_only_radios_a_per_option_selector():
@@ -512,6 +546,35 @@ def test_fill_field_combobox_types_and_presses_enter():
     box.click.assert_called_once()
     box.fill.assert_called_once_with("United States", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
     page.keyboard.press.assert_called_once_with("Enter")
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("$140,000 - $175,000", "157500"),
+    ("Flexible, $100,000+ depending on location", "100000"),
+    ("150000", "150000"),
+    ("$150,000.00 - $200,000.00", "175000"),
+])
+def test_fill_field_number_input_gets_the_midpoint(value, expected):
+    page = MagicMock()
+    field = dict(_field("Desired salary", selector="#sal"), input_type="number")
+    assert apply_agent._fill_field(page, field, value, is_salary=True) is True
+    page.locator.return_value.first.fill.assert_called_once_with(
+        expected, timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+
+
+def test_fill_field_non_salary_number_input_is_filled_verbatim():
+    page = MagicMock()
+    field = dict(_field("GPA", selector="#gpa"), input_type="number")
+    assert apply_agent._fill_field(page, field, "3.5") is True
+    page.locator.return_value.first.fill.assert_called_once_with(
+        "3.5", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
+
+
+def test_fill_field_number_input_without_a_number_is_not_filled():
+    page = MagicMock()
+    field = dict(_field("Desired salary"), input_type="number")
+    assert apply_agent._fill_field(page, field, "Negotiable", is_salary=True) is False
+    page.locator.assert_not_called()
 
 
 def test_fill_field_never_raises_and_skips_files():
@@ -1473,7 +1536,7 @@ def _preview_mocks(mocker, attach):
     mocker.patch("apply_agent._attach_resume_and_cover_letter", return_value=attach)
     mocker.patch("apply_agent._generate_screening_answers", return_value={})
     mocker.patch("apply_agent._fill_screening_questions", return_value={})
-    mocker.patch("apply_agent._fill_eligibility_answers")
+    mocker.patch("apply_agent._fill_eligibility_answers", return_value={})
     mocker.patch("apply_agent.db.load_prompts", return_value={})
 
 
@@ -1497,7 +1560,20 @@ def test_preview_complete_stores_fill_report(mocker):
     assert apply_agent._process_one_preview(_preview_job()) == "filled"
 
     assert complete.call_args[0][2]["fill_report"] == {
-        "fields": _OK_FIELDS, "attachments": _OK_ATTACH, "questions": {}, "required_unfilled": []}
+        "fields": _OK_FIELDS, "attachments": _OK_ATTACH, "questions": {}, "eligibility": {},
+        "required_unfilled": []}
+
+
+def test_preview_records_which_question_each_fixed_answer_went_into(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent._fill_eligibility_answers",
+                 return_value={"What is your desired annual salary?": True})
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+
+    apply_agent._process_one_preview(_preview_job())
+
+    assert complete.call_args[0][2]["fill_report"]["eligibility"] == {
+        "What is your desired annual salary?": True}
 
 
 def test_preview_releases_needs_input_when_a_required_question_stays_empty(mocker):
@@ -1540,6 +1616,37 @@ def test_preview_logs_the_form_inventory_without_values(mocker, caplog):
     line = next(r.getMessage() for r in caplog.records if "[APPLY-FORM]" in r.getMessage())
     assert '"label": "Email"' in line
     assert "secret@example.com" not in line
+
+
+def test_preview_answers_salary_from_h1b_wages_and_stores_the_basis(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent.db.load_prompts", return_value={
+        "applicant_eligibility": '{"salary": "Flexible, $100,000+", "gender": "Male"}'})
+    mocker.patch("apply_agent.salary_estimate.estimate", return_value={
+        "text": "$170,000 - $215,000", "low": 170000, "high": 215000, "basis": "Stripe's H-1B filings in CA"})
+    fill_eligibility = apply_agent._fill_eligibility_answers
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+
+    assert apply_agent._process_one_preview(_preview_job()) == "filled"
+
+    expected = {"salary": "$170,000 - $215,000", "gender": "Male"}
+    assert fill_eligibility.call_args[0][1] == expected
+    preview = complete.call_args[0][2]
+    assert preview["eligibility_answers"] == expected
+    assert preview["salary_basis"] == "Stripe's H-1B filings in CA"
+
+
+def test_preview_keeps_the_flat_salary_answer_without_h1b_data(mocker):
+    _preview_mocks(mocker, dict(_OK_ATTACH))
+    mocker.patch("apply_agent.db.load_prompts", return_value={
+        "applicant_eligibility": '{"salary": "Flexible, $100,000+"}'})
+    complete = mocker.patch("apply_agent.db.complete_preview", return_value=True)
+
+    apply_agent._process_one_preview(_preview_job())
+
+    preview = complete.call_args[0][2]
+    assert preview["eligibility_answers"] == {"salary": "Flexible, $100,000+"}
+    assert "salary_basis" not in preview
 
 
 def test_preview_opens_the_application_url_not_the_posting(mocker):

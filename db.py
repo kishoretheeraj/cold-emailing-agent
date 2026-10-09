@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 import hashlib
 import logging
 import posixpath
+import os
 import re
 import time
 import uuid
@@ -32,6 +33,9 @@ import job_identity
 from config import SUPABASE_URL, SUPABASE_ANON_KEY
 
 _client = None
+_admin_client = None
+# Service-role key: writes to RLS-locked tables (h1b_wage_stats). Soft-optional at import time.
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 # Retry wrapper for Supabase calls — same shape as emailer._call_claude.
 # Network blips and 5xx are rare but kill the whole run when get_all_contacts
@@ -59,6 +63,13 @@ def get_client():
 
 _CONTACT_PAGE = 1000
 
+def get_admin_client():
+    global _admin_client
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not set")
+    if _admin_client is None:
+        _admin_client = _create_patched(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    return _admin_client
 
 def get_all_contacts():
     """Fetch all live contacts, paged past PostgREST's row cap. Ordered by id so no row is skipped
@@ -204,16 +215,23 @@ def load_prompts():
     return {r["key"]: r["value"] for r in (result.data or [])}
 
 def upsert_prompt(key, value):
-    """Upsert a single prompts row. Best-effort: logs and returns False on error."""
+    """Set an existing prompts row's value. Best-effort: logs and returns False on error, or
+    when no row has this key (a new key needs its display_title/sort_order seeded first, as
+    scripts/seed_applicant_eligibility.py does)."""
     from datetime import datetime, timezone
-    row = {"key": key, "value": value,
-           "updated_at": datetime.now(timezone.utc).isoformat()}
+    # An upsert of only key/value/updated_at always failed: Postgres checks NOT NULL
+    # (display_title) on the proposed insert row before resolving the conflict, even when the
+    # key already exists. A plain UPDATE has no such row to validate.
+    fields = {"value": value, "updated_at": datetime.now(timezone.utc).isoformat()}
     try:
-        _retry(lambda: get_client().table("prompts").upsert(row, on_conflict="key").execute())
-        return True
+        result = _retry(lambda: get_client().table("prompts").update(fields).eq("key", key).execute())
     except Exception as exc:
         log.warning(f"upsert_prompt failed | key={key} | {exc}")
         return False
+    if not result.data:
+        log.warning(f"upsert_prompt failed | key={key} | no prompts row with this key; seed it first")
+        return False
+    return True
 
 def get_pause_scope():
     """Return the current pause_scope: 'none', 'agent', or 'all'. Defaults to 'none' on any error."""
@@ -505,6 +523,72 @@ def upsert_employer_h1b_stats(rows):
     except Exception as exc:
         log.warning(f"[employer_h1b_stats] upsert failed for {len(rows)} rows: {exc}")
         return False
+
+
+def get_employer_h1b_normalized_name(employer_id):
+    """normalized_name of one employer_h1b_stats row by id, or None."""
+    if not employer_id:
+        return None
+    result = _retry(lambda: (
+        get_client()
+        .table("employer_h1b_stats")
+        .select("normalized_name")
+        .eq("id", employer_id)
+        .limit(1)
+        .execute()
+    ))
+    return (result.data or [{}])[0].get("normalized_name")
+
+
+def upsert_h1b_wage_stats(rows):
+    """Batch upsert h1b_wage_stats rows keyed by (normalized_name, role_family, worksite_state).
+    Best-effort, like upsert_employer_h1b_stats."""
+    if not rows:
+        return True
+    try:
+        _retry(lambda: (
+            get_admin_client()
+            .table("h1b_wage_stats")
+            .upsert(rows, on_conflict="normalized_name,role_family,worksite_state")
+            .execute()
+        ))
+        return True
+    except Exception as exc:
+        log.warning(f"[h1b_wage_stats] upsert failed for {len(rows)} rows: {exc}")
+        return False
+
+
+def delete_stale_h1b_wage_stats(cutoff):
+    """Delete h1b_wage_stats rows last written before cutoff (ISO timestamp). Best-effort."""
+    try:
+        _retry(lambda: (
+            get_admin_client()
+            .table("h1b_wage_stats")
+            .delete()
+            .lt("updated_at", cutoff)
+            .execute()
+        ))
+        return True
+    except Exception as exc:
+        log.warning(f"[h1b_wage_stats] stale delete failed: {exc}")
+        return False
+
+
+def get_h1b_wage_stats(normalized_names, role_family):
+    """Every h1b_wage_stats row for the given employers (include '*' for the market rows) and
+    role family."""
+    if not normalized_names:
+        return []
+    result = _retry(lambda: (
+        get_client()
+        .table("h1b_wage_stats")
+        .select("normalized_name, role_family, worksite_state, filings, wage_p25, wage_median, "
+                "wage_p75, fiscal_years")
+        .in_("normalized_name", list(normalized_names))
+        .eq("role_family", role_family)
+        .execute()
+    ))
+    return result.data or []
 
 
 def get_company_intel_by_normalized_names(normalized_names):
