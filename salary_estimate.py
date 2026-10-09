@@ -25,7 +25,14 @@ import ingest_oflc_lca
 
 log = logging.getLogger(__name__)
 
-_STATE_RE = re.compile(r",\s*([A-Z]{2})\b")
+_STATE_RE = re.compile(r"(?:,\s*|[\s/;|(\[])([A-Z]{2})\b")
+
+
+def _state_codes_in(text):
+    """State abbreviations in a location string. Matches 'City, ST' as well as standalone
+    codes after delimiters ('NY / TX', 'Remote (TX)'), so multi-state postings are detected
+    instead of silently picking the first comma-prefixed one."""
+    return {code for code in _STATE_RE.findall(str(text or "")) if code in _US_STATES}
 _US_STATES = frozenset(
     "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM "
     "NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split())
@@ -37,7 +44,7 @@ def state_from_location(location):
     # the employer-anywhere / national levels instead of guessing the first one listed.
     if isinstance(location, (list, tuple)):
         location = "; ".join(str(item) for item in location if item)
-    states = {code for code in _STATE_RE.findall(str(location or "")) if code in _US_STATES}
+    states = _state_codes_in(location)
     return next(iter(states)) if len(states) == 1 else None
 
 

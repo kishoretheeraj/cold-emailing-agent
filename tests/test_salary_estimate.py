@@ -116,6 +116,10 @@ def test_never_raises(mocker):
     ("United States", None),
     ("Remote", None),
     (None, None),
+    # Slash-separated second state must not be silently ignored.
+    ("New York, NY / TX", None),
+    ("Austin, TX | Remote", "TX"),
+    ("Remote (TX)", "TX"),
 ])
 def test_state_from_location(location, expected):
     assert salary_estimate.state_from_location(location) == expected

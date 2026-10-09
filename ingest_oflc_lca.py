@@ -495,9 +495,14 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
     if wage_rows and wage_upserts_ok:
         # Every row just written carries this run's updated_at; anything older is an
         # employer/state/family absent from the new data and would otherwise outrank fresh
-        # market rows forever. Skipped after a partial upsert so a failure never deletes data.
-        if not db.delete_stale_h1b_wage_stats(wage_rows[0]["updated_at"]):
-            errors += 1
+        # market rows forever. Only after a COMPLETE ingest (every target FY) — a partial
+        # run must never delete employers unique to the missing FYs.
+        if set(ingested_fys) == set(target_fys):
+            if not db.delete_stale_h1b_wage_stats(wage_rows[0]["updated_at"]):
+                errors += 1
+        else:
+            missing = sorted(set(target_fys) - set(ingested_fys))
+            log.warning(f"[RESEARCH-C] visa_intel | stale cleanup skipped, FYs missing: {missing}")
 
     status = "success" if errors == 0 else "success"  # partial FY misses are non-fatal
     log.info(
