@@ -591,6 +591,31 @@ APPLY_AGENT_HAND_MAPPED_PLATFORMS = ("greenhouse", "ashby", "lever")
 # Per-field fill/attach timeout: Playwright's 30s default x every missing field made each job
 # take 15-20 min and a 45-min preview run finished 2 of 10 rows.
 APPLY_AGENT_FIELD_TIMEOUT_MS = 3000
+
+# ── H-1B wage-based salary answers ────────────────────────────────────────────────
+# Job titles folded into h1b_wage_stats by ingest_oflc_lca.py, and matched against a job's role by
+# salary_estimate.py. First matching family wins, so entry-level comes first: priced against all PM
+# filings, "Product Manager: New Grad Accelerator" at Stripe got Stripe's mostly-senior $230K-$270K.
+# "exclude" keeps leadership titles out of an individual-contributor PM range.
+H1B_WAGE_ROLE_FAMILIES = {
+    "associate_product_manager": {
+        "include": (r"\b(associate|junior|entry[- ]level|new grad|graduate|rotational)\b.*"
+                    r"\bproduct\s+(manager|management|owner)\b"
+                    r"|\bproduct\s+(manager|management|owner)\b.*"
+                    r"\b(associate|junior|entry[- ]level|new grad|graduate|rotational)\b"
+                    r"|\bapm\b|\bproduct manager,?\s*(i|1)\b(?!\s*[-/]?\s*(ii|iii|2|3))"),
+        "exclude": r"\b(director|vice president|vp|head|chief|cpo|svp|evp|senior|sr|lead|principal|staff)\b",
+    },
+    "product_manager": {
+        "include": r"\bproduct\s+(manager|management|owner|lead)\b",
+        "exclude": r"\b(director|vice president|vp|head|chief|cpo|svp|evp)\b",
+    },
+}
+# The operator's floor: a salary answer never goes below this (2026-10-07, "more than 100k is okay").
+SALARY_FLOOR_USD = 100000
+# Fewest filings a range is built from: an employer's own filings, then the whole market's.
+SALARY_MIN_EMPLOYER_FILINGS = 3
+SALARY_MIN_MARKET_FILINGS = 10
 # Execution lifecycle on job_applications.automation_status; must match the migration's CHECK constraint.
 AUTOMATION_STATUSES = (
     "idle", "preparing", "needs_input", "ready_for_review", "approved", "submitting",

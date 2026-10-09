@@ -18,6 +18,7 @@ import ats_platform
 import candidate_profile
 import config
 import db
+import salary_estimate
 from emailer import _call_claude
 
 log = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ _FORM_INVENTORY_JS = r"""() => {
     const raw = rawLabel(el);
     const f = {key: sel(el) || ('field:' + out.length), selector: sel(el), label: clean(raw),
                required: el.required || el.getAttribute('aria-required') === 'true' || starred(raw),
-               options: [], kind: el.tagName.toLowerCase(), filled: false};
+               options: [], kind: el.tagName.toLowerCase(), input_type: type, filled: false};
     if (type === 'file') { f.kind = 'file'; f.filled = el.files && el.files.length > 0; }
     else if (el.tagName === 'SELECT') {
       f.options = Array.from(el.options).filter((o) => o.value !== '').map((o) => clean(o.text));
@@ -206,11 +207,22 @@ def _pick_option(options, value):
     return None
 
 
-def _fill_field(page, field, value):
+def _numbers_in(value):
+    # "$140,000 - $175,000" -> [140000, 175000]; a number-only box gets their midpoint.
+    return [int(float(n.replace(",", ""))) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", str(value or ""))]
+
+
+def _fill_field(page, field, value, is_salary=False):
     kind = field.get("kind")
     timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
     try:
-        if kind in ("input", "textarea"):
+        # Only a salary range is collapsed to its midpoint; any other number (GPA, years) is verbatim.
+        if is_salary and kind == "input" and field.get("input_type") == "number":
+            numbers = _numbers_in(value)
+            if not numbers:
+                return False
+            page.locator(field["selector"]).first.fill(str(sum(numbers) // len(numbers)), timeout=timeout)
+        elif kind in ("input", "textarea"):
             page.locator(field["selector"]).first.fill(str(value), timeout=timeout)
         elif kind == "select":
             option = _pick_option(field.get("options"), value)
@@ -245,19 +257,23 @@ def _fill_field(page, field, value):
         return False
 
 
-def _eligibility_value_for(label, answers):
+def _eligibility_match(label, answers):
     for key, value in (answers or {}).items():
         if not value:
             continue
         pattern = _ELIGIBILITY_QUESTION_PATTERNS.get(key)
         if pattern is not None:
             if pattern.search(label):
-                return value
+                return key, value
         elif _norm_label(key) and _norm_label(key) in _norm_label(label):
             # A key the user added to applicant_eligibility themselves (e.g. "desired salary")
             # matches any question label containing it.
-            return value
-    return None
+            return key, value
+    return None, None
+
+
+def _eligibility_value_for(label, answers):
+    return _eligibility_match(label, answers)[1]
 
 
 # ── Screening questions ────────────────────────────────────────────────────────
@@ -367,6 +383,13 @@ _ELIGIBILITY_QUESTION_PATTERNS = {
     "veteran_status": re.compile(r"veteran", re.IGNORECASE),
     "disability_status": re.compile(r"disability", re.IGNORECASE),
     "lgbtq_identity": re.compile(r"lgbtq|sexual orientation", re.IGNORECASE),
+    # Desired/expected pay only. A "current salary" or "salary history" question must never get
+    # the desired range -- that would be a false statement on the application.
+    "salary": re.compile(
+        r"^(?!.*\b(current|currently|present|previous|prior|last|past|history)\b)"
+        r"(?=.*\b(salary|compensation|pay)\b)"
+        r"(?=.*\b(desired|expected|expecting|expectations?|target|requirements?|requested|looking for)\b)",
+        re.IGNORECASE),
 }
 
 
@@ -380,10 +403,10 @@ def _fill_eligibility_answers(page, answers):
     for field in _form_inventory(page) or []:
         if field.get("filled") or field.get("kind") == "file":
             continue
-        value = _eligibility_value_for(field.get("label") or "", answers)
+        key, value = _eligibility_match(field.get("label") or "", answers)
         if value is None:
             continue
-        ok = _fill_field(page, field, value)
+        ok = _fill_field(page, field, value, is_salary=(key == "salary"))
         if not ok:
             log.info(f"[APPLY-AGENT] | eligibility field not fillable: {field['label'][:60]!r}")
         report[field["label"]] = ok
@@ -727,7 +750,12 @@ def _process_one_preview(job):
                     return "blocked"
             db.heartbeat_application(job_id, lease)
             eligibility_answers = _eligibility_answers()
-            _fill_eligibility_answers(page, eligibility_answers)
+            salary = salary_estimate.estimate(job)
+            if salary:
+                # Per-job H-1B wage range replaces the operator's flat "salary" answer for this row
+                # only; stored with the preview so submit() replays exactly what was reviewed.
+                eligibility_answers["salary"] = salary["text"]
+            eligibility_report = _fill_eligibility_answers(page, eligibility_answers)
             screening_answers = _generate_screening_answers(page, job)
             question_report = _fill_screening_questions(page, screening_answers)
             db.heartbeat_application(job_id, lease)
@@ -736,6 +764,9 @@ def _process_one_preview(job):
             _log_inventory(job, inventory)
             if fill_report is not None:
                 fill_report["questions"] = question_report
+                # Which on-page question each fixed answer went into ({label: filled}), so the reviewer
+                # sees e.g. that the salary range landed in "desired salary" and nowhere else.
+                fill_report["eligibility"] = eligibility_report
                 fill_report["required_unfilled"] = _required_unfilled(inventory)
                 if fill_report["required_unfilled"]:
                     reason = ("Preview couldn't fill required questions: "
@@ -755,6 +786,8 @@ def _process_one_preview(job):
             }
             if fill_report is not None:
                 preview["fill_report"] = fill_report
+            if salary:
+                preview["salary_basis"] = salary["basis"]
             if not db.complete_preview(job_id, lease, preview, signature):
                 log.warning(f"[APPLY-PREVIEW] | {job.get('company')} | lease lost, preview discarded "
                             f"(row was recovered by lease recovery)")

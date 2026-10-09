@@ -27,7 +27,10 @@ test.describe("Applications page", () => {
                 posting_snapshot: null, resume_file_ref: null, cover_letter_file_ref: null,
                 resume_cost_usd: null, resume_tokens_input: null, resume_tokens_output: null,
                 pick_verdict: "strong", pick_score: 0.9, pick_reasoning: "Great fit.",
-                apply_preview: { platform: "ashby", field_values: {}, eligibility_answers: {}, screening_answers: {} },
+                apply_preview: { platform: "ashby", field_values: {},
+                  eligibility_answers: { salary: "$170,000 - $215,000" }, screening_answers: {},
+                  salary_basis: "Ashby Co's H-1B filings in CA: 12 product manager filings, FY2023-FY2026",
+                  fill_report: { eligibility: { "What is your desired annual salary?": true } } },
                 apply_blocked_reason: null, approved_at: null,
                 automation_status: "ready_for_review", preview_revision_hash: "c".repeat(64),
                 approved_revision_hash: null,
@@ -150,6 +153,32 @@ test.describe("Applications page", () => {
     await expect(page.getByText("No resume on file yet.")).toBeVisible();
     await expect(page.getByText("Not yet scored.")).toBeVisible();
     await page.screenshot({ path: "tests/e2e/screenshots/18-applications-detail-sheet.png" });
+  });
+
+  test("a row in review offers Re-prepare, which POSTs requeue-preview", async ({ page }) => {
+    let requeued = false;
+    await page.route("**/api/applications/2/requeue-preview", async (route) => {
+      requeued = route.request().method() === "POST";
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    });
+    await page.goto("/applications");
+    const row = page.getByRole("row", { name: /Ashby Co/ });
+    await expect(row.getByRole("button", { name: "Approve & Submit" })).toBeVisible();
+    await page.screenshot({ path: "tests/e2e/screenshots/18-applications-reprepare.png" });
+    await row.getByRole("button", { name: "Re-prepare" }).click();
+    await expect.poll(() => requeued).toBe(true);
+  });
+
+  test("the detail sheet shows where the salary range came from", async ({ page }) => {
+    await page.goto("/applications");
+    await page.getByRole("row", { name: /Ashby Co/ }).getByRole("button", { name: "View" }).click();
+    await expect(page.getByTestId("salary-basis")).toHaveText(
+      "Salary based on Ashby Co's H-1B filings in CA: 12 product manager filings, FY2023-FY2026");
+    await expect(page.locator(`input[value="$170,000 - $215,000"]`)).toBeVisible();
+    await expect(page.getByTestId("eligibility-placement")).toContainText(
+      "What is your desired annual salary?: filled");
+    await page.waitForTimeout(600); // let the side sheet finish sliding in before the screenshot
+    await page.screenshot({ path: "tests/e2e/screenshots/18-applications-salary-basis.png" });
   });
 
   test("confirms before submitting and shows the confirm dialog copy", async ({ page }) => {

@@ -199,6 +199,35 @@ describe("ApplicationDetailSheet -- apply preview (U3/U11)", () => {
     expect(screen.getByText(/Kishore/)).toBeInTheDocument();
   });
 
+  it("shows where the salary range came from when the preview has a salary_basis", () => {
+    const withBasis: JobApplication = {
+      ...appWithAnswers,
+      apply_preview: { ...appWithAnswers.apply_preview!, salary_basis: "Stripe's H-1B filings in CA: 12 filings" },
+    };
+    render(<ApplicationDetailSheet application={withBasis} onClose={() => {}} />);
+    expect(screen.getByTestId("salary-basis")).toHaveTextContent(
+      "Salary based on Stripe's H-1B filings in CA: 12 filings");
+  });
+
+  it("lists which on-page question each fixed answer went into", () => {
+    const withReport: JobApplication = {
+      ...appWithAnswers,
+      apply_preview: {
+        ...appWithAnswers.apply_preview!,
+        fill_report: { eligibility: { "What is your desired annual salary?": true, "Gender": false } },
+      },
+    };
+    render(<ApplicationDetailSheet application={withReport} onClose={() => {}} />);
+    const placement = screen.getByTestId("eligibility-placement");
+    expect(placement).toHaveTextContent("What is your desired annual salary?: filled");
+    expect(placement).toHaveTextContent("Gender: not filled");
+  });
+
+  it("omits the salary basis line when the flat salary answer was used", () => {
+    render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
+    expect(screen.queryByTestId("salary-basis")).not.toBeInTheDocument();
+  });
+
   it("renders screening and eligibility answers as editable fields", async () => {
     render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
     expect(await screen.findByDisplayValue("Because of the mission.")).toBeInTheDocument();
