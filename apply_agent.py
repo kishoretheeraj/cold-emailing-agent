@@ -1777,7 +1777,7 @@ def submit(job_id):
             if not db.renew_submission_lease(job_id, lease, job["approved_revision_hash"]):
                 raise RuntimeError("Submit stopped: worker lease or approved revision changed during preparation")
 
-            if universal or platform == "workday":
+            if universal or platform == "workday" or platform in config.APPLY_AGENT_HAND_MAPPED_PLATFORMS:
                 # The guard has stopped every submission until now; only this approved click goes through.
                 universal_filler.lift_guard(target)
 
