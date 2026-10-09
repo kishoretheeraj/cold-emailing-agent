@@ -118,6 +118,9 @@ def test_never_raises(mocker):
     (None, None),
     # Slash-separated second state must not be silently ignored.
     ("New York, NY / TX", None),
+    ("NY / TX", None),
+    ("NY/TX", None),
+    (["NY", "TX"], None),
     ("Austin, TX | Remote", "TX"),
     ("Remote (TX)", "TX"),
 ])

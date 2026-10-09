@@ -25,7 +25,7 @@ import ingest_oflc_lca
 
 log = logging.getLogger(__name__)
 
-_STATE_RE = re.compile(r"(?:,\s*|[\s/;|(\[])([A-Z]{2})\b")
+_STATE_RE = re.compile(r"(?:^|,\s*|[\s/;|(\[])([A-Z]{2})\b")
 
 
 def _state_codes_in(text):
