@@ -1,13 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST } from "./route";
+import { createSessionToken } from "@/lib/operatorAuth";
+import { signApproval } from "@/lib/approvalSignature";
 
 const mockRpc = vi.fn();
 vi.mock("@supabase/supabase-js", () => ({
   createClient: vi.fn(() => ({ rpc: mockRpc })),
 }));
 
+const SECRET = "s".repeat(32);
+const KEY = "k".repeat(32);
+const NOW = 1791428400000;
+
 beforeEach(() => {
   vi.stubEnv("GITHUB_DISPATCH_TOKEN", "test-token");
+  vi.stubEnv("OPERATOR_PASSWORD", "correct horse battery");
+  vi.stubEnv("SESSION_SECRET", SECRET);
+  vi.stubEnv("APPROVAL_SIGNING_KEY", KEY);
+  vi.spyOn(Date, "now").mockReturnValue(NOW);
   vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: true, status: 204 } as Response)));
   mockRpc.mockReset();
   // Both approve_application and reset_approval resolve successfully by default; individual
@@ -22,11 +32,17 @@ beforeEach(() => {
 });
 
 const HASH = "a".repeat(64);
+const APPROVE_ARGS = {
+  p_id: 5,
+  p_revision_hash: HASH,
+  p_signature: signApproval(KEY, 5, HASH, NOW),
+  p_signed_at_ms: NOW,
+};
 
-function makeRequest(idInPath = "5", body: unknown = { revision_hash: HASH }) {
+function makeRequest(idInPath = "5", body: unknown = { revision_hash: HASH }, cookie = `cm_session=${createSessionToken(SECRET, NOW)}`) {
   return new Request(`http://localhost/api/applications/${idInPath}/submit`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", cookie },
     body: body === null ? undefined : typeof body === "string" ? body : JSON.stringify(body),
   });
 }
@@ -35,7 +51,7 @@ describe("POST /api/applications/[id]/submit", () => {
   it("calls the approve_application RPC before dispatching", async () => {
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
     expect(res.status).toBe(200);
-    expect(mockRpc).toHaveBeenCalledWith("approve_application", { p_id: 5, p_revision_hash: HASH });
+    expect(mockRpc).toHaveBeenCalledWith("approve_application", APPROVE_ARGS);
     expect(global.fetch).toHaveBeenCalled();
     // C3: a successful dispatch must never touch the recovery path.
     expect(mockRpc).not.toHaveBeenCalledWith("reset_approval", expect.anything());
@@ -66,7 +82,7 @@ describe("POST /api/applications/[id]/submit", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, status: 500 } as Response)));
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
     expect(res.status).toBe(502);
-    expect(mockRpc).toHaveBeenCalledWith("approve_application", { p_id: 5, p_revision_hash: HASH });
+    expect(mockRpc).toHaveBeenCalledWith("approve_application", APPROVE_ARGS);
     expect(mockRpc).toHaveBeenCalledWith("reset_approval", { p_id: 5 });
   });
 
@@ -159,6 +175,53 @@ describe("POST /api/applications/[id]/submit", () => {
     });
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
     expect(res.status).toBe(409);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  // Spec 2026-10-08 §9.1: the approval is signed server-side behind the operator login, so a
+  // caller holding only the public anon key can neither reach this route nor forge a signature.
+  it.each([
+    ["", "no cookie"],
+    ["cm_session=forged", "garbage cookie"],
+    [`cm_session=${createSessionToken("t".repeat(32), NOW)}`, "cookie signed with another secret"],
+  ])("returns 401 without calling rpc or fetch (%s)", async (cookie) => {
+    const res = await POST(makeRequest("5", { revision_hash: HASH }, cookie), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(401);
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 while login is not configured at all", async () => {
+    vi.stubEnv("OPERATOR_PASSWORD", "");
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(401);
+    expect(mockRpc).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 without calling rpc or fetch when APPROVAL_SIGNING_KEY is missing", async () => {
+    vi.stubEnv("APPROVAL_SIGNING_KEY", "");
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(503);
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("signs exactly the id, rendered hash and signing time it sends", async () => {
+    await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    const [, args] = mockRpc.mock.calls.find(([fn]) => fn === "approve_application")!;
+    expect(args.p_signature).toMatch(/^[0-9a-f]{64}$/);
+    expect(args.p_signature).toBe(signApproval(KEY, args.p_id, args.p_revision_hash, args.p_signed_at_ms));
+  });
+
+  // Once the Beelink submits (apply-submit.service polls approved rows), dispatching the GitHub
+  // workflow too would race it for the same row.
+  it("approves without dispatching when the Beelink is the submit host", async () => {
+    vi.stubEnv("APPLY_SUBMIT_HOST", "beelink");
+    vi.stubEnv("GITHUB_DISPATCH_TOKEN", "");
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: "5" }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, queued: "beelink" });
+    expect(mockRpc).toHaveBeenCalledWith("approve_application", APPROVE_ARGS);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });

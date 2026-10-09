@@ -85,7 +85,8 @@ SELECT pg_temp.expect_eq((SELECT stage || '|' || form_signature || '|' || (worke
 
 -- a submitting claim needs approval + hash binding
 SELECT pg_temp.expect_eq(claim_application(pg_temp.did(), '11111111-1111-1111-1111-111111111111'::uuid, 'submitting')::text, 'false', 'submitting claim refused before approval');
-SELECT approve_application(pg_temp.did(), (SELECT preview_revision_hash FROM job_applications WHERE id = pg_temp.did()));
+-- 4-arg since 20261008000001 (signed approvals); the HMAC itself is checked by the worker, not here.
+SELECT approve_application(pg_temp.did(), (SELECT preview_revision_hash FROM job_applications WHERE id = pg_temp.did()), repeat('ab', 32), (extract(epoch FROM now()) * 1000)::bigint);
 SELECT pg_temp.expect_eq(pg_temp.dst(), 'approved', 'approved');
 
 -- ── submitting claim, renew, post-click release rules ──────────────────────────

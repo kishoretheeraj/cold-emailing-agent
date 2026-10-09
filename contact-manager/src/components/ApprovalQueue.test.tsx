@@ -1,0 +1,334 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, within } from "@testing-library/react";
+import { ApprovalQueue, UNDO_SECONDS } from "./ApprovalQueue";
+
+vi.mock("sonner", () => {
+  const toast = Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() });
+  return { toast };
+});
+import { toast } from "sonner";
+
+// The People panel fetches on its own; PeoplePanel.test.tsx covers it.
+vi.mock("@/components/PeoplePanel", () => ({ PeoplePanel: () => <div data-testid="people-panel" /> }));
+
+const HASH = "c".repeat(64);
+
+function row(over: Record<string, unknown>) {
+  return {
+    id: "1", company: "Acme", role: "Product Manager", job_url: "https://jobs.lever.co/acme/1",
+    stage: "ready_to_submit", automation_status: "ready_for_review", pick_verdict: "strong", pick_score: 0.8,
+    preview_revision_hash: HASH, apply_blocked_reason: null, submission_evidence: null,
+    created_at: "2026-10-08T00:00:00Z",
+    apply_preview: {
+      platform: "lever", field_values: {},
+      eligibility_answers: { "Are you legally authorized to work in the US?": "Yes" },
+      screening_answers: { "Why Acme?": "I have shipped lending tools for small businesses." },
+      keyword_coverage: { covered: ["SQL"], missing: ["Python"] },
+    },
+    ...over,
+  };
+}
+
+type Call = [string, RequestInit | undefined];
+let queue: unknown[];
+let calls: Call[];
+let submitStatus: number;
+let today: { submitted: number; cap: number };
+let outcomeRows: unknown[];
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  queue = [row({})];
+  calls = [];
+  submitStatus = 200;
+  today = { submitted: 2, cap: 50 };
+  outcomeRows = [];
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+    calls.push([url, init]);
+    if (url === "/api/applications?view=queue") {
+      return Promise.resolve(new Response(JSON.stringify({ applications: queue }), { status: 200 }));
+    }
+    if (url === "/api/applications?view=outcomes") {
+      return Promise.resolve(new Response(JSON.stringify({ applications: outcomeRows }), { status: 200 }));
+    }
+    if (url === "/api/applications/today") {
+      return Promise.resolve(new Response(JSON.stringify(today), { status: 200 }));
+    }
+    if (url.endsWith("/submit")) {
+      return Promise.resolve(new Response(JSON.stringify(submitStatus === 200 ? { ok: true } : { error: "approve_application: the preview changed since it was shown" }), { status: submitStatus }));
+    }
+    if (url.endsWith("/files")) {
+      return Promise.resolve(new Response(JSON.stringify({ resume_url: "https://s/r", cover_letter_url: "https://s/c" }), { status: 200 }));
+    }
+    return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  }));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.mocked(toast.success).mockReset();
+  vi.mocked(toast.error).mockReset();
+});
+
+async function renderQueue() {
+  const utils = render(<ApprovalQueue />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  return utils;
+}
+
+const submitCalls = () => calls.filter(([url]) => url.endsWith("/submit"));
+
+async function click(el: HTMLElement) {
+  await act(async () => { el.click(); });
+}
+
+describe("ApprovalQueue", () => {
+  it("shows today's submissions against the daily cap", async () => {
+    today = { submitted: 25, cap: 50 };
+    await renderQueue();
+    expect(screen.getByRole("heading", { name: "Today: 25 of 50 submitted" })).toBeInTheDocument();
+    const bar = screen.getByRole("progressbar");
+    expect(bar).toHaveAttribute("aria-valuemax", "50");
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+  });
+
+  it("says when today's cap is reached", async () => {
+    today = { submitted: 50, cap: 50 };
+    await renderQueue();
+    expect(screen.getByText(/cap is reached/)).toBeInTheDocument();
+  });
+
+  it("shows no meter when there is no cap", async () => {
+    today = { submitted: 7, cap: 0 };
+    await renderQueue();
+    expect(screen.getByRole("heading", { name: "Today: 7 submitted" })).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("shows where and when each job was posted", async () => {
+    queue = [row({ location: "San Francisco, CA", source: "simplify", posted_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })];
+    await renderQueue();
+    const card = screen.getByRole("article", { name: "Acme Product Manager" });
+    expect(within(card).getByText("San Francisco, CA · simplify · posted 3 days ago")).toBeInTheDocument();
+  });
+
+  it("shows each ready application with its answers, coverage and links", async () => {
+    await renderQueue();
+    const card = screen.getByRole("article", { name: "Acme Product Manager" });
+    expect(within(card).getByText("Why Acme?")).toBeInTheDocument();
+    expect(within(card).getByText("I have shipped lending tools for small businesses.")).toBeInTheDocument();
+    expect(within(card).getByText("Yes")).toBeInTheDocument();
+    expect(within(card).getByText(/Your documents cover: SQL/)).toBeInTheDocument();
+    expect(within(card).getByText(/also asks for: Python/)).toBeInTheDocument();
+    expect(within(card).getByRole("link", { name: "Posting" })).toHaveAttribute("href", "https://jobs.lever.co/acme/1");
+  });
+
+  it("Submit waits five seconds, then approves the revision shown on the card", async () => {
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Submit" }));
+    expect(screen.getByRole("status")).toHaveTextContent(`Submitting in ${UNDO_SECONDS}s`);
+    await act(async () => { await vi.advanceTimersByTimeAsync((UNDO_SECONDS - 1) * 1000); });
+    expect(submitCalls()).toHaveLength(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(submitCalls()).toHaveLength(1);
+    const [url, init] = submitCalls()[0];
+    expect(url).toBe("/api/applications/1/submit");
+    expect(JSON.parse(String(init?.body))).toEqual({ revision_hash: HASH });
+    expect(toast.success).toHaveBeenCalled();
+  });
+
+  it("Undo during the countdown sends nothing", async () => {
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Submit" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    await click(screen.getByRole("button", { name: "Undo" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(submitCalls()).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+  });
+
+  it("leaving the page during the countdown sends nothing", async () => {
+    const { unmount } = await renderQueue();
+    await click(screen.getByRole("button", { name: "Submit" }));
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(submitCalls()).toHaveLength(0);
+  });
+
+  it("only one countdown runs at a time", async () => {
+    queue = [row({}), row({ id: "2", company: "Beta" })];
+    await renderQueue();
+    const [first, second] = screen.getAllByRole("button", { name: "Submit" });
+    await click(first);
+    expect(second).toBeDisabled();
+  });
+
+  it("a refused approval says why", async () => {
+    submitStatus = 409;
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Submit" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(UNDO_SECONDS * 1000); });
+    expect(toast.error).toHaveBeenCalledWith("approve_application: the preview changed since it was shown");
+  });
+
+  it("Skip withdraws the application from the queue", async () => {
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Skip" }));
+    const patch = calls.find(([url, init]) => url === "/api/applications/1" && init?.method === "PATCH");
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ stage: "withdrawn" });
+  });
+
+  it("Show documents loads signed links", async () => {
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Show documents" }));
+    expect(screen.getByRole("link", { name: "Resume" })).toHaveAttribute("href", "https://s/r");
+    expect(screen.getByRole("link", { name: "Cover letter" })).toHaveAttribute("href", "https://s/c");
+  });
+
+  it("a row that needs input shows the reason and can be prepared again", async () => {
+    queue = [row({ automation_status: "needs_input", apply_blocked_reason: "Quality check: Resume: 2 pages" })];
+    await renderQueue();
+    const card = screen.getByRole("article", { name: "Acme needs you" });
+    expect(within(card).getByText("Quality check: Resume: 2 pages")).toBeInTheDocument();
+    await click(within(card).getByRole("button", { name: "Prepare again" }));
+    expect(calls.some(([url]) => url === "/api/applications/1/requeue-preview")).toBe(true);
+  });
+
+  it("an unconfirmed submission asks whether it went through", async () => {
+    queue = [row({ automation_status: "needs_confirmation" })];
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "It went through" }));
+    const resolve = calls.find(([url]) => url === "/api/applications/1/resolve-confirmation");
+    expect(JSON.parse(String(resolve?.[1]?.body))).toEqual({ submitted: true });
+  });
+
+  it("lists in-flight and submitted applications with their proof", async () => {
+    queue = [
+      row({ id: "2", company: "Beta", automation_status: "submitting" }),
+      row({ id: "3", company: "Gamma", automation_status: "submitted", submission_evidence: { source: "page_confirmation", url: "https://gamma/thanks" } }),
+    ];
+    await renderQueue();
+    expect(screen.getByText(/Beta · Product Manager: submitting now/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "confirmation" })).toHaveAttribute("href", "https://gamma/thanks");
+  });
+
+  it("says when nothing is waiting", async () => {
+    queue = [];
+    await renderQueue();
+    expect(screen.getByText(/Nothing is waiting for you/)).toBeInTheDocument();
+  });
+
+  it("refreshes on its own", async () => {
+    await renderQueue();
+    const before = calls.filter(([u]) => u === "/api/applications?view=queue").length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(calls.filter(([u]) => u === "/api/applications?view=queue").length).toBe(before + 1);
+  });
+});
+
+describe("ApprovalQueue -- warm paths", () => {
+  const inDays = (d: number) => new Date(Date.now() + d * 86_400_000).toISOString();
+
+  it("shows who the user knows at the company", async () => {
+    queue = [row({ people: { linked: 1, known: 3 } })];
+    await renderQueue();
+    expect(screen.getByText("You know 3 people here · 1 linked")).toBeInTheDocument();
+  });
+
+  it("asks for a referral first: holds the row and opens People", async () => {
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Ask for a referral first" }));
+    const holdCall = calls.find(([url]) => url === "/api/applications/1/hold");
+    expect(holdCall?.[1]?.method).toBe("POST");
+    expect(screen.getByTestId("people-panel")).toBeInTheDocument();
+    expect(submitCalls()).toHaveLength(0);
+  });
+
+  it("puts held cards last with a badge, and Submit still works on them", async () => {
+    queue = [
+      row({ id: "1", company: "Held Co", pick_score: 0.99, referral_hold_until: inDays(5) }),
+      row({ id: "2", company: "Open Co", pick_score: 0.5 }),
+    ];
+    await renderQueue();
+    const cards = screen.getAllByRole("article");
+    expect(within(cards[0]).getByText("Open Co")).toBeInTheDocument();
+    expect(within(cards[1]).getByRole("note")).toHaveTextContent("Waiting on a referral until");
+    expect(within(cards[1]).queryByRole("button", { name: "Ask for a referral first" })).toBeNull();
+    expect(within(cards[1]).getByRole("button", { name: "Submit" })).toBeEnabled();
+  });
+
+  it("an expired hold is ignored", async () => {
+    queue = [row({ referral_hold_until: inDays(-1) })];
+    await renderQueue();
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(screen.getByRole("button", { name: "Ask for a referral first" })).toBeInTheDocument();
+  });
+
+  it("shows other applications at the company, amber at the cap", async () => {
+    queue = [row({ id: "1", company: "Acme", company_30d: { others: 1, cap: 3 } }),
+             row({ id: "2", company: "Beta", pick_score: 0.1, company_30d: { others: 3, cap: 3 } }),
+             row({ id: "3", company: "Gamma", pick_score: 0.05, company_30d: { others: 0, cap: 3 } })];
+    await renderQueue();
+    expect(screen.getByText("1 other application here in 30 days (cap 3)")).toHaveClass("text-fg-dim");
+    expect(screen.getByText("3 other applications here in 30 days (cap 3)")).toHaveClass("text-amber-300");
+    expect(screen.queryByText(/0 other/)).toBeNull();
+  });
+
+  it("shows the H-1B signal in its tone", async () => {
+    queue = [row({ id: "1", company: "Acme", visa: { label: "H-1B filings: 7 in 2 years", tone: "good" } }),
+             row({ id: "2", company: "Beta", pick_score: 0.1, visa: { label: "No H-1B data", tone: "none" } })];
+    await renderQueue();
+    expect(screen.getByText("H-1B filings: 7 in 2 years")).toHaveClass("text-emerald-300");
+    expect(screen.getByText("No H-1B data")).toHaveClass("text-fg-dim");
+  });
+
+  it("stops waiting", async () => {
+    queue = [row({ referral_hold_until: inDays(5) })];
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Stop waiting" }));
+    expect(calls.find(([url, init]) => url === "/api/applications/1/hold" && init?.method === "DELETE")).toBeTruthy();
+  });
+
+  it("People toggles the panel", async () => {
+    await renderQueue();
+    const toggle = screen.getByRole("button", { name: "People" });
+    await click(toggle);
+    expect(screen.getByTestId("people-panel")).toBeInTheDocument();
+    await click(toggle);
+    expect(screen.queryByTestId("people-panel")).toBeNull();
+  });
+});
+
+
+describe("ApprovalQueue -- replies from companies", () => {
+  const evidence = (kind: string) => ({ kind, message_id: "<m@x>", from: "Acme <a@acme.com>",
+    subject: kind === "interview" ? "Next steps with Acme" : "Your application to Acme",
+    date: "2026-10-18T12:00:00Z", previous_stage: "applied" });
+
+  it("lists interview invites and rejections with the email subject", async () => {
+    outcomeRows = [
+      row({ id: "7", company: "Acme", stage: "phone_screen", outcome_evidence: evidence("interview") }),
+      row({ id: "8", company: "Beta", stage: "rejected", outcome_evidence: evidence("rejection") }),
+    ];
+    await renderQueue();
+    const acme = screen.getByRole("article", { name: "Acme reply" });
+    expect(within(acme).getByText("interview invite")).toHaveClass("text-emerald-300");
+    expect(within(acme).getByText(/Next steps with Acme/)).toBeInTheDocument();
+    expect(within(screen.getByRole("article", { name: "Beta reply" })).getByText("not moving forward")).toBeInTheDocument();
+  });
+
+  it("undo puts the stage back", async () => {
+    outcomeRows = [row({ id: "8", company: "Beta", stage: "rejected", outcome_evidence: evidence("rejection") })];
+    await renderQueue();
+    await click(screen.getByRole("button", { name: "Not right? Undo" }));
+    const patch = calls.find(([url, init]) => url === "/api/applications/8" && init?.method === "PATCH");
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ stage: "applied" });
+  });
+
+  it("an undone outcome says so and offers no button", async () => {
+    outcomeRows = [row({ id: "8", company: "Beta", stage: "applied", outcome_evidence: evidence("rejection") })];
+    await renderQueue();
+    expect(screen.getByText("Undone")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Not right? Undo" })).toBeNull();
+  });
+});

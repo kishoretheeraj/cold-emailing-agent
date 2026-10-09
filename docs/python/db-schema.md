@@ -405,6 +405,32 @@ CREATE TABLE job_applications (
   `stage='applied'` plus `source_channel`/`applied_date` together, since a partial failure between
   two separate calls would leave the row `applied` with neither field recorded, or vice versa.
 
+- **Run log, takeover, evidence (migration `20261008000000`, first-ten-applications Phase B):**
+  `application_runs` (append-only: `run_id`, `application_id` nullable for bake-off fixtures, `kind`
+  prepare/submit/bakeoff/dryrun, `adapter`, `host`, `started_at`/`ended_at`, `outcome`, `stop_reason`,
+  `fields_filled`/`fields_missing`, `takeovers`, `model_calls`, `error_class`, `details` JSONB <= 16 KB).
+  API roles get SELECT only; rows are written by `log_application_run(...)` (validates lengths, counts,
+  future timestamps). `job_applications.takeover JSONB` (`{kind, reason, lease, requested_at, continue_at}`,
+  RPC-only): `request_takeover(p_id, p_lease, p_kind, p_reason)` (live lease, `preparing`/`submitting`
+  only), `takeover_continue(p_id)` (UI "I'm done"; only an open request whose `lease` equals the row's
+  current `worker_lease_id`, so a request from an earlier lease is stale), `clear_takeover(p_id, p_lease)`.
+  `record_submission` is now `(p_id, p_lease, p_source_channel, p_applied_date, p_evidence JSONB DEFAULT
+  NULL)` (4-arg version dropped, not overloaded): evidence is merged with `source`/`at` server-owned and
+  `message_id` stripped (reserved for receipt proof), and it clears `takeover`. Private bucket
+  `application-evidence` (5 MB, png/jpeg/text/json) with an anon INSERT-only policy; there is no read
+  policy, evidence is shown only through signed URLs from an authenticated route (spec §9.1).
+  `db.py`: `log_application_run` (best-effort, returns id or None), `request_takeover`, `clear_takeover`,
+  `takeover_state(id, lease)` -> `continued`/`waiting`/`none`/`lost`, `record_submission(..., evidence=None)`
+  (omits `p_evidence` when None). Vocabularies: `config.APPLICATION_RUN_KINDS`/`_OUTCOMES`/`TAKEOVER_KINDS`.
+  Tests: `tests/test_application_runs_migration.py`, `tests/test_application_runs_db.py`,
+  `supabase/tests/application_runs_takeover_dryrun.sql`.
+
+- **Signed approvals (migration `20261008000001`):** `approval_signature TEXT` and
+  `approval_signed_at_ms BIGINT` (RPC-only). `approve_application(p_id, p_revision_hash, p_signature,
+  p_signed_at_ms)` replaces the 2-arg version: signature must be 64 lowercase hex, signing time within
+  120 s of `now()`. The HMAC itself is checked by the submit worker (`approval_signature.py`), since the
+  database never holds the key.
+
 ## api_usage_log (system-wide cost tracking, added 2026-08-29)
 
 Append-only ledger covering every Claude API call anywhere in the codebase, not just
@@ -448,3 +474,69 @@ CREATE TABLE api_usage_log (
   `resume_agent.py` keeps its own independent Anthropic client but calls
   `usage_tracking.log_usage` too (`action="propose"` / `"cover_letter"`), so this table captures
   Phase 3's calls alongside every other module's.
+
+
+## Job identity, preview attempts and job_boards (migration 20261009000000)
+
+New `job_applications` columns (spec 2026-10-08 fifty-a-day):
+
+| Column | Written by | Meaning |
+|---|---|---|
+| `job_key` | `db.save_job_application`, `db.backfill_identity` | `job_identity.identify(url)["job_key"]`: one key per real job across URL spellings. Unique when not NULL (`idx_job_applications_job_key_unique`). |
+| `platform` | same | `job_identity` platform (`greenhouse`, `lever`, `ashby`, `workday`, `smartrecruiters`, `workable`, `oracle`, `icims`, `aggregator`, `generic`). The queues exclude platforms this host cannot prepare. |
+| `company_key`, `title_key` | same | Company name without legal suffixes; the set of title words. Same company and title identity within 45 days is a duplicate role (indexed together). |
+| `location`, `posted_at` | `job_sourcing` | Where and when the source said the job was posted. |
+| `jd_fingerprint` | same | 64-bit SimHash of the description: tells a repost of a role already applied to from a different opening with the same title. |
+| `prepare_attempts` | `claim_application` (+1 on a preview claim), `requeue_preview` (reset) | RPC-owned; no API role may write it. The preview queue skips a row at `APPLY_PREPARE_MAX_ATTEMPTS`. |
+| `pick_attempts` | `job_pick` | Failed fit judgments; `maybe` after `JOB_PICK_MAX_ATTEMPTS`. |
+
+`requeue_preview` also accepts `failed_retryable` now. DELETE, TRUNCATE and TRIGGER on `job_applications`
+are revoked from anon and authenticated (rows leave through `stage='withdrawn'`).
+
+`job_boards` (platform, board, company, source, enabled, last_scanned_at, last_job_count,
+consecutive_failures, dead_at; unique `(platform, board)`): the company boards `job_sourcing.py` sweeps.
+`board` is the slug for Greenhouse/Lever/Ashby and `<host>/<tenant>/<site>` for Workday. Rows come from
+the Simplify feed's URLs. A board is dead after 3 consecutive "does not exist" answers; transient
+errors only move it to the back of the queue. API roles: SELECT, INSERT, UPDATE.
+
+Functional checks: `supabase/tests/job_identity_queue_dryrun.sql`.
+
+## Warm paths (migration 20261010000000)
+
+Spec: `docs/superpowers/specs/2026-10-08-warm-paths-design.md`. Functional checks:
+`supabase/tests/warm_paths_dryrun.sql` (12 hand-made mutations of the migration each caught).
+
+- `contacts.job_application_id BIGINT NULL REFERENCES job_applications(id) ON DELETE SET NULL`, partial index.
+  One contact belongs to at most one application.
+- `contacts.relationship TEXT NULL`, CHECK in `hiring_manager`, `leader`, `recruiter`, `alum`, `team_member`, `other`.
+- `contacts.deleted_at` is restated with `ADD COLUMN IF NOT EXISTS` (it existed live without a migration).
+- Trigger `contacts_link_guard` (BEFORE INSERT OR UPDATE OF `job_application_id`, `deleted_at`; `SECURITY DEFINER`,
+  `search_path` pinned). On a new link: `mode` must be `applied` or `networking`, `stage='new'` and
+  `reply_status='no_reply'` (old and new values on UPDATE), the application not `rejected`/`withdrawn`. On a new link
+  or a restore (`deleted_at` -> NULL): the application row is locked `FOR UPDATE`, then at most 3 live linked people.
+  Errors start with `warm_paths:` (the contact-manager maps them to 409).
+- `job_applications.referral_hold_until TIMESTAMPTZ NULL`. No anon/authenticated column grant. Written by
+  `hold_for_referral(p_id BIGINT, p_days INTEGER) RETURNS timestamptz` (clamped 1..14, NULL -> 10; only
+  `automation_status='ready_for_review' AND approved_at IS NULL`; raises otherwise) and
+  `release_referral_hold(p_id BIGINT)` (raises on an unknown id). Both `SECURITY DEFINER`, EXECUTE to anon and
+  authenticated. Not part of `preview_revision_hash`; survives `requeue_preview`.
+
+New `db.py`: `get_application_states(ids)` (`{id: {stage, role, company, applied_date, job_url,
+posting_description}}`, chunks of 200, raises on failure). `get_all_contacts()` now pages
+(`.order("id").range()`, 1000 a page).
+
+`job_search_preferences` keys read by the contact-manager only: `referral_hold_days` (default 10, max 14) and
+`outreach_per_company_30d` (default 5).
+
+Local stacks: `scripts/local_dryrun/prod_drift.sql` adds the live-only `contacts` columns
+(`classifier_status`, `resume_url`, `deleted_at`) and `build_db.sh` loads `setup_prompts.sql`, so the stress
+stack can run the contact-manager's real queries.
+
+## Application outcomes (migration 20261011000000)
+
+`job_applications.outcome_evidence JSONB NULL`: the employer email that last moved the row's stage, written by
+`application_outcomes.py` via `db.record_application_outcome(id, to_stage, from_stages, evidence)` (a conditional
+UPDATE on `stage IN from_stages`). Shape: `{source: "gmail_outcome", kind: "rejection"|"interview", message_id,
+from, subject, date, previous_stage}`. NULL means no outcome email was read, never "no outcome". Column-granted
+UPDATE to anon and authenticated; it is not part of `preview_revision_hash`. Reader: `db.get_open_applications_for_outcomes(max_age_days)`.
+Functional check: `supabase/tests/application_outcomes_dryrun.sql`.

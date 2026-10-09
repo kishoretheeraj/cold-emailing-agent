@@ -55,6 +55,8 @@ export type Contact = {
   deleted_at: string | null;
   state?: string | null;
   company_intel_id?: number | null;
+  job_application_id?: number | null;
+  relationship?: string | null;
   company_intel?: Pick<CompanyIntel, "sponsors_h1b" | "h1b_recent_count" | "match_status"> | null;
 };
 
@@ -307,11 +309,15 @@ export const AUTOMATION_STATUS_LABELS: Record<AutomationStatus, string> = {
 
 export type JobApplicationPickVerdict = "strong" | "maybe" | "no";
 
+export type KeywordCoverage = { covered: string[]; missing: string[] };
+
 export type JobApplicationApplyPreview = {
   platform: string;
   field_values: Record<string, string>;
   eligibility_answers: Record<string, string>;
   screening_answers: Record<string, string>;
+  keyword_coverage?: KeywordCoverage | null;
+  workday_steps?: string[];
   // Where the per-job salary range came from (apply_agent.py / salary_estimate.py); absent when
   // the flat applicant_eligibility answer was used.
   salary_basis?: string;
@@ -321,11 +327,23 @@ export type JobApplicationApplyPreview = {
 
 export type SubmissionEvidence = {
   source: string;
+  url?: string;
+  text?: string;
   message_id?: string;
   from?: string;
   subject?: string;
   date?: string;
   at?: string;
+};
+
+// Written only by the request_takeover / takeover_continue / clear_takeover RPCs. A request is
+// open only while its lease is the row's current worker_lease_id and continue_at is unset.
+export type TakeoverRequest = {
+  kind: string;
+  reason: string | null;
+  lease: string;
+  requested_at: string;
+  continue_at: string | null;
 };
 
 export type JobApplication = {
@@ -336,6 +354,22 @@ export type JobApplication = {
   job_url: string | null;
   source: string | null;
   source_channel: string | null;
+  location?: string | null;
+  posted_at?: string | null;
+  // Warm paths: waiting on a referral until this time (hold_for_referral), and the queue route's
+  // people counts (linked to this application; known at the company).
+  referral_hold_until?: string | null;
+  people?: { linked: number; known: number };
+  // Other applications at this company in the last 30 days that count toward the per-company cap.
+  company_30d?: { others: number; cap: number };
+  // H-1B signal for the company (lib/visaSignal.ts): never a negative unless a human confirmed it.
+  visa?: { label: string; tone: "good" | "review" | "none" };
+  // The employer email that last moved the stage (application_outcomes.py); NULL = none read.
+  outcome_evidence?: {
+    kind: "rejection" | "interview"; message_id: string; from: string; subject: string; date: string;
+    previous_stage: JobApplicationStage;
+  } | null;
+  company_key?: string | null;
   stage: JobApplicationStage;
   applied_date: string | null;
   notes: string | null;
@@ -357,6 +391,8 @@ export type JobApplication = {
   form_signature?: string | null;
   submit_attempted_at?: string | null;
   submission_evidence?: SubmissionEvidence | null;
+  worker_lease_id?: string | null;
+  takeover?: TakeoverRequest | null;
   created_at: string;
   updated_at: string;
 };

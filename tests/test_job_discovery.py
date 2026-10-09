@@ -143,3 +143,18 @@ def test_run_survives_company_universe_failure(mocker):
     job_discovery.run()   # must not raise
     args, kwargs = db.record_run.call_args
     assert args[0] == "failure"
+
+
+def test_run_filters_titles_before_capping(mocker):
+    # fifty-a-day F9: the cap used to apply before the title match, so matching roles past the
+    # board's first 25 postings were never saved.
+    mocker.patch.object(db, "load_prompts", return_value={"target_roles": "Product Manager"})
+    mocker.patch.object(job_discovery, "_company_universe", return_value=["BigCo"])
+    postings = ([{"title": f"Engineer {i}", "url": f"https://x/{i}", "location": "", "description": "", "source": "greenhouse"}
+                 for i in range(40)]
+                + [{"title": "Product Manager", "url": "https://x/pm", "location": "", "description": "", "source": "greenhouse"}])
+    fetch = mocker.patch.object(job_discovery.ats, "fetch_jobs", return_value=postings)
+    create = mocker.patch.object(db, "create_job_application", return_value={"id": 1})
+    job_discovery.run()
+    assert fetch.call_args.kwargs["max_jobs"] >= len(postings)
+    assert [c.kwargs["role"] for c in create.call_args_list] == ["Product Manager"]

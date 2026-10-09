@@ -1,6 +1,8 @@
 export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
+import { approvalSigningKey, signApproval } from "@/lib/approvalSignature";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 function getClient() {
   return createClient(
@@ -10,6 +12,12 @@ function getClient() {
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  // Checked here as well as in the proxy: approving is the one action that can lead to a real
+  // application, so it never relies on route matching alone.
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
+
   const { id } = await params;
 
   // job_applications.id is an INTEGER. Reject anything else before it reaches the
@@ -28,8 +36,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "revision_hash is required" }, { status: 400 });
   }
 
+  const signingKey = approvalSigningKey();
+  if (!signingKey) {
+    return Response.json({ error: "APPROVAL_SIGNING_KEY is not configured" }, { status: 503 });
+  }
+
+  // APPLY_SUBMIT_HOST=beelink: apply-submit.service on the Beelink polls approved rows, so the
+  // approval alone queues the submit and no GitHub workflow is dispatched.
+  const beelinkSubmits = process.env.APPLY_SUBMIT_HOST === "beelink";
   const token = process.env.GITHUB_DISPATCH_TOKEN;
-  if (!token) {
+  if (!beelinkSubmits && !token) {
     return Response.json(
       { error: "GITHUB_DISPATCH_TOKEN is not configured" },
       { status: 500 }
@@ -43,13 +59,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // the row was actually submittable. IMPORTANT: supabase-js RPC calls do NOT throw on a
   // Postgres exception -- the error comes back on the `error` field of the resolved value, so
   // it must be checked explicitly here, not caught with try/catch.
+  // The signature is what the submit worker verifies (approval_signature.py); the RPC only
+  // stores it and checks that the signing time is current.
   const supabase = getClient();
+  const signedAtMs = Date.now();
   const { error: rpcError } = await supabase.rpc("approve_application", {
     p_id: Number(id),
     p_revision_hash: revisionHash,
+    p_signature: signApproval(signingKey, Number(id), revisionHash, signedAtMs),
+    p_signed_at_ms: signedAtMs,
   });
   if (rpcError) {
     return Response.json({ error: rpcError.message }, { status: 409 });
+  }
+  if (beelinkSubmits) {
+    return Response.json({ ok: true, queued: "beelink" });
   }
 
   // C3: approve_application already set approved_at above. If the dispatch below fails --

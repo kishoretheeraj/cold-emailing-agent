@@ -52,6 +52,27 @@ ATS_MAX_SLUG_CANDIDATES = 2
 # just the single best match for one contact's role — this cap is deliberately higher
 # than ATS_MAX_JOBS (which sizes a research-brief snippet, not a discovery scan).
 ATS_DISCOVERY_MAX_JOBS = 25
+# job_discovery reads a whole board before filtering titles (fifty-a-day F9).
+ATS_DISCOVERY_FETCH_ALL = 2000
+
+# ── Job sourcing (spec 2026-10-08 fifty-a-day §3.3) ───────────────────────────
+# job_sourcing.py runs on the Beelink every 2 hours. Zero-token: public, no-auth sources only.
+SOURCING_SIMPLIFY_URL = ("https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/"
+                         ".github/scripts/listings.json")
+SOURCING_SIMPLIFY_CATEGORIES = ("Product",)
+SOURCING_TIMEOUT_SECONDS = 20
+SOURCING_MAX_DESCRIPTION_CHARS = 6000
+# Boards swept per run, least recently scanned first: about 200 boards every 2 hours keeps each
+# board fresh within a day without bursting any one ATS.
+SOURCING_MAX_BOARDS_PER_RUN = 200
+SOURCING_BOARD_DELAY_SECONDS = 0.5
+SOURCING_BOARD_DEAD_AFTER_FAILURES = 3
+SOURCING_WORKDAY_MAX_PAGES = 3
+SOURCING_WORKDAY_PAGE_DELAY_SECONDS = 0.25
+SOURCING_WORKDAY_SEARCH_TERMS = ("product manager", "product analyst", "product owner", "program manager",
+                                 "business analyst")
+# Legacy rows without a job_key are backfilled this many at a time per run.
+SOURCING_BACKFILL_BATCH = 200
 
 # ── Email verification pre-flight (Phase 5, full-fledged buildout) ─────────────
 
@@ -516,6 +537,8 @@ RULES FOR USING THIS CONTEXT:
 # ── Resume intelligence (Phase 3, full-fledged buildout) ────────────────────────
 
 RESUME_STORAGE_BUCKET = "resumes"
+# Private bucket for submission proof (migration 20261008000000); anon may insert, never read.
+APPLY_EVIDENCE_BUCKET = "application-evidence"
 RESUME_MODEL = EMAIL_MODEL
 # 90: each conversion starts a fresh throwaway LibreOffice profile, adding first-run setup time.
 RESUME_SOFFICE_TIMEOUT_SECONDS = 90
@@ -532,9 +555,16 @@ RESUME_MODEL_COST_PER_MTOK_OUTPUT = 15.0
 # Defaults to "api" so merging changes nothing; only resume-worker.service sets "subscription",
 # and GitHub Actions opts in by setting it in jobright_pull.yml once the worker is proven.
 RESUME_CLAUDE_BACKEND = os.environ.get("RESUME_CLAUDE_BACKEND", "api")
+# Same switch for apply_agent's screening answers (first-ten-applications Phase C); the Beelink's
+# apply units set "subscription". The GitHub Actions preview keeps "api".
+APPLY_CLAUDE_BACKEND = os.environ.get("APPLY_CLAUDE_BACKEND", "api")
+APPLY_MODEL = RESUME_MODEL
 CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH", "claude")
 CLAUDE_CLI_TIMEOUT_SECONDS = 300
-RESUME_WORKER_BATCH = 3
+RESUME_WORKER_BATCH = 5
+# The drain reads this many candidates per batch slot: rows it parks (closed posting, company cap)
+# don't use up the batch.
+RESUME_QUEUE_POOL_FACTOR = 4
 RESUME_QUEUE_STALE_HOURS = 24
 
 # ── Model pricing (system-wide cost tracking) ───────────────────────────────────
@@ -586,6 +616,11 @@ JOB_PICK_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 # conservative gate. Tune based on real false-negative reports, not guesswork.
 JOB_PICK_EMBEDDING_THRESHOLD = 0.35
 JOB_PICK_MODEL = EMAIL_MODEL
+# "subscription" on the Beelink's job-pick.service (claude -p); "api" elsewhere.
+JOB_PICK_BACKEND = os.environ.get("JOB_PICK_BACKEND", "api")
+JOB_PICK_JUDGE_BATCH = 10
+JOB_PICK_MAX_ATTEMPTS = 3
+JOB_PICK_MAX_PER_RUN = 300
 
 APPLY_AGENT_HAND_MAPPED_PLATFORMS = ("greenhouse", "ashby", "lever")
 # Per-field fill/attach timeout: Playwright's 30s default x every missing field made each job
@@ -621,10 +656,63 @@ AUTOMATION_STATUSES = (
     "idle", "preparing", "needs_input", "ready_for_review", "approved", "submitting",
     "submitted", "needs_confirmation", "failed_retryable", "failed_terminal", "unsupported",
 )
+# Mirrored by migration 20261008000000's CHECK constraints and request_takeover's guard.
+APPLICATION_RUN_KINDS = ("prepare", "submit", "bakeoff", "dryrun")
+APPLICATION_RUN_OUTCOMES = (
+    "ready", "needs_input", "takeover_timeout", "submitted", "needs_confirmation",
+    "failed_retryable", "failed_terminal", "unsupported", "skipped", "scored",
+)
+TAKEOVER_KINDS = ("captcha", "sms_code", "email_verification", "login", "unrecognized_page", "other")
+# ── Beelink apply worker (first-ten-applications Phase D) ─────────────────────────
+# Defaults keep GitHub Actions' headless preview unchanged; the Beelink units set headful real
+# Chrome on display :1, no generic adapter (browser-use needs a paid API key), and takeover on.
+APPLY_BROWSER_HEADLESS = os.environ.get("APPLY_BROWSER_HEADLESS", "1") != "0"
+APPLY_BROWSER_CHANNEL = os.environ.get("APPLY_BROWSER_CHANNEL") or None
+# A specific browser binary (tests and hosts whose Chromium is not Playwright's bundled revision).
+APPLY_BROWSER_EXECUTABLE = os.environ.get("APPLY_BROWSER_EXECUTABLE") or None
+APPLY_GENERIC_ADAPTER = os.environ.get("APPLY_GENERIC_ADAPTER", "browser_use")
+APPLY_TAKEOVER_ENABLED = os.environ.get("APPLY_TAKEOVER_ENABLED") == "1"
+APPLY_TAKEOVER_TIMEOUT_SECONDS = 1800
+APPLY_TAKEOVER_POLL_SECONDS = 10
+# After the Submit click: seconds to wait for confirmation copy or a confirmation URL.
+APPLY_CONFIRMATION_POLLS = 30
+# A site holding the submission for an emailed code (Greenhouse spam protection): who sends it and
+# how long to wait for it in the receipt inbox.
+APPLY_EMAIL_CODE_SENDERS = ("greenhouse.io", "greenhouse-mail.io", "ashbyhq.com", "lever.co", "hire.lever.co")
+APPLY_EMAIL_CODE_WAIT_SECONDS = 180
+APPLY_DISPLAY_LOCK = os.environ.get("APPLY_DISPLAY_LOCK", "/var/lib/job-agent/display1.lock")
+APPLY_SUBMIT_LOCK_WAIT_SECONDS = 600
+APPLY_PREPARE_BATCH = 5
+APPLY_SUBMIT_BATCH = 3
+APPLY_WORKER_ADAPTER = "deterministic"
+# The pre-review document quality gate (application_quality.py). On by default; "0" turns it off.
+APPLY_QUALITY_GATE = os.environ.get("APPLY_QUALITY_GATE", "1") != "0"
+# Workday applications (workday_adapter.py): only where a human can take over (the Beelink).
+APPLY_WORKDAY_ENABLED = os.environ.get("APPLY_WORKDAY_ENABLED") == "1"
+# The universal filler (universal_filler.py, spec 2026-10-09): one-page forms on any other site, no
+# paid model. Beelink units only (tests/test_ops_workflows.py fails if a workflow sets it), and only
+# for the job_identity platforms listed, which grow as watched runs prove each one.
+APPLY_UNIVERSAL_ENABLED = os.environ.get("APPLY_UNIVERSAL_ENABLED") == "1"
+APPLY_UNIVERSAL_PLATFORMS = tuple(p.strip() for p in os.environ.get("APPLY_UNIVERSAL_PLATFORMS", "").split(",")
+                                  if p.strip())
+# Per-tenant logged-in browser state (ats_sessions.py) and the encrypted password vault
+# (credential_vault.py). VAULT_KEY comes from /etc/job-agent/vault.env, loaded only by the apply units.
+APPLY_SESSIONS_DIR = os.environ.get("APPLY_SESSIONS_DIR", "/var/lib/job-agent/sessions")
+APPLY_VAULT_PATH = os.environ.get("APPLY_VAULT_PATH", "/var/lib/job-agent/vault.bin")
+VAULT_KEY = os.environ.get("VAULT_KEY")
+# Sender domains of Workday's account-verification mail (email_verification.py).
+WORKDAY_VERIFICATION_SENDERS = ("myworkday.com", "myworkdayjobs.com", "workday.com")
+
 # 1800s exceeds the submit workflow's 15-minute timeout and the per-row preview budget, so only a dead worker's lease goes stale.
 APPLY_AGENT_LEASE_STALE_SECONDS = 1800
 # Statuses a preview worker may claim a saved row from.
 APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES = ("idle", "failed_retryable")
+# A row is prepared at most this many times (claim_application counts attempts); a failed attempt
+# waits APPLY_PREPARE_BACKOFF_MINUTES x 2^(attempts-1) before the next. "Prepare again" resets it.
+APPLY_PREPARE_MAX_ATTEMPTS = 3
+APPLY_PREPARE_BACKOFF_MINUTES = 30
+# Candidate rows read per preview pass (best pick_score first); the batch size is separate.
+APPLY_PREVIEW_POOL = 100
 APPLY_AGENT_AGGREGATOR_DOMAINS = (
     "indeed.com",
     "ziprecruiter.com",
@@ -715,3 +803,12 @@ CU_LINKEDIN_MAX_WAIT_SECONDS = 300
 # does nothing -- no IMAP, no escalation.
 RECEIPT_IMAP_ADDRESS = os.environ.get("RECEIPT_IMAP_ADDRESS")
 RECEIPT_IMAP_APP_PASSWORD = os.environ.get("RECEIPT_IMAP_APP_PASSWORD")
+
+# ── Warm paths (contacts linked to a job application) ──────────────────────────
+# Mirrored by the contacts_link_guard trigger (migration 20261010000000) and warmPaths.ts; a static
+# test fails if they drift.
+WARM_MAX_PEOPLE_PER_APPLICATION = 3
+
+# ── Application outcomes (rejections and interview invites from the receipt inbox) ──
+APPLY_OUTCOME_LOOKBACK_DAYS = 3       # each monitor pass reads this many days of mail (it runs every 20 min)
+APPLY_OUTCOME_MAX_AGE_DAYS = 180      # applications older than this are not matched any more

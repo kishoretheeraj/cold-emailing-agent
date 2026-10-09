@@ -138,3 +138,46 @@ def test_persist_postings_truncates_to_the_per_session_cap(mocker):
     saved, _, _ = cu_linkedin.persist_postings(postings)
     assert saved == config.CU_LINKEDIN_MAX_POSTINGS_PER_SESSION
     assert create.call_count == config.CU_LINKEDIN_MAX_POSTINGS_PER_SESSION
+
+
+# ── Triage at insert (fifty-a-day follow-up): LinkedIn rows pass the same filters ──
+
+
+def _settings():
+    import job_filters
+    return job_filters.load_preferences({}), {"requires_visa_sponsorship": "Yes"}
+
+
+@pytest.mark.parametrize("posting,reason", [
+    (_posting(role="Senior Product Manager"), "seniority"),
+    (_posting(role="Software Engineer"), "title"),
+    (dict(_posting(role="Associate Product Manager"), location="London, UK"), "location"),
+    (dict(_posting(role="Associate Product Manager"), description="We are unable to sponsor visas for this role."),
+     "no_sponsorship"),
+])
+def test_off_target_linkedin_postings_are_skipped_before_insert(mocker, caplog, posting, reason):
+    import logging
+    caplog.set_level(logging.INFO)
+    create = mocker.patch.object(db, "create_job_application")
+    assert cu_linkedin.persist_postings([posting], settings=_settings()) == (0, 1, 0)
+    create.assert_not_called()
+    assert f"skipped: {reason}" in caplog.text
+
+
+def test_an_on_target_linkedin_posting_is_saved_with_its_location(mocker):
+    create = mocker.patch.object(db, "create_job_application", return_value={"id": 3})
+    posting = dict(_posting(role="Associate Product Manager"), location="New York, NY")
+    assert cu_linkedin.persist_postings([posting], settings=_settings()) == (1, 0, 0)
+    assert create.call_args.kwargs["location"] == "New York, NY"
+
+
+def test_run_loads_the_search_settings_once(mocker):
+    mocker.patch.object(cu_linkedin.db, "get_pause_scope", return_value="none")
+    load = mocker.patch.object(cu_linkedin.job_sourcing, "load_search_settings", return_value=_settings())
+    mocker.patch.object(cu_linkedin, "run_session", return_value=("[]", 1, 0))
+    mocker.patch.object(cu_linkedin.db, "record_run")
+    persist = mocker.patch.object(cu_linkedin, "persist_postings", return_value=(0, 0, 0))
+    mocker.patch.object(cu_linkedin.config, "CU_LINKEDIN_ENABLED", True, create=True)
+    cu_linkedin.run()
+    assert persist.call_args.kwargs["settings"] == load.return_value
+    load.assert_called_once()

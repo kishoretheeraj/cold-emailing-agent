@@ -16,7 +16,12 @@ def fake_client(mocker):
     return client
 
 
-def test_create_job_application_inserts_with_default_stage(fake_client):
+@pytest.fixture
+def no_duplicates(mocker):
+    return mocker.patch.object(db, "_dedup_rows", return_value=[])
+
+
+def test_create_job_application_inserts_with_default_stage(fake_client, no_duplicates):
     fake_client.table.return_value.insert.return_value.execute.return_value.data = [
         {"id": 1, "company": "Acme", "role": "PM", "stage": "saved"}
     ]
@@ -29,42 +34,123 @@ def test_create_job_application_inserts_with_default_stage(fake_client):
     assert result["id"] == 1
 
 
-def test_create_job_application_passes_optional_fields(fake_client):
-    fake_client.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+def test_create_job_application_passes_optional_fields(fake_client, no_duplicates):
     fake_client.table.return_value.insert.return_value.execute.return_value.data = [{"id": 2}]
     db.create_job_application(
-        company="Acme", role="PM", job_url="https://x", source="manual",
+        company="Acme", role="PM", job_url="https://x.example/jobs/1", source="manual",
         contact_id=5, applied_date="2026-08-26", notes="hi",
-        posting_snapshot={"salary": "150k"},
+        posting_snapshot={"salary": "150k"}, location="Boston, MA", posted_at="2026-10-01T00:00:00+00:00",
     )
     inserted = fake_client.table.return_value.insert.call_args[0][0]
-    assert inserted["job_url"] == "https://x"
+    assert inserted["job_url"] == "https://x.example/jobs/1"
     assert inserted["source"] == "manual"
     assert inserted["contact_id"] == 5
     assert inserted["applied_date"] == "2026-08-26"
     assert inserted["notes"] == "hi"
     assert inserted["posting_snapshot"] == {"salary": "150k"}
+    assert inserted["location"] == "Boston, MA"
+    assert inserted["posted_at"] == "2026-10-01T00:00:00+00:00"
 
 
-def test_create_job_application_returns_none_on_empty_data(fake_client):
+def test_create_job_application_writes_the_identity_fields(fake_client, no_duplicates):
+    fake_client.table.return_value.insert.return_value.execute.return_value.data = [{"id": 3}]
+    description = " ".join(f"word{i}" for i in range(80))
+    db.create_job_application(company="Figma, Inc.", role="Associate Product Manager",
+                              job_url="https://boards.greenhouse.io/figma/jobs/6180116004?gh_src=x",
+                              posting_snapshot={"description": description})
+    inserted = fake_client.table.return_value.insert.call_args[0][0]
+    assert inserted["job_key"] == "greenhouse:6180116004"
+    assert inserted["platform"] == "greenhouse"
+    assert inserted["company_key"] == "figma"
+    assert inserted["title_key"] == "associate manager product"
+    assert len(inserted["jd_fingerprint"]) == 16
+
+
+def test_create_job_application_returns_none_on_empty_data(fake_client, no_duplicates):
     fake_client.table.return_value.insert.return_value.execute.return_value.data = []
     assert db.create_job_application(company="Acme", role="PM") is None
+    assert db.save_job_application(company="Acme", role="PM") == (None, "no_row")
 
 
-def test_create_job_application_skips_when_job_url_already_exists(fake_client):
-    fake_client.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-        {"id": 9}
-    ]
-    result = db.create_job_application(company="Acme", role="PM", job_url="https://x")
-    assert result is None
+def test_create_job_application_skips_a_duplicate_without_inserting(fake_client, mocker):
+    mocker.patch.object(db, "_dedup_rows", return_value=[{"id": 9, "job_key": "lever:" + "a" * 8}])
+    mocker.patch.object(db, "duplicate_reason", return_value="same_job")
+    assert db.save_job_application(company="Acme", role="PM", job_url="https://x") == (None, "same_job")
     fake_client.table.return_value.insert.assert_not_called()
 
 
-def test_create_job_application_skips_dedup_check_when_no_job_url(fake_client):
-    fake_client.table.return_value.insert.return_value.execute.return_value.data = [{"id": 3}]
-    result = db.create_job_application(company="Acme", role="PM")
-    fake_client.table.return_value.select.assert_not_called()
-    assert result["id"] == 3
+def test_a_lost_insert_race_returns_none_at_once_instead_of_retrying(fake_client, no_duplicates, mocker):
+    sleep = mocker.patch("db.time.sleep")
+    fake_client.table.return_value.insert.return_value.execute.side_effect = Exception(
+        "{'code': '23505', 'message': 'duplicate key value violates unique constraint'}")
+    assert db.save_job_application(company="Acme", role="PM", job_url="https://x") == (None, "conflict")
+    assert fake_client.table.return_value.insert.return_value.execute.call_count == 1
+    sleep.assert_not_called()
+
+
+def test_other_insert_errors_are_still_retried_and_raised(fake_client, no_duplicates, mocker):
+    mocker.patch("db.time.sleep")
+    fake_client.table.return_value.insert.return_value.execute.side_effect = Exception("503 upstream")
+    with pytest.raises(Exception, match="503"):
+        db.create_job_application(company="Acme", role="PM")
+    assert fake_client.table.return_value.insert.return_value.execute.call_count == 3
+
+
+def test_dedup_rows_queries_key_url_and_title_identity(fake_client):
+    table = fake_client.table.return_value
+    table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [{"id": 1}]
+    (table.select.return_value.eq.return_value.eq.return_value.order.return_value.limit.return_value
+     .execute.return_value.data) = [{"id": 2}]
+    fields = {"job_key": "lever:abc", "company_key": "acme", "title_key": "manager product"}
+    rows = db._dedup_rows(fields, "https://jobs.lever.co/acme/abc")
+    assert [r["id"] for r in rows] == [1, 1, 2]
+    eq_calls = [c.args for c in table.select.return_value.eq.call_args_list]
+    assert ("job_key", "lever:abc") in eq_calls and ("job_url", "https://jobs.lever.co/acme/abc") in eq_calls
+    assert ("company_key", "acme") in eq_calls
+
+
+def test_dedup_rows_skips_queries_it_has_no_value_for(fake_client):
+    assert db._dedup_rows({"job_key": None, "company_key": None, "title_key": None}, None) == []
+    fake_client.table.assert_not_called()
+
+
+# ── duplicate_reason (pure) ────────────────────────────────────────────────────
+
+_NOW = db.datetime(2026, 10, 9, tzinfo=db.timezone.utc)
+
+
+def _row(days_ago, **over):
+    created = (_NOW - db.timedelta(days=days_ago)).isoformat()
+    return {"id": 1, "job_url": "https://old", "job_key": "k:old", "stage": "saved",
+            "automation_status": "idle", "created_at": created, "jd_fingerprint": None, **over}
+
+
+_FIELDS = {"job_key": "k:new", "company_key": "acme", "title_key": "manager product", "jd_fingerprint": None}
+
+
+@pytest.mark.parametrize("rows,url,expected", [
+    ([], "https://new", None),
+    ([_row(400, job_key="k:new")], "https://new", "same_job"),
+    ([_row(400, job_url="https://new")], "https://new", "same_job"),
+    ([_row(10)], "https://new", "same_role"),
+    ([_row(10, stage="withdrawn")], "https://new", "same_role"),
+    ([_row(60)], "https://new", None),
+    ([_row(60, stage="applied")], "https://new", "repost_of_applied"),
+    ([_row(60, automation_status="submitted")], "https://new", "repost_of_applied"),
+    ([_row(200, stage="applied")], "https://new", None),
+])
+def test_duplicate_reason(rows, url, expected):
+    assert db.duplicate_reason(_FIELDS, url, rows, now=_NOW) == expected
+
+
+def test_a_different_posting_for_the_same_title_is_not_a_repost():
+    jd = "We need a product manager for payments onboarding activation and retention " * 6
+    other = "Warehouse forklift operator loading trucks scanning inventory on weekend shifts " * 6
+    fields = dict(_FIELDS, jd_fingerprint=db.job_identity.fingerprint(jd))
+    applied = _row(60, stage="applied", jd_fingerprint=db.job_identity.fingerprint(other))
+    same = _row(60, stage="applied", jd_fingerprint=db.job_identity.fingerprint(jd))
+    assert db.duplicate_reason(fields, "https://new", [applied], now=_NOW) is None
+    assert db.duplicate_reason(fields, "https://new", [same], now=_NOW) == "repost_of_applied"
 
 
 def test_get_job_applications_returns_all_rows(fake_client):
@@ -161,14 +247,47 @@ def test_set_resume_files_writes_fresh_documents_version_each_call(fake_client):
     assert str(uuid.UUID(versions[0])) == versions[0]
 
 
+def test_set_resume_files_stores_digests_only_when_provided(fake_client):
+    fake_client.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": 1}]
+    db.set_resume_files(1, resume_file_ref="r.pdf")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert "resume_sha256" not in updated and "cover_letter_sha256" not in updated
+    db.set_resume_files(1, resume_file_ref="r.pdf", cover_letter_file_ref="c.pdf",
+                        resume_sha256="aa", cover_letter_sha256="bb")
+    updated = fake_client.table.return_value.update.call_args[0][0]
+    assert updated["resume_sha256"] == "aa"
+    assert updated["cover_letter_sha256"] == "bb"
+
+
+def test_upload_resume_file_is_content_addressed_immutable_and_returns_digest(fake_client):
+    import hashlib
+    digest = hashlib.sha256(b"filebytes").hexdigest()
+    path, got_digest = db.upload_resume_file("resumes/1/resume.pdf", b"filebytes", "application/pdf")
+    fake_client.storage.from_.assert_called_with(config.RESUME_STORAGE_BUCKET)
+    fake_client.storage.from_.return_value.upload.assert_called_once()
+    args, kwargs = fake_client.storage.from_.return_value.upload.call_args
+    assert args[0] == f"resumes/1/resume-{digest[:16]}.pdf"
+    assert args[1] == b"filebytes"
+    assert args[2]["upsert"] == "false"
+    assert (path, got_digest) == (f"resumes/1/resume-{digest[:16]}.pdf", digest)
+
+
+def test_upload_resume_file_treats_existing_identical_object_as_success(fake_client):
+    fake_client.storage.from_.return_value.upload.side_effect = RuntimeError("The resource already exists")
+    path, digest = db.upload_resume_file("resumes/1/resume.pdf", b"same", "application/pdf")
+    assert digest[:16] in path
+
+
 def test_upload_resume_file_calls_storage_and_returns_path(fake_client):
+    import hashlib
+    digest = hashlib.sha256(b"filebytes").hexdigest()
     result = db.upload_resume_file("resumes/1/resume.pdf", b"filebytes", "application/pdf")
     fake_client.storage.from_.assert_called_with(config.RESUME_STORAGE_BUCKET)
     fake_client.storage.from_.return_value.upload.assert_called_once()
     args, kwargs = fake_client.storage.from_.return_value.upload.call_args
-    assert args[0] == "resumes/1/resume.pdf"
+    assert args[0] == f"resumes/1/resume-{digest[:16]}.pdf"
     assert args[1] == b"filebytes"
-    assert result == "resumes/1/resume.pdf"
+    assert result == (f"resumes/1/resume-{digest[:16]}.pdf", digest)
 
 
 def test_upload_resume_file_raises_on_failure(fake_client):

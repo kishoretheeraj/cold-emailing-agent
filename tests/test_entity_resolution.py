@@ -120,3 +120,14 @@ def test_classify_mid_band_score_is_needs_review():
     status, top = er.classify("acme indutsries co", candidates)
     assert status == "needs_review"
     assert er.REVIEW_FLOOR <= top.score < er.AUTO_THRESHOLD
+
+
+def test_visa_names_fixture_matches_python():
+    # contact-manager/src/lib/visaSignal.ts mirrors normalize + canonicalize_alias_group and reads
+    # the same fixture, so the queue card's H-1B lookup cannot drift from the ingestion keys.
+    import json
+    from pathlib import Path
+    rows = json.loads((Path(__file__).parent / "fixtures" / "visa_names.json").read_text())
+    assert len(rows) >= 25
+    for name, key in rows:
+        assert er.canonicalize_alias_group(er.normalize(name)) == key, name

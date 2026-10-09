@@ -1,36 +1,41 @@
 """
-Pure URL-pattern classifier for job_applications.job_url -- decides which filler
-apply_agent.py uses. No I/O, no logging, no state. Matches on domain/path
-fragments only, never a "did not match anything known" guess: unmatched URLs
-fall to 'generic' (browser-use handles it), never silently into 'workday' or
-'aggregator'. See docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md.
+Which filler apply_agent.py uses for a job_applications.job_url: one of 'greenhouse', 'ashby',
+'lever', 'workday', 'aggregator' or 'generic'. Decided by hostname through job_identity, never by
+substring ("clever.com" is not Lever, "?src=greenhouse.io" is not Greenhouse). Platforms with no
+adapter here (SmartRecruiters, Workable, Oracle, iCIMS, unknown hosts) are 'generic'. Pure, no I/O.
+See docs/superpowers/specs/2026-10-08-fifty-a-day-design.md §3.1.
 """
 
-import re
-
 import config
+import job_identity
 
-# Matches the Workday domains themselves, NOT the `.wdN.` tenant segment -- that segment
-# isn't universal, and Workday also serves career sites on myworkdaysite.com. Requiring it
-# would let those URLs fall through to 'generic' (the browser-use path) despite Workday
-# being permanently excluded -- currently inert only because browser-use doesn't work yet.
-_WORKDAY_PATTERN = re.compile(r"myworkdayjobs\.com|myworkdaysite\.com", re.IGNORECASE)
+_ROUTED = ("greenhouse", "ashby", "lever", "workday", "aggregator")
+# job_identity platforms that route to the generic adapter (classify -> 'generic').
+GENERIC_PLATFORMS = ("generic", "smartrecruiters", "workable", "oracle", "icims")
 
 
 def classify(job_url):
-    if not job_url:
-        return "generic"
-    lowered = job_url.lower()
+    platform = job_identity.identify(job_url)["platform"]
+    return platform if platform in _ROUTED else "generic"
 
-    if "ashbyhq.com" in lowered:
-        return "ashby"
-    if "greenhouse.io" in lowered:
-        return "greenhouse"
-    if "lever.co" in lowered:
-        return "lever"
-    if _WORKDAY_PATTERN.search(lowered):
-        return "workday"
-    for domain in config.APPLY_AGENT_AGGREGATOR_DOMAINS:
-        if domain in lowered:
-            return "aggregator"
-    return "generic"
+
+def universal_platform(job_url):
+    """The job_identity platform when the universal filler handles this URL on this host, else None."""
+    platform = job_identity.identify(job_url)["platform"]
+    if config.APPLY_UNIVERSAL_ENABLED and platform in GENERIC_PLATFORMS and platform in config.APPLY_UNIVERSAL_PLATFORMS:
+        return platform
+    return None
+
+
+def unpreparable_platforms():
+    """job_identity platforms this host can only skip: generic sites when no generic adapter is
+    configured and the universal filler does not cover them, Workday when it is enabled but the account vault key is missing. Queues exclude
+    them in the query itself, so a pile of them can never fill a batch and starve the rest, and the
+    resume worker never builds documents nobody here can submit."""
+    excluded = []
+    universal = config.APPLY_UNIVERSAL_PLATFORMS if config.APPLY_UNIVERSAL_ENABLED else ()
+    if config.APPLY_GENERIC_ADAPTER == "none":
+        excluded += [p for p in GENERIC_PLATFORMS if p not in universal]
+    if config.APPLY_WORKDAY_ENABLED and not config.VAULT_KEY:
+        excluded.append("workday")
+    return excluded

@@ -38,6 +38,22 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
+      - name: Check repo visibility
+        id: visibility
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          private="$(gh api "repos/$GITHUB_REPOSITORY" --jq .private 2>/dev/null || true)"
+          if [ "$private" != "true" ]; then private=false; fi
+          echo "private=$private" >> "$GITHUB_OUTPUT"
+
+      # The log names companies; it is printed to the console only when the repo is private,
+      # so the per-job outcome can be read without downloading the artifact.
+      - name: Print log (private repo only)
+        if: always() && steps.visibility.outputs.private == 'true'
+        run: cat apply_agent.log || true
+
       - name: Upload log artifact
         if: always()
         uses: actions/upload-artifact@v4

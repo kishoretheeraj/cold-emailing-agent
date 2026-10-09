@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Fixtureco Candidate Experience</title></head>
+<body>
+<!-- Email-then-code sign-in, as Oracle Candidate Experience does it, then a one-page form. -->
+<div id="gate">
+  <label for="em">Email Address</label><input id="em" name="email" type="email">
+  <button id="next" type="button">Next</button>
+</div>
+<div id="code" hidden>
+  <p>Enter the verification code we sent to your email.</p>
+  <label for="pin">Verification code</label><input id="pin" name="pin" inputmode="numeric" autocomplete="one-time-code">
+  <button id="verify" type="button">Verify</button>
+</div>
+<form id="apply" hidden>
+  <label for="fn">First Name *</label><input id="fn" name="firstName" required>
+  <label for="ln">Last Name *</label><input id="ln" name="lastName" required>
+  <label for="cv">Resume *</label><input id="cv" name="cv" type="file" required>
+  <button type="submit">Submit</button>
+</form>
+<script>
+  window.__submitted = 0; window.__email = null;
+  document.getElementById('next').onclick = () => { window.__email = document.getElementById('em').value;
+    document.getElementById('gate').hidden = true; document.getElementById('code').hidden = false; };
+  document.getElementById('verify').onclick = () => {
+    if (document.getElementById('pin').value !== '482913') return;
+    document.getElementById('code').hidden = true; document.getElementById('apply').hidden = false; };
+  document.getElementById('apply').addEventListener('submit', (e) => { e.preventDefault(); window.__submitted += 1; });
+</script>
+</body></html>

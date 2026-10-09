@@ -91,7 +91,7 @@ as_agent git -C "$APP" -c advice.detachedHead=false checkout -q "refs/tags/$TAG"
 log "venv"
 [ -x "$APP/.venv/bin/python" ] || as_agent python3 -m venv "$APP/.venv"
 as_agent "$APP/.venv/bin/pip" install -q --upgrade pip
-as_agent "$APP/.venv/bin/pip" install -q -r "$APP/requirements.txt"
+as_agent "$APP/.venv/bin/pip" install -q -r "$APP/requirements-beelink.txt"
 
 log "claude CLI for jobagent"
 if [ ! -x "$STATE/.local/bin/claude" ]; then
@@ -108,6 +108,14 @@ if [ ! -f "$ETC/base.env" ]; then
     install -o root -g root -m 0600 "$APP/deploy/beelink/env/base.env.example" "$ETC/base.env"
     log "created $ETC/base.env from the template -- fill it in: sudo nano $ETC/base.env"
 fi
+if [ ! -f "$ETC/approval.env" ]; then
+    install -o root -g root -m 0600 "$APP/deploy/beelink/env/approval.env.example" "$ETC/approval.env"
+    log "created $ETC/approval.env from the template -- paste the signing key: sudo nano $ETC/approval.env"
+fi
+if [ ! -f "$ETC/vault.env" ]; then
+    install -o root -g root -m 0600 "$APP/deploy/beelink/env/vault.env.example" "$ETC/vault.env"
+    log "created $ETC/vault.env from the template -- generate a key as its comment says: sudo nano $ETC/vault.env"
+fi
 if [ ! -f "$ETC/vncpasswd" ] && [ -t 0 ]; then
     log "set the VNC console password (guards the console only, not a LinkedIn credential)"
     x11vnc -storepasswd "$ETC/vncpasswd"
@@ -123,10 +131,17 @@ if have_systemd; then
     install -m 0644 "$APP"/deploy/beelink/systemd/*.service "$APP"/deploy/beelink/systemd/*.timer \
         /etc/systemd/system/
     systemctl daemon-reload
-    # resume-worker.timer is enabled by hand after the first watched run (RUNBOOK).
+    # resume-worker.timer and the apply-prepare/apply-submit timers are enabled by hand after a
+    # watched first run (RUNBOOK).
     if [ -f "$ETC/vncpasswd" ]; then
         systemctl enable --now xvfb@0 chrome-profile@0 x11vnc@0 novnc@0
         systemctl --no-pager --lines=0 status xvfb@0 chrome-profile@0 x11vnc@0 novnc@0 || true
+        # Display :1 is the apply worker's; its noVNC is how a human takes over a CAPTCHA.
+        systemctl enable --now xvfb@1 x11vnc@1 novnc@1
+        # noVNC stays on 127.0.0.1; tailscale serve publishes it over HTTPS to the tailnet only.
+        if command -v tailscale >/dev/null; then
+            tailscale serve --bg --https=8443 http://127.0.0.1:6081
+        fi
     else
         log "no $ETC/vncpasswd yet -- re-run from an interactive terminal to set it and start slot 0"
     fi

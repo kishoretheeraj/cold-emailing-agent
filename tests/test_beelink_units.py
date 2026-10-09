@@ -33,9 +33,17 @@ def _directives(path):
 
 def test_every_expected_unit_exists():
     assert sorted(os.path.basename(p) for p in _unit_paths()) == [
+        "apply-prepare.service",
+        "apply-prepare.timer",
+        "apply-submit.service",
+        "apply-submit.timer",
         "chrome-profile@.service",
         "job-linkedin-ingest.service",
         "job-linkedin-ingest.timer",
+        "job-pick.service",
+        "job-pick.timer",
+        "job-sourcing.service",
+        "job-sourcing.timer",
         "notify-failure@.service",
         "novnc@.service",
         "resume-worker.service",
@@ -61,14 +69,26 @@ def test_no_unit_ever_sets_an_automation_detectable_chrome_flag(flag):
 
 # ── The ARMED gate stays absent, testably ──────────────────────────────────────
 
+_ARMED_UNIT = "apply-submit.service"
+
+
 def test_every_service_explicitly_blanks_apply_agent_armed():
     for path in _unit_paths():
-        if path.endswith(".service"):
+        if path.endswith(".service") and os.path.basename(path) != _ARMED_UNIT:
             assert "Environment=APPLY_AGENT_ARMED=\n" in _read(path), path
 
 
-def test_nothing_in_m1_arms_the_submit_path():
+def test_apply_submit_is_the_only_armed_unit():
+    unit = _directives(os.path.join(_SYSTEMD, _ARMED_UNIT))
+    armed = [line for line in unit.splitlines() if "APPLY_AGENT_ARMED" in line]
+    assert armed == ["Environment=APPLY_AGENT_ARMED=1"]
+    assert "ExecStart=/opt/job-agent/.venv/bin/python apply_worker.py --submit" in unit
+
+
+def test_nothing_else_arms_the_submit_path():
     for path in _unit_paths() + [_ENV_EXAMPLE]:
+        if os.path.basename(path) == _ARMED_UNIT:
+            continue
         content = _directives(path)
         assert "APPLY_AGENT_ARMED=1" not in content, path
         assert "armed.env" not in content, path
@@ -223,9 +243,10 @@ def test_resume_worker_runs_drain_as_jobagent_with_its_own_token_file():
     assert "OnFailure=notify-failure@%n.service" in unit
 
 
-def test_only_the_resume_worker_loads_the_claude_token():
+def test_only_the_workers_that_call_claude_load_the_claude_token():
+    # apply-submit never calls Claude (it replays the reviewed answers), so it must not hold it.
     for path in _unit_paths():
-        if os.path.basename(path) != "resume-worker.service":
+        if os.path.basename(path) not in ("resume-worker.service", "apply-prepare.service", "job-pick.service"):
             assert "claude.env" not in _read(path), path
 
 
@@ -247,3 +268,172 @@ def test_provision_installs_worker_prereqs_but_never_enables_the_worker_timer():
     assert "/usr/local/share/fonts/calibri" in code
     assert "fc-match" in code
     assert "enable --now resume-worker" not in code and "enable resume-worker" not in code
+
+
+# ── apply worker (first-ten-applications Phase D) ─────────────────────────────
+
+_PREPARE = os.path.join(_SYSTEMD, "apply-prepare.service")
+_SUBMIT = os.path.join(_SYSTEMD, _ARMED_UNIT)
+_APPROVAL_ENV_EXAMPLE = os.path.join(_ROOT, "deploy", "beelink", "env", "approval.env.example")
+
+
+@pytest.mark.parametrize("path", [_PREPARE, _SUBMIT])
+def test_apply_units_drive_headful_chrome_on_display_1(path):
+    unit = _directives(path)
+    for line in ("Type=oneshot", "User=jobagent", "Environment=DISPLAY=:1",
+                 "Requires=xvfb@1.service", "JoinsNamespaceOf=xvfb@1.service",
+                 "Environment=APPLY_BROWSER_HEADLESS=0", "Environment=APPLY_BROWSER_CHANNEL=chrome",
+                 "Environment=APPLY_GENERIC_ADAPTER=none", "Environment=APPLY_TAKEOVER_ENABLED=1",
+                 "Environment=APPLY_WORKDAY_ENABLED=1", "EnvironmentFile=/etc/job-agent/vault.env",
+                 "EnvironmentFile=/etc/job-agent/base.env", "OnFailure=notify-failure@%n.service"):
+        assert line in unit, (path, line)
+    # PrivateTmp gives each unit its own /tmp, so the shared lock must live elsewhere.
+    assert "Environment=APPLY_DISPLAY_LOCK=/var/lib/job-agent/display1.lock" in unit
+    timeout = [l for l in unit.splitlines() if l.startswith("TimeoutStartSec=")]
+    assert len(timeout) == 1 and int(timeout[0].split("=")[1]) <= 5400
+
+
+def test_prepare_runs_on_the_subscription_and_never_holds_the_signing_key():
+    unit = _directives(_PREPARE)
+    assert "ExecStart=/opt/job-agent/.venv/bin/python apply_worker.py --prepare" in unit
+    assert "EnvironmentFile=/etc/job-agent/claude.env" in unit
+    assert "Environment=APPLY_CLAUDE_BACKEND=subscription" in unit
+    assert "approval.env" not in unit
+
+
+def test_only_apply_submit_loads_the_approval_signing_key():
+    for path in _unit_paths():
+        if os.path.basename(path) != _ARMED_UNIT:
+            assert "approval.env" not in _read(path), path
+    assert "EnvironmentFile=/etc/job-agent/approval.env" in _directives(_SUBMIT)
+
+
+def test_approval_env_template_is_valueless_and_key_only():
+    lines = [l for l in _read(_APPROVAL_ENV_EXAMPLE).splitlines() if l and not l.startswith("#")]
+    assert lines == ["APPROVAL_SIGNING_KEY="]
+
+
+def test_apply_timers():
+    prepare = _read(os.path.join(_SYSTEMD, "apply-prepare.timer"))
+    submit = _read(os.path.join(_SYSTEMD, "apply-submit.timer"))
+    assert "OnCalendar=*:0/20" in prepare and "Unit=apply-prepare.service" in prepare
+    assert "OnCalendar=*:*:00" in submit and "Unit=apply-submit.service" in submit
+
+
+def test_provision_never_enables_the_apply_timers():
+    code = _provision_code()
+    for unit in ("apply-prepare", "apply-submit"):
+        assert f"enable --now {unit}" not in code and f"enable {unit}" not in code
+
+
+def test_provision_installs_the_beelink_requirements_and_the_approval_env_template():
+    code = _provision_code()
+    assert "requirements-beelink.txt" in code
+    assert "approval.env.example" in code
+
+
+def test_takeover_view_is_tailnet_only_through_tailscale_serve():
+    # noVNC stays bound to 127.0.0.1; tailscale serve publishes it over HTTPS to the tailnet only
+    # (never --funnel, which would put it on the internet).
+    code = _provision_code()
+    assert "tailscale serve --bg --https=8443 http://127.0.0.1:6081" in code
+    assert "funnel" not in code
+
+
+def test_beelink_requirements_pin_playwright_and_skip_browser_use():
+    with open(os.path.join(_ROOT, "requirements-beelink.txt")) as f:
+        lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    assert "-r requirements.txt" in lines
+    assert any(l.startswith("playwright==") for l in lines)
+    assert not any("browser-use" in l or "langchain" in l for l in lines)
+
+
+def test_memory_fits_with_the_apply_worker_running():
+    # LinkedIn slot 0, the takeover display slot 1, one apply worker at a time (display lock),
+    # and the resume worker, within the ~10.5 GiB left after the OS.
+    stack = ("xvfb@.service", "x11vnc@.service", "novnc@.service")
+    total = (sum(_memory_max_bytes(os.path.join(_SYSTEMD, n)) for n in stack + ("chrome-profile@.service",))
+             + sum(_memory_max_bytes(os.path.join(_SYSTEMD, n)) for n in stack)
+             + max(_memory_max_bytes(_PREPARE), _memory_max_bytes(_SUBMIT))
+             + _memory_max_bytes(os.path.join(_SYSTEMD, "resume-worker.service"))
+             + _memory_max_bytes(os.path.join(_SYSTEMD, "job-pick.service"))
+             + _memory_max_bytes(os.path.join(_SYSTEMD, "job-sourcing.service")))
+    assert total <= int(10.5 * 2**30)
+
+
+_VAULT_ENV_EXAMPLE = os.path.join(_ROOT, "deploy", "beelink", "env", "vault.env.example")
+
+
+def test_only_the_apply_units_load_the_vault_key():
+    for path in _unit_paths():
+        name = os.path.basename(path)
+        loads = "EnvironmentFile=/etc/job-agent/vault.env" in _directives(path)
+        assert loads == (name in ("apply-prepare.service", "apply-submit.service")), name
+        if name not in ("apply-prepare.service", "apply-submit.service"):
+            assert "vault.env" not in _read(path), name
+
+
+def test_vault_env_template_is_valueless_and_key_only():
+    lines = [l for l in _read(_VAULT_ENV_EXAMPLE).splitlines() if l and not l.startswith("#")]
+    assert lines == ["VAULT_KEY="]
+
+
+def test_provision_creates_the_vault_env_template_but_never_a_key():
+    code = _provision_code()
+    assert "vault.env.example" in code
+    assert "Fernet.generate_key" not in code and "VAULT_KEY=" not in code
+
+
+# ── Sourcing and scoring (fifty-a-day) ─────────────────────────────────────────
+
+def test_sourcing_needs_no_model_and_no_secrets_beyond_base():
+    unit = _directives(os.path.join(_SYSTEMD, "job-sourcing.service"))
+    assert "ExecStart=/opt/job-agent/.venv/bin/python job_sourcing.py" in unit
+    assert [l for l in unit.splitlines() if l.startswith("EnvironmentFile=")] == ["EnvironmentFile=/etc/job-agent/base.env"]
+
+
+def test_job_pick_judges_on_the_subscription_and_skips_unsubmittable_sites():
+    unit = _directives(os.path.join(_SYSTEMD, "job-pick.service"))
+    assert "ExecStart=/opt/job-agent/.venv/bin/python job_pick.py" in unit
+    for line in ("EnvironmentFile=/etc/job-agent/claude.env", "Environment=JOB_PICK_BACKEND=subscription",
+                 "Environment=RESUME_CLAUDE_BACKEND=subscription", "Environment=APPLY_GENERIC_ADAPTER=none"):
+        assert line in unit
+
+
+def test_the_resume_worker_skips_sites_nothing_here_can_submit():
+    # fifty-a-day F15: documents were built for Oracle/iCIMS rows the apply worker can never send.
+    assert "Environment=APPLY_GENERIC_ADAPTER=none" in _directives(os.path.join(_SYSTEMD, "resume-worker.service"))
+
+
+def test_scoring_runs_after_sourcing_every_two_hours():
+    sourcing = _read(os.path.join(_SYSTEMD, "job-sourcing.timer"))
+    pick = _read(os.path.join(_SYSTEMD, "job-pick.timer"))
+    assert "OnCalendar=*-*-* 00/2:13:00" in sourcing and "OnCalendar=*-*-* 00/2:43:00" in pick
+
+
+def test_provision_never_enables_the_sourcing_or_pick_timers():
+    code = _provision_code()
+    assert "enable --now job-sourcing" not in code and "enable --now job-pick" not in code
+
+
+def test_beelink_requirements_install_cpu_only_torch_for_job_pick():
+    with open(os.path.join(_ROOT, "requirements-beelink.txt")) as f:
+        lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    assert "--extra-index-url https://download.pytorch.org/whl/cpu" in lines
+    assert lines.index("torch") < lines.index("sentence-transformers>=3.0.0")
+
+
+def test_the_universal_filler_platforms_match_across_every_unit_that_reads_them():
+    # apply-prepare fills, apply-submit sends, resume-worker builds documents and job-pick counts
+    # stale rows for the same platforms; a drifted list builds documents nobody can send, or skips
+    # rows the worker could fill.
+    lists = {}
+    for unit in ("apply-prepare", "apply-submit", "resume-worker", "job-pick"):
+        directives = _directives(os.path.join(_SYSTEMD, f"{unit}.service"))
+        assert "Environment=APPLY_UNIVERSAL_ENABLED=1" in directives, unit
+        lists[unit] = [d for d in directives.splitlines() if d.startswith("Environment=APPLY_UNIVERSAL_PLATFORMS=")]
+    assert len({tuple(v) for v in lists.values()}) == 1
+    assert len(lists["apply-prepare"]) == 1
+    platforms = lists["apply-prepare"][0].split("=", 2)[2].split(",")
+    import ats_platform
+    assert platforms and set(platforms) <= set(ats_platform.GENERIC_PLATFORMS)

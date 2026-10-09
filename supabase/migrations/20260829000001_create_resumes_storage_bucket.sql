@@ -4,9 +4,10 @@
 -- Every other table in this project runs with RLS disabled (see draft_history's migration
 -- comment) since this repo authenticates with a single anon key and has no separate
 -- service-role credential anywhere in the stack. Storage always enforces RLS-style policies on
--- storage.objects (there is no bucket-level "disable RLS" toggle), so these three policies grant
--- the anon key the same full read/write access on this one bucket that it already has on every
--- table -- scoped to bucket_id = 'resumes' only, not every bucket.
+-- storage.objects (there is no bucket-level "disable RLS" toggle), so these policies grant
+-- the anon key read and insert on this one bucket -- scoped to bucket_id = 'resumes' only, not
+-- every bucket. There is deliberately NO update policy: uploads are content-addressed and
+-- immutable (db.upload_resume_file), so an approved PDF cannot be overwritten in place.
 
 insert into storage.buckets (id, name, public)
 values ('resumes', 'resumes', false)
@@ -17,6 +18,3 @@ create policy "resumes bucket -- anon read" on storage.objects
 
 create policy "resumes bucket -- anon write" on storage.objects
   for insert with check (bucket_id = 'resumes');
-
-create policy "resumes bucket -- anon update" on storage.objects
-  for update using (bucket_id = 'resumes');

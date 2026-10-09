@@ -1,0 +1,44 @@
+# Prepares job applications in headful Chrome on display :1 and stops before Submit
+# (apply_worker.py --prepare). Never armed. Loads claude.env so screening answers run on the
+# Claude subscription, the same way resume-worker does. Shares display :1 with apply-submit;
+# an flock on APPLY_DISPLAY_LOCK keeps the two from opening browsers at once.
+#
+# JoinsNamespaceOf= is load-bearing: the X11 socket lives in xvfb@1's private /tmp.
+[Unit]
+Description=Apply worker: prepare applications on display :1 (never submits)
+After=xvfb@1.service network-online.target
+Requires=xvfb@1.service
+JoinsNamespaceOf=xvfb@1.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/job-agent
+EnvironmentFile=/etc/job-agent/base.env
+EnvironmentFile=/etc/job-agent/vault.env
+EnvironmentFile=/etc/job-agent/claude.env
+Environment=HOME=/var/lib/job-agent
+Environment=DISPLAY=:1
+Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
+Environment=APPLY_CLAUDE_BACKEND=subscription
+Environment=APPLY_BROWSER_HEADLESS=0
+Environment=APPLY_BROWSER_CHANNEL=chrome
+Environment=APPLY_GENERIC_ADAPTER=none
+# The universal filler (one-page forms, spec 2026-10-09). The list grows as watched runs prove each platform;
+# keep it identical in apply-prepare, apply-submit, resume-worker and job-pick.
+Environment=APPLY_UNIVERSAL_ENABLED=1
+Environment=APPLY_UNIVERSAL_PLATFORMS=generic,workable,smartrecruiters
+Environment=APPLY_TAKEOVER_ENABLED=1
+Environment=APPLY_WORKDAY_ENABLED=1
+Environment=APPLY_DISPLAY_LOCK=/var/lib/job-agent/display1.lock
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/opt/job-agent/.venv/bin/python apply_worker.py --prepare
+TimeoutStartSec=5400
+MemoryMax=2560M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/job-agent /var/lib/job-agent

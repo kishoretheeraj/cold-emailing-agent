@@ -14,6 +14,8 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Loader2 } from "lucide-react";
 import { ApplicationDetailSheet } from "@/components/ApplicationDetailSheet";
 import { SystemHealthStrip } from "@/components/SystemHealthStrip";
+import { TakeoverBanner } from "@/components/TakeoverBanner";
+import { ApprovalQueue } from "@/components/ApprovalQueue";
 import { pickVerdictVariant } from "@/lib/applicationBadges";
 import {
   JOB_APPLICATION_STAGES,
@@ -417,6 +419,12 @@ export function ApplicationsPage() {
 
       <SystemHealthStrip />
 
+      <TakeoverBanner />
+
+      <ApprovalQueue />
+
+      <h2 className="text-base font-medium text-fg">All applications</h2>
+
       <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-sm text-fg-muted">
           Company
@@ -494,6 +502,7 @@ export function ApplicationsPage() {
       ) : applications.length === 0 ? (
         <p className="text-sm text-fg-dim">No applications yet.</p>
       ) : (
+        <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-fg-dim border-b border-border">
@@ -708,6 +717,7 @@ export function ApplicationsPage() {
             })}
           </tbody>
         </table>
+        </div>
       )}
 
       <ApplicationDetailSheet

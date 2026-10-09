@@ -43,6 +43,21 @@ resume_build.py
 resume_scrub.py
 resume/
 candidate_profile.py
+job_identity.py
+job_filters.py
+job_sources.py
+job_sourcing.py
+job_liveness.py
+universal_filler.py
+application_outcomes.py
+approval_signature.py
+apply_worker.py
+takeover.py
+ats_sessions.py
+credential_vault.py
+email_verification.py
+workday_adapter.py
+application_quality.py
 salary_estimate.py
 claude_subscription.py
 usage_tracking.py
@@ -80,7 +95,7 @@ format:
 
 The marker is one of: `START`, `DONE`, `PAUSED`, `[OUTREACH]`, `[APPLIED]`, `[NETWORKING]`,
 `[CRITIC]`, `[RESEARCH]`, `[RESEARCH-Q]`, `[RESEARCH-T]`, `[RESEARCH-F]`,
-`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, or a level tag from a warning/error. Don't change the timestamp format — the
+`[RESEARCH-C]`, `[RESEARCH-A]`, `[CU-LINKEDIN]`, `[RECONCILE]`, `[SOURCING]`, `[LIVENESS]`, `[WARM]`, `[OUTCOME]`, `[APPLY-UNIVERSAL]`, or a level tag from a warning/error. Don't change the timestamp format — the
 GitHub Actions artifacts and downstream scripts read it. Mode tags are looked up from
 `agent._MODE_TAGS` / `emailer._MODE_TAGS` (two mirrored dicts, not a ternary) — add new modes
 to both.
@@ -112,6 +127,11 @@ script, above all project imports.
   `contacts.connection_context` (free text) when present; when empty, the
   prompt is instructed to degrade to a genuinely low-ask cold opener rather
   than fabricate a connection. See `docs/python/db-schema.md`.
+- **Warm paths** (contacts linked to a job application, see "Warm paths" below). Only `applied`-mode
+  contacts with a `job_application_id` are gated: skipped until the application's `stage` is
+  `applied`/`phone_screen`/`onsite`/`offer`/`accepted` ("application not submitted yet"), skipped once it is
+  `rejected`/`withdrawn` ("application closed"), skipped when the link can't be read ("linked application
+  unreadable"). Unlinked contacts, and every `outreach`/`networking` contact, decide exactly as before.
 
 ## Stage / template / label maps
 
@@ -465,13 +485,9 @@ Seven workflows live in `.github/workflows/`:
   a manual-by-default JobRight puller that runs on an explicit daily schedule per
   the user's override of the original manual-only rule (see
   `docs/superpowers/specs/2026-08-26-full-fledged-job-platform-buildout.md`, "JobRight scheduling").
-  Pulls fresh recommendations via `jobright.py`, then runs `job_pick.py` to score
-  every newly-saved row through three stages (structured filters, embedding similarity,
-  LLM judge) and queue `strong` verdicts for the Beelink resume worker: the scoring step sets
-  `RESUME_CLAUDE_BACKEND: subscription` (switched 2026-10-06, after the worker was live-verified on
-  the Beelink). Removing that line rolls back to the old api/zero-tap path, which can't build here
-  anyway: GitHub Actions has no LibreOffice, so those builds always failed at `soffice` (see
-  `docs/superpowers/specs/2026-08-30-phase2.5-auto-apply-design.md`).
+  Pulls fresh recommendations via `jobright.py` (through `job_filters`) and nothing else: scoring
+  moved to the Beelink's `job-pick.service` on the Claude subscription (2026-10-08, fifty-a-day F10;
+  the judge used to bill the API from here). Installs `requirements.txt` only.
 - **`apply_agent_preview.yml`** (named "Apply Agent Preview") — daily (`37 12 * * *`,
   off the hour), runs `python apply_agent.py --preview` unattended: fills every eligible
   job application's form (Greenhouse/Ashby/Lever hand-mapped, or `browser-use` for
@@ -487,9 +503,32 @@ Seven workflows live in `.github/workflows/`:
   this workflow's own env block — **the only place in this entire repo this variable
   is ever set.** `timeout-minutes: 15`. See "Auto-apply agent" below.
 
-All seven workflows: upload the relevant `.log` file as an artifact (30-day
+Those seven upload the relevant `.log` file as an artifact (30-day
 retention) where one exists, and run `notify_failure.py` in an `if: failure()` step.
 All support `workflow_dispatch` for manual triggers.
+
+Three more are **ops workflows**, manual-trigger only (`workflow_dispatch`), `contents: read`,
+inputs passed to the shell only through `env:` (never `${{ }}` inside `run:`), never armed, and
+asserted by `tests/test_ops_workflows.py`. They exist so the pipeline can be watched and fixed from
+somewhere with no database or job-site access:
+
+- **`apply_status.yml`** — `scripts/apply_status.py`, a read-only pipeline snapshot (counts by
+  stage/`automation_status`, the supported-ATS funnel, which `applicant_eligibility` keys exist).
+- **`apply_dryrun.yml`** — `scripts/apply_dryrun.py`, a read-only probe of real forms for given
+  ids: fills only deterministic data (contact fields, files, eligibility answers) and prints the
+  fill report, form inventory and still-empty required questions. No database writes, no Claude,
+  no browser-use, no clicks; refuses to start if `APPLY_AGENT_ARMED` is present at all.
+- **`db_migrate.yml`** — `list` / `dryrun` / `push` against the linked Supabase project (secrets
+  `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD`; the ref comes from `SUPABASE_URL`). `dryrun`
+  composes BEGIN + migration + optional `supabase/tests` file + ROLLBACK through
+  `scripts/sql_guard.py` (refuses anything that could commit or can't run in a transaction) and
+  fails unless `scripts/schema_fingerprint.sql` reads the same before and after. `push` needs the
+  `confirm` input to be exactly `push`.
+
+**Privacy rule for any workflow output:** company names, roles, URLs, answers and page HTML print
+only when a `Check repo visibility` step reads `private: true` from the GitHub API (anything else,
+including an API failure, becomes `false`). Logs and artifacts are world-readable while the repo
+is public. `applicant_eligibility` values never print in any mode.
 Python version: **3.11**. Dependencies are split so the frequently-run workflows stay light —
 `monitor.yml` alone runs ~50×/day and must not install `torch` on every run:
 
@@ -497,8 +536,8 @@ Python version: **3.11**. Dependencies are split so the frequently-run workflows
   `monitor.yml`, `visa_intel_ingest.yml`.
 - **`requirements-jobs.txt`** (`-r requirements.txt` + `sentence-transformers`) — `job_pick.py`
   imports `sentence_transformers` at **module level**, so anything importing `job_pick` needs this.
-  Installed by `jobright_pull.yml`, and by `requirements-dev.txt` (the test suite imports
-  `job_pick`).
+  Installed by `requirements-dev.txt` (the test suite imports `job_pick`); on the Beelink,
+  `requirements-beelink.txt` installs it on CPU-only torch for `job-pick.service`.
 - **`requirements-apply.txt`** (`-r requirements.txt` + `playwright` + `browser-use`) — installed
   by `apply_agent_preview.yml` / `apply_agent_submit.yml` only. Both libraries are imported
   **lazily inside functions** in `apply_agent.py`, never at module level, which is why the test
@@ -580,6 +619,7 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_automation_status_migration.py` — static assertions over the automation_status migration's SQL text (status CHECK, old-overload drop, anon grants never covering the hash columns or `approved_at`, trigger, RPC guards); there is no live DB in the test suite.
 - `tests/test_lifecycle_rpcs_migration.py` — static SQL assertions for the 2026-10-04 lifecycle RPCs/grants (functional checks live in `supabase/tests/lifecycle_rpcs_dryrun.sql`).
 - `tests/test_application_leases_db.py` — `db.py` lifecycle RPC wrappers (exact RPC names/params, claim re-read recovery, never `table().update`).
+- `tests/test_application_runs_migration.py` / `tests/test_application_runs_db.py` — migration `20261008000000` (run log, takeover RPCs, evidence bucket, `record_submission(p_evidence)`) and its `db.py` wrappers; functional checks in `supabase/tests/application_runs_takeover_dryrun.sql`.
 - `tests/test_requeue_preview_migration.py` — static SQL assertions for migration `20261006000000` (`requeue_preview` from `ready_for_review`).
 - `tests/test_h1b_wage_stats.py` — wage folding/annualizing, role families, pooled market rows, `run()` upsert order, `h1b_wage_stats` db accessors, migration `20261007000000`.
 - `tests/test_salary_estimate.py` — `salary_estimate.estimate()` level walk, floor/rounding, exact-or-confirmed employer key (never fuzzy), never raises.
@@ -587,6 +627,14 @@ See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 - `tests/test_claude_subscription.py` — `claude_subscription.complete()` argv, env allowlist, process-group kill on timeout, error mapping (all subprocess mocked).
 - `tests/test_resume_subscription_migration.py` — static SQL assertions for migration `20261005000000` (`billing` CHECK, `resume_error` grants).
 - `tests/test_db_resume_queue.py` — `db.py`'s resume-queue accessors (`count_stale_strong_without_resume` etc.).
+- `tests/test_job_identity.py`, `tests/test_job_filters.py`, `tests/test_job_sources.py`, `tests/test_job_sourcing.py`,
+  `tests/test_job_liveness.py`, `tests/test_job_identity_migration.py` (+ `supabase/tests/job_identity_queue_dryrun.sql`),
+  `tests/test_submit_control.py` (real DOM), `tests/test_screening_batch.py`, `tests/test_apply_load.py`,
+  `tests/test_stress_local.py` — fifty-a-day sourcing, dedup, triage, queues and the submit tail.
+- `tests/test_warm_paths_agent.py`, `tests/test_warm_paths_db.py`, `tests/test_warm_paths_migration.py`
+  (+ `supabase/tests/warm_paths_dryrun.sql`, 12 mutations caught), `tests/test_reply_warm_paths.py`,
+  the warm-path cases at the end of `tests/test_agent.py`, `tests/test_engagement_report.py` and
+  `tests/test_stress_local.py` — warm paths.
 - `tests/test_engagement_report.py` — the report's `db.py` accessors (following `test_db_draft_history.py`'s mock pattern), the contact join, distinct-contact grouping, NULL-renders-as-"unknown", small-`n` rate suppression, and a malformed-row never-raises sweep.
 
 See docs/python/critic-loop.md for critic loop details (pass condition, prompts, common failures).
@@ -725,6 +773,11 @@ threaded through `prepare_email` → `ctx` → `finalize_email` exactly like
 (`VOICE_INJECTION_FALLBACK` + `FIRST_TOUCH_ACTIONS`). Both sides must change
 together or the Prompt Lab preview silently diverges from production. The em-dash
 ban and `forbidden_phrases` still win over anything Voice DNA observes.
+
+**Known Lab gap (warm paths):** for a linked applied-mode contact with an empty `applied_date`, the
+agent fills it in memory from the application (`agent._with_application_fields`); the Lab preview does
+not mirror that and shows its usual fallback. `job_title`/`job_description` are persisted when the
+contact is created from the People panel, so those match.
 
 ## Decision-context tagging
 
@@ -869,6 +922,10 @@ X11 display slot 0 through Anthropic's Computer Use API (`computer_toolset_20260
 `job_applications` at `stage='saved'`, `source='linkedin'` via the same dedup-by-`job_url`
 `db.create_job_application` path `job_discovery.py`/`jobright.py` use. Log marker
 `[CU-LINKEDIN]`, own log file (`cu_linkedin.log`). Best-effort: never raises past `run()`.
+
+**Same triage as every source (2026-10-08).** `run()` loads `job_sourcing.load_search_settings()` once and
+`persist_postings(postings, settings=...)` skips anything `job_filters.reject_reason` rejects (title, seniority,
+location, sponsorship) before insert, logging `skipped: <reason>`; saved rows carry `location`.
 
 **Discovery only.** `linkedin.com/jobs` stays a permanently-excluded *apply* target in
 `config.APPLY_AGENT_AGGREGATOR_DOMAINS` -- both facts hold simultaneously.
@@ -1074,7 +1131,7 @@ third-party tool was fetched or integrated for that purpose.
 **Subscription transport (2026-10-04).** `resume_agent._call_claude` can run on the operator's
 Claude subscription via `claude_subscription.complete()` (`claude -p`), selected by
 `config.RESUME_CLAUDE_BACKEND` (read from the `RESUME_CLAUDE_BACKEND` env var, default `"api"`;
-`resume-worker.service` and `jobright_pull.yml`'s scoring step set `"subscription"`; live since 2026-10-06).
+`resume-worker.service` and `job-pick.service` set `"subscription"`; live since 2026-10-06).
 Every call strips ambient context (empty cwd + empty `CLAUDE_CONFIG_DIR`, `--strict-mcp-config
 --setting-sources ""`, `--tools ""`; measured ~224K -> ~6.5K tokens per call) and passes the CLI an
 env **allowlist** (`_ENV_ALLOW`), not a denylist: Claude Code prefers an API key, auth token, base
@@ -1082,6 +1139,11 @@ URL or cloud provider over the subscription. A timeout kills the whole process g
 `os.killpg`). **Never `--bare`**: it ignores OAuth. Auth is `CLAUDE_CODE_OAUTH_TOKEN`
 (`claude setup-token`). Rows are logged with `api_usage_log.billing='subscription'`, `cost_usd=0`
 (assumes paid usage credits are off for the account).
+- **Apply-side answers (2026-10-08).** `config.APPLY_CLAUDE_BACKEND` (env `APPLY_CLAUDE_BACKEND`, default `"api"`)
+  routes `apply_agent._generate_screening_answers` through the same `claude_subscription.complete()`
+  (model `config.APPLY_MODEL`, usage logged `billing='subscription'`). A `ClaudeSubscriptionError` (usage
+  limit, missing token, broken CLI) is never swallowed per question: the row is released `failed_retryable`
+  and `run_preview()` stops. Tests: `tests/test_apply_subscription.py`.
 - **Queue, not zero-tap.** On the subscription backend `job_pick.run()` writes nothing for `strong` rows (the
   queue is the row filters: `stage='saved'`, strong verdict, no resume, no `resume_error`) and
   returns a stale count after `RESUME_QUEUE_STALE_HOURS` (24); nonzero fails closed (exit 1). The
@@ -1123,8 +1185,8 @@ submits real application forms). See docs/superpowers/specs/2026-08-30-phase2.5-
 for the full design and docs/superpowers/plans/2026-08-30-phase2.5-auto-apply.md for the
 implementation plan.
 
-**`job_pick.py`'s three-stage scoring funnel** (run() is wired into `jobright_pull.yml`, after
-`jobright.py`'s pull): a cheap structured keyword filter on the job title short-circuits obvious
+**`job_pick.py`'s three-stage scoring funnel** (run by the Beelink's `job-pick.service` every 2 hours,
+after `job-sourcing`): `job_filters` (title, seniority, location, age, sponsorship) short-circuits obvious
 mismatches at zero cost -> a local `sentence-transformers` embedding-similarity check against the
 user's real resume/project text (no API key, no cost) short-circuits below-threshold jobs before
 any Claude call -> a Claude judge (`strong`/`maybe`/`no` + reasoning) only for jobs that survive
@@ -1135,8 +1197,9 @@ strategy-review gate, but only for this auto-pick path.
 **`apply_agent.py`'s platform routing** (`ats_platform.classify(job_url)` -> one of six strings):
 Greenhouse/Ashby/Lever get hand-mapped, deterministic Playwright fillers (`ats_fillers.py`);
 anything else with a real application page gets `browser-use` (an LLM-driven browser agent);
-Workday and job-board aggregator links (Indeed, ZipRecruiter, LinkedIn Jobs, etc.) are
-**permanently excluded** -- blocked before any fill attempt is even tried, `apply_blocked_reason`
+Workday runs only on the Beelink (`APPLY_WORKDAY_ENABLED=1`, see "Workday in apply_agent" below)
+and is excluded everywhere else; job-board aggregator links (Indeed, ZipRecruiter, LinkedIn Jobs,
+etc.) are **permanently excluded** -- blocked before any fill attempt is even tried, `apply_blocked_reason`
 set, row stays at `stage='saved'` for the user to handle by hand. Both fill paths attach the
 resume/cover letter (headless `set_input_files`, no OS dialog), answer free-text screening
 questions via Claude (grounded only in the real profile, never fabricated), and fill fixed
@@ -1154,7 +1217,9 @@ apply to. That tap POSTs to `/api/applications/[id]/submit`, which fires a `work
 form fresh (never reuses the preview pass's browser session) and clicks Submit for real.
 
 **`APPLY_AGENT_ARMED` is the single hard safety rule of this entire feature. This environment
-variable must never be set anywhere except `apply_agent_submit.yml`'s own env block -- never a
+variable must never be set anywhere except `apply_agent_submit.yml`'s own env block and, since
+2026-10-08, the Beelink's `deploy/beelink/systemd/apply-submit.service` (`tests/test_armed_rule.py`
+scans every tracked non-doc file and fails on any third setter) -- never a
 repo secret, never in `build-continue.yml`'s environment, never in a local `.env`
 file** (`config.py`'s `load_dotenv()` would otherwise silently arm a local `--submit` run --
 document this explicitly if you ever touch `apply_agent.py`'s docstring or this rule). The one
@@ -1340,6 +1405,125 @@ clears neither, with no partial-failure window and no separate write for the rou
   and never an unsupported `"strong"` that would zero-tap real resume spend) instead of judging
   fit with no candidate evidence at all.
 
+**Signed approvals (2026-10-08, migration `20261008000001`)**: the anon key is public, so
+`approve_application(p_id, p_revision_hash, p_signature, p_signed_at_ms)` (2-arg dropped) now
+stores an HMAC the contact-manager's submit route computes behind the operator login with
+`APPROVAL_SIGNING_KEY`, and refuses a malformed signature or a timestamp more than 120 s from
+`now()`. `submit()` refuses before claiming when the key is missing (`approval_signature.key_configured`)
+and, after the claim and hash check, releases to `needs_input` (approval cleared) on
+`approval_signature.verify(job)` failure: wrong HMAC, unsigned, or signed more than 300 s from
+`approved_at` (replay). The key lives in Vercel's server env, the `APPROVAL_SIGNING_KEY` GitHub
+secret (`apply_agent_submit.yml` only) and later the Beelink submit unit. Tests:
+`tests/test_approval_signature.py`, `tests/test_signed_approval_migration.py`,
+`supabase/tests/signed_approval_dryrun.sql`.
+
+**Content-bound documents and approval expiry (2026-10-09, Codex review, migration `20261012000000`)**:
+`db.upload_resume_file` stores each build under a content-addressed, never-overwritten path
+(`<root>-<sha256[:16]>.pdf`, upsert off; the anon UPDATE policy on the `resumes` bucket is dropped) and returns
+`(path, sha256)`; `set_resume_files` records `resume_sha256`/`cover_letter_sha256`. `preview_revision_hash` now
+covers those digests and the destination (`company`, `role`, `job_url`), so retargeting or swapping documents
+after approval invalidates it. At submit both attach paths re-hash the downloaded bytes
+(`_verify_document_digest`) and raise `DigestMismatch` (pre-click, `failed_retryable`) on a mismatch or a missing
+digest: rows built before the migration must be rebuilt. `approve_application` sets `approval_expires_at` (7 days)
+and `approval_signature.verify` refuses an expired or missing expiry. Workday submit refuses a failed attachment.
+`application_runs` and `job_boards` have RLS enabled. Functional check: `supabase/tests/document_digests_dryrun.sql`.
+
+**Beelink apply worker (2026-10-08, Phase D)**: `apply_worker.py --prepare|--submit`, each a oneshot on
+its own timer (`apply-prepare.timer` every 20 min, `apply-submit.timer` every minute; both enabled by
+hand after a watched run, RUNBOOK section 10). Both drive real Chrome headful on display :1
+(`APPLY_BROWSER_HEADLESS=0`, `APPLY_BROWSER_CHANNEL=chrome`), serialized by an `fcntl.flock` on
+`APPLY_DISPLAY_LOCK` (under `/var/lib/job-agent`, not `/tmp`, because of `PrivateTmp`). Prepare
+skips a run while the display is busy and yields between rows as soon as `db.get_approved_application_ids()`
+is non-empty; submit waits up to `APPLY_SUBMIT_LOCK_WAIT_SECONDS`. Every row's outcome (read back from
+the row's `automation_status`) goes to `application_runs`. `--submit` refuses unless `APPLY_AGENT_ARMED`
+is exactly `"1"`. `APPLY_GENERIC_ADAPTER=none` on the Beelink (browser-use needs a paid API key): generic-platform rows the
+universal filler does not cover stay `idle` in prepare and `submit()` refuses them before claiming (see "Universal filler"). **Takeover**
+(`takeover.py`, only with `APPLY_TAKEOVER_ENABLED=1`): `challenge_present(page)` detects a visible
+reCAPTCHA/hCaptcha/Turnstile (detection only; real-DOM tests in `tests/test_takeover.py`);
+`await_human` requests a takeover, heartbeats every `APPLY_TAKEOVER_POLL_SECONDS`, and returns on
+`continued`, raises `TakeoverLost` on a lost lease, returns False after 30 minutes. In
+`apply_agent`: checked on page load and after filling (prepare: unsolved -> `needs_input`), before
+the click (unsolved -> `failed_retryable`), and after the click when no confirmation shows (the human
+finishes; the worker never clicks Submit again; unsolved -> `needs_confirmation`). The contact-manager's
+`TakeoverBanner` polls `/api/applications?takeover=open` and posts `takeover-continue`. With
+`APPLY_SUBMIT_HOST=beelink` in Vercel the submit route approves without dispatching
+`apply_agent_submit.yml`. Tests: `tests/test_apply_worker.py`, `tests/test_takeover.py`,
+`tests/test_apply_agent_beelink.py`, `tests/test_beelink_units.py`, `tests/test_armed_rule.py`.
+
+**Sessions, vault, email verification, Workday prelude (2026-10-08, Phase E)**:
+`ats_sessions.tenant_key(url)` is the account boundary (host; host + company slug on shared hosts
+like Lever/Greenhouse/Ashby/Workable/SmartRecruiters; `myworkdaysite.com/recruiting/<tenant>`);
+`save_state`/`state_path`/`forget` keep a Playwright `storage_state` per tenant under
+`APPLY_SESSIONS_DIR` (0700/0600, hashed names). `credential_vault.Vault` (Fernet, `VAULT_KEY` from
+`/etc/job-agent/vault.env`, apply units only) holds one entry per tenant; `reserve()` generates a
+24-char password and writes it to disk BEFORE any typing and never replaces an entry; `mark()`
+records `active`/`rejected`. Passwords never appear in logs or reprs.
+`email_verification.wait_for_verification(sender_domains, since, ...)` reads only the receipt inbox
+(`gmail.fetch_inbox_since`), only matching senders after `since`, and returns a code (URLs stripped
+first; letter codes uppercase-only) or a link on an allowed host; never raises.
+`workday_adapter`: `enter_apply_flow` (Apply -> Apply Manually only), `authenticate` (vault sign-in,
+or signup with verification; "already in use", a refused login or a previously `rejected` entry
+raise `WorkdayStop("login")`, never a blind sign-in, reset or second account), `advance` (Next only
+while the step bar shows a later step and the label is Next/Continue/Save and Continue; returns
+False on Review; refuses anything reading like Submit). Tested against a real browser and
+`tests/fixtures/workday_tenant.html` (both UI generations; the Review step's footer button turns
+into "Submit" under the same id, as on real tenants).
+
+**Workday in apply_agent (2026-10-08)**: with `APPLY_WORKDAY_ENABLED=1` (Beelink units only;
+`tests/test_ops_workflows.py` fails if a workflow sets it) and a `VAULT_KEY` (else the row stays
+idle / submit refuses before claiming), `_launch_for` opens the job page with the tenant's saved
+`storage_state`; `_workday_reach_wizard` walks Workday's screens (job -> Apply Manually -> auth ->
+verify -> wizard), turning each `WorkdayStop` into a takeover and re-reading the screen after "I'm
+done"; `_walk_workday` fills each step (known contact fields by id, resume to
+`file-upload-input-ref`, eligibility, generated or replayed screening answers) and stops on the
+first step with a required question still blank (`needs_input`, step named). The preview stores
+`workday_steps`. `submit()` replays the reviewed answers through the same walk and presses
+`workday_adapter.submit_button(page)`, which exists only on the Review step and only when it reads
+"Submit". A `WorkdayStop` in prepare (including "already applied" or an account it has no password
+for) lands in `needs_input`. The form inventory and `_fill_field` now handle listbox buttons
+(`button[aria-haspopup=listbox]`, kind `listbox`): options are read by opening the popup
+(`_listbox_options`, also used to give the screening prompt real options), a value must match an
+option or nothing is picked, and the popup is closed again. `_form_signature` waits for a
+*visible* field. Tests: `tests/test_apply_agent_workday.py` (real browser, fixture tenant),
+`tests/test_apply_agent_listbox.py`.
+
+**Document quality gate (2026-10-08, spec §6.3)**: `_process_one_preview` runs
+`application_quality.evaluate(job)` right after the claim and before any browser opens
+(`config.APPLY_QUALITY_GATE`, default on). It downloads both PDFs and extracts their text with pypdf
+(what an ATS reads): the resume must be one page with the candidate's `master.json` name and email
+and the EXPERIENCE/EDUCATION headers in the extracted text; the cover letter must be 180-450 words of
+extracted text, name the company (suffixes like Inc./LLC stripped) and most of the role's core
+words, and have no em dash; neither may contain a placeholder or AI-assistant wording. Any problem
+releases the row to `needs_input` with "Quality check: ..." (a storage failure raises and is
+retryable). A passing preview records `keyword_coverage` ({covered, missing} skills from
+`skills.json` the JD names), a report for the card, never a reason to add a skill. `conftest.py`
+stubs `_quality_report` for every test module whose name lacks "quality". Tests:
+`tests/test_application_quality.py` (real PDFs built in the test), `tests/test_apply_agent_quality_gate.py`.
+Before the gate, `application_quality.knockout_reasons(posting_text(job), eligibility)` drops a row to
+`unsupported` ("Knock-out: ...") when `applicant_eligibility.requires_visa_sponsorship` starts with
+"y" and the posting refuses sponsorship or requires citizenship, permanent residency or a clearance;
+an unknown answer never drops a job. After the page loads, `posting_closed_reason(page text)` drops
+a closed posting to `unsupported` ("Posting closed: ...") before any field is filled.
+
+**Submission evidence (2026-10-08)**: after `_submission_confirmed`, `submit()` records
+`_capture_evidence(page, job_id)` -- the page URL, a 1000-char text excerpt around the confirmation
+copy, and a full-page screenshot uploaded with `db.upload_evidence` to the private
+`application-evidence` bucket (`config.APPLY_EVIDENCE_BUCKET`, insert-only, never upsert, a fresh
+uuid path per run). Capture never raises. `_record_submission` passes it as `evidence=`; if that call
+fails (a database without migration `20261008000000`) it records once more without evidence, so a
+confirmed submission is never left looking unconfirmed. `conftest.py` stubs `_capture_evidence` for
+test modules whose names lack "evidence". The bucket has no read policy, so the screenshots are not
+viewable from the contact-manager yet (that needs a read path decision; see the plan).
+Tests: `tests/test_submission_evidence.py` (includes a real-browser capture).
+
+**Answer bank (2026-10-08)**: `_generate_screening_answers` first looks the question up in
+`_answer_bank()`, built from `db.get_answer_bank_rows()` (previews with `approved_at` set, newest
+first): `{normalized question: answer}` keeping only answers of at most 120 characters that are not
+`NEEDS HUMAN REVIEW` and do not name their own company (in the question or the answer). A banked
+answer is used only if it matches one of this field's options (when it has options); otherwise the
+model answers as before. Never raises. `conftest.py` stubs `_answer_bank` outside
+`tests/test_answer_bank.py`.
+
 **Execution lifecycle (automation_status, 2026-10-01)**: `job_applications.automation_status` (migration
 `20261001000000`) is the execution state, separate from the recruiting `stage`. Vocabulary, by name only:
 `idle`, `preparing`, `needs_input`, `ready_for_review`, `approved`, `submitting`, `submitted`,
@@ -1412,6 +1596,57 @@ company is used only when the role disambiguates. After 15 min without a match i
 `apply_blocked_reason` with "No receipt email found..." once and keeps checking.
 Plan: docs/superpowers/plans/2026-10-01-automation-status-and-leases.md.
 
+**Application outcomes** (`application_outcomes.py`, run from `monitor.py` right after the reconciler,
+best-effort, marker `[OUTCOME]`, migration `20261011000000`): reads the last `APPLY_OUTCOME_LOOKBACK_DAYS` (3)
+of the same receipt mailbox and moves open submitted rows (applied/phone_screen/onsite, at most
+`APPLY_OUTCOME_MAX_AGE_DAYS` old). A rejection moves applied/phone_screen/onsite to `rejected`, which also stops
+applied-mode warm-path mail for that role. An interview invite moves applied to `phone_screen`. Each move writes
+`outcome_evidence` (message id, from, subject, date, kind, `previous_stage`) through
+`db.record_application_outcome`, conditional on the source stage. A message already stored on the row is never
+applied again, so the queue's Undo (a PATCH back to `previous_stage`) sticks. Matching is deliberately narrow:
+- exact phrases only; a rejection beats interview wording;
+- a receipt saying "if selected we'll schedule an interview" is not an invite unless it carries a booking link;
+- mail must come from the company (display name, subject or domain, as the reconciler matches), never from a job
+  board (`_JOB_BOARD_DOMAINS`), and never a reply in a human thread;
+- it must arrive after `submit_attempted_at`/`applied_date`;
+- with two open applications at one company, the email has to name the role.
+Anything uncertain changes nothing. Tests: `tests/test_application_outcomes.py`,
+`tests/test_application_outcomes_migration.py` (+ `supabase/tests/application_outcomes_dryrun.sql`).
+
+**Universal filler (2026-10-09, spec docs/superpowers/specs/2026-10-09-every-site-design.md, advisor-reviewed)**:
+`universal_filler.py` fills **one-page** forms on any site the hand-mapped fillers and Workday do not cover, with no
+model in the loop for navigation (screening answers still come from the subscription). It runs only where
+`APPLY_UNIVERSAL_ENABLED=1` (Beelink apply/resume/pick units; `tests/test_ops_workflows.py` fails if a workflow sets
+it) and only for job_identity platforms in `APPLY_UNIVERSAL_PLATFORMS` (identical in all four units,
+`tests/test_beelink_units.py`); `ats_platform.universal_platform(url)` decides, and `unpreparable_platforms()` keeps
+excluding the rest so the resume worker never builds documents for them. Safety rules, each with a mutation-checked
+real-browser test against a POST-counting server (`tests/test_universal_apply.py`):
+- `submit_guard(block_network)` (a context init script, so new tabs and iframes get it) stops every native
+  submission (submit event, Enter, `form.submit()`, `requestSubmit()`) and counts it (`guard_count`); a nonzero
+  count or a missing guard fails the preview. Only `submit()` lifts it, right before the one approved click.
+  Non-GET/HEAD fetch, XHR and sendBeacon calls are counted (`network_count`, logged) and blocked only in the
+  universal **preview** (`_launch_for(..., for_submit=False)`): the approved submit pass and Workday (both
+  passes) must let them through, because real sites sign in, save wizard steps and upload a resume on file
+  choice that way (Codex review 2026-10-09 asked for network blocking; blocking it there broke Workday
+  sign-in/Next and uploads-on-select, `tests/test_universal_apply.py` covers both directions).
+- Nothing is pressed but the entry control (once, on the landing page, never a third-party "Apply with ...") and,
+  in an armed `submit()`, the final control. A page with any Next-class control is multi-step and stops
+  (`Stop("multi_step")`, needs_input); the final control must be exactly one strict Submit/Apply label, stored in
+  `apply_preview.universal.final_label` and required to match at submit (`FormChangedError` otherwise).
+- Details are typed only on the posting's own registrable domain or a known ATS host (`allowed_host`).
+- The inventory is scoped to the application's `<form>` (`View.form_scope`, read by `_form_inventory`), contact
+  fields map by positive label rules (`contact_key`), a key two fields claim fills neither (email + confirm email
+  is the one pair), files go by label (`file_targets`), comboboxes are answered by clicking an option, never Enter
+  (`View.no_enter`).
+- A confirmation visible after filling releases `unsupported` ("may have received this application during preview").
+- A sign-in wall: saved cookies for that tenant first (`ats_sessions.restore_cookies`), then one takeover on the
+  Beelink; afterwards only that site's cookies are saved (`save_state(domain=)`). No password is ever typed.
+`_submission_state` now counts only visible confirmation/rejection text (pages ship hidden thank-you panels).
+`scripts/form_recon.py` is the read-only recon (presses only Apply, records labels/kinds/roles, never values); this
+cloud session's egress blocks job sites, so recon runs on the Beelink (RUNBOOK section 12).
+Tests: `tests/test_universal_contact.py`, `test_universal_buttons.py`, `test_universal_host.py`,
+`test_universal_pages.py`, `test_universal_plan.py`, `test_universal_apply.py`, `test_form_recon.py`.
+
 **Fill reports and the required-field gate (2026-10-06)**: `ats_fillers` locates fields by id/name
 selector first with a label-regex fallback, and each `fill_<platform>` returns `{field_key: bool}`;
 `_attach_resume_and_cover_letter` targets `input[type=file]` elements and returns
@@ -1463,6 +1698,123 @@ else's pay), so an unmatched employer gets market data. No role family or no dat
 **Known follow-up, still not fixed**: a *cover-letter* attach failure is non-blocking (only the
 resume is required); required attachments are no longer silently swallowed. The ARMED/approval gates
 remain the actual safety boundary.
+
+## Fifty a day: sourcing, dedup, triage, throughput (2026-10-08)
+
+Spec: docs/superpowers/specs/2026-10-08-fifty-a-day-design.md (F1-F15 are the failures it fixes, each
+reproduced first). Plan: docs/superpowers/plans/2026-10-08-fifty-a-day.md.
+
+- **Job identity** (`job_identity.py`, pure): `identify(url)` classifies by **hostname, never substring**
+  (`clever.com` is not Lever) and returns a canonical `job_key`: `greenhouse:<id>` (ids are global, so a
+  company page's `?gh_jid=` is the same job), `lever:<uuid>`, `ashby:<uuid>`, `workday:<tenant>:<req>`
+  (one requisition can sit on several sites of a tenant), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
+  ids, else `url:<canonical>` with tracking parameters dropped. `apply_url` is where the browser goes
+  (Ashby `/application`, Lever `/apply`, the Greenhouse embed for a `gh_jid` page). `ats_platform.classify`
+  delegates to it. `company_key`/`title_key` ("title identity" = the set of title words) and a 64-bit
+  SimHash `fingerprint` of the description come from Career-Ops (MIT), ported.
+- **Dedup at insert** (`db.save_job_application`, wrapped by `create_job_application`): same `job_key` or
+  URL -> `same_job`; same company + title identity within `DUPLICATE_ROLE_DAYS` (45, any stage, so a
+  skipped role is not offered again) -> `same_role`; same role already applied to within `REPOST_DAYS`
+  (180) with a matching (or missing) fingerprint -> `repost_of_applied`. A unique partial index on
+  `job_key` (migration `20261009000000`) is the race backstop; a unique violation returns
+  `(None, "conflict")` at once (`_retry(give_up=_is_unique_violation)`), never retried.
+- **Triage** (`job_filters.py`, pure): `reject_reason(job, prefs, eligibility)` -> `seniority`, `title`,
+  `location`, `stale`, `no_sponsorship` or None. Preferences are the `job_search_preferences` prompts
+  row (JSON, defaults in `DEFAULT_PREFERENCES`; invalid parts fall back): title include/exclude,
+  `seniority_exclude`/`seniority_allow`, Career-Ops location tiers (`block_hard` > `always_allow` > `block`
+  > `allow`, word boundaries, US-state expansion, Workday URL location, remote-title rescue),
+  `max_posting_age_days`, `per_company_cap_30d`, `daily_submit_cap` (0 = no cap), `skip_no_sponsorship`.
+  Used by `job_sourcing`, `jobright.run` and `job_pick`.
+- **Sources** (`job_sources.py`, stdlib, never raises): the SimplifyJobs New-Grad listings.json feed
+  (`SOURCING_SIMPLIFY_CATEGORIES`), whole Greenhouse/Ashby/Lever boards, Workday CXS search per
+  `SOURCING_WORKDAY_SEARCH_TERMS`; Greenhouse and Workday lists carry no description, so `add_detail`
+  fetches it only for postings that pass the cheap cuts. `board_from_url` learns a company's board from
+  every feed URL into `job_boards` (dead after 3 consecutive "missing", never on transient errors).
+- **Runner** (`job_sourcing.py`, Beelink `job-sourcing.timer` every 2 h, zero tokens): backfills identity
+  onto legacy rows (`db.backfill_identity`; a duplicate that is still saved+idle is withdrawn with
+  "Duplicate of application #N"), Simplify, a sweep of `SOURCING_MAX_BOARDS_PER_RUN` boards, triage, save.
+  One `agent_runs` row per run (`source='job_sourcing'`). Respects the pause switch.
+- **Liveness** (`job_liveness.check`, never raises): Greenhouse per-job API, Ashby board listing, Workday
+  CXS detail; a Lever 404 is `unknown` (confidential postings). Only `closed` drops a row.
+- **Queues.** `db.get_preview_candidates` filters in the database (the 1000-row cap used to hide ready
+  rows), excludes `ats_platform.unpreparable_platforms()` (generic sites when `APPLY_GENERIC_ADAPTER=none`,
+  Workday without a vault key) in the query, best `pick_score` first. `claim_application` counts
+  `prepare_attempts` (RPC-owned column); candidates stop at `APPLY_PREPARE_MAX_ATTEMPTS` (3) and a
+  `failed_retryable` row waits `APPLY_PREPARE_BACKOFF_MINUTES x 2^(attempts-1)`; `requeue_preview` (now
+  also from `failed_retryable`) resets it. `run_prepare` counts only rows it worked on toward `limit`.
+  The resume queue orders preparable platforms by `pick_score`, and `resume_agent._queue_gate` marks a
+  closed posting `unsupported` and parks a company at its 30-day cap in `resume_error` before any spend
+  (`RESUME_WORKER_BATCH` 5, pool x4).
+- **Scoring on the subscription.** `JOB_PICK_BACKEND=subscription` (job-pick.service) judges
+  `JOB_PICK_JUDGE_BATCH` (10) postings per `claude -p` call; an unparseable judgment leaves the row
+  unscored (`pick_attempts`), then `maybe` after `JOB_PICK_MAX_ATTEMPTS`. The profile vector is computed
+  once per run. `count_stale_strong_without_resume` excludes the same unpreparable platforms.
+- **Applying.** Attachments go up as named byte payloads (`<Name>_Resume.pdf`, `<Name>_Cover_Letter.pdf`
+  from `master.json`), no temp files. `_resolve_submit_control` finds exactly one visible, enabled
+  "Submit (your) application" button **before** `clicked = True` (else pre-click `failed_retryable`).
+  `_submission_confirmed` polls `APPLY_CONFIRMATION_POLLS` (30) seconds for confirmation copy or a
+  confirmation URL, rejection copy first. A site holding the submission for an emailed code
+  (`_email_code_requested`: code prompt text and a visible code field) gets the code from the receipt
+  inbox (`APPLY_EMAIL_CODE_SENDERS`, mail after the click), typed into the field(s), then the form's own
+  Submit, which is the same held submission; no code -> `email_verification` takeover. Screening
+  questions go to the model in one batched call per form (`_SCREENING_BATCH_PROMPT`), single calls for
+  anything it leaves out. `apply_worker.run_submit` stops at `daily_submit_cap` per America/New_York
+  day (`db.count_submit_attempts_since`; an unreadable count submits nothing). `APPLY_BROWSER_EXECUTABLE`
+  pins a browser binary.
+- **Grants.** Migration `20261009000000` revokes DELETE/TRUNCATE/TRIGGER on `job_applications` from
+  anon and authenticated (a deleted submitted row would free its `job_key` and let the same job be
+  applied to again); `job_boards` gets SELECT/INSERT/UPDATE only.
+- **Pressure tests.** `tests/test_stress_local.py` (skipped unless `STRESS_SUPABASE_URL`): the real
+  `db.py` against Postgres 16 + PostgREST 12 with the 1000-row cap (`scripts/stress/up.sh`).
+  `tests/test_apply_load.py`: real preview + armed submit passes in real Chromium against local
+  Greenhouse/Lever/Ashby lookalike forms (`tests/fixtures/ats_forms`), `APPLY_LOAD_ROWS=50` for the
+  full run (50 + 50 in ~5 min, no leaked browsers or temp files).
+- **Capacity model** (`scripts/stress/capacity.py`, `tests/test_capacity_model.py`): per-stage daily ceilings
+  from the real unit timers/timeouts and config, demand from the target walked back through labeled funnel
+  assumptions, the bottleneck. As shipped the machine has headroom; posting supply is the limit (Simplify
+  Product measured at about 1.6 passing postings a day, 2026-10-08).
+
+## Warm paths: the cold-email agent and the application pipeline (2026-10-08)
+
+Spec: docs/superpowers/specs/2026-10-08-warm-paths-design.md (two advisor passes, every finding mapped in §7-§8).
+Referrals are the one well-measured lever (Burks et al. QJE 2015; Brown, Setren and Topa JOLE 2016), and they
+come from people who reply, so each application can grow up to three linked people the user picks.
+
+- **Schema** (migration `20261010000000`): `contacts.job_application_id` (FK, `ON DELETE SET NULL`),
+  `contacts.relationship` (`hiring_manager`/`leader`/`recruiter` -> `applied` mode; `alum`/`team_member`/`other`
+  -> `networking`), `job_applications.referral_hold_until`. `contacts` has RLS disabled and several anon writers,
+  so the rules live in the **`contacts_link_guard` trigger** (`SECURITY DEFINER`, locks the application row
+  `FOR UPDATE` before counting, also fires on `deleted_at`): link only an `applied`/`networking` contact at
+  `stage='new'`/`no_reply`, never onto a rejected/withdrawn application, at most 3 live people per application
+  (`config.WARM_MAX_PEOPLE_PER_APPLICATION`, mirrored in `warmPaths.ts`, static test). Unlinking is always allowed.
+- **Hold:** `referral_hold_until` has no column grant; only `hold_for_referral(p_id, p_days)` (1..14 days, only an
+  unapproved `ready_for_review` row, raises otherwise) and `release_referral_hold(p_id)`. Outside
+  `preview_revision_hash`. Held cards stay visible (sorted last, badge), and Submit still works on them.
+- **Agent:** `agent._attach_applications` (one `db.get_application_states` lookup per run, chunked; failure or a
+  missing id fails closed for linked applied-mode contacts, marker `[WARM]`), `_application_gate` in
+  `_decide_applied`/`_skip_reason`, `_with_application_fields` (applied mode only; fills empty
+  `job_title`/`applied_date`/`job_description` in memory, never persisted). `db.get_all_contacts` now pages with
+  `.order("id").range()` (it was silently capped at PostgREST's 1000 rows).
+- **Reply drafts:** `reply_drafter._application_context` appends an `APPLICATION CONTEXT` block for a linked
+  contact (first attempt and preflight retry): a referral ask before submission, a word to the hiring manager
+  after it, no ask once closed. An unreadable link only drops the block.
+- **Contact-manager:** `PeoplePanel` (queue card "People" + detail sheet on rows past `saved`): linked people,
+  known contacts at the company (`companyKey` mirrors `job_identity.company_key`; both test
+  `tests/fixtures/company_keys.json`), search links (the user's own browser; no LinkedIn automation), posting
+  emails, add-person (email guess only when 2 known addresses agree; a networking hook is offered as a
+  suggestion and written only when tapped; never names the role). Routes: `/api/applications/[id]/people`
+  (GET/POST), `.../people/link`, `.../people/unlink`, `.../hold` (POST/DELETE). Per-company cap
+  `outreach_per_company_30d` (default 5) and `referral_hold_days` (default 10) in `job_search_preferences`.
+  PATCH `stage: applied` records `applied_date` (New York date) when empty.
+- **Report:** `engagement_report.py` adds submitted applications with vs without outreach (reached = a linked
+  contact with `latest_message_id` or `classifier_status`), interview rate at n >= 5, reply rate by relationship,
+  and prints the selection and manual-stage caveats.
+- **Queue cards** also show other applications at the company in the last 30 days (the rows
+  `db.count_company_applications` counts, amber at `per_company_cap_30d`) and an H-1B badge
+  (`contact-manager/src/lib/visaSignal.ts`: `visaKey` mirrors `entity_resolution.normalize` +
+  `canonicalize_alias_group` via `tests/fixtures/visa_names.json`; exact names only; a human `/visa-review`
+  decision wins; no data reads "No H-1B data", never a negative).
+- **Not built, deliberately:** people scraping, paid enrichment, auto-created contacts, LinkedIn DMs, a send path.
 
 ## System-wide Claude API cost tracking
 

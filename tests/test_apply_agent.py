@@ -29,11 +29,15 @@ def _lease_defaults(mocker):
     # tests that aren't about questions don't trip the required-question gate.
     mocker.patch("apply_agent._form_inventory", return_value=[])
     mocker.patch("apply_agent.db.load_prompts", return_value={})
+    # The approval-signature gate has its own tests (tests/test_approval_signature.py); here every
+    # approved fixture row counts as validly signed.
+    mocker.patch("apply_agent.approval_signature.key_configured", return_value=True)
+    mocker.patch("apply_agent.approval_signature.verify", return_value=None)
     mocker.patch("apply_agent.salary_estimate.estimate", return_value=None)
 
 
 def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
@@ -52,7 +56,7 @@ def test_run_preview_routes_greenhouse_to_hand_mapped_filler(mocker):
 
 
 def test_run_preview_blocks_workday_without_attempting_a_fill(mocker):
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://acme.wd1.myworkdayjobs.com/job/1",
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
@@ -68,7 +72,7 @@ def test_run_preview_blocks_workday_without_attempting_a_fill(mocker):
 
 
 def test_run_preview_blocks_aggregator_links(mocker):
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://www.indeed.com/viewjob?jk=1",
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
@@ -84,7 +88,7 @@ def test_run_preview_blocks_aggregator_links(mocker):
 
 
 def test_run_preview_routes_generic_to_browser_use(mocker):
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://careers.acme.com/apply/1",
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
@@ -117,7 +121,7 @@ def test_eligibility_answers_never_raises_when_key_missing(mocker):
 
 
 def test_run_preview_isolates_one_row_failure_from_the_rest(mocker):
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"},
         {"id": 2, "company": "Beta", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=2",
@@ -141,7 +145,7 @@ def test_run_preview_isolates_one_row_failure_from_the_rest(mocker):
 
 
 def test_run_preview_counts_blocked_rows_separately_from_filled(mocker, caplog):
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://boards.greenhouse.io/embed/job_app?token=1",
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"},
         {"id": 2, "company": "Beta", "role": "PM", "job_url": "https://acme.wd1.myworkdayjobs.com/job/1",
@@ -585,8 +589,13 @@ def test_fill_field_never_raises_and_skips_files():
      "https://jobs.ashbyhq.com/neighborly-software/23712769-a9c6-4840-ac07-7116ca45d79a/application"),
     ("https://jobs.ashbyhq.com/kalshi/a2e482ee-e520-4182-b383-3be4f9ca8155/application",
      "https://jobs.ashbyhq.com/kalshi/a2e482ee-e520-4182-b383-3be4f9ca8155/application"),
+    # Tracking parameters are dropped (job_identity), real ones would be kept.
     ("https://jobs.ashbyhq.com/x/23712769-a9c6-4840-ac07-7116ca45d79a/?src=jr",
-     "https://jobs.ashbyhq.com/x/23712769-a9c6-4840-ac07-7116ca45d79a/application?src=jr"),
+     "https://jobs.ashbyhq.com/x/23712769-a9c6-4840-ac07-7116ca45d79a/application"),
+    ("https://www.ixl.com/company/jobs?gh_jid=8862211002",
+     "https://boards.greenhouse.io/embed/job_app?token=8862211002"),
+    ("https://boards.greenhouse.io/figma/jobs/6180116004?gh_src=x",
+     "https://job-boards.greenhouse.io/figma/jobs/6180116004"),
     ("https://jobs.lever.co/neighbor/aa8a58c7-9a82-4127-b060-28d168bcd3fc",
      "https://jobs.lever.co/neighbor/aa8a58c7-9a82-4127-b060-28d168bcd3fc/apply"),
     ("https://jobs.lever.co/neighbor/aa8a58c7-9a82-4127-b060-28d168bcd3fc/apply",
@@ -638,6 +647,7 @@ def _get_by_text_matching(matching_pattern):
     def get_by_text(pattern):
         result = MagicMock()
         result.count.return_value = 1 if pattern is matching_pattern else 0
+        result.filter.return_value = result   # _submission_state counts visible text only
         return result
     return get_by_text
 
@@ -654,6 +664,7 @@ def test_submission_confirmed_false_when_rejection_text_present_even_if_it_also_
     exactly once (for the rejection pattern), never reaching the confirmation check at all."""
     page = MagicMock()
     page.get_by_text.return_value.count.return_value = 1
+    page.get_by_text.return_value.filter.return_value = page.get_by_text.return_value
 
     assert apply_agent._submission_confirmed(page) is False
     assert page.get_by_text.call_count == 1
@@ -662,6 +673,7 @@ def test_submission_confirmed_false_when_rejection_text_present_even_if_it_also_
 def test_submission_confirmed_false_when_no_confirmation_text(mocker):
     page = MagicMock()
     page.get_by_text.return_value.count.return_value = 0
+    page.get_by_text.return_value.filter.return_value = page.get_by_text.return_value
 
     assert apply_agent._submission_confirmed(page) is False
 
@@ -717,7 +729,7 @@ def test_run_preview_counts_lost_as_error_not_filled(mocker, caplog):
     rows = [{"id": 1, "stage": "saved", "resume_file_ref": "r", "cover_letter_file_ref": "c",
              "automation_status": "idle"}]
     mocker.patch.object(apply_agent.db, "recover_stale_leases", return_value=0)
-    mocker.patch.object(apply_agent.db, "get_job_applications", return_value=rows)
+    mocker.patch.object(apply_agent.db, "get_preview_candidates", return_value=rows)
     mocker.patch.object(apply_agent, "_process_one_preview", return_value="lost")
     with caplog.at_level("INFO"):
         apply_agent.run_preview()
@@ -752,7 +764,7 @@ def test_run_preview_blocks_the_row_when_the_generic_browser_use_fill_fails(mock
     # The gap the finding-2 fix closes: a browser-use failure now actually reaches
     # db.set_apply_blocked via run_preview()'s existing per-row exception handler, and the row
     # is never marked ready_to_submit.
-    mocker.patch("apply_agent.db.get_job_applications", return_value=[
+    mocker.patch("apply_agent.db.get_preview_candidates", return_value=[
         {"id": 1, "company": "Acme", "role": "PM", "job_url": "https://careers.acme.com/apply/1",
          "resume_file_ref": "resumes/1/r.pdf", "cover_letter_file_ref": "resumes/1/cl.pdf"}
     ])
@@ -1292,15 +1304,20 @@ def test_preview_marks_workday_unsupported_without_claiming(mocker):
     claim.assert_not_called()
 
 
-def test_run_preview_ignores_rows_not_in_eligible_statuses(mocker):
-    rows = [{"id": i, "stage": "saved", "resume_file_ref": "r", "cover_letter_file_ref": "c",
-             "automation_status": s} for i, s in enumerate(
-             ["idle", "failed_retryable", "unsupported", "ready_for_review", "preparing"])]
-    mocker.patch.object(apply_agent.db, "recover_stale_leases", return_value=0)
-    mocker.patch.object(apply_agent.db, "get_job_applications", return_value=rows)
-    proc = mocker.patch.object(apply_agent, "_process_one_preview", return_value="filled")
-    apply_agent.run_preview()
-    assert [c.args[0]["id"] for c in proc.call_args_list] == [0, 1]
+def test_run_preview_reads_only_eligible_statuses_from_the_database(mocker):
+    # The status filter runs in the query (fifty-a-day F3); tests/test_stress_local.py runs it
+    # against Postgres.
+    client = MagicMock()
+    chain = client.table.return_value
+    for name in ("select", "eq", "not_", "is_", "in_", "lt", "or_", "order", "limit"):
+        getattr(chain, name).return_value = chain
+    chain.not_ = chain
+    chain.execute.return_value = MagicMock(data=[])
+    mocker.patch.object(apply_agent.db, "get_client", return_value=client)
+    apply_agent.db.get_preview_candidates(10)
+    chain.in_.assert_called_once_with("automation_status", list(apply_agent.config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES))
+    chain.lt.assert_called_once_with("prepare_attempts", apply_agent.config.APPLY_PREPARE_MAX_ATTEMPTS)
+    chain.limit.assert_called_once_with(10)
 
 
 def test_standard_field_values_uses_application_email():
@@ -1324,7 +1341,7 @@ def _sig_page(idents=None, evaluate_raises=None, wait_raises=None):
 def test_form_signature_waits_for_fields_before_evaluating():
     page = _sig_page(["text:name"])
     apply_agent._form_signature(page)
-    page.wait_for_selector.assert_called_once_with("input, select, textarea", timeout=15000)
+    page.wait_for_selector.assert_called_once_with("input:visible, select:visible, textarea:visible", timeout=15000)
 
 
 def test_form_signature_ignores_order_case_and_whitespace():
@@ -1462,6 +1479,20 @@ def test_attach_finds_hidden_file_input_by_id(mocker):
     job = {"resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"}
     assert apply_agent._attach_resume_and_cover_letter(page, job) == {"resume": True, "cover_letter": True}
     assert page.locs["#resume"].set_calls[0][1] == apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS
+
+
+def test_attachments_carry_the_candidates_name_and_leave_no_temp_files(mocker, tmp_path):
+    # fifty-a-day F11: uploads used to be named tmpXXXX.pdf (what a recruiter sees) and the temp
+    # files were never deleted.
+    _storage(mocker)
+    mocker.patch("tempfile.tempdir", str(tmp_path))
+    page = _FilePage({"#resume", "#cover_letter"})
+    apply_agent._attach_resume_and_cover_letter(page, {"resume_file_ref": "r.pdf", "cover_letter_file_ref": "c.pdf"})
+    resume = page.locs["#resume"].set_calls[0][0]
+    cover = page.locs["#cover_letter"].set_calls[0][0]
+    assert resume == {"name": "Kishore_Theeraj_Vasudevan_Jaya_Resume.pdf", "mimeType": "application/pdf", "buffer": b"x"}
+    assert cover["name"] == "Kishore_Theeraj_Vasudevan_Jaya_Cover_Letter.pdf"
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_attach_resume_falls_back_to_first_file_input_and_cover_letter_none_without_field(mocker):
@@ -1627,7 +1658,8 @@ def test_preview_opens_the_application_url_not_the_posting(mocker):
 
     apply_agent._process_one_preview(job)
 
-    launch.assert_called_once_with("https://jobs.ashbyhq.com/n/23712769-a9c6-4840-ac07-7116ca45d79a/application")
+    launch.assert_called_once_with("https://jobs.ashbyhq.com/n/23712769-a9c6-4840-ac07-7116ca45d79a/application",
+                                  init_script=apply_agent.universal_filler.SUBMIT_GUARD)
 
 
 def test_submit_refuses_before_clicking_when_a_required_question_is_empty(mocker, approved_job):
@@ -1688,3 +1720,13 @@ def test_preview_returns_lost_when_needs_input_release_returns_none(mocker):
     _preview_mocks(mocker, {"resume": None, "cover_letter": None})
     mocker.patch("apply_agent.db.release_application", return_value=None)
     assert apply_agent._process_one_preview(_preview_job()) == "lost"
+
+
+def test_refuse_on_failed_attachments_raises_only_for_failed():
+    with pytest.raises(ValueError, match="attachments failed: resume"):
+        apply_agent._refuse_on_failed_attachments({"resume": False, "cover_letter": True})
+    # None means "no file input on this step" — not a failure.
+    apply_agent._refuse_on_failed_attachments({"resume": None, "cover_letter": None})
+    apply_agent._refuse_on_failed_attachments({"resume": True})
+    apply_agent._refuse_on_failed_attachments({})
+    apply_agent._refuse_on_failed_attachments(None)

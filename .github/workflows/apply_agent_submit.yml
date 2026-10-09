@@ -49,6 +49,8 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # submit() refuses any approval the contact-manager did not sign with this key.
+          APPROVAL_SIGNING_KEY: ${{ secrets.APPROVAL_SIGNING_KEY }}
 
       - name: Upload log artifact
         if: always()

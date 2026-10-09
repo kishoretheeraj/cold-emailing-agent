@@ -226,3 +226,70 @@ def test_main_never_writes(mocker):
     engagement_report.main()
     insert.assert_not_called()
     update.assert_not_called()
+
+
+# ── Warm paths: applications with vs without outreach (spec 2026-10-08) ─────────
+
+def _app(aid, stage="applied", applied_date="2026-10-01"):
+    return {"id": aid, "company": f"Co{aid}", "role": "APM", "stage": stage, "applied_date": applied_date}
+
+
+def _linked(cid, aid, relationship="alum", latest=None, classifier=None):
+    return {"id": cid, "job_application_id": aid, "relationship": relationship,
+            "latest_message_id": latest, "classifier_status": classifier}
+
+
+def test_warm_rows_only_count_submitted_applications_and_real_outreach():
+    apps = [_app(1), _app(2, stage="phone_screen"), _app(3, stage="ready_to_submit", applied_date=None),
+            _app(4, stage="rejected")]
+    contacts = [
+        _linked(10, 1, latest="<m1>"),                    # a send was detected
+        _linked(11, 2, classifier="positive_reply"),      # replied, so reached
+        _linked(12, 4),                                   # drafted, never sent: not reached
+        _linked(13, 3, latest="<m3>"),                    # application never submitted
+        {"id": 14, "job_application_id": None},
+    ]
+    rows = {r["id"]: r for r in engagement_report.warm_path_rows(apps, contacts)}
+    assert set(rows) == {1, 2, 4}
+    assert (rows[1]["warm"], rows[1]["interviewed"]) == (True, False)
+    assert (rows[2]["warm"], rows[2]["interviewed"]) == (True, True)
+    assert (rows[4]["warm"], rows[4]["interviewed"]) == (False, False)
+
+
+def test_relationship_reply_counts_over_people_reached():
+    contacts = [_linked(1, 1, "alum", latest="<a>", classifier="positive_reply"), _linked(2, 1, "alum", latest="<b>"),
+                _linked(3, 2, "hiring_manager", latest="<c>"), _linked(4, 2, "hiring_manager"),
+                {"id": 5, "job_application_id": None, "relationship": None, "latest_message_id": "<d>"}]
+    assert engagement_report.relationship_counts(contacts) == {
+        "alum": {"n": 2, "replies": 1}, "hiring_manager": {"n": 1, "replies": 0}}
+
+
+def test_render_warm_prints_rates_only_at_n_five_and_the_caveats(caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    rows = ([{"id": i, "warm": True, "interviewed": i < 2} for i in range(5)]
+            + [{"id": 10 + i, "warm": False, "interviewed": False} for i in range(3)])
+    engagement_report.render_warm(rows, {"alum": {"n": 2, "replies": 1}})
+    text = caplog.text
+    assert "with outreach | n=5 | interviews=2 | interview_rate=40.0%" in text
+    assert "without outreach | n=3 | interviews=0 | n too small for a rate" in text
+    assert "relationship=alum | n=2 | replies=1 | n too small for a rate" in text
+    assert "selection" in text and "update the application stage" in text
+
+
+@pytest.mark.parametrize("bad", [None, [None, 5, "x"], [{"id": None}], [{"no": "id"}]])
+def test_warm_rows_never_raise(bad):
+    assert engagement_report.warm_path_rows(bad, bad) == []
+    assert engagement_report.relationship_counts(bad) == {}
+
+
+def test_main_runs_the_warm_section_without_breaking_the_first(mocker, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    mocker.patch.object(engagement_report, "get_draft_history_by_stages", return_value=[])
+    mocker.patch.object(engagement_report, "get_all_contacts", return_value=[])
+    mocker.patch.object(engagement_report, "get_research_reliability_map", return_value={})
+    mocker.patch.object(engagement_report, "get_all_job_applications", side_effect=RuntimeError("down"))
+    engagement_report.main()
+    assert "[ENGAGEMENT] | DONE" in caplog.text
+    assert "warm paths skipped" in caplog.text

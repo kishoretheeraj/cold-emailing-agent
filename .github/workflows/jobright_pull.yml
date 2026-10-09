@@ -27,7 +27,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements-jobs.txt   # base + sentence-transformers (job_pick.py)
+        run: pip install -r requirements.txt   # scoring moved to the Beelink's job-pick.service
 
       - name: Pull JobRight recommendations
         run: python jobright.py
@@ -39,19 +39,6 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           JOBRIGHT_EMAIL: ${{ secrets.JOBRIGHT_EMAIL }}
           JOBRIGHT_PASSWORD: ${{ secrets.JOBRIGHT_PASSWORD }}
-
-      - name: Score newly-discovered jobs
-        run: python job_pick.py
-        env:
-          # Strong verdicts are queued for the Beelink's resume-worker (Claude subscription) instead
-          # of building here: this runner has no LibreOffice. Remove this line to roll back to the
-          # api zero-tap path (see docs/superpowers/plans/2026-10-04-resume-subscription-transport.md).
-          RESUME_CLAUDE_BACKEND: subscription
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
       - name: Upload log artifact
         if: always()

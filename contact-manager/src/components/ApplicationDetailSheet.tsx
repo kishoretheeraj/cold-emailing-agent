@@ -13,6 +13,7 @@ import {
 import type { JobApplication } from "@/lib/types";
 import { Badge } from "@/components/ui/Badge";
 import { pickVerdictVariant } from "@/lib/applicationBadges";
+import { PeoplePanel } from "@/components/PeoplePanel";
 
 type Files = {
   resume_url: string | null;
@@ -293,6 +294,13 @@ export function ApplicationDetailSheet({
                         </p>
                       )}
                     </div>
+                  </section>
+                )}
+
+                {application.stage !== "saved" && (
+                  <section>
+                    <h3 className="text-sm font-medium text-fg mb-2">People</h3>
+                    <PeoplePanel applicationId={application.id} />
                   </section>
                 )}
 

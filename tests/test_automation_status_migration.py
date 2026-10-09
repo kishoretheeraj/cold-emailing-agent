@@ -79,7 +79,15 @@ def test_hash_includes_documents_version_and_trigger_passes_it():
     fn = SQL_NO_COMMENTS.split("FUNCTION job_application_preview_revision_hash(")[1].split("$$;")[0]
     assert "p_docs_version TEXT" in fn
     assert "coalesce(p_docs_version, '')" in fn
-    assert "NEW.documents_version)" in SQL_NO_COMMENTS
+    assert "NEW.documents_version," in SQL_NO_COMMENTS
+
+
+def test_hash_binds_the_destination_identity():
+    fn = SQL_NO_COMMENTS.split("FUNCTION job_application_preview_revision_hash(")[1].split("$$;")[0]
+    assert "p_company TEXT, p_role TEXT, p_job_url TEXT" in fn
+    for part in ("coalesce(p_company, '')", "coalesce(p_role, '')", "coalesce(p_job_url, '')"):
+        assert part in fn
+    assert "NEW.company, NEW.role, NEW.job_url)" in SQL_NO_COMMENTS
 
 
 def test_documents_version_column_added():

@@ -1,6 +1,13 @@
 export const runtime = "nodejs";
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { openTakeover } from "@/lib/takeover";
+import { companyKey } from "@/lib/warmPaths";
+import {
+  companyApplicationIds, knownPeopleByCompany, linkedCounts, loadPreferences, perCompanyCap, visaRows,
+} from "@/lib/warmPathsData";
+import { visaKey, visaSignal } from "@/lib/visaSignal";
+import type { JobApplication } from "@/lib/types";
 
 function getClient() {
   return createClient(
@@ -9,18 +16,71 @@ function getClient() {
   );
 }
 
+const QUEUE_STATUSES = [
+  "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
+];
+// Submitted rows stay in the queue's "Submitted" list for two weeks; at fifty a day an unbounded
+// list grows past what a phone can show and past the API's row cap.
+const SUBMITTED_DAYS = 14;
+
+// Each queue card shows who is linked and how many people the user knows at the company
+// (warm paths). Best-effort: a failed count leaves the cards without it, never the queue empty.
+async function withPeople(supabase: SupabaseClient, rows: JobApplication[]): Promise<JobApplication[]> {
+  try {
+    const keyOf = (r: JobApplication) => r.company_key || companyKey(r.company);
+    const [linked, known, atCompany, prefs] = await Promise.all([
+      linkedCounts(supabase, rows.map((r) => Number(r.id))), knownPeopleByCompany(supabase),
+      companyApplicationIds(supabase, rows.map(keyOf)), loadPreferences(supabase),
+    ]);
+    const cap = perCompanyCap(prefs);
+    const visa = await visaRows(supabase, rows.map((r) => visaKey(r.company))).catch(() => null);
+    return rows.map((r) => ({
+      ...r,
+      people: { linked: linked.get(Number(r.id)) ?? 0, known: known.get(companyKey(r.company)) ?? 0 },
+      ...(visa ? { visa: visaSignal(visa.intel.get(visaKey(r.company)), visa.stats.get(visaKey(r.company))) } : {}),
+      company_30d: {
+        others: (atCompany.get(keyOf(r)) ?? []).filter((id) => id !== Number(r.id)).length,
+        cap,
+      },
+    }));
+  } catch {
+    return rows;
+  }
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const stage = searchParams.get("stage");
   const source = searchParams.get("source");
+  // ?takeover=open: only rows where a Beelink worker is waiting for a human (the banner polls it).
+  const takeoverOpen = searchParams.get("takeover") === "open";
+  // ?view=queue: what the approval queue shows (ready, in flight, needs you, and the last two weeks
+  // of submitted rows); skipped (withdrawn) and rejected rows leave it.
+  const queueView = searchParams.get("view") === "queue";
+  // ?view=outcomes: rows an employer email moved (rejection, interview invite) in the last two weeks.
+  const outcomesView = searchParams.get("view") === "outcomes";
   try {
     const supabase = getClient();
     let query = supabase.from("job_applications").select("*");
     if (stage) query = query.eq("stage", stage);
     if (source) query = query.eq("source", source);
+    if (takeoverOpen) query = query.not("takeover", "is", null);
+    if (outcomesView) {
+      const since = new Date(Date.now() - SUBMITTED_DAYS * 86_400_000).toISOString();
+      query = query.not("outcome_evidence", "is", null).gte("updated_at", since);
+    }
+    if (queueView) {
+      const since = new Date(Date.now() - SUBMITTED_DAYS * 86_400_000).toISOString();
+      query = query
+        .not("stage", "in", "(withdrawn,rejected)")
+        .in("automation_status", QUEUE_STATUSES)
+        .or(`automation_status.neq.submitted,updated_at.gte.${since}`);
+    }
     const { data, error } = await query.order("created_at", { ascending: false });
     if (error) throw error;
-    return Response.json({ applications: data ?? [] });
+    const rows = (data ?? []) as JobApplication[];
+    if (queueView) return Response.json({ applications: await withPeople(supabase, rows) });
+    return Response.json({ applications: takeoverOpen ? rows.filter((r) => openTakeover(r)) : rows });
   } catch (err) {
     return Response.json({ error: String(err) }, { status: 500 });
   }

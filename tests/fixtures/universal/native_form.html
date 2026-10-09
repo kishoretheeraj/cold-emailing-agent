@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Apply - Nativeco</title></head>
+<body>
+<!-- A plain HTML form that posts natively (no script), with a ZIP code field that must not read as
+     a verification code, and a combobox answered without Enter. -->
+<h1>Product Analyst</h1>
+<form id="apply" action="/received" method="post" enctype="multipart/form-data">
+  <label for="name">Full name *</label><input id="name" name="name" required>
+  <label for="email">Email *</label><input id="email" name="email" type="email" required>
+  <label for="zip">ZIP code</label><input id="zip" name="zip" inputmode="numeric" maxlength="5">
+  <label for="city">City</label><input id="city" name="city">
+  <label for="file">Attach your resume *</label><input id="file" name="file" type="file" required>
+  <label for="src">Where did you hear about us? *</label>
+  <input id="src" name="src" role="combobox" aria-controls="src-list" required autocomplete="off">
+  <ul id="src-list" role="listbox" hidden><li role="option">LinkedIn</li><li role="option">Company website</li></ul>
+  <button type="submit">Submit</button>
+</form>
+<script>
+  const box = document.getElementById('src'), list = document.getElementById('src-list');
+  box.addEventListener('input', () => { list.hidden = false; });
+  for (const li of list.querySelectorAll('[role=option]')) li.addEventListener('click', () => {
+    box.value = li.textContent; list.hidden = true; });
+</script>
+</body></html>

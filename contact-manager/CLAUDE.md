@@ -49,7 +49,13 @@ src/
 │   ├── api/applications/[id]/files/route.ts
 │   ├── api/applications/[id]/submit/route.ts
 │   ├── api/applications/[id]/reset-approval/route.ts
+│   ├── api/applications/today/route.ts
+│   ├── api/applications/[id]/people/route.ts (+ link/, unlink/)
+│   ├── api/applications/[id]/hold/route.ts
 │   ├── api/system-health/route.ts
+│   ├── api/login/route.ts
+│   ├── api/logout/route.ts
+│   ├── login/page.tsx
 │   ├── applications/page.tsx
 │   ├── import/page.tsx
 │   ├── lab/page.tsx
@@ -94,9 +100,22 @@ src/
 │   ├── ApplicationsPage.tsx
 │   ├── ApplicationDetailSheet.tsx
 │   ├── SystemHealthStrip.tsx
+│   ├── LoginForm.tsx
+│   ├── ApprovalQueue.tsx
+│   ├── PeoplePanel.tsx
+│   ├── TakeoverBanner.tsx
 │   └── Field.tsx
+├── proxy.ts
 └── lib/
     ├── supabase.ts
+    ├── operatorAuth.ts
+    ├── approvalSignature.ts
+    ├── loginNext.ts
+    ├── nyDay.ts
+    ├── dailyCap.ts
+    ├── warmPaths.ts
+    ├── warmPathsData.ts
+    ├── visaSignal.ts
     ├── gmail-server.ts
     ├── cadence.ts
     ├── personalization.ts
@@ -150,6 +169,102 @@ tests/
   `500` for unexpected SDK errors.
 - Strip ` ```json` code fences from Claude responses before `JSON.parse`.
 
+### Operator login and signed approvals (2026-10-08)
+
+`src/proxy.ts` (Next 16's renamed middleware, Node.js runtime) gates every page and API route
+behind an operator session once `OPERATOR_PASSWORD` (16+ chars) and `SESSION_SECRET` (32+ chars)
+are set: pages redirect to `/login?next=...`, API calls get `401`. Unset, everything except
+`/login`, `/api/login` and `/api/logout` is denied (fail closed). `POST /api/login` (`{ password }`) sets `cm_session` (expiry + HMAC under
+`SESSION_SECRET`, HttpOnly, Secure, SameSite=Strict, 30 days); a wrong password waits 750 ms and
+returns `401`; unconfigured returns `503`. `POST /api/logout` clears it. `Nav` renders nothing on
+`/login`. `safeNextPath` (`lib/loginNext.ts`, client-safe) only allows same-origin paths.
+
+The anon key ships in the browser bundle, so anyone holding it can call `approve_application`.
+That is why `POST /api/applications/[id]/submit` checks the session itself (`isOperatorRequest`,
+not just the proxy) and signs `approval:v1:<id>:<hash>:<signed_at_ms>` with
+`APPROVAL_SIGNING_KEY` (`lib/approvalSignature.ts`, mirrored by the root `approval_signature.py`
+with a shared test vector). The submit worker refuses any approval whose signature it cannot
+verify. Missing key: `503` before any RPC.
+
+### Approval queue (2026-10-08)
+
+`ApprovalQueue.tsx` sits at the top of `/applications` (above the "All applications" table) and polls
+`GET /api/applications?view=queue` every 10 s (server: `automation_status` in ready_for_review,
+approved, submitting, needs_input, needs_confirmation, submitted; stage not withdrawn/rejected;
+submitted rows only from the last 14 days) and `GET /api/applications/today` (`{ submitted, cap }`:
+submit attempts since midnight America/New_York, `lib/nyDay.ts`, and the `daily_submit_cap` from the
+`job_search_preferences` prompts row, `lib/dailyCap.ts`, default 50, 0 = no cap; the Beelink's submit
+worker enforces the same cap). It shows "Today: N of CAP submitted" (ten segments, each a tenth of
+the cap, no inline styles; a note when the cap is reached), a **Needs you** list (needs_input reason +
+"Prepare again" -> requeue-preview; needs_confirmation -> "It went through"/"It did not" ->
+resolve-confirmation), **Ready to submit** cards (best `pick_score` first: location · source · posted N
+days ago, answers, keyword coverage,
+posting link, "Show documents" -> signed links from `/files`, **Submit** and **Skip**), "On the way",
+and **Submitted** with proof links. Submit starts a 5-second countdown with Undo; only when it runs
+out is `POST /submit` sent with the card's `preview_revision_hash`; Undo or leaving the page sends
+nothing; one countdown at a time. Skip PATCHes `stage: "withdrawn"`. `ApplicationsPage.test.tsx`
+mocks it (its polling tests count fetch calls). The nav's links and the applications table scroll
+inside their own containers so nothing widens the page on a phone (`21-approval-queue.spec.ts`
+asserts `scrollWidth <= 390`).
+
+**Replies from companies.** The queue also polls `GET /api/applications?view=outcomes` (rows with
+`outcome_evidence` updated in the last 14 days, written by the root `application_outcomes.py`). It lists each
+employer email as an interview invite (emerald) or "not moving forward", with the subject and date.
+"Not right? Undo" PATCHes `stage` back to `outcome_evidence.previous_stage`, and the row then reads "Undone".
+The Python side never reapplies a message it already stored, so an undo sticks (`23-company-replies.spec.ts`).
+
+### Warm paths: people for an application (2026-10-08)
+
+Spec: root `docs/superpowers/specs/2026-10-08-warm-paths-design.md`. `PeoplePanel.tsx` opens from a queue card's
+**People** link (and in `ApplicationDetailSheet` for any row past `saved`). It shows:
+- linked people, with Unlink;
+- live contacts at the same company (`companyKey`, a mirror of `job_identity.company_key`; both sides test
+  `tests/fixtures/company_keys.json`) with a Link button, or the reason one can't be linked;
+- LinkedIn/Google search links that open the user's own browser;
+- emails found in the posting (generic inboxes labeled);
+- the add-person form.
+
+Relationship sets the cold-email track: hiring manager, department lead and recruiter become `applied` mode, with
+`job_title`/`job_description` persisted. Alum, team member and other become `networking` mode. The networking
+hook is offered as a placeholder plus a "Use suggestion" button, and is never written unless tapped; that is the
+`connection_context` rule below. It never names the role, because the networking prompt forbids it. An email
+guess appears only when 2 known addresses at the company agree on a pattern.
+
+**Ask for a referral first** calls `POST /api/applications/[id]/hold` (`hold_for_referral`, days from
+`job_search_preferences.referral_hold_days`, default 10, clamped to 14). The card stays in Ready, sorted last,
+with a "Waiting on a referral until" badge and "Stop waiting" (`DELETE .../hold`). Submit still works on it.
+The queue route adds, per row and best-effort (a failed read leaves the field out):
+- `people: { linked, known }`;
+- `company_30d: { others, cap }`: other rows at the same `company_key` in the last 30 days with documents
+  built or an approval/submission, the same rows `db.count_company_applications` counts. The card turns
+  amber at `per_company_cap_30d`;
+- `visa: { label, tone }` from `lib/visaSignal.ts`. `visaKey` mirrors `entity_resolution.normalize` +
+  `canonicalize_alias_group`, and both sides test `tests/fixtures/visa_names.json`. It does an exact lookup
+  in `company_intel` and `employer_h1b_stats`, and a human `/visa-review` decision wins. No data reads
+  "No H-1B data"; like `ContactsList`, the copy never says "does not sponsor".
+
+Routes: `GET/POST /api/applications/[id]/people`, `POST .../people/link` and `.../people/unlink` (`{ contact_id }`).
+- The database trigger `contacts_link_guard` is the real gate: stage `new`, applied/networking mode, at most 3,
+  not closed. Its `warm_paths:` errors and duplicate emails return 409.
+- A soft-deleted duplicate gets the existing restore message.
+- The per-company cap is `job_search_preferences.outreach_per_company_30d` (default 5).
+- Queries live in `lib/warmPathsData.ts`, so route tests mock one module. `warmPathsData.stress.test.ts` runs them
+  against the local Postgres + PostgREST stack (the 1000-row cap, the trigger under 6 concurrent links), and is
+  skipped without `STRESS_SUPABASE_URL`.
+- PATCH `stage: "applied"` also writes today's New York date into an empty `applied_date` (`newYorkDate`).
+
+### Takeover card (2026-10-08)
+
+`TakeoverBanner.tsx` (rendered under `SystemHealthStrip` on `/applications`) polls
+`GET /api/applications?takeover=open` every 15 s (server filters with `openTakeover`: the request's
+`lease` must equal the row's `worker_lease_id` and `continue_at` must be unset) and shows a "Needs
+you" card per waiting row, linking to `NEXT_PUBLIC_TAKEOVER_URL` (the Beelink's noVNC for display
+:1 over `tailscale serve`; plain text when unset). "I'm done" posts
+`/api/applications/[id]/takeover-continue` (`takeover_continue` RPC; 409 when nothing is waiting).
+`ApplicationsPage.test.tsx` mocks the banner because its polling tests count fetch calls.
+`APPLY_SUBMIT_HOST=beelink` (server env) makes the submit route approve without dispatching the
+GitHub workflow (`{ ok: true, queued: "beelink" }`); the Beelink's apply-submit timer picks it up.
+
 ### `/api/agent-config` — pause control
 
 **GET** — returns `{ scope: "none" | "agent" | "all" }` from `system_config` table.
@@ -184,8 +299,10 @@ apply_preview?: JobApplicationApplyPreview }`. Validates `stage` against
 (`[id]`) API route — `params` is `Promise<{ id: string }>` per Next.js 16's route handler
 convention.
 
-**POST `/api/applications/[id]/submit`** — no body. Calls the `approve_application` Postgres
-RPC (`supabase.rpc("approve_application", { p_id })`) before dispatching — this is a
+**POST `/api/applications/[id]/submit`** — body `{ revision_hash }`; requires the operator
+session (401) and `APPROVAL_SIGNING_KEY` (503). Calls the `approve_application` Postgres
+RPC (`{ p_id, p_revision_hash, p_signature, p_signed_at_ms }`, see "Operator login and signed
+approvals" above) before dispatching — this is a
 `SECURITY DEFINER` function and the only way `approved_at` can ever be set, since the anon
 key's table-level UPDATE grant excludes that column. If the RPC rejects the row (wrong stage,
 missing `apply_preview`, etc.), returns `409` with the RPC's error message and never
@@ -383,8 +500,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 83** (vitest: 781 across 49 files, playwright: 83; 2026-10-07 added
-  Re-prepare on ready_for_review rows and the detail sheet's salary-basis line). Beelink M2 Task 9
+- **Current test count: 88** (vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more
@@ -440,9 +556,10 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
   Running `vercel deploy --prod` from inside `contact-manager/` still fails (path resolves to
   `contact-manager/contact-manager`); always run from repo root.
 - Env vars (public): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-  `NEXT_PUBLIC_BEELINK_VNC_URL` (optional — M2/U14, see `/api/system-health` above; not yet
+  `NEXT_PUBLIC_TAKEOVER_URL` (optional, the takeover viewer), `NEXT_PUBLIC_BEELINK_VNC_URL` (optional — M2/U14, see `/api/system-health` above; not yet
   set in the real deployment, pending a known Beelink LAN/Tailscale address).
-- Env vars (server-only): `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
+- Env vars (server-only): `APPLY_SUBMIT_HOST` (`beelink` once the Beelink submits), `OPERATOR_PASSWORD`, `SESSION_SECRET`, `APPROVAL_SIGNING_KEY` (same value as the
+  GitHub secret and the Beelink's), `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
 - `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.
 - Gmail OAuth vars: run `cd contact-manager && npx tsx scripts/capture-gmail-token.mts` once

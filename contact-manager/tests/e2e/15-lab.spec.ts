@@ -120,8 +120,9 @@ test("compare: editing prompt then previewing shows Saved and Sandbox labels", a
   await page.getByRole("button", { name: /preview/i }).click();
 
   // Both "Saved" and "Sandbox" column labels should appear
-  await expect(page.getByText("Saved")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText("Sandbox")).toBeVisible();
+  // exact: a substring match also hits the editor's "unsaved changes" badge.
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Sandbox", { exact: true })).toBeVisible();
 
   await page.screenshot({ path: "tests/e2e/screenshots/15-lab-compare.png" });
 });

@@ -220,3 +220,111 @@ systemctl list-timers job-linkedin-ingest.timer
 `[CU-LINKEDIN] | CAPTCHA or login challenge -- needs a human at the VNC console for display
 slot 0`. VNC in and solve it yourself, in the browser. Nothing in this system may ever solve,
 bypass, or work around it — not in code, not by retrying, not by switching tools.
+
+## 10. Apply worker (first-ten-applications Phase D)
+
+`apply-prepare` fills applications in real Chrome on display :1 and stops before Submit;
+`apply-submit` is the only Beelink unit with `APPLY_AGENT_ARMED=1` and submits only rows you
+approved in the contact-manager, whose signature it can verify. Provisioning installs both units
+and starts display :1 (`xvfb@1`, `x11vnc@1`, `novnc@1`) but never enables their timers.
+
+```bash
+# Beelink: the same signing key Vercel has as APPROVAL_SIGNING_KEY (32+ random characters)
+sudo nano /etc/job-agent/approval.env
+# Beelink: the vault key for per-site passwords (generate it as the file's comment says; keep a copy)
+sudo nano /etc/job-agent/vault.env
+# Beelink: the takeover view, tailnet-only over HTTPS (provisioning already ran this; check it)
+sudo tailscale serve status
+```
+
+Set `NEXT_PUBLIC_TAKEOVER_URL` in Vercel to `https://<beelink tailnet name>:8443/vnc.html` so the
+"Needs you" card links straight to the browser; it opens from the Mac or the phone while either is
+on the tailnet. The VNC password from section 3 guards it.
+
+**Watched first prepare**, with nothing approved:
+
+```bash
+sudo systemctl start apply-prepare && journalctl -u apply-prepare -f
+tail -f /opt/job-agent/apply_worker.log   # apply_agent's own lines land here too
+```
+
+Watch display :1 while it runs. Expected: rows move to `ready_for_review` (or `needs_input` with a
+reason), each with an `application_runs` row (`apply_status.yml` shows them), and no Submit click.
+A CAPTCHA shows a "Needs you" card; solve it in the viewer, press I'm done, and the worker
+continues. Then:
+
+```bash
+sudo systemctl enable --now apply-prepare.timer
+```
+
+**Submit**, only after the prepare output looks right and `APPLY_SUBMIT_HOST=beelink` is set in
+Vercel (so approvals stop dispatching the GitHub workflow):
+
+```bash
+sudo systemctl enable --now apply-submit.timer
+```
+
+Approve one application in the contact-manager and watch `journalctl -u apply-submit -f` and display
+:1. A submit that cannot verify the approval signature puts the row back in `needs_input` before any
+browser opens; a missing `approval.env` key stops the run without touching the approval.
+
+## 11. Sourcing and scoring (fifty a day)
+
+`job-sourcing` finds postings every 2 hours. It reads the Simplify new-grad feed and sweeps the
+company boards in `job_boards` (Greenhouse, Ashby and Lever whole boards, plus a Workday search).
+It drops off-target titles, senior roles, non-US locations, stale postings and roles that refuse
+sponsorship, and saves the rest without duplicates. It makes no model calls and needs only
+`base.env`.
+
+`job-pick` scores the new rows 30 minutes later. It runs the same filters, then a local embedding,
+then the fit judge on the Claude subscription, 10 postings per call. `jobright_pull.yml` no longer
+scores anything.
+
+Migration `20261009000000` must be pushed (`db_migrate.yml`) before either unit runs. The queues
+read its columns.
+
+**Watched first run:**
+
+```bash
+sudo systemctl start job-sourcing && journalctl -u job-sourcing -f
+tail -f /opt/job-agent/job_sourcing.log      # one DONE line with counts per outcome
+sudo systemctl start job-pick && journalctl -u job-pick -f
+```
+
+Expected: the sourcing `DONE` line shows `saved=…`, `skipped_location=…`, `duplicate_…` and
+`boards_ok=…` counts. A second immediate `start` saves 0 (everything is a duplicate). `job-pick`
+writes verdicts, and strong rows wait for `resume-worker`. Then:
+
+```bash
+sudo systemctl enable --now job-sourcing.timer job-pick.timer
+```
+
+Search preferences live in the `job_search_preferences` row of the Prompts page (JSON: titles,
+seniority words, locations, posting age, per-company cap, daily submit cap). A bad value falls
+back to its default. `job_pick` needs CPU-only torch. `requirements-beelink.txt` installs it from
+PyTorch's CPU index, so reprovision or `pip install -r requirements-beelink.txt` after pulling.
+
+## 12. Every site: recon and the universal filler
+
+The universal filler (`universal_filler.py`, spec `docs/superpowers/specs/2026-10-09-every-site-design.md`)
+fills one-page application forms on sites without a hand-written filler. It runs only where
+`APPLY_UNIVERSAL_ENABLED=1` (the four apply/resume/pick units) and only for the platforms in
+`APPLY_UNIVERSAL_PLATFORMS` (shipped: `generic,workable,smartrecruiters`; keep the list identical in
+all four units). Multi-step forms, sign-in walls without a saved session, and Apply links that open
+another site stop with a reason in "Needs you".
+
+**Recon first** (read-only: it presses only "Apply", never types, never submits):
+
+```bash
+cd /opt/job-agent && sudo -u jobagent .venv/bin/python scripts/form_recon.py --from-feed 3 --out /tmp/recon.json
+```
+
+Send the JSON back to the session that builds adapters (it holds labels and button names only).
+Each report says per site whether the form is one page (`state: form`, a `submit` role and no
+`next` role), a wizard, a sign-in wall, or an iframe.
+
+**Watched preview:** with `apply-prepare.timer` stopped, `sudo systemctl start apply-prepare` and
+watch `journalctl -u apply-prepare -f` for `[APPLY-UNIVERSAL]` lines. A sign-in wall asks you in the
+contact-manager to sign in once on the takeover view; the session is then saved for that site (only
+that site's cookies). Add a platform to `APPLY_UNIVERSAL_PLATFORMS` (all four units, `daemon-reload`)
+only after its watched preview and one watched submit look right.

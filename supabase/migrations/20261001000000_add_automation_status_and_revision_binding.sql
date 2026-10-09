@@ -3,7 +3,9 @@
 -- 1. automation_status: execution lifecycle, decoupled from the recruiting `stage` (which is kept,
 --    unrenamed, and still dual-written -- see the strategic plan §4's recorded deviation).
 -- 2. preview_revision_hash: computed ONLY by the trigger below, on every insert/update, from
---    apply_preview + resume/cover-letter refs. Because the trigger overwrites it on every write,
+--    apply_preview + resume/cover-letter refs + the destination (company, role, job_url), so an
+--    approved row cannot be retargeted at another job without invalidating its approval.
+--    Because the trigger overwrites it on every write,
 --    no role (anon, or even a buggy service-role script) can forge it. Not granted to anon.
 -- 3. approved_revision_hash: set ONLY by approve_application(), to the hash the human was shown.
 --    Approval is valid only while approved_revision_hash = preview_revision_hash; any later edit
@@ -41,7 +43,9 @@ ALTER TABLE job_applications
 -- documents_version: resume_agent.py --build re-uploads to FIXED storage paths, so a rebuild after
 -- approval leaves the file refs (and thus a refs-only hash) unchanged. db.set_resume_files writes a
 -- fresh uuid here on every build, which is hashed in, so a rebuild invalidates any approval.
-CREATE OR REPLACE FUNCTION job_application_preview_revision_hash(p_preview JSONB, p_resume TEXT, p_cover TEXT, p_docs_version TEXT)
+-- Destination identity (company, role, job_url) is hashed too: job_url is anon-writable, and any
+-- change to where the application goes changes the hash, which invalidates the approval.
+CREATE OR REPLACE FUNCTION job_application_preview_revision_hash(p_preview JSONB, p_resume TEXT, p_cover TEXT, p_docs_version TEXT, p_company TEXT, p_role TEXT, p_job_url TEXT)
 RETURNS TEXT
 LANGUAGE sql
 IMMUTABLE
@@ -49,7 +53,7 @@ AS $$
   SELECT CASE
     WHEN p_preview IS NULL THEN NULL
     -- jsonb::text is canonical (keys sorted, whitespace normalized), so equal previews hash equal
-    ELSE encode(sha256(convert_to(p_preview::text || '|' || coalesce(p_resume, '') || '|' || coalesce(p_cover, '') || '|' || coalesce(p_docs_version, ''), 'UTF8')), 'hex')
+    ELSE encode(sha256(convert_to(p_preview::text || '|' || coalesce(p_resume, '') || '|' || coalesce(p_cover, '') || '|' || coalesce(p_docs_version, '') || '|' || coalesce(p_company, '') || '|' || coalesce(p_role, '') || '|' || coalesce(p_job_url, ''), 'UTF8')), 'hex')
   END
 $$;
 
@@ -58,7 +62,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  NEW.preview_revision_hash := job_application_preview_revision_hash(NEW.apply_preview, NEW.resume_file_ref, NEW.cover_letter_file_ref, NEW.documents_version);
+  NEW.preview_revision_hash := job_application_preview_revision_hash(NEW.apply_preview, NEW.resume_file_ref, NEW.cover_letter_file_ref, NEW.documents_version, NEW.company, NEW.role, NEW.job_url);
   RETURN NEW;
 END;
 $$;

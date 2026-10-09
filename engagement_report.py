@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-from db import (get_all_contacts, get_draft_history_by_stages,
+from db import (get_all_contacts, get_all_job_applications, get_draft_history_by_stages,
                 get_research_reliability_map)
 from research import _cache_key
 
@@ -115,6 +115,77 @@ def group_counts(rows):
     return groups
 
 
+# ── Warm paths: applications with vs without outreach ──────────────────────────
+
+_INTERVIEW_STAGES = {"phone_screen", "onsite", "offer", "accepted"}
+_SUBMITTED_STAGES = {"applied", "rejected", "withdrawn"} | _INTERVIEW_STAGES
+
+
+def _reached(contact):
+    # A detected send sets latest_message_id; a reply sets classifier_status (and can move the
+    # contact to a reply stage, so the stage alone would miss the people who answered).
+    return bool(contact.get("latest_message_id")) or contact.get("classifier_status") is not None
+
+
+def warm_path_rows(applications, contacts):
+    """One row per submitted application: warm (a linked contact was reached) and interviewed.
+    Never raises: malformed rows are skipped."""
+    rows = []
+    try:
+        reached = set()
+        for c in contacts or []:
+            if isinstance(c, dict) and c.get("job_application_id") and _reached(c):
+                reached.add(c["job_application_id"])
+        for app in applications or []:
+            if not isinstance(app, dict) or app.get("id") is None:
+                continue
+            if not app.get("applied_date") and app.get("stage") not in _SUBMITTED_STAGES:
+                continue
+            rows.append({"id": app["id"], "warm": app["id"] in reached,
+                         "interviewed": app.get("stage") in _INTERVIEW_STAGES})
+    except Exception as exc:
+        log.warning(f"[ENGAGEMENT] | warm_path_rows failed: {exc}")
+    return rows
+
+
+def relationship_counts(contacts):
+    """{relationship: {"n": linked people reached, "replies": N}}. Never raises."""
+    groups = {}
+    try:
+        for c in contacts or []:
+            if not isinstance(c, dict) or not c.get("job_application_id") or not _reached(c):
+                continue
+            g = groups.setdefault(c.get("relationship") or UNKNOWN, {"n": 0, "replies": 0})
+            g["n"] += 1
+            if c.get("classifier_status") is not None:
+                g["replies"] += 1
+    except Exception as exc:
+        log.warning(f"[ENGAGEMENT] | relationship_counts failed: {exc}")
+    return groups
+
+
+def _rate_line(prefix, n, hits, count_name, rate_name):
+    line = f"{prefix} | n={n} | {count_name}={hits}"
+    if n >= MIN_GROUP_N:
+        return f"{line} | {rate_name}={100.0 * hits / n:.1f}%"
+    return f"{line} | n too small for a rate"
+
+
+def render_warm(rows, relationships):
+    log.info("[ENGAGEMENT] | WARM PATHS | submitted applications with vs without outreach")
+    for warm, label in ((True, "with outreach"), (False, "without outreach")):
+        group = [r for r in rows if r["warm"] is warm]
+        log.info(_rate_line(f"[ENGAGEMENT] | {label}", len(group),
+                            sum(1 for r in group if r["interviewed"]), "interviews", "interview_rate"))
+    for relationship in sorted(relationships):
+        g = relationships[relationship]
+        log.info(_rate_line(f"[ENGAGEMENT] | relationship={relationship}", g["n"], g["replies"],
+                            "replies", "reply_rate"))
+    log.info("[ENGAGEMENT] | caveat: warm paths go to the roles you care most about, so this compares "
+             "different selections, not the same roles with and without outreach")
+    log.info("[ENGAGEMENT] | caveat: interviews count only when you update the application stage")
+
+
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
 def render(rows):
@@ -151,6 +222,12 @@ def main():
         log.warning(f"[ENGAGEMENT] | report aborted, read failed: {exc}")
         return
     render(build_rows(draft_rows, contacts, reliability))
+    try:
+        applications = get_all_job_applications("id,company,role,stage,applied_date")
+    except Exception as exc:
+        log.warning(f"[ENGAGEMENT] | warm paths skipped, read failed: {exc}")
+        return
+    render_warm(warm_path_rows(applications, contacts), relationship_counts(contacts))
 
 
 if __name__ == "__main__":

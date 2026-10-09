@@ -23,9 +23,13 @@ import unicodedata
 
 import anthropic
 
+import ats_platform
 import claude_subscription
 import config
 import db
+import job_identity
+import job_liveness
+import job_sourcing
 import resume_build
 import resume_lint
 import resume_scrub
@@ -427,11 +431,14 @@ def build(application_id):
         _verify_clean_pdf(cl_pdf_path, "cover letter")
 
         with open(pdf_path, "rb") as f:
-            resume_ref = db.upload_resume_file(f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
+            resume_ref, resume_digest = db.upload_resume_file(
+                f"resumes/{application_id}/resume.pdf", f.read(), "application/pdf")
         with open(cl_pdf_path, "rb") as f:
-            cl_ref = db.upload_resume_file(f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
+            cl_ref, cl_digest = db.upload_resume_file(
+                f"resumes/{application_id}/cover_letter.pdf", f.read(), "application/pdf")
 
-        db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref)
+        db.set_resume_files(application_id, resume_file_ref=resume_ref, cover_letter_file_ref=cl_ref,
+                            resume_sha256=resume_digest, cover_letter_sha256=cl_digest)
         log.info(f"[RESUME] | {application_id} | {job.get('company')} | build complete")
         return {"resume_file_ref": resume_ref, "cover_letter_file_ref": cl_ref}
     finally:
@@ -475,22 +482,61 @@ def _worker_preflight():
     return problems
 
 
+def _queue_gate(job, company_cap):
+    """Why this queued row should not get documents now: ('closed', reason) when the ATS says the
+    posting is gone, ('cap', reason) when the company already has company_cap applications in the
+    last 30 days; None to build. Each check degrades to building, never to dropping a job."""
+    if job_liveness.check(job.get("job_url")) == "closed":
+        return "closed", "Posting closed (checked before building documents)"
+    company_key = job.get("company_key") or job_identity.company_key(job.get("company"))
+    if company_cap and company_key:
+        try:
+            count = db.count_company_applications(company_key, 30)
+        except Exception as exc:
+            log.info(f"[RESUME] | {job.get('id')} | company count unavailable: {exc}")
+            return None
+        if count >= company_cap:
+            return "cap", (f"Skipped: {count} applications at {job.get('company')} in the last 30 days "
+                           f"(per_company_cap_30d is {company_cap}); clear this to build anyway")
+    return None
+
+
 def drain(limit=None):
     """Build resumes for strong-verdict rows that don't have one yet: propose (unless a strategy
-    already exists) then build, one row at a time. Machine-wide problems -- a failed preflight,
-    a usage limit, or any Claude CLI/auth/timeout failure -- stop the run without marking a row,
-    so fixing the machine resumes the queue; a usage limit isn't counted as an error. Per-row
-    content failures (bad strategy, lint, deadline passed, page overflow) are written to
-    resume_error so the row isn't retried every run. Returns the error count."""
+    already exists) then build, one row at a time, best pick_score first, only on platforms this
+    host can submit. Before any spend, a row whose posting is closed is marked unsupported and a
+    row at a company already at its per-company cap is parked in resume_error. Machine-wide
+    problems -- a failed preflight, a usage limit, or any Claude CLI/auth/timeout failure -- stop
+    the run without marking a row, so fixing the machine resumes the queue; a usage limit isn't
+    counted as an error. Per-row content failures (bad strategy, lint, deadline passed, page
+    overflow) are written to resume_error so the row isn't retried every run. Returns the error count."""
     problems = _worker_preflight()
     if problems:
         log.warning(f"[RESUME] | drain | preflight failed, no rows touched: {problems}")
         return 1
-    rows = db.get_strong_applications_without_resume(limit or config.RESUME_WORKER_BATCH)
+    limit = limit or config.RESUME_WORKER_BATCH
+    rows = db.get_strong_applications_without_resume(limit * config.RESUME_QUEUE_POOL_FACTOR,
+                                                      exclude_platforms=ats_platform.unpreparable_platforms())
+    company_cap = job_sourcing.load_search_settings()[0]["per_company_cap_30d"]
     log.info(f"[RESUME] | drain | START | rows={len(rows)}")
-    built = errors = 0
+    built = errors = attempted = 0
     for job in rows:
+        if attempted >= limit:
+            break
         job_id = job.get("id")
+        try:
+            gate = _queue_gate(job, company_cap)
+            if gate:
+                kind, reason = gate
+                log.info(f"[RESUME] | {job_id} | {job.get('company')} | {kind}: {reason}")
+                if kind == "closed":
+                    db.mark_unsupported(job_id, reason)
+                else:
+                    db.set_resume_error(job_id, reason)
+                continue
+        except Exception as exc:
+            log.warning(f"[RESUME] | {job_id} | queue gate failed, building anyway: {exc}")
+        attempted += 1
         try:
             if not _check_deadline(job):
                 raise DeadlinePassedError(f"row {job_id}'s deadline has passed")

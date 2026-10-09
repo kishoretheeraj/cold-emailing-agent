@@ -6,6 +6,7 @@ import {
   type JobApplicationStage,
   type JobApplicationApplyPreview,
 } from "@/lib/types";
+import { newYorkDate } from "@/lib/nyDay";
 
 function getClient() {
   return createClient(
@@ -149,6 +150,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           );
         }
         throw error;
+      }
+      // Marking a row applied by hand records the date if nothing did: the cold-email agent's
+      // applied-mode mail to linked people says when the application went in (warm paths).
+      if (updates.stage === "applied" && data && !data.applied_date) {
+        const { data: dated } = await supabase
+          .from("job_applications")
+          .update({ applied_date: newYorkDate() })
+          .eq("id", Number(id))
+          .is("applied_date", null)
+          .select()
+          .maybeSingle();
+        if (dated) return Response.json({ application: dated });
       }
       return Response.json({ application: data });
     }

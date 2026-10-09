@@ -1,0 +1,24 @@
+# Finds, filters and dedups job postings into job_applications (job_sourcing.py). Zero tokens:
+# public ATS APIs and the Simplify feed only, so it needs base.env and nothing else.
+[Unit]
+Description=Job sourcing: find, filter and dedup postings (no model calls)
+After=network-online.target
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/job-agent
+EnvironmentFile=/etc/job-agent/base.env
+Environment=HOME=/var/lib/job-agent
+Environment=APPLY_AGENT_ARMED=
+ExecStart=/opt/job-agent/.venv/bin/python job_sourcing.py
+TimeoutStartSec=3600
+MemoryMax=512M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/job-agent /var/lib/job-agent

@@ -13,6 +13,16 @@ import resume_agent
 import resume_lint
 
 
+@pytest.fixture(autouse=True)
+def _offline_queue_checks(mocker):
+    # drain() reads the search preferences and asks the ATS whether a posting is still open; tests
+    # that exercise those checks override these.
+    mocker.patch.object(resume_agent.job_sourcing, "load_search_settings",
+                        return_value=(resume_agent.job_sourcing.job_filters.load_preferences({}), {}))
+    mocker.patch.object(resume_agent.job_liveness, "check", return_value="unknown")
+    mocker.patch.object(resume_agent.db, "count_company_applications", return_value=0)
+
+
 # ── _check_deadline ──────────────────────────────────────────────────────────
 
 def test_check_deadline_true_when_no_deadline_known():
@@ -248,16 +258,18 @@ def test_build_happy_path_uploads_and_writes_file_refs(mocker):
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     upload = mocker.patch.object(db, "upload_resume_file", side_effect=[
-        "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
+        ("resumes/1/resume-aaaa.pdf", "d1"), ("resumes/1/cover_letter-bbbb.pdf", "d2"),
     ])
     set_files = mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
 
     result = resume_agent.build(1)
 
-    assert result["resume_file_ref"] == "resumes/1/resume.pdf"
-    assert result["cover_letter_file_ref"] == "resumes/1/cover_letter.pdf"
+    assert result["resume_file_ref"] == "resumes/1/resume-aaaa.pdf"
+    assert result["cover_letter_file_ref"] == "resumes/1/cover_letter-bbbb.pdf"
     assert upload.call_count == 2
     set_files.assert_called_once()
+    assert set_files.call_args.kwargs["resume_sha256"] == "d1"
+    assert set_files.call_args.kwargs["cover_letter_sha256"] == "d2"
 
 
 def _mock_happy_build(mocker):
@@ -308,7 +320,7 @@ def test_build_refuses_to_upload_when_rendered_text_has_invisible_characters(moc
 def test_build_allows_pypdf_control_characters_in_rendered_text(mocker):
     _mock_happy_build(mocker)
     mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team\r\nBest\x0c")
-    upload = mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    upload = mocker.patch.object(db, "upload_resume_file", side_effect=[("a", "d1"), ("b", "d2")])
     mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
     result = resume_agent.build(1)
     assert upload.call_count == 2
@@ -347,7 +359,7 @@ def test_build_uses_a_per_build_workdir_and_removes_it_on_success(mocker):
     _mock_pdf_checks(mocker)
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
-    mocker.patch.object(db, "upload_resume_file", side_effect=["a", "b"])
+    mocker.patch.object(db, "upload_resume_file", side_effect=[("a", "d1"), ("b", "d2")])
     mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
     resume_agent.build(1)
     assert not seen["docx"].startswith("/tmp/resume_")
@@ -399,7 +411,7 @@ def test_build_tracks_usage_for_the_cover_letter_call(mocker):
     mocker.patch("resume_agent.resume_build.new_document")
     mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
     mocker.patch.object(db, "upload_resume_file", side_effect=[
-        "resumes/1/resume.pdf", "resumes/1/cover_letter.pdf",
+        ("resumes/1/resume-aaaa.pdf", "d1"), ("resumes/1/cover_letter-bbbb.pdf", "d2"),
     ])
     mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
 
@@ -546,6 +558,7 @@ def test_skills_group_labels_are_short_plain_and_unattributed(label, ok):
 def _drain_ready(mocker):
     mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
     mocker.patch.object(resume_agent, "_check_deadline", return_value=True)
+    mocker.patch.object(resume_agent, "_queue_gate", return_value=None)
 
 
 def test_drain_runs_propose_then_build_per_row(mocker):
@@ -607,7 +620,44 @@ def test_drain_uses_configured_batch_by_default(mocker):
     mocker.patch.object(resume_agent, "_worker_preflight", return_value=[])
     get = mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[])
     resume_agent.drain()
-    get.assert_called_once_with(config.RESUME_WORKER_BATCH)
+    get.assert_called_once_with(config.RESUME_WORKER_BATCH * config.RESUME_QUEUE_POOL_FACTOR,
+                                exclude_platforms=resume_agent.ats_platform.unpreparable_platforms())
+
+
+def test_drain_parks_closed_and_capped_rows_without_spending_the_batch(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(resume_agent, "_queue_gate", side_effect=[
+        ("closed", "Posting closed"), ("cap", "Skipped: 3 applications"), None, None])
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": i, "company": "A", "resume_strategy": {"x": 1}} for i in (1, 2, 3, 4)])
+    unsupported = mocker.patch.object(db, "mark_unsupported")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    build = mocker.patch.object(resume_agent, "build")
+    assert resume_agent.drain(limit=1) == 0
+    unsupported.assert_called_once_with(1, "Posting closed")
+    set_error.assert_called_once_with(2, "Skipped: 3 applications")
+    assert [c.args[0] for c in build.call_args_list] == [3]
+
+
+@pytest.mark.parametrize("liveness,count,cap,expected", [
+    ("closed", 0, 3, "closed"),
+    ("live", 3, 3, "cap"),
+    ("unknown", 2, 3, None),
+    ("live", 9, 0, None),          # a cap of 0 means no cap
+])
+def test_queue_gate(mocker, liveness, count, cap, expected):
+    mocker.patch.object(resume_agent.job_liveness, "check", return_value=liveness)
+    mocker.patch.object(db, "count_company_applications", return_value=count)
+    gate = resume_agent._queue_gate({"id": 1, "company": "Figma, Inc.", "job_url": "https://x"}, cap)
+    assert (gate and gate[0]) == expected
+    if expected == "cap":
+        db.count_company_applications.assert_called_once_with("figma", 30)
+
+
+def test_queue_gate_builds_when_the_count_is_unavailable(mocker):
+    mocker.patch.object(resume_agent.job_liveness, "check", return_value="unknown")
+    mocker.patch.object(db, "count_company_applications", side_effect=RuntimeError("down"))
+    assert resume_agent._queue_gate({"id": 1, "company": "A", "job_url": "https://x"}, 3) is None
 
 
 def test_drain_preflight_failure_touches_no_rows(mocker):
