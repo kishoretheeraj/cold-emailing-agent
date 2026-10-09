@@ -20,8 +20,10 @@ def test_migration_adds_digest_columns_and_hash_takes_them():
     assert "ADD COLUMN IF NOT EXISTS resume_sha256 TEXT" in SQL_NO_COMMENTS
     assert "ADD COLUMN IF NOT EXISTS cover_letter_sha256 TEXT" in SQL_NO_COMMENTS
     assert "p_resume_sha256 TEXT, p_cover_sha256 TEXT)" in SQL_NO_COMMENTS
-    assert "coalesce(p_resume_sha256, '')" in SQL_NO_COMMENTS
-    assert "coalesce(p_cover_sha256, '')" in SQL_NO_COMMENTS
+    # Structured JSON serialization (not '|' concatenation) to avoid field-boundary ambiguity.
+    assert "jsonb_build_object(" in SQL_NO_COMMENTS
+    assert "'resume_sha256', coalesce(p_resume_sha256, '')" in SQL_NO_COMMENTS
+    assert "'cover_sha256', coalesce(p_cover_sha256, '')" in SQL_NO_COMMENTS
     assert "NEW.resume_sha256, NEW.cover_letter_sha256" in SQL_NO_COMMENTS
 
 

@@ -1551,7 +1551,8 @@ def test_preview_opens_the_application_url_not_the_posting(mocker):
 
     apply_agent._process_one_preview(job)
 
-    launch.assert_called_once_with("https://jobs.ashbyhq.com/n/23712769-a9c6-4840-ac07-7116ca45d79a/application")
+    launch.assert_called_once_with("https://jobs.ashbyhq.com/n/23712769-a9c6-4840-ac07-7116ca45d79a/application",
+                                  init_script=apply_agent.universal_filler.SUBMIT_GUARD)
 
 
 def test_submit_refuses_before_clicking_when_a_required_question_is_empty(mocker, approved_job):

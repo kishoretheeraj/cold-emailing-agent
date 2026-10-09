@@ -25,7 +25,17 @@ IMMUTABLE
 AS $$
   SELECT CASE
     WHEN p_preview IS NULL THEN NULL
-    ELSE encode(sha256(convert_to(p_preview::text || '|' || coalesce(p_resume, '') || '|' || coalesce(p_cover, '') || '|' || coalesce(p_docs_version, '') || '|' || coalesce(p_company, '') || '|' || coalesce(p_role, '') || '|' || coalesce(p_job_url, '') || '|' || coalesce(p_resume_sha256, '') || '|' || coalesce(p_cover_sha256, ''), 'UTF8')), 'hex')
+    ELSE encode(sha256(convert_to(jsonb_build_object(
+      'preview', p_preview,
+      'resume', coalesce(p_resume, ''),
+      'cover', coalesce(p_cover, ''),
+      'docs_version', coalesce(p_docs_version, ''),
+      'company', coalesce(p_company, ''),
+      'role', coalesce(p_role, ''),
+      'job_url', coalesce(p_job_url, ''),
+      'resume_sha256', coalesce(p_resume_sha256, ''),
+      'cover_sha256', coalesce(p_cover_sha256, '')
+    )::text, 'UTF8')), 'hex')
   END
 $$;
 

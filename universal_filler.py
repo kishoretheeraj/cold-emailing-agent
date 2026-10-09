@@ -256,6 +256,8 @@ def allowed_host(job_url, url):
 # and navigator.sendBeacon with any method but GET/HEAD) is stopped and counted until
 # window.__ufGuardOff is set, which only apply_agent.submit() does, right before the one approved
 # click. The network wrappers cover a button whose handler posts directly with no <form> involved.
+# Use this for single-page forms (universal, generic, dry-run) where any mutating request during
+# prepare is suspicious.
 SUBMIT_GUARD = r"""(() => {
   window.__ufBlocked = 0;
   const blocked = () => !window.__ufGuardOff;
@@ -296,6 +298,25 @@ SUBMIT_GUARD = r"""(() => {
       return realBeacon.apply(this, arguments);
     };
   }
+})();"""
+
+
+# Forms-only variant for multi-step wizards (Workday). The wizard needs POSTs to log in, save
+# steps and upload attachments, so network requests are left alone; native <form> submissions
+# are still stopped and counted. The final Submit is a distinct button click that only
+# apply_agent.submit() performs, after lift_guard().
+SUBMIT_GUARD_FORMS_ONLY = r"""(() => {
+  window.__ufBlocked = 0;
+  const blocked = () => !window.__ufGuardOff;
+  window.addEventListener('submit', (e) => {
+    if (blocked()) { e.preventDefault(); e.stopImmediatePropagation(); window.__ufBlocked += 1; }
+  }, true);
+  const proto = HTMLFormElement.prototype;
+  const submit = proto.submit, requestSubmit = proto.requestSubmit;
+  proto.submit = function () { if (blocked()) { window.__ufBlocked += 1; return; } return submit.call(this); };
+  proto.requestSubmit = function (b) {
+    if (blocked()) { window.__ufBlocked += 1; return; } return requestSubmit.call(this, b);
+  };
 })();"""
 
 

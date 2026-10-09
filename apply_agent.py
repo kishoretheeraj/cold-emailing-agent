@@ -1134,7 +1134,7 @@ def _walk_workday(page, job, job_id, lease, field_values, eligibility, replay=No
         db.heartbeat_application(job_id, lease)
         label = workday_adapter.step_label(page) or f"Step {len(steps) + 1}"
         workday_adapter.fill_known_fields(page, values)
-        for key, ok in _attach_resume_and_cover_letter(page, job).items():
+        for key, ok in _attach_resume_and_cover_letter(page, job, verify_digests=replay is not None).items():
             if ok is not None:
                 attach[key] = attach[key] or ok
         _fill_eligibility_answers(page, eligibility)
@@ -1376,8 +1376,11 @@ def _launch_for(job, platform):
         return _launch_page(job.get("job_url"), storage_state=state, init_script=universal_filler.SUBMIT_GUARD)
     if platform == "workday":
         state = ats_sessions.state_path(ats_sessions.tenant_key(job.get("job_url")) or "")
-        return _launch_page(job.get("job_url"), storage_state=state, init_script=universal_filler.SUBMIT_GUARD)
-    return _launch_page(_application_url(job.get("job_url")))
+        return _launch_page(job.get("job_url"), storage_state=state,
+                            init_script=universal_filler.SUBMIT_GUARD_FORMS_ONLY)
+    # Hand-mapped platforms (greenhouse, lever, ashby): single-page forms, full guard.
+    return _launch_page(_application_url(job.get("job_url")),
+                        init_script=universal_filler.SUBMIT_GUARD)
 
 
 def _page_text(page):
