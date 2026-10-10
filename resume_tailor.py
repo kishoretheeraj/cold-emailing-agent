@@ -24,6 +24,7 @@ from datetime import date
 from pathlib import Path
 
 from dewatermark import dewatermark
+from resume_rewrite import OVERLAP_RETRY_THRESHOLD, RewriteError, codex_available, rewrite_bullets, shared_4gram_ratio, swap_bullets
 
 RESUME_DIR = Path(__file__).parent / "resume"
 VERSIONS_DIR = RESUME_DIR / "versions"
@@ -791,7 +792,34 @@ def write_version(resume, report, company, role, out_root, today):
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 
-def tailor(jd, company, role, archetype=None, similar_jds=None, out_root=None, today=None):
+def _rewrite_stage(resume, master, banned, archetype_name, jd, headline_titles):
+    """Rewrite bullets through Codex CLI; always falls back to the input on any failure."""
+    if not codex_available():
+        return resume, {"status": "skipped", "reason": "codex CLI not found"}
+    bullets = _bullets_in(resume)
+    if not bullets:
+        return resume, {"status": "skipped", "reason": "no bullets"}
+    for strength in ("standard", "aggressive"):
+        try:
+            new_bullets = rewrite_bullets(bullets, banned, aggressive=(strength == "aggressive"))
+        except RewriteError as exc:
+            return resume, {"status": "skipped", "reason": str(exc)}
+        if len(new_bullets) != len(bullets):
+            return resume, {"status": "skipped",
+                            "reason": f"bullet count mismatch ({len(new_bullets)} vs {len(bullets)})"}
+        overlap = shared_4gram_ratio(bullets, new_bullets)
+        candidate = dewatermark(swap_bullets(resume, bullets, new_bullets))
+        errors = run_gates(candidate, master, banned, archetype_name, jd, headline_titles)
+        if errors:
+            return resume, {"status": "fallback", "reason": "; ".join(errors),
+                            "overlap": round(overlap, 3)}
+        if overlap < OVERLAP_RETRY_THRESHOLD or strength == "aggressive":
+            return candidate, {"status": "ok", "overlap": round(overlap, 3), "strength": strength}
+    return resume, {"status": "skipped", "reason": "unexpected"}
+
+
+def tailor(jd, company, role, archetype=None, similar_jds=None, out_root=None, today=None,
+           no_rewrite=False):
     """Tailor the master resume to one JD. Returns {'dir', 'report'}. Raises GateFailure when two
     attempts both fail the deterministic gates (nothing is written in that case)."""
     jd = _defang(jd).strip()[:MAX_JD_CHARS]
@@ -824,8 +852,13 @@ def tailor(jd, company, role, archetype=None, similar_jds=None, out_root=None, t
         last_errors = run_gates(resume, master, banned, name, jd, headline_titles)
         if last_errors:
             continue
+        if not no_rewrite:
+            resume, rewrite_info = _rewrite_stage(resume, master, banned, name, jd, headline_titles)
+        else:
+            rewrite_info = {"status": "disabled"}
         slop = _run_slop_check(resume, master, jd, banned, arch)
-        best = {"resume": resume, "report": report, "slop": slop, "attempts": attempt}
+        best = {"resume": resume, "report": report, "slop": slop, "attempts": attempt,
+                "rewrite": rewrite_info}
         if slop["verdict"] != "FAIL":
             break
         last_errors = ["slop-check FAIL, apply these fixes: " + slop["fixes"]]
@@ -842,6 +875,7 @@ def tailor(jd, company, role, archetype=None, similar_jds=None, out_root=None, t
         "attempts": best["attempts"],
         "slop_check": best["slop"],
         "needs_review": best["slop"]["verdict"] != "PASS",
+        "rewrite": best["rewrite"],
         "company": company,
         "role": role,
     })
@@ -858,13 +892,14 @@ def main(argv=None):
     parser.add_argument("--archetype", choices=list_archetype_names())
     parser.add_argument("--similar-jd", action="append", default=[], help="another posting for the same role family")
     parser.add_argument("--out-dir", default=str(VERSIONS_DIR))
+    parser.add_argument("--no-rewrite", action="store_true", help="skip the Codex rewrite stage")
     args = parser.parse_args(argv)
 
     jd = sys.stdin.read() if args.jd == "-" else Path(args.jd).read_text()
     similar = [Path(p).read_text() for p in args.similar_jd]
     try:
         result = tailor(jd, args.company, args.role, archetype=args.archetype,
-                        similar_jds=similar, out_root=args.out_dir)
+                        similar_jds=similar, out_root=args.out_dir, no_rewrite=args.no_rewrite)
     except GateFailure as exc:
         print("FAILED after one regeneration; nothing written:", file=sys.stderr)
         for e in exc.errors:

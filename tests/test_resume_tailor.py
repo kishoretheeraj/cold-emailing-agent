@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import resume_tailor as rt
+import resume_rewrite as rw
 
 TODAY = date(2026, 10, 9)
 MASTER = rt.load_master()
@@ -106,10 +107,16 @@ def stub_renders(mocker):
     mocker.patch.object(rt, "render_docx", side_effect=fake_docx)
 
 
-def run_tailor(mocker, fake, tmp_path, jd=JD_AI_PM, archetype="ai-pm-startup"):
+def run_tailor(mocker, fake=None, tmp_path=None, jd=JD_AI_PM, archetype="ai-pm-startup",
+               no_rewrite=False):
+    # The Codex rewrite stage is opt-in per test; default it off so existing
+    # tests exercise the pre-rewrite pipeline only.
+    mocker.patch.object(rt, "codex_available", return_value=False)
+    if fake is None:
+        fake = FakeClaude([wrap(make_good_resume())])
     mocker.patch.object(rt, "_call_claude", side_effect=fake)
     return rt.tailor(jd, "Acme", "AI Product Manager", archetype=archetype,
-                     out_root=tmp_path / "versions", today=TODAY)
+                     out_root=tmp_path / "versions", today=TODAY, no_rewrite=no_rewrite)
 
 
 # ── Data: bullets, archetypes, prompts ─────────────────────────────────────────
@@ -589,6 +596,76 @@ def test_dewatermark_fixes_banned_word_before_gates(mocker, tmp_path, stub_rende
     assert result["report"]["attempts"] == 1
     assert fake.actions() == ["tailor", "slopcheck"]
     assert "Spearheaded" not in (result["dir"] / "resume.md").read_text()
+
+
+def _mini_resume(bullets):
+    lines = ["# Test Name", "", "test@example.com | 555-0100", "",
+             "Builder | Tester | Writer", "", "## EXPERIENCE", ""]
+    lines.extend(f"- {b}" for b in bullets)
+    return "\n".join(lines) + "\n"
+
+
+_ORIGINAL = ["Raised revenue 40% after redesigning pricing.",
+             "Cut AWS spending $20,000 through capacity planning."]
+
+
+def test_rewrite_stage_skipped_without_codex(mocker):
+    mocker.patch.object(rt, "codex_available", return_value=False)
+    resume = _mini_resume(_ORIGINAL)
+    out, info = rt._rewrite_stage(resume, "m", [], "a", "jd", [])
+    assert info["status"] == "skipped"
+    assert out == resume
+
+
+def test_rewrite_stage_ok(mocker):
+    paraphrased = ["Revenue rose 40% after the pricing redesign.",
+                   "AWS spending fell $20,000 through capacity planning."]
+    mocker.patch.object(rt, "codex_available", return_value=True)
+    mocker.patch.object(rt, "rewrite_bullets", return_value=paraphrased)
+    mocker.patch.object(rt, "run_gates", return_value=[])
+    out, info = rt._rewrite_stage(_mini_resume(_ORIGINAL), "m", [], "a", "jd", [])
+    assert info["status"] == "ok"
+    assert info["overlap"] < 0.5
+    assert paraphrased[0] in out and paraphrased[1] in out
+    assert _ORIGINAL[0] not in out
+
+
+def test_rewrite_stage_fallback_on_gate_failure(mocker):
+    bad = ["Leveraged pricing changes to raise revenue 40%.",
+           "Cut AWS spending $20,000 through capacity planning."]
+    mocker.patch.object(rt, "codex_available", return_value=True)
+    mocker.patch.object(rt, "rewrite_bullets", return_value=bad)
+    mocker.patch.object(rt, "run_gates", return_value=["banned word: leveraged"])
+    out, info = rt._rewrite_stage(_mini_resume(_ORIGINAL), "m", ["leveraged"], "a", "jd", [])
+    assert info["status"] == "fallback"
+    assert _ORIGINAL[0] in out
+    assert bad[0] not in out
+
+
+def test_rewrite_stage_retries_aggressive_on_high_overlap(mocker):
+    near_identical = ["Raised revenue 40% after redesigning pricing plans.",
+                      "Cut AWS spending $20,000 through capacity planning work."]
+    aggressive = ["Pricing redesign drove a 40% revenue increase.",
+                  "$20,000 in AWS spending was removed via capacity planning."]
+    mocker.patch.object(rt, "codex_available", return_value=True)
+    rewrite = mocker.patch.object(rt, "rewrite_bullets",
+                                  side_effect=[near_identical, aggressive])
+    mocker.patch.object(rt, "run_gates", return_value=[])
+    out, info = rt._rewrite_stage(_mini_resume(_ORIGINAL), "m", [], "a", "jd", [])
+    assert info["status"] == "ok" and info["strength"] == "aggressive"
+    assert rewrite.call_count == 2
+    assert rewrite.call_args_list[1].kwargs["aggressive"] is True
+    assert aggressive[0] in out
+
+
+def test_rewrite_disabled_flag(mocker, tmp_path, stub_renders):
+    result = run_tailor(mocker, tmp_path=tmp_path, no_rewrite=True)
+    assert result["report"]["rewrite"]["status"] == "disabled"
+
+
+def test_rewrite_skipped_by_default(mocker, tmp_path, stub_renders):
+    result = run_tailor(mocker, tmp_path=tmp_path)
+    assert result["report"]["rewrite"]["status"] == "skipped"
 
 
 def test_slop_call_error_degrades_to_needs_review(mocker, tmp_path, stub_renders):
