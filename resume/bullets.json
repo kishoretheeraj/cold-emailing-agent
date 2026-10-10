@@ -1,0 +1,110 @@
+{
+  "version": "2026-10-09",
+  "note": "Source of truth for bullet text. `text` is the exact master wording. Tailoring may compress to 20 words but never add a fact. `tags` come from the archetype keyword clusters.",
+  "bullets": [
+    {
+      "id": "allegro-workbench",
+      "section": "experience",
+      "role": "AI Technology Intern, Allegro MicroSystems",
+      "text": "Rebuilt Knowledge Gem Workbench 2.0, the curation platform behind BigAL, Allegro's internal AI assistant (1,300+ employees, 14 countries): 5-step gem creation wizard, bulk Excel imports with validation, and gem-level file preview (Next.js, Python, Firestore, Vertex AI/Gemini).",
+      "metrics": ["1,300+ employees", "14 countries", "5-step wizard"],
+      "tags": ["llm", "ai platform", "next.js", "python", "system design", "0-to-1", "generative ai", "api integration", "applied ai"]
+    },
+    {
+      "id": "allegro-benchmark",
+      "section": "experience",
+      "role": "AI Technology Intern, Allegro MicroSystems",
+      "text": "Designed a 40-question paired retrieval benchmark: LLM-selection retrieval answered 40/40 vs 32/40 for the best standard method (McNemar exact test, p < 0.01) at 8-35x lower token cost.",
+      "metrics": ["40/40 vs 32/40", "p < 0.01", "8-35x lower token cost"],
+      "tags": ["rag", "model evaluation", "evals", "benchmarking", "token optimization", "inference cost", "statistical significance", "llm", "vector search", "experimentation"]
+    },
+    {
+      "id": "allegro-chunking",
+      "section": "experience",
+      "role": "AI Technology Intern, Allegro MicroSystems",
+      "text": "Designed and implemented PDF outline-first chunking, chosen over Gemini TOC detection after measuring 1.3% outline coverage on 536 samples; the new approach reached 69.8% coverage with token caps derived from the same samples.",
+      "metrics": ["1.3% to 69.8% outline coverage", "536 samples"],
+      "tags": ["rag", "model evaluation", "token optimization", "data pipelines", "system design", "python", "prompt engineering", "embeddings", "data analysis"]
+    },
+    {
+      "id": "allegro-roi",
+      "section": "experience",
+      "role": "AI Technology Intern, Allegro MicroSystems",
+      "text": "Built an audited cost/ROI workbook (176 formulas) and presented an 86-slide readout and 7-page report to the CTO and CEO; shipped a curator self-service update flow cutting approvals from multiple business days to same-day.",
+      "metrics": ["176 formulas", "86-slide readout", "7-page report", "multiple days to same-day approvals"],
+      "tags": ["roi", "business case", "executive communication", "stakeholder management", "ai adoption", "ai transformation", "process optimization", "program management", "ai strategy"]
+    },
+    {
+      "id": "allegro-mcp",
+      "section": "experience",
+      "role": "AI Technology Intern, Allegro MicroSystems",
+      "text": "Built a standalone MCP server decoupling curated knowledge from BigAL, built and validated with an external AI client.",
+      "metrics": [],
+      "tags": ["mcp", "tool use", "agent frameworks", "api design", "api products", "platform", "llm agents", "system design", "api integration"]
+    },
+    {
+      "id": "protium-buildvsbuy",
+      "section": "experience",
+      "role": "Associate Product Manager, Protium Finance Limited",
+      "text": "Eliminated $20K/year in vendor costs by building a 3-year cost-benefit model comparing buying vs building, then shipping an in-house risk-monitoring tool on open-source data at full regulatory compliance.",
+      "metrics": ["$20K/year", "3-year model"],
+      "tags": ["build-vs-buy", "roi", "business case", "regulatory compliance", "compliance", "technical roadmap", "prioritization", "product strategy", "automation"]
+    },
+    {
+      "id": "protium-audit-hub",
+      "section": "experience",
+      "role": "Associate Product Manager, Protium Finance Limited",
+      "text": "Saved 110 verified hours/month by consolidating audit work across 90+ branches into a centralized hub, following 25+ stakeholder interviews and an operations dashboard.",
+      "metrics": ["110 hours/month", "90+ branches", "25+ stakeholder interviews"],
+      "tags": ["process optimization", "automation", "stakeholder management", "discovery", "user research", "dashboards", "cross-functional", "program management", "requirements"]
+    },
+    {
+      "id": "protium-api-revenue",
+      "section": "experience",
+      "role": "Associate Product Manager, Protium Finance Limited",
+      "text": "Identified a $120K/year B2B revenue opportunity by packaging internal compliance and risk tools as white-labeled API products through competitive analysis and market research.",
+      "metrics": ["$120K/year"],
+      "tags": ["api products", "b2b saas", "go-to-market", "competitive analysis", "product strategy", "platform", "enterprise", "compliance"]
+    },
+    {
+      "id": "protium-ai-review-adoption",
+      "section": "experience",
+      "role": "Senior Product Analyst, Protium Finance Limited",
+      "text": "Cut processing time 32% by driving adoption of an AI review tool from 1.6% to 65% in one month, using customer-journey analysis to remove the manual handoff blocking the rollout.",
+      "metrics": ["32% faster processing", "1.6% to 65% adoption", "one month"],
+      "tags": ["ai adoption", "ai transformation", "change management", "scaling pilots", "metrics", "kpis", "discovery", "process optimization", "ai product management", "launch"]
+    },
+    {
+      "id": "protium-dropoff",
+      "section": "experience",
+      "role": "Product Analyst, Protium Finance Limited",
+      "text": "Prevented $200K/month in business losses by reducing customer drop-off 20% through SQL cohort and funnel analysis diagnosing pain points across the customer journey.",
+      "metrics": ["$200K/month", "20% drop-off reduction"],
+      "tags": ["sql", "cohort analysis", "funnel analysis", "data analysis", "metrics", "kpis", "data-driven", "experimentation", "dashboards", "a/b testing"]
+    },
+    {
+      "id": "outreach-agent-approval",
+      "section": "project",
+      "role": "outreach-agent",
+      "text": "Built outreach-agent, an agentic workflow that researches roles, scores fit, and drafts tailored applications, with a mandatory human-approval gate before any external action; cryptographically signed approvals separate autonomous preparation from user-approved submission.",
+      "metrics": [],
+      "tags": ["llm agents", "agentic workflows", "agent orchestration", "human-in-the-loop", "guardrails", "responsible ai", "system design", "typescript", "python", "playwright", "supabase"]
+    },
+    {
+      "id": "outreach-agent-scope",
+      "section": "project",
+      "role": "outreach-agent",
+      "text": "Scoped the system prepare-only by default: a deliberate tradeoff of speed for trust in a high-stakes domain. 50-module Python/TypeScript codebase with 3,500+ tests backing approval-gated reliability.",
+      "metrics": ["50 modules", "3,500+ tests"],
+      "tags": ["guardrails", "human-in-the-loop", "testing", "reliability", "ci/cd", "observability", "system design", "product strategy", "responsible ai", "trust and safety"]
+    },
+    {
+      "id": "leadership-unschool",
+      "section": "leadership",
+      "role": "Leadership",
+      "text": "Mentored 500+ students via Unschool (LinkedIn Top 10 Startup, 2020); personal equity portfolio returned 51.73% absolute (25.87% XIRR) across Indian and US markets.",
+      "metrics": ["500+ students", "51.73% absolute return", "25.87% XIRR"],
+      "tags": ["stakeholder management", "data analysis", "metrics"]
+    }
+  ]
+}

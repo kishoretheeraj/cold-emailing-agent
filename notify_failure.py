@@ -9,6 +9,7 @@ import os
 import shlex
 import smtplib
 import socket
+import sys
 from email.message import EmailMessage
 
 
@@ -40,6 +41,22 @@ def _systemd_unit_failure(failed_unit):
     return subject, body
 
 
+def _no_context_notice():
+    # Nothing failed here: with no GITHUB_RUN_ID and no FAILED_UNIT there is no
+    # run to link to, and a [FAILED] subject would be a false alarm.
+    hostname = socket.gethostname()
+    subject = f"[NOTICE] notify_failure.py invoked without failure context on {hostname}"
+    body = (
+        "This email was sent because notify_failure.py ran with neither GitHub "
+        "Actions context (GITHUB_RUN_ID) nor systemd context (FAILED_UNIT). "
+        "This is usually a manual test invocation, not a real failure.\n\n"
+        f"Host:   {hostname}\n"
+        f"Cwd:    {os.getcwd()}\n"
+        f"Argv:   {sys.argv}\n"
+    )
+    return subject, body
+
+
 def main():
     gmail = os.environ["GMAIL_ADDRESS"]
     password = os.environ["GMAIL_APP_PASSWORD"]
@@ -47,8 +64,10 @@ def main():
     failed_unit = os.environ.get("FAILED_UNIT")
     if failed_unit:
         subject, body = _systemd_unit_failure(failed_unit)
-    else:
+    elif os.environ.get("GITHUB_RUN_ID"):
         subject, body = _github_actions_failure()
+    else:
+        subject, body = _no_context_notice()
 
     msg = EmailMessage()
     msg["Subject"] = subject

@@ -20,3 +20,7 @@ coverage.xml
 .playwright-mcp/
 .vercel
 .claude/worktrees/
+
+# Resume tailoring pipeline: generated resumes are PII, never commit
+resume/versions/
+resume/tracker.jsonl

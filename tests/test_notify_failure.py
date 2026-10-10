@@ -1,4 +1,4 @@
-"""Tests for notify_failure.py -- the GitHub-Actions and systemd failure-email paths."""
+"""Tests for notify_failure.py -- the GitHub-Actions, systemd and no-context email paths."""
 
 from unittest.mock import MagicMock
 
@@ -41,20 +41,31 @@ def test_github_actions_path_uses_real_env_vars(mocker, monkeypatch):
     assert "Run:    https://github.com/kishoretheeraj/cold-emailing-agent/actions/runs/12345" in body
 
 
-def test_github_actions_path_without_any_context_falls_back_to_placeholders(mocker, monkeypatch):
-    """Regression guard for the original, pre-FAILED_UNIT behavior: a totally
-    contextless invocation (no GITHUB_* vars, no FAILED_UNIT) still sends an
-    email rather than crashing -- it just can't say more than '?'."""
+def test_contextless_invocation_sends_notice_not_failure_with_placeholders(mocker, monkeypatch):
+    """The bug this guards: a bare `python notify_failure.py` (no GITHUB_RUN_ID,
+    no FAILED_UNIT) used to send '[FAILED] ... run ?' with a dead
+    github.com/?/actions/runs/? link -- indistinguishable from a real failure.
+    It must now say it is a notice, name the host, and carry no placeholders."""
     _clear_failure_context(monkeypatch)
+    mocker.patch.object(notify_failure.socket, "gethostname", return_value="beelink")
+    mocker.patch.object(notify_failure.sys, "argv", ["notify_failure.py", "--probe"])
+    mocker.patch.object(notify_failure.os, "getcwd", return_value="/srv/test-cwd")
 
     smtp = _mock_smtp(mocker)
     notify_failure.main()
 
     sent_msg = smtp.__enter__.return_value.send_message.call_args.args[0]
-    assert sent_msg["Subject"] == "[FAILED] Cold Email Agent | run ?"
+    subject = sent_msg["Subject"]
+    assert "[NOTICE]" in subject
+    assert "[FAILED]" not in subject
+    assert "beelink" in subject
     body = sent_msg.get_content()
-    assert "Repo:   ?" in body
-    assert "Branch: ?" in body
+    assert "manual test" in body
+    assert "beelink" in body
+    assert "/srv/test-cwd" in body
+    assert "--probe" in body
+    assert "?" not in body
+    assert "actions/runs" not in body
 
 
 def test_failed_unit_path_reports_unit_and_host_not_placeholders(mocker, monkeypatch):
@@ -84,6 +95,7 @@ def test_failed_unit_takes_priority_over_github_env_vars(mocker, monkeypatch):
     _clear_failure_context(monkeypatch)
     monkeypatch.setenv("FAILED_UNIT", "job-linkedin-ingest.service")
     monkeypatch.setenv("GITHUB_WORKFLOW", "should not be used")
+    monkeypatch.setenv("GITHUB_RUN_ID", "999")
     mocker.patch.object(notify_failure.socket, "gethostname", return_value="beelink")
 
     smtp = _mock_smtp(mocker)
