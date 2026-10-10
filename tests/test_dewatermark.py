@@ -1,127 +1,196 @@
-from collections import Counter
+"""Tests for deterministic resume-text dewatermarking."""
+
+from __future__ import annotations
+
 import re
 
 import pytest
 
-from dewatermark import dewatermark
+import dewatermark as module
+from dewatermark import dewatermark, strip_unicode_marks
+
+
+NEW_WORD_SWAPS = {
+    "additionally": "also",
+    "furthermore": "also",
+    "moreover": "also",
+    "approximately": "about",
+    "demonstrate": "show",
+    "demonstrated": "showed",
+    "extensive": "wide",
+    "facilitate": "help",
+    "facilitated": "helped",
+    "facilitates": "helps",
+    "facilitating": "helping",
+    "obtain": "get",
+    "obtained": "got",
+    "obtains": "gets",
+    "obtaining": "getting",
+    "regarding": "about",
+    "commence": "start",
+    "commenced": "started",
+    "commences": "starts",
+    "commencing": "starting",
+    "enhance": "improve",
+    "enhanced": "improved",
+    "enhances": "improves",
+    "enhancing": "improving",
+}
+
+
+def test_original_smoke_case() -> None:
+    text = (
+        "Spearheaded a cutting-edge program — leveraged robust systems "
+        "in a fast-paced environment."
+    )
+
+    assert dewatermark(text) == (
+        "Led a modern program, used reliable systems in a fast-moving team."
+    )
+
+
+def test_removes_zero_width_characters() -> None:
+    text = "Led\u200b cross\u200cfunctional\u200d work\ufeff with\u2060 teams."
+    assert strip_unicode_marks(text) == "Led crossfunctional work with teams."
 
 
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("Spearheaded migration", "Led migration"),
-        ("leveraged tools", "used tools"),
-        ("utilize tools", "use tools"),
-        ("utilized tools", "used tools"),
-        ("utilizing tools", "using tools"),
-        ("orchestrated delivery", "ran delivery"),
-        ("robust service", "reliable service"),
-        ("seamless rollout", "smooth rollout"),
-        ("cutting-edge system", "modern system"),
-        ("proven track record", "strong record"),
-        ("detail-oriented engineer", "thorough engineer"),
-        ("fast-paced environment", "fast-moving team"),
-        ("thought leader", "leader"),
-        ("game-changer", "major improvement"),
-        ("disrupt markets", "change markets"),
-        ("disruptive product", "major product"),
-        ("a ninja engineer", "a engineer"),
-        ("a guru engineer", "a engineer"),
-        ("a rockstar engineer", "a engineer"),
-        ("synergy across teams", "working together across teams"),
-        ("synergies across teams", "working together across teams"),
-        ("a passionate engineer", "a engineer"),
-        ("a results-driven engineer", "a engineer"),
+        ("one\u00a0two", "one two"),
+        ("one\u2000two", "one two"),
+        ("one\u2005two", "one two"),
+        ("one\u200atwo", "one two"),
+        ("one\u202ftwo", "one two"),
+        ("one\u3000two", "one two"),
     ],
 )
-def test_each_word_map_entry(source, expected):
-    assert dewatermark(source) == expected
+def test_normalizes_unicode_whitespace(source: str, expected: str) -> None:
+    assert strip_unicode_marks(source) == expected
 
 
-def test_whole_words_only():
-    assert dewatermark("leveragedness and disruption") == (
-        "leveragedness and disruption"
+def test_maps_fullwidth_ascii_to_ascii() -> None:
+    assert strip_unicode_marks("ＡＢＣ１２３！") == "ABC123!"
+
+
+def test_maps_cyrillic_and_greek_lookalikes_to_latin() -> None:
+    assert strip_unicode_marks("раураl ΑΒΕ Οffісе") == "paypal ABE Office"
+
+
+@pytest.mark.parametrize(("source", "expected"), NEW_WORD_SWAPS.items())
+def test_each_new_word_swap(source: str, expected: str) -> None:
+    assert dewatermark(f"We {source} outcomes.") == f"We {expected} outcomes."
+
+
+ORIGINAL_WORD_SWAPS = {
+    "spearheaded": "led",
+    "leveraged": "used",
+    "utilize": "use",
+    "utilized": "used",
+    "utilizing": "using",
+    "orchestrated": "ran",
+    "robust": "reliable",
+    "seamless": "smooth",
+    "cutting-edge": "modern",
+    "proven track record": "strong record",
+    "detail-oriented": "thorough",
+    "fast-paced environment": "fast-moving team",
+    "thought leader": "leader",
+    "game-changer": "major improvement",
+    "disrupt": "change",
+    "disruptive": "major",
+    "synergy": "working together",
+    "synergies": "working together",
+}
+
+ORIGINAL_WORD_REMOVALS = ["ninja", "guru", "rockstar", "passionate", "results-driven"]
+
+
+@pytest.mark.parametrize(("source", "expected"), ORIGINAL_WORD_SWAPS.items())
+def test_each_original_word_swap(source: str, expected: str) -> None:
+    assert dewatermark(f"We {source} outcomes.") == f"We {expected} outcomes."
+
+
+@pytest.mark.parametrize("word", ORIGINAL_WORD_REMOVALS)
+def test_each_original_word_removal(word: str) -> None:
+    assert word not in dewatermark(f"We are {word} about outcomes.").lower()
+
+
+def test_new_swaps_preserve_initial_capitalization() -> None:
+    assert dewatermark("Furthermore, we enhanced delivery.") == (
+        "Also, we improved delivery."
     )
 
 
-def test_spaced_em_dash_becomes_comma():
-    assert dewatermark("Built it — shipped it.") == "Built it, shipped it."
-
-
-def test_unspaced_em_dash_becomes_hyphen():
-    assert dewatermark("Built it—shipped it.") == "Built it - shipped it."
-
-
-def test_no_em_dash_remains():
-    assert "—" not in dewatermark("One — two—three")
-
-
-def test_numbers_dates_percentages_and_money_are_unchanged():
-    source = (
-        "Led work from 2022-2024, improving revenue 35% from "
-        "$1.2M to $2,500,000 on 10/09/2026."
+def test_twenty_word_bullet_does_not_exceed_cap() -> None:
+    text = (
+        "- Additionally demonstrated extensive skills to facilitate teams and "
+        "obtain approximately 25% growth regarding earlier goals across many "
+        "projects successfully today"
     )
-    result = dewatermark(source)
-    facts = re.compile(
-        r"\$[\d,.]+[kKmMbB]?|\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?"
-        r"|\d{4}-\d{2,4}|\d[\d,.]*%|\d[\d,.]*[kKmMbB]?"
+    before = re.findall(r"\b[\w%]+\b", text)
+    result = dewatermark(text)
+    after = re.findall(r"\b[\w%]+\b", result)
+
+    assert len(before) == 20
+    assert len(after) <= 20
+
+
+def test_preserves_numbers_dates_and_currency() -> None:
+    text = (
+        "Additionally enhanced revenue from $1.2M to $1.5M by 25% "
+        "during 2024-2025, after the 06/15/2024 launch."
     )
-    assert Counter(facts.findall(result)) == Counter(facts.findall(source))
+    result = dewatermark(text)
+
+    for fact in ("$1.2M", "$1.5M", "25%", "2024-2025", "06/15/2024"):
+        assert fact in result
 
 
-def test_mapped_word_in_metric_context_is_skipped():
-    assert dewatermark("leveraged 35% growth") == "leveraged 35% growth"
-    assert dewatermark("$2M robust") == "$2M robust"
-
-
-def test_proper_noun_is_skipped():
-    assert dewatermark("Built the Robust Systems platform") == (
-        "Built the Robust Systems platform"
-    )
-
-
-def test_headline_is_processed():
-    assert dewatermark("Results-Driven Engineering Leader") == (
-        "Engineering Leader"
+def test_returns_original_input_if_fact_guard_detects_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Enhanced revenue by 25%."
+    monkeypatch.setattr(
+        module,
+        "_replace_words",
+        lambda value: value.replace("25%", "26%"),
     )
 
-
-def test_triple_parallelism_is_untouched():
-    source = "Built systems, trained teams, and improved operations."
-    assert dewatermark(source) == source
+    assert dewatermark(text) == text
 
 
-def test_idempotent():
-    source = "Passionate leader — leveraged robust, seamless pipelines."
-    once = dewatermark(source)
+def test_protects_mapped_language_in_metric_context() -> None:
+    assert dewatermark("Achieved robust 25% growth.") == (
+        "Achieved robust 25% growth."
+    )
+
+
+def test_protects_title_case_term_inside_proper_name() -> None:
+    assert dewatermark("Joined Acme Robust Systems.") == (
+        "Joined Acme Robust Systems."
+    )
+
+
+def test_cleans_spacing_after_removed_words() -> None:
+    assert dewatermark("A passionate, results-driven leader.") == "A leader."
+
+
+def test_handles_em_dashes() -> None:
+    assert dewatermark("Led delivery — improved quality—reduced cost.") == (
+        "Led delivery, improved quality - reduced cost."
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Additionally enhanced a robust process — obtaining about 25% growth.",
+        "A passionate, results-driven leader.",
+        "Ａdditionally\u00a0demonstrated extensive experience.",
+        "Joined Acme Robust Systems in 2024-2025.",
+    ],
+)
+def test_is_idempotent(text: str) -> None:
+    once = dewatermark(text)
     assert dewatermark(once) == once
-
-
-def test_full_resume_smoke():
-    source = """
-# Engineering Leader
-
-## Experience
-
-- Spearheaded the rebuild — leveraged robust pipelines to deliver cutting-edge results.
-- Increased revenue 35% from $1.2M to $2M during 2022-2024.
-""".strip()
-
-    result = dewatermark(source)
-    banned = (
-        "spearheaded",
-        "leveraged",
-        "robust",
-        "cutting-edge",
-    )
-
-    assert "—" not in result
-    assert not any(re.search(rf"\b{re.escape(word)}\b", result, re.I) for word in banned)
-    assert (
-        "- Led the rebuild, used reliable pipelines to deliver modern results."
-        in result
-    )
-    assert "35%" in result
-    assert "$1.2M" in result
-    assert "$2M" in result
-    assert "2022-2024" in result

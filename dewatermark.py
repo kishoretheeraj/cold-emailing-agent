@@ -30,6 +30,30 @@ _WORD_MAP = {
     "synergies": "working together",
     "passionate": "",
     "results-driven": "",
+    "additionally": "also",
+    "furthermore": "also",
+    "moreover": "also",
+    "approximately": "about",
+    "demonstrate": "show",
+    "demonstrated": "showed",
+    "extensive": "wide",
+    "facilitate": "help",
+    "facilitated": "helped",
+    "facilitates": "helps",
+    "facilitating": "helping",
+    "obtain": "get",
+    "obtained": "got",
+    "obtains": "gets",
+    "obtaining": "getting",
+    "regarding": "about",
+    "commence": "start",
+    "commenced": "started",
+    "commences": "starts",
+    "commencing": "starting",
+    "enhance": "improve",
+    "enhanced": "improved",
+    "enhances": "improves",
+    "enhancing": "improving",
 }
 
 _PATTERN = re.compile(
@@ -38,6 +62,22 @@ _PATTERN = re.compile(
     + r")(?!\w)",
     re.IGNORECASE,
 )
+
+_ZERO_WIDTH = frozenset("\u200b\u200c\u200d\ufeff\u2060")
+_CONFUSABLES = str.maketrans({
+    # Cyrillic characters commonly used as Latin lookalikes.
+    "А": "A", "В": "B", "С": "C", "Е": "E", "Н": "H", "І": "I",
+    "Ј": "J", "К": "K", "М": "M", "О": "O", "Р": "P", "Ѕ": "S",
+    "Т": "T", "Х": "X", "У": "Y",
+    "а": "a", "с": "c", "е": "e", "і": "i", "ј": "j", "о": "o",
+    "р": "p", "ѕ": "s", "х": "x", "у": "y",
+    # Greek characters commonly used as Latin lookalikes.
+    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I",
+    "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T",
+    "Υ": "Y", "Χ": "X", "Ϲ": "C",
+    "α": "a", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p",
+    "τ": "t", "υ": "y", "χ": "x", "ϲ": "c",
+})
 
 _METRIC = r"(?:[$£€]\s*)?\d[\d,]*(?:\.\d+)?(?:\s*%|\s*[kKmMbB])?"
 _NUMBER_OR_DATE = re.compile(
@@ -54,6 +94,24 @@ _NUMBER_OR_DATE = re.compile(
     """,
     re.VERBOSE,
 )
+
+
+def strip_unicode_marks(text: str) -> str:
+    """Remove invisible marks and normalize confusable typography."""
+    normalized: list[str] = []
+    for character in text:
+        if character in _ZERO_WIDTH:
+            continue
+
+        codepoint = ord(character)
+        if 0xFF01 <= codepoint <= 0xFF5E:
+            character = chr(codepoint - 0xFEE0)
+        elif character.isspace() and character not in "\r\n":
+            character = " "
+
+        normalized.append(character)
+
+    return "".join(normalized).translate(_CONFUSABLES)
 
 
 def _numbers_and_dates(text: str) -> Counter[str]:
@@ -98,17 +156,30 @@ def _match_case(replacement: str, original: str) -> str:
 
 
 def _replace_words(text: str) -> str:
-    def replace(match: re.Match[str]) -> str:
+    parts: list[str] = []
+    last = 0
+    for match in _PATTERN.finditer(text):
         start, end = match.span()
+        parts.append(text[last:start])
         if (
             _in_metric_context(text, start, end)
             or _looks_like_proper_noun(text, start, end)
         ):
-            return match.group(0)
-        replacement = _WORD_MAP[match.group(0).lower()]
-        return _match_case(replacement, match.group(0))
-
-    return _PATTERN.sub(replace, text)
+            parts.append(match.group(0))
+            last = end
+            continue
+        replacement = _match_case(_WORD_MAP[match.group(0).lower()], match.group(0))
+        if replacement:
+            parts.append(replacement)
+        elif following := re.match(r"[ \t]*,", text[end:]):
+            # Swallow a comma left dangling after the removed word ("passionate,").
+            end += following.end()
+        else:
+            # Drop a comma left dangling before the removed word (", passionate").
+            parts[-1] = re.sub(r",[ \t]*$", "", parts[-1])
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def _clean_removed_words(text: str) -> str:
@@ -122,9 +193,10 @@ def _clean_removed_words(text: str) -> str:
 
 def dewatermark(text: str) -> str:
     """Return a conservative, deterministic stylistic cleanup of *text*."""
-    original_facts = _numbers_and_dates(text)
+    result = strip_unicode_marks(text)
+    original_facts = _numbers_and_dates(result)
 
-    result = text.replace(" — ", ", ")
+    result = result.replace(" — ", ", ")
     result = result.replace("—", " - ")
     result = _replace_words(result)
     result = _clean_removed_words(result)
