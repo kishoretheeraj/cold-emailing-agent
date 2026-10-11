@@ -58,8 +58,12 @@ def sanitize(text):
 _DEFAULT_SYSTEM = "You are a careful writing assistant. Reply with only what was asked for."
 _RETRY_LATER = re.compile(r"usage limit|limit reached|rate.?limit|overloaded|\b429\b|\b529\b", re.I)
 
+# Linux caps a single argv string at MAX_ARG_STRLEN (131072 bytes, including the trailing NUL), and the
+# prompt is one argv element, so a longer prompt fails at exec with E2BIG.
+_MAX_PROMPT_BYTES = 131071
 
-def _argv(model, system):
+
+def _argv(model, system, prompt):
     return [
         config.CLAUDE_CLI_PATH, "-p",
         "--output-format", "json",
@@ -69,6 +73,7 @@ def _argv(model, system):
         "--setting-sources", "",
         "--model", model,
         "--system-prompt", system or _DEFAULT_SYSTEM,
+        "--", prompt,
     ]
 
 
@@ -78,13 +83,16 @@ def _argv(model, system):
 # subscription. It also keeps this process's app secrets (Supabase, Gmail) out of the CLI.
 _ENV_ALLOW = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "TZ",
               "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
-              "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_OAUTH_TOKEN")
+              "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_OAUTH_TOKEN",
+              "CLAUDE_CODE_MAX_OUTPUT_TOKENS")
 
 
-def _child_env(config_dir):
+def _child_env(config_dir, max_output_tokens=None):
     env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOW or k.startswith("LC_")}
     env["CLAUDE_CONFIG_DIR"] = config_dir
     env["DISABLE_AUTOUPDATER"] = "1"
+    if max_output_tokens is not None:
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_output_tokens)
     return env
 
 
@@ -109,24 +117,28 @@ def _parse(proc):
     return sanitize(payload.get("result") or ""), usage
 
 
-def complete(prompt, system=None, model=None):
+def complete(prompt, system=None, model=None, max_output_tokens=None):
     """Run one completion on the subscription. Returns (text, usage) with usage =
     {"input_tokens", "output_tokens"}, cache tokens folded into input. Raises
     ClaudeUsageLimitError for retry-later conditions, ClaudeSubscriptionError otherwise."""
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         raise ClaudeSubscriptionError(
             "CLAUDE_CODE_OAUTH_TOKEN is not set -- create one with `claude setup-token`")
+    prompt_bytes = len(prompt.encode("utf-8"))
+    if prompt_bytes > _MAX_PROMPT_BYTES:
+        raise ClaudeSubscriptionError(
+            f"prompt is {prompt_bytes} bytes; the argv limit is {_MAX_PROMPT_BYTES} bytes")
     workdir = tempfile.mkdtemp(prefix="claude-cwd-")
     config_dir = tempfile.mkdtemp(prefix="claude-cfg-")
     try:
         try:
             proc = subprocess.Popen(
-                _argv(model or config.RESUME_MODEL, system), stdin=subprocess.PIPE,
+                _argv(model or config.RESUME_MODEL, system, prompt), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=workdir,
-                env=_child_env(config_dir), start_new_session=True,
+                env=_child_env(config_dir, max_output_tokens), start_new_session=True,
             )
             try:
-                stdout, stderr = proc.communicate(input=prompt, timeout=config.CLAUDE_CLI_TIMEOUT_SECONDS)
+                stdout, stderr = proc.communicate(timeout=config.CLAUDE_CLI_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)

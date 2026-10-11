@@ -66,14 +66,50 @@ def test_argv_strips_every_context_source_and_never_uses_bare(run):
     assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
 
 
-def test_prompt_goes_on_stdin_not_argv(mocker, token):
+def test_prompt_goes_on_argv_not_stdin(mocker, token):
     fake_popen = FakePopen(_ok_payload())
     popen_mock = mocker.patch("claude_subscription.subprocess.Popen", return_value=fake_popen)
     communicate_mock = mocker.patch.object(fake_popen, "communicate", return_value=(_ok_payload(), ""))
     claude_subscription.complete("SECRET-PROMPT-BODY")
+    assert popen_mock.call_args.args[0][-1] == "SECRET-PROMPT-BODY"
+    assert popen_mock.call_args.kwargs["stdin"] == subprocess.DEVNULL
     communicate_mock.assert_called_once()
-    assert communicate_mock.call_args.kwargs["input"] == "SECRET-PROMPT-BODY"
-    assert "SECRET-PROMPT-BODY" not in popen_mock.call_args.args[0]
+    assert "input" not in communicate_mock.call_args.kwargs
+    assert communicate_mock.call_args.args == ()
+
+
+@pytest.mark.parametrize("prompt", ["--version", "-h", "-p evil", "--tools Bash"])
+def test_dash_leading_prompt_is_separated_from_flags(run, prompt):
+    claude_subscription.complete(prompt)
+    argv = run.call_args.args[0]
+    assert argv[-2:] == ["--", prompt]
+    assert argv.count("--") == 1
+
+
+def test_oversized_prompt_raises_and_never_spawns(mocker, token):
+    popen = mocker.patch("claude_subscription.subprocess.Popen")
+    mkdtemp = mocker.patch("claude_subscription.tempfile.mkdtemp")
+    with pytest.raises(claude_subscription.ClaudeSubscriptionError, match="131071"):
+        claude_subscription.complete("a" * 131072)
+    popen.assert_not_called()
+    mkdtemp.assert_not_called()
+
+
+def test_prompt_limit_counts_bytes_not_characters(mocker, token):
+    popen = mocker.patch("claude_subscription.subprocess.Popen")
+    prompt = "\u00e9" * 70000  # 70000 characters, 140000 UTF-8 bytes
+    assert len(prompt) < 131071 < len(prompt.encode("utf-8"))
+    with pytest.raises(claude_subscription.ClaudeSubscriptionError):
+        claude_subscription.complete(prompt)
+    popen.assert_not_called()
+
+
+def test_prompt_of_exactly_the_limit_is_accepted(run):
+    prompt = "a" * 131071
+    assert len(prompt.encode("utf-8")) == 131071
+    text, _ = claude_subscription.complete(prompt)
+    assert text == "hello"
+    assert run.call_args.args[0][-1] == prompt
 
 
 def test_system_prompt_replaces_the_default(run):
