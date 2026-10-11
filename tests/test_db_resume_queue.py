@@ -6,7 +6,7 @@ import db
 def _client(mocker, data):
     client = mocker.MagicMock()
     chain = client.table.return_value
-    for name in ("select", "eq", "is_", "order", "limit", "update", "or_", "gte"):
+    for name in ("select", "eq", "in_", "is_", "order", "limit", "update", "or_", "gte"):
         getattr(chain, name).return_value = chain
     chain.execute.return_value = mocker.MagicMock(data=data)
     mocker.patch.object(db, "get_client", return_value=client)
@@ -18,6 +18,7 @@ def test_get_strong_applications_without_resume_filters_and_limits(mocker):
     assert db.get_strong_applications_without_resume(2) == [{"id": 3}]
     eq_calls = {c.args for c in chain.eq.call_args_list}
     assert ("pick_verdict", "strong") in eq_calls and ("stage", "saved") in eq_calls
+    assert [c.args for c in chain.in_.call_args_list] == [("automation_status", ["idle", "failed_retryable"])]
     is_calls = {c.args for c in chain.is_.call_args_list}
     assert ("resume_file_ref", "null") in is_calls and ("resume_error", "null") in is_calls
     assert ("worker_lease_id", "null") in is_calls
@@ -67,3 +68,10 @@ def test_count_stale_strong_without_resume_none_count_is_zero(mocker):
     chain.lt.return_value = chain
     chain.execute.return_value = mocker.MagicMock(data=[], count=None)
     assert db.count_stale_strong_without_resume(24) == 0
+
+
+def test_strong_queue_filters_unclaimable_statuses_before_ordering_and_limiting(mocker):
+    chain = _client(mocker, [])
+    db.get_strong_applications_without_resume(2)
+    names = [c[0] for c in chain.method_calls]
+    assert names.index("in_") < names.index("order") < names.index("limit")

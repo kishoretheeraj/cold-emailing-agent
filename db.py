@@ -821,6 +821,13 @@ def finish_document_generation(application_id, lease_id, ok, reason=None):
         "p_id": application_id, "p_lease": lease_id, "p_ok": bool(ok), "p_reason": _clip(reason, 900)})))
 
 
+def cancel_document_generation(application_id, lease_id, reason):
+    """End a document-only lease without counting the attempt (machine-wide failures such as a usage
+    limit or Claude auth): back to idle with the claim's attempt refunded. False if the lease was lost."""
+    return bool(_retry(lambda: _rpc("cancel_document_generation", {
+        "p_id": application_id, "p_lease": lease_id, "p_reason": _clip(reason, 900)})))
+
+
 # ── Job sourcing: board registry and identity backfill (fifty-a-day §3.3) ──────
 
 def get_sourcing_boards(limit):
@@ -1238,11 +1245,9 @@ def mark_unsupported(application_id, reason):
 
 
 def mark_unsupported_with_lease(application_id, lease_id, reason):
-    """Mark a row unsupported while holding its 'preparing' lease: the lease is released first (the
-    unsupported RPC refuses a leased row), then the row is marked. False if either step is refused."""
-    if not finish_document_generation(application_id, lease_id, False, reason):
-        return False
-    return mark_unsupported(application_id, reason)
+    """Atomically mark a row unsupported while holding its 'preparing' lease."""
+    return bool(_retry(lambda: _rpc("mark_unsupported_under_lease", {
+        "p_id": application_id, "p_lease": lease_id, "p_reason": _clip(reason, 900)})))
 
 
 _OUTCOME_STAGES = ("applied", "phone_screen", "onsite")
@@ -1321,6 +1326,7 @@ def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref
 
 def _strong_queue(query, exclude_platforms):
     query = (query.eq("pick_verdict", "strong").eq("stage", "saved")
+             .in_("automation_status", ["idle", "failed_retryable"])
              .is_("resume_file_ref", "null").is_("resume_error", "null"))
     if exclude_platforms:
         query = query.or_(f"platform.is.null,platform.not.in.({','.join(exclude_platforms)})")
@@ -1331,7 +1337,9 @@ def get_strong_applications_without_resume(limit, exclude_platforms=()):
     """Rows at stage='saved' that job_pick.py scored 'strong', with no built resume and no
     recorded resume_error -- the Beelink resume worker's queue (resume_agent.py --drain). Best
     pick_score first, then oldest; rows on platforms this host cannot submit and rows another worker
-    holds a lease on are left out. Applied/rejected/withdrawn rows are never rebuilt."""
+    holds a lease on are left out. Only claimable statuses (idle, failed_retryable) are listed, so rows
+    the claim would refuse (needs_input, unsupported, ...) never fill the pool. Applied/rejected/withdrawn
+    rows are never rebuilt."""
     result = _retry(lambda: _strong_queue(get_client().table("job_applications").select("*"), exclude_platforms)
                     .is_("worker_lease_id", "null")
                     .order("pick_score", desc=True, nullsfirst=False)

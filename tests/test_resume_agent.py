@@ -609,6 +609,7 @@ def test_drain_stops_on_usage_limit_without_marking(mocker):
     propose = mocker.patch.object(resume_agent, "propose",
                                   side_effect=claude_subscription.ClaudeUsageLimitError("usage limit reached"))
     set_error = mocker.patch.object(db, "set_resume_error")
+    mocker.patch.object(db, "cancel_document_generation", return_value=True)
     assert resume_agent.drain() == 0
     propose.assert_called_once_with(1)
     set_error.assert_not_called()
@@ -669,28 +670,65 @@ def test_drain_releases_the_lease_and_does_not_build_when_the_gate_raises(mocker
     assert release.call_args.args[:3] == (1, "lease", False)
 
 
-def test_drain_releases_the_lease_as_failed_on_usage_limit_and_cli_errors(mocker):
+def test_drain_cancels_the_lease_on_usage_limit_and_cli_errors_without_a_failed_release(mocker):
     _drain_ready(mocker)
     mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
     release = mocker.patch.object(resume_agent, "_release_row")
+    cancel = mocker.patch.object(db, "cancel_document_generation", return_value=True)
     for exc in (claude_subscription.ClaudeUsageLimitError("limit"), claude_subscription.ClaudeSubscriptionError("cli")):
-        release.reset_mock()
+        release.reset_mock(); cancel.reset_mock()
         mocker.patch.object(resume_agent, "propose", side_effect=exc)
         resume_agent.drain()
-        args = release.call_args.args
-        assert args[:3] == (1, "lease", False) and type(exc).__name__ in args[3]
+        release.assert_not_called()
+        args = cancel.call_args.args
+        assert args[:2] == (1, "lease") and type(exc).__name__ in args[2]
 
 
-def test_mark_unsupported_with_lease_releases_then_marks(mocker):
-    finish = mocker.patch.object(db, "finish_document_generation", return_value=True)
-    mark = mocker.patch.object(db, "mark_unsupported", return_value=True)
+def test_drain_survives_a_refused_or_failing_cancel(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    propose = mocker.patch.object(resume_agent, "propose",
+                                  side_effect=claude_subscription.ClaudeUsageLimitError("limit"))
+    release = mocker.patch.object(resume_agent, "_release_row")
+    for outcome in ({"return_value": False}, {"side_effect": RuntimeError("db down")}):
+        propose.reset_mock()
+        mocker.patch.object(db, "cancel_document_generation", **outcome)
+        resume_agent.drain()
+        propose.assert_called_once_with(1)  # still stops the run
+        release.assert_not_called()
+
+
+def test_drain_per_row_failure_still_releases_as_failed_retryable(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    mocker.patch.object(resume_agent, "propose", side_effect=ValueError("bad strategy"))
+    mocker.patch.object(db, "set_resume_error")
+    cancel = mocker.patch.object(db, "cancel_document_generation")
+    release = mocker.patch.object(resume_agent, "_release_row")
+    assert resume_agent.drain() == 1
+    cancel.assert_not_called()
+    assert release.call_args.args[:3] == (1, "lease", False)
+
+
+def test_mark_unsupported_with_lease_is_one_atomic_rpc(mocker):
+    rpc = mocker.patch.object(db, "_rpc", return_value=True)
+    finish = mocker.patch.object(db, "finish_document_generation")
     assert db.mark_unsupported_with_lease(1, "L", "gone") is True
-    finish.assert_called_once_with(1, "L", False, "gone")
-    mark.assert_called_once_with(1, "gone")
-    finish.return_value = False
-    mark.reset_mock()
+    assert rpc.call_args_list == [mocker.call("mark_unsupported_under_lease",
+                                              {"p_id": 1, "p_lease": "L", "p_reason": "gone"})]
+    finish.assert_not_called()
+    rpc.return_value = False
     assert db.mark_unsupported_with_lease(1, "L", "gone") is False
-    mark.assert_not_called()
+
+
+def test_cancel_document_generation_is_one_rpc(mocker):
+    rpc = mocker.patch.object(db, "_rpc", return_value=True)
+    assert db.cancel_document_generation(5, "L", "UsageLimit: x") is True
+    assert rpc.call_args.args == ("cancel_document_generation",
+                                  {"p_id": 5, "p_lease": "L", "p_reason": "UsageLimit: x"})
+    rpc.return_value = None
+    assert db.cancel_document_generation(5, "L", "x") is False
 
 
 @pytest.mark.parametrize("liveness,count,cap,expected", [
@@ -730,6 +768,7 @@ def test_drain_transport_failure_stops_the_run_without_marking(mocker):
     propose = mocker.patch.object(resume_agent, "propose",
                                   side_effect=claude_subscription.ClaudeSubscriptionError("claude CLI failed (exit 1): auth"))
     set_error = mocker.patch.object(db, "set_resume_error")
+    mocker.patch.object(db, "cancel_document_generation", return_value=True)
     assert resume_agent.drain() == 1
     propose.assert_called_once_with(1)
     set_error.assert_not_called()

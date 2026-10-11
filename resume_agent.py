@@ -539,6 +539,17 @@ def _release_row(job_id, lease, ok, reason=None):
         log.warning(f"[RESUME] | {job_id} | could not release the document lease: {exc}")
 
 
+# Best-effort: a lost cancel is recovered by db.recover_stale_leases.
+def _cancel_row(job_id, lease, exc):
+    if not lease:
+        return
+    try:
+        if not db.cancel_document_generation(job_id, lease, f"{type(exc).__name__}: {exc}"):
+            log.warning(f"[RESUME] | {job_id} | document lease cancel refused (lease lost or row changed)")
+    except Exception as cancel_exc:
+        log.warning(f"[RESUME] | {job_id} | could not cancel the document lease: {cancel_exc}")
+
+
 def _gate_held_row(job, lease, company_cap):
     """Run the queue gate on a row whose lease we hold. True to build; otherwise the lease has been
     released (or the row marked unsupported) and the row must be skipped."""
@@ -597,6 +608,7 @@ def drain(limit=None):
             continue
         attempted += 1
         ok, reason = True, None
+        lease_released = False
         try:
             if not _check_deadline(job):
                 raise DeadlinePassedError(f"row {job_id}'s deadline has passed")
@@ -605,13 +617,15 @@ def drain(limit=None):
             build(job_id)
             built += 1
         except claude_subscription.ClaudeUsageLimitError as exc:
-            ok, reason = False, f"{type(exc).__name__}: {exc}"
             log.warning(f"[RESUME] | {job_id} | {job.get('company')} | usage limit, stopping drain: {exc}")
+            _cancel_row(job_id, lease, exc)
+            lease_released = True
             break
         except claude_subscription.ClaudeSubscriptionError as exc:
             errors += 1
-            ok, reason = False, f"{type(exc).__name__}: {exc}"
             log.warning(f"[RESUME] | {job_id} | {job.get('company')} | Claude CLI failure, stopping drain: {exc}")
+            _cancel_row(job_id, lease, exc)
+            lease_released = True
             break
         except Exception as exc:
             errors += 1
@@ -622,7 +636,8 @@ def drain(limit=None):
             except Exception as write_exc:
                 log.warning(f"[RESUME] | {job_id} | could not record resume_error: {write_exc}")
         finally:
-            _release_row(job_id, lease, ok, reason)
+            if not lease_released:
+                _release_row(job_id, lease, ok, reason)
     log.info(f"[RESUME] | drain | DONE | built={built} | errors={errors}")
     return errors
 
