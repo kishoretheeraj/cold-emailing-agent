@@ -70,6 +70,30 @@ def wrap(resume, report=REPORT):
     return f"<resume>\n{resume}\n</resume>\n<report>\n{json.dumps(report)}\n</report>"
 
 
+SKILL_LIST = [s.strip() for s in SKILLS_LINE.split(",")]
+BULLETS_BY_ID = {b["id"]: b for b in BULLETS}
+
+
+def make_good_data(headline=HEADLINE, skills=None, texts=None):
+    texts = texts or {}
+    items = [{"id": b["id"], "text": texts.get(b["id"], " ".join(b["text"].split()[:18]))}
+             for b in BULLETS if b["section"] != "leadership"]
+    return {"headline": headline, "bullets": items, "skills": skills or SKILL_LIST, "gaps": []}
+
+
+def wrap_json(data):
+    return json.dumps(data)
+
+
+def make_good_json(**kw):
+    return wrap_json(make_good_data(**kw))
+
+
+def make_overlong_json():
+    first = BULLETS[0]
+    return make_good_json(texts={first["id"]: "filler " * 20 + " ".join(first["text"].split()[:18])})
+
+
 class FakeClaude:
     def __init__(self, tailor_outputs, slop_outputs=None):
         self.tailor_outputs = list(tailor_outputs)
@@ -113,7 +137,7 @@ def run_tailor(mocker, fake=None, tmp_path=None, jd=JD_AI_PM, archetype="ai-pm-s
     # tests exercise the pre-rewrite pipeline only.
     mocker.patch.object(rt, "codex_available", return_value=False)
     if fake is None:
-        fake = FakeClaude([wrap(make_good_resume())])
+        fake = FakeClaude([make_good_json()])
     mocker.patch.object(rt, "_call_claude", side_effect=fake)
     return rt.tailor(jd, "Acme", "AI Product Manager", archetype=archetype,
                      out_root=tmp_path / "versions", today=TODAY, no_rewrite=no_rewrite)
@@ -423,17 +447,69 @@ def test_master_has_no_wrong_role_language():
 # ── Parsing ────────────────────────────────────────────────────────────────────
 
 def test_parse_output_plain_fenced_and_failures():
-    resume, report = rt.parse_output(wrap("# N\n\ncontact\n\nhead | x"))
-    assert resume.startswith("# N") and report["variant"] == "startup"
-    fenced = "```\n<resume>\n```markdown\n# N\n```\n</resume>\n<report>\n```json\n{\"a\": 1}\n```\n</report>\n```"
-    resume, report = rt.parse_output(fenced)
-    assert resume.strip() == "# N" and report == {"a": 1}
+    good = make_good_data()
+    out = rt.parse_output(wrap_json(good))
+    assert out["headline"] == HEADLINE and out["bullets"] == good["bullets"]
+    assert rt.parse_output("```json\n" + wrap_json(good) + "\n```")["skills"] == good["skills"]
+    for bad in ("not json", "[1]", json.dumps({"headline": "h"}),
+                json.dumps({**good, "headline": " "}), json.dumps({**good, "bullets": []}),
+                json.dumps({**good, "skills": "Python, SQL"})):
+        with pytest.raises(rt.TailorParseError):
+            rt.parse_output(bad)
+
+
+def test_assemble_matches_good_resume_and_passes_structure():
+    md = rt.assemble_resume(MASTER, make_good_data(), BULLETS_BY_ID)
+    keep = lambda t: [ln for ln in t.splitlines() if ln.strip()]
+    assert keep(md) == keep(make_good_resume())
+    assert rt.check_structure(md, MASTER) == []
+
+
+def test_assemble_swaps_headline_and_skills_only():
+    data = make_good_data(headline="Product Builder | 3+ Years Product Management", skills=["Python", "SQL"])
+    md = rt.assemble_resume(MASTER, data, BULLETS_BY_ID)
+    assert rt.get_headline(md) == data["headline"]
+    assert rt.split_sections(md)["SKILLS"] == ["Python, SQL"]
+    assert not rt.SUMMARY_HEADINGS & set(rt.split_sections(md))
+
+
+def test_assemble_empty_skills_keeps_master_skills_line():
+    md = rt.assemble_resume(MASTER, {**make_good_data(), "skills": []}, BULLETS_BY_ID)
+    assert rt.split_sections(md)["SKILLS"] == [SKILLS_LINE]
+
+
+def test_assemble_role_without_selected_bullets_keeps_heading():
+    data = make_good_data()
+    data["bullets"] = [b for b in data["bullets"] if b["id"].startswith("protium")]
+    md = rt.assemble_resume(MASTER, data, BULLETS_BY_ID)
+    assert "*AI Technology Intern* | Jun 2026 - Sep 2026" in md and "**Allegro MicroSystems**" in md
+    assert "Rebuilt Knowledge" not in md
+    assert rt.check_structure(md, MASTER) == []
+
+
+def test_assemble_uses_model_order_within_a_role():
+    data = make_good_data()
+    by_id = {b["id"]: b for b in data["bullets"]}
+    data["bullets"] = [by_id["allegro-benchmark"], by_id["allegro-workbench"]]
+    md = rt.assemble_resume(MASTER, data, BULLETS_BY_ID)
+    assert md.index(by_id["allegro-benchmark"]["text"]) < md.index(by_id["allegro-workbench"]["text"])
+
+
+def test_assemble_leadership_stays_verbatim_and_unknown_id_raises():
+    data = make_good_data()
+    data["bullets"].append({"id": "leadership-unschool", "text": "rewritten"})
+    md = rt.assemble_resume(MASTER, data, BULLETS_BY_ID)
+    assert "rewritten" not in md and "Mentored 500+ students" in md
+    data["bullets"].append({"id": "made-up", "text": "x"})
     with pytest.raises(rt.TailorParseError):
-        rt.parse_output("<resume>x</resume>")
+        rt.assemble_resume(MASTER, data, BULLETS_BY_ID)
+
+
+def test_assemble_bullet_for_role_missing_from_master_raises():
+    lib = {"ghost": {"id": "ghost", "section": "experience", "role": "CEO, Nowhere"}}
+    data = {**make_good_data(), "bullets": [{"id": "ghost", "text": "Did a thing."}]}
     with pytest.raises(rt.TailorParseError):
-        rt.parse_output("<resume>x</resume><report>not json</report>")
-    with pytest.raises(rt.TailorParseError):
-        rt.parse_output("<resume>x</resume><report>[1]</report>")
+        rt.assemble_resume(MASTER, data, lib)
 
 
 def test_parse_blocks_structure():
@@ -496,8 +572,15 @@ def test_tailor_prompt_ranks_bullets_with_hints_and_truncates_jd():
     ranked = rt.order_bullets(BULLETS, JD_AI_ENG, ARCHS["ai-engineer"]["lead_metrics"])
     prompt = rt.build_tailor_prompt(MASTER, ranked, ARCHS["ai-engineer"], "startup", False,
                                     "x" * (rt.MAX_JD_CHARS + 500), BANNED)
-    assert "lead_metric_hits" in prompt
+    block = re.search(r"<BULLETS>\n(.*?)\n</BULLETS>", prompt, re.S).group(1)
+    sent = json.loads(block)
+    # order_bullets() ranking survives as list order; the ranking hints do not reach the model
+    assert [b["text"] for b in sent] == [b["text"] for b in ranked]
+    assert all(set(b) <= set(rt._PROMPT_BULLET_KEYS) for b in sent)
+    for hint in ("lead_metric_hits", "metric_strength", "relevance"):
+        assert hint not in prompt.split("<BULLETS>")[1].split("</BULLETS>")[0]
     assert "x" * (rt.MAX_JD_CHARS + 1) not in prompt
+    assert "x" * rt.MAX_JD_CHARS in prompt
 
 
 def test_call_claude_unpacks_tuple_and_logs_subscription_usage(mocker):
@@ -505,14 +588,19 @@ def test_call_claude_unpacks_tuple_and_logs_subscription_usage(mocker):
                             return_value=("hello", {"input_tokens": 1, "output_tokens": 2}))
     log = mocker.patch("usage_tracking.log_usage")
     assert rt._call_claude("p", "tailor") == "hello"
-    complete.assert_called_once_with("p")
+    complete.assert_called_once_with("p", max_output_tokens=rt.TAILOR_MAX_TOKENS)
     assert log.call_args.kwargs["billing"] == "subscription"
+    assert log.call_args.args[:2] == ("resume_tailor", "tailor")
+
+    complete.reset_mock()
+    rt._call_claude("p", "slopcheck")
+    complete.assert_called_once_with("p", max_output_tokens=None)
 
 
 # ── Pipeline (Claude mocked) ───────────────────────────────────────────────────
 
 def test_success_writes_all_four_files(mocker, tmp_path, stub_renders):
-    fake = FakeClaude([wrap(make_good_resume())])
+    fake = FakeClaude([make_good_json()])
     result = run_tailor(mocker, fake, tmp_path)
     out = result["dir"]
     assert out.name == "2026-10-09-acme-ai-product-manager"
@@ -521,14 +609,14 @@ def test_success_writes_all_four_files(mocker, tmp_path, stub_renders):
     assert report["archetype"] == "ai-pm-startup" and report["archetype_source"] == "flag"
     assert report["attempts"] == 1 and report["needs_review"] is False and report["pages"] == 1
     assert report["ai_layer"] == "kept" and report["lead_metrics"]
+    assert report["headline"] == HEADLINE and report["skills"] == SKILL_LIST and report["gaps"] == []
+    assert report["bullets_used"] == [b["id"] for b in BULLETS if b["section"] != "leadership"]
     assert fake.actions() == ["tailor", "slopcheck"]
 
 
 def test_regenerates_once_with_error_list_then_succeeds(mocker, tmp_path, stub_renders):
-    good = make_good_resume()
     # over-20-word bullet: dewatermark cannot fix this, so the gates still fail
-    bad = good.replace("- Rebuilt", "- Rebuilt " + "filler " * 20, 1)
-    fake = FakeClaude([wrap(bad), wrap(good)])
+    fake = FakeClaude([make_overlong_json(), make_good_json()])
     result = run_tailor(mocker, fake, tmp_path)
     assert result["report"]["attempts"] == 2
     assert fake.actions() == ["tailor", "tailor", "slopcheck"]
@@ -538,8 +626,7 @@ def test_regenerates_once_with_error_list_then_succeeds(mocker, tmp_path, stub_r
 
 
 def test_two_gate_failures_raise_and_write_no_files(mocker, tmp_path, stub_renders):
-    bad = make_good_resume().replace("- Rebuilt", "- Rebuilt " + "filler " * 20, 1)
-    fake = FakeClaude([wrap(bad), wrap(bad)])
+    fake = FakeClaude([make_overlong_json(), make_overlong_json()])
     with pytest.raises(rt.GateFailure) as exc:
         run_tailor(mocker, fake, tmp_path)
     assert any("bullet over 20 words" in e for e in exc.value.errors)
@@ -549,10 +636,10 @@ def test_two_gate_failures_raise_and_write_no_files(mocker, tmp_path, stub_rende
 
 
 def test_parse_failure_counts_as_a_failed_attempt(mocker, tmp_path, stub_renders):
-    fake = FakeClaude(["I cannot do that", wrap(make_good_resume())])
+    fake = FakeClaude(["I cannot do that", make_good_json()])
     result = run_tailor(mocker, fake, tmp_path)
     assert result["report"]["attempts"] == 2
-    assert "missing the <resume>" in fake.prompts("tailor")[1]
+    assert "not valid JSON" in fake.prompts("tailor")[1]
 
 
 def test_two_parse_failures_raise(mocker, tmp_path, stub_renders):
@@ -563,7 +650,7 @@ def test_two_parse_failures_raise(mocker, tmp_path, stub_renders):
 
 
 def test_slop_fail_feeds_fixes_into_the_retry(mocker, tmp_path, stub_renders):
-    good = wrap(make_good_resume())
+    good = make_good_json()
     fake = FakeClaude([good, good], slop_outputs=[FAIL_TEXT, PASS_TEXT])
     result = run_tailor(mocker, fake, tmp_path)
     assert result["report"]["attempts"] == 2 and result["report"]["needs_review"] is False
@@ -572,7 +659,7 @@ def test_slop_fail_feeds_fixes_into_the_retry(mocker, tmp_path, stub_renders):
 
 
 def test_slop_fail_twice_still_writes_files_but_flags_review(mocker, tmp_path, stub_renders):
-    good = wrap(make_good_resume())
+    good = make_good_json()
     fake = FakeClaude([good, good], slop_outputs=[FAIL_TEXT, FAIL_TEXT])
     result = run_tailor(mocker, fake, tmp_path)
     assert result["report"]["needs_review"] is True and result["report"]["attempts"] == 2
@@ -580,18 +667,16 @@ def test_slop_fail_twice_still_writes_files_but_flags_review(mocker, tmp_path, s
 
 
 def test_slop_gate_failure_on_retry_keeps_first_good_attempt(mocker, tmp_path, stub_renders):
-    good = make_good_resume()
-    bad = good.replace("- Rebuilt", "- Rebuilt " + "filler " * 20, 1)
-    fake = FakeClaude([wrap(good), wrap(bad)], slop_outputs=[FAIL_TEXT])
+    fake = FakeClaude([make_good_json(), make_overlong_json()], slop_outputs=[FAIL_TEXT])
     result = run_tailor(mocker, fake, tmp_path)
     assert result["report"]["attempts"] == 1 and result["report"]["needs_review"] is True
     assert "filler" not in (result["dir"] / "resume.md").read_text()
 
 
 def test_dewatermark_fixes_banned_word_before_gates(mocker, tmp_path, stub_renders):
-    good = make_good_resume()
-    bad = good.replace("- Rebuilt", "- Spearheaded", 1)
-    fake = FakeClaude([wrap(bad)])
+    first = BULLETS[0]  # allegro-workbench, text starts "Rebuilt"
+    text = "Spearheaded" + " ".join(first["text"].split()[:18])[len("Rebuilt"):]
+    fake = FakeClaude([make_good_json(texts={first["id"]: text})])
     result = run_tailor(mocker, fake, tmp_path)
     assert result["report"]["attempts"] == 1
     assert fake.actions() == ["tailor", "slopcheck"]
@@ -669,7 +754,7 @@ def test_rewrite_skipped_by_default(mocker, tmp_path, stub_renders):
 
 
 def test_slop_call_error_degrades_to_needs_review(mocker, tmp_path, stub_renders):
-    fake = FakeClaude([wrap(make_good_resume())], slop_outputs=[RuntimeError("boom")])
+    fake = FakeClaude([make_good_json()], slop_outputs=[RuntimeError("boom")])
     result = run_tailor(mocker, fake, tmp_path)
     assert result["report"]["slop_check"]["verdict"] == "UNKNOWN"
     assert result["report"]["needs_review"] is True
@@ -677,7 +762,9 @@ def test_slop_call_error_degrades_to_needs_review(mocker, tmp_path, stub_renders
 
 
 def test_non_ai_archetype_strips_ai_layer_via_regeneration(mocker, tmp_path, stub_renders):
-    fake = FakeClaude([wrap(make_good_resume()), wrap(make_apm_resume())])
+    stripped = [s.strip() for s in rt.strip_ai_terms(SKILLS_LINE, ",").split(",") if s.strip()]
+    apm = make_good_json(headline="Product Builder | 3+ Years Product Management", skills=stripped)
+    fake = FakeClaude([make_good_json(), apm])
     result = run_tailor(mocker, fake, tmp_path, jd=JD_APM, archetype="apm-general")
     assert result["report"]["attempts"] == 2 and result["report"]["ai_layer"] == "stripped"
     assert "<AI_LAYER>\nSTRIP" in fake.prompts("tailor")[0]
