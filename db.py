@@ -1141,13 +1141,30 @@ def get_dashboard_decisions():
         after = max(row["application_id"] for row in rows)
 
 
-def get_applications_awaiting_approval(limit=200):
-    """Rows the operator can approve (preview done, not yet approved), oldest first: the dashboard queue."""
-    result = _retry(lambda: get_client().table("job_applications")
-                    .select("id,company,role,platform,resume_file_ref,created_at")
-                    .eq("stage", "ready_to_submit").eq("automation_status", "ready_for_review")
-                    .order("created_at", desc=False).limit(limit).execute())
-    return result.data or []
+def _awaiting_approval_query():
+    return (get_client().table("job_applications")
+            .select("id,company,role,platform,resume_file_ref,created_at")
+            .eq("stage", "ready_to_submit").eq("automation_status", "ready_for_review"))
+
+
+def get_applications_awaiting_approval(page=200):
+    """Every row the operator can approve (preview done, not yet approved), ascending by id, read in
+    keyset pages so neither a page cap nor intent-only approvals (which stay ready_for_review) can hide
+    a newer row: the dashboard queue."""
+    rows = []
+    after = 0
+    while True:
+        batch = _retry(lambda: _awaiting_approval_query().gt("id", after).order("id").limit(page).execute()).data or []
+        rows.extend(batch)
+        if len(batch) < page:
+            return rows
+        after = max(row["id"] for row in batch)
+
+
+def get_application_awaiting_approval(application_id):
+    """One row from the dashboard queue by id, or None if it is not awaiting approval."""
+    rows = _retry(lambda: _awaiting_approval_query().eq("id", int(application_id)).limit(1).execute()).data or []
+    return rows[0] if rows else None
 
 
 def get_unsigned_approval_intents():
@@ -1305,9 +1322,10 @@ def _strong_queue(query, exclude_platforms):
 def get_strong_applications_without_resume(limit, exclude_platforms=()):
     """Rows at stage='saved' that job_pick.py scored 'strong', with no built resume and no
     recorded resume_error -- the Beelink resume worker's queue (resume_agent.py --drain). Best
-    pick_score first, then oldest; rows on platforms this host cannot submit are left out.
-    Applied/rejected/withdrawn rows are never rebuilt."""
+    pick_score first, then oldest; rows on platforms this host cannot submit and rows another worker
+    holds a lease on are left out. Applied/rejected/withdrawn rows are never rebuilt."""
     result = _retry(lambda: _strong_queue(get_client().table("job_applications").select("*"), exclude_platforms)
+                    .is_("worker_lease_id", "null")
                     .order("pick_score", desc=True, nullsfirst=False)
                     .order("created_at", desc=False).limit(limit).execute())
     return result.data or []

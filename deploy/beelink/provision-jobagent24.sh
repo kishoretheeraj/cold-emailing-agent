@@ -25,6 +25,16 @@ TIMERS=(discovery screening resume apply)
 log() { echo "==> $*"; }
 have_systemd() { [ -d /run/systemd/system ]; }
 
+# Abort the deploy unless the unit really stopped (a stop on a never-installed unit reads "inactive").
+require_stopped() {
+    local state
+    state="$(systemctl is-active "$1" 2>/dev/null || true)"
+    case "$state" in
+        inactive|failed|unknown) ;;
+        *) echo "$1 is still $state after stop: aborting before touching code" >&2; exit 1 ;;
+    esac
+}
+
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 1; }
 id jobagent >/dev/null 2>&1 || { echo "no jobagent user: run provision-debian.sh first" >&2; exit 1; }
 command -v google-chrome >/dev/null || { echo "no google-chrome: run provision-debian.sh first" >&2; exit 1; }
@@ -58,8 +68,14 @@ if have_systemd; then
     done
     if systemctl is-active --quiet jobagent24-api.service; then WAS_API_ACTIVE=1; fi
     log "quiescing jobagent24-*"
-    for name in "${TIMERS[@]}"; do systemctl stop "jobagent24-$name.timer" 2>/dev/null || true; done
-    for name in "${UNITS[@]}"; do systemctl stop "jobagent24-$name.service" 2>/dev/null || true; done
+    for name in "${TIMERS[@]}"; do
+        systemctl stop "jobagent24-$name.timer" 2>/dev/null || true
+        require_stopped "jobagent24-$name.timer"
+    done
+    for name in "${UNITS[@]}"; do
+        systemctl stop "jobagent24-$name.service" 2>/dev/null || true
+        require_stopped "jobagent24-$name.service"
+    done
 fi
 
 # ── Repo at a signed tag, never main ───────────────────────────────────────────
@@ -108,12 +124,6 @@ if have_systemd; then
         log "no $OLD_ETC/vncpasswd -- display :2 not started"
     fi
     systemctl enable jobagent24-api.service
-    if [ "$ENABLE_TIMERS" -eq 1 ]; then
-        for name in "${TIMERS[@]}"; do systemctl enable --now "jobagent24-$name.timer"; done
-    else
-        for name in "${WAS_ACTIVE_TIMERS[@]}"; do systemctl start "jobagent24-$name.timer"; done
-        log "timers installed; only those running before this deploy were restarted (--enable-timers enables all)"
-    fi
     # The api restarts only if it was running: on a first install the env files are still empty templates
     # and it cannot start yet.
     if [ "$WAS_API_ACTIVE" -eq 1 ]; then
@@ -125,6 +135,14 @@ if have_systemd; then
         done
         [ "$healthy" -eq 1 ] || { echo "jobagent24-api not healthy after restart: journalctl -u jobagent24-api -n 50" >&2; exit 1; }
         log "api healthy"
+    fi
+    # Timers come back only now, after the api answered its health check. A failed check exits above and
+    # leaves them stopped, like the rest of the namespace.
+    if [ "$ENABLE_TIMERS" -eq 1 ]; then
+        for name in "${TIMERS[@]}"; do systemctl enable --now "jobagent24-$name.timer"; done
+    else
+        for name in "${WAS_ACTIVE_TIMERS[@]}"; do systemctl start "jobagent24-$name.timer"; done
+        log "timers installed; only those running before this deploy were restarted (--enable-timers enables all)"
     fi
 fi
 

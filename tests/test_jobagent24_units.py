@@ -107,3 +107,35 @@ def test_provision_restarts_only_what_was_running_and_fails_on_an_unhealthy_api(
     assert "WAS_ACTIVE_TIMERS" in text and '[ "$WAS_API_ACTIVE" -eq 1 ]' in text
     assert '"status":"ok"' in text
     assert "exit 1" in text.split("/api/health")[1]
+
+
+import subprocess
+
+
+def test_provision_verifies_every_stop_and_restarts_timers_only_after_the_api_is_healthy():
+    text = _provision()
+    assert text.index("require_stopped()") < text.index("systemctl stop")
+    assert text.count('require_stopped "jobagent24-$name.timer"') == 1
+    assert text.count('require_stopped "jobagent24-$name.service"') == 1
+    # verification happens before any code is touched
+    assert text.index('require_stopped "jobagent24-$name.service"') < text.index("checkout -q")
+    # the timer restart block comes after the api health check, never before
+    assert text.index("/api/health") < text.index('[ "$ENABLE_TIMERS" -eq 1 ]')
+    assert text.index('echo "jobagent24-api not healthy') < text.index('[ "$ENABLE_TIMERS" -eq 1 ]')
+
+
+@pytest.mark.parametrize("state,code", [
+    ("inactive", 0), ("failed", 0), ("unknown", 0),
+    ("active", 1), ("activating", 1), ("deactivating", 1), ("reloading", 1),
+])
+def test_require_stopped_aborts_unless_the_unit_is_down(tmp_path, state, code):
+    func = re.search(r"require_stopped\(\) \{.*?\n\}", _provision(), re.S).group(0)
+    fake = tmp_path / "systemctl"
+    fake.write_text('#!/bin/sh\necho "$FAKE_STATE"\n[ "$FAKE_STATE" = active ]\n')
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_STATE": state}
+    run = subprocess.run(["bash", "-c", f"set -euo pipefail\n{func}\nrequire_stopped jobagent24-x.timer"],
+                         env=env, capture_output=True, text=True)
+    assert run.returncode == code
+    if code:
+        assert state in run.stderr

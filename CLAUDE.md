@@ -1043,7 +1043,9 @@ consumer boundaries (`job_sourcing.save`, `ats_api.resolve`). `apply_worker._pre
 (`APPLY_RESUME_V2=1`) tailors via `resume/v2` from the Greenhouse/Lever API posting and uploads through
 `resume/v2/delivery.py`; `emit_run_digest` is a deliberate `NotImplementedError`. Dashboard approve/reject
 write `application_runs` rows (adapter `dashboard`) first and answer 503 on failure; an approval is intent
-only, the signed `approve_application` RPC is still the gate.
+only, the signed `approve_application` RPC is still the gate. `resume_agent.drain()` takes the same `preparing`
+lease as `apply_worker`'s v2 document pass (skips held rows); the dashboard queue is keyset-paginated and
+reconciled on every refresh; `provision-jobagent24.sh` verifies each stop and restarts timers only after the api is healthy.
 
 ## Resume intelligence (full-fledged buildout, Phase 3)
 

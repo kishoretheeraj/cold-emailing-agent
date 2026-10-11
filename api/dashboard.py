@@ -3,7 +3,8 @@
 Provides approval queue and system status for the web dashboard.
 
 State is an in-memory read cache of job_applications rows awaiting approval (ready_for_review), filled
-from the database at startup, on /api/queue and /api/status, and when an unknown id is decided.
+from the database at startup, on /api/queue and /api/status, and when an unknown id is decided, reconciled
+each time (rows no longer awaiting approval are dropped, other processes' decisions applied).
 Approve/reject are written through db.py in one transaction (record_dashboard_decision RPC: audit row +
 withdrawal, compare-and-swap against a prior decision) BEFORE the in-memory transition, with the store
 lock held across check -> persist -> transition. A failed write answers 503 and changes nothing; a
@@ -53,6 +54,7 @@ class DashboardStore:
         self.persister = persister
         self.decisions: dict[str, tuple] = {}
         self.records: dict[str, dict] = {}
+        self._dropped: dict[str, dict] = {}
         self.worker_status: dict[str, str] = {}
         self.claude_status = "unknown"
         self._lock = threading.RLock()
@@ -91,24 +93,55 @@ class DashboardStore:
         """The store lock; held across a decision's check, persist and transition."""
         return self._lock
 
+    def _admit(self, row) -> None:
+        application_id = str(row["id"])
+        if application_id in self._dropped:
+            # Left the queue earlier and is back (re-queued): the state machine cannot forget it, so
+            # restore the parked record instead of walking the entry path again.
+            self.records[application_id] = self._dropped.pop(application_id)
+            self._apply_decision(application_id)
+            return
+        self.add_application(
+            application_id, row.get("role") or "", row.get("company") or "",
+            row.get("platform") or "unknown", row.get("resume_file_ref") or "")
+
     def sync_pending(self) -> int:
-        """Add rows the database holds awaiting approval that the cache has not seen (a persister with
-        pending() supplies them; a no-op without one). Returns how many were added."""
+        """Reconcile the cache with the database's awaiting-approval rows (a persister with pending()
+        supplies them; a no-op without one): add rows the cache has not seen, drop cached records still
+        awaiting approval that the database no longer lists (approved, withdrawn or submitted elsewhere),
+        and apply decisions another API process recorded. A failed read raises before anything changes.
+        Returns how many rows were added."""
         pending = getattr(self.persister, "pending", None)
         if pending is None:
             return 0
         rows = pending()
+        decisions = self.persister.load()
+        live = {str(row["id"]) for row in rows}
         added = 0
         with self._lock:
+            self.decisions.update(decisions)
+            for application_id in list(self.records):
+                if application_id in live:
+                    self._apply_decision(application_id)
+                elif self.machine.get_state(application_id) is S.AWAITING_APPROVAL:
+                    self._dropped[application_id] = self.records.pop(application_id)
             for row in rows:
-                application_id = str(row["id"])
-                if application_id in self.records:
-                    continue
-                self.add_application(
-                    application_id, row.get("role") or "", row.get("company") or "",
-                    row.get("platform") or "unknown", row.get("resume_file_ref") or "")
-                added += 1
+                if str(row["id"]) not in self.records:
+                    self._admit(row)
+                    added += 1
         return added
+
+    def sync_one(self, application_id: str) -> bool:
+        """Fetch one awaiting-approval row by id (a persister with pending_one()) and cache it. Returns
+        whether the id is now known."""
+        fetch = getattr(self.persister, "pending_one", None)
+        row = fetch(application_id) if fetch is not None else None
+        if not row:
+            return False
+        with self._lock:
+            if str(row["id"]) not in self.records:
+                self._admit(row)
+        return True
 
     def persist(self, application_id: str, decision: str, reason: str | None = None) -> None:
         """Write a decision through the persister (raises on failure) and remember it."""
@@ -156,6 +189,10 @@ class _DbPersister:
     def pending(self):
         import db
         return db.get_applications_awaiting_approval()
+
+    def pending_one(self, application_id):
+        import db
+        return db.get_application_awaiting_approval(application_id)
 
 
 STORE = DashboardStore(persister=_DbPersister())
@@ -238,6 +275,12 @@ def queue(state: str = Query(default="awaiting_approval")) -> list[dict]:
 def _transition(application_id: str, to_state: ApplicationState, reason: str, decision: str, detail: str | None = None) -> None:
     if application_id not in STORE.records:
         _refresh()
+    if application_id not in STORE.records:
+        # Not in the listing (or the listing failed): ask for this one row before answering 404.
+        try:
+            STORE.sync_one(application_id)
+        except Exception as exc:
+            log.warning(f"[DASHBOARD] could not fetch application {application_id}: {exc}")
     # One lock across check -> persist -> transition: a concurrent request for the same application sees
     # the finished transition and answers 409 BEFORE persisting. The database compare-and-swap covers
     # another process; this covers threads in this one.

@@ -20,6 +20,7 @@ def test_get_strong_applications_without_resume_filters_and_limits(mocker):
     assert ("pick_verdict", "strong") in eq_calls and ("stage", "saved") in eq_calls
     is_calls = {c.args for c in chain.is_.call_args_list}
     assert ("resume_file_ref", "null") in is_calls and ("resume_error", "null") in is_calls
+    assert ("worker_lease_id", "null") in is_calls
     assert [c.args for c in chain.order.call_args_list] == [("pick_score",), ("created_at",)]
     chain.limit.assert_called_with(2)
     chain.or_.assert_not_called()

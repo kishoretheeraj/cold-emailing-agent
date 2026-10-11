@@ -150,3 +150,90 @@ def test_unsigned_intents_with_none_approved_makes_no_query(mocker):
     client = mocker.patch.object(db, "get_client")
     assert db.get_unsigned_approval_intents() == []
     client.assert_not_called()
+
+
+# ── reconciliation ─────────────────────────────────────────────────────────────
+
+def test_refresh_drops_records_no_longer_awaiting_approval(monkeypatch):
+    persister = _Persister(rows=[ROW, {**ROW, "id": 13}])
+    client, store = _env(monkeypatch, persister)
+    assert client.get("/api/status").json()["queue_depth"] == 2
+    persister.rows = [ROW]  # 13 was approved/withdrawn/submitted elsewhere
+    assert [i["application_id"] for i in client.get("/api/queue").json()] == ["12"]
+    assert client.get("/api/status").json()["queue_depth"] == 1
+    assert client.post("/api/approve/13").status_code == 404
+
+
+def test_a_dropped_row_that_is_requeued_reappears(monkeypatch):
+    persister = _Persister(rows=[ROW])
+    client, store = _env(monkeypatch, persister)
+    client.get("/api/queue")
+    persister.rows = []
+    assert client.get("/api/queue").json() == []
+    persister.rows = [ROW]
+    assert len(client.get("/api/queue").json()) == 1
+    assert client.post("/api/approve/12").status_code == 200
+
+
+def test_refresh_applies_a_decision_another_process_recorded(monkeypatch):
+    persister = _Persister(rows=[ROW])
+    client, store = _env(monkeypatch, persister)
+    client.get("/api/queue")
+    persister.saved = {"12": ("approved", None)}
+    assert client.get("/api/status").json()["queue_depth"] == 0
+    assert store.state_of("12") is S.APPLYING
+    assert client.post("/api/approve/12").status_code == 409
+
+
+def test_a_failed_refresh_drops_nothing(monkeypatch):
+    persister = _Persister(rows=[ROW])
+    client, store = _env(monkeypatch, persister)
+    client.get("/api/queue")
+    persister.pending_fails = True
+    assert len(client.get("/api/queue").json()) == 1
+
+
+def test_unknown_id_is_fetched_directly_before_404(monkeypatch):
+    class P(_Persister):
+        def pending_one(self, application_id):
+            return ROW if str(application_id) == "12" else None
+    client, store = _env(monkeypatch, P(rows=[]))  # the listing does not hold it
+    assert client.post("/api/approve/12").status_code == 200
+    assert client.post("/api/approve/999").status_code == 404
+
+
+# ── db.py: pagination and direct fetch ─────────────────────────────────────────
+
+class _Paged:
+    def __init__(self, pages):
+        self.pages, self.after = list(pages), []
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            if name == "gt":
+                self.after.append(args[1])
+            return self
+        return call
+
+    def execute(self):
+        result = type("R", (), {})()
+        result.data = self.pages.pop(0)
+        return result
+
+
+def test_awaiting_approval_is_keyset_paginated(mocker):
+    pages = [[{"id": i} for i in range(1, 201)], [{"id": 201}]]
+    q = _Paged(pages)
+    mocker.patch.object(db, "get_client", return_value=q)
+    rows = db.get_applications_awaiting_approval()
+    assert len(rows) == 201 and rows[-1]["id"] == 201
+    assert q.after == [0, 200]  # the second page starts after the first page's last id
+
+
+def test_single_awaiting_row_fetch(mocker):
+    q = _Q([ROW])
+    mocker.patch.object(db, "get_client", return_value=q)
+    assert db.get_application_awaiting_approval("12") == ROW
+    assert ("eq", ("id", 12), {}) in q.calls and ("eq", ("automation_status", "ready_for_review"), {}) in q.calls
+    mocker.patch.object(db, "get_client", return_value=_Q([]))
+    assert db.get_application_awaiting_approval(99) is None

@@ -501,6 +501,33 @@ def _queue_gate(job, company_cap):
     return None
 
 
+# ── Document lease (shared with apply_worker's v2 pass) ────────────────────────
+
+# Take the 'preparing' lease apply_worker._run_document_pass takes, so the two workers never generate
+# documents for the same row. Returns (lease, busy). A row the claim RPC refuses is still built unleased
+# unless something visibly holds it; an unreadable row is skipped (fail closed).
+def _hold_row(job_id):
+    try:
+        lease = db.claim_application(job_id, "preparing")
+        if lease:
+            return lease, False
+        row = db.get_job_application(job_id) or {}
+    except Exception as exc:
+        log.warning(f"[RESUME] | {job_id} | could not claim the document lease, skipping: {exc}")
+        return None, True
+    return None, bool(row.get("worker_lease_id") or row.get("automation_status") == "preparing")
+
+
+# Best-effort: a lost release is recovered by db.recover_stale_leases.
+def _release_row(job_id, lease, ok, reason=None):
+    if not lease:
+        return
+    try:
+        db.finish_document_generation(job_id, lease, ok, reason)
+    except Exception as exc:
+        log.warning(f"[RESUME] | {job_id} | could not release the document lease: {exc}")
+
+
 def drain(limit=None):
     """Build resumes for strong-verdict rows that don't have one yet: propose (unless a strategy
     already exists) then build, one row at a time, best pick_score first, only on platforms this
@@ -536,7 +563,12 @@ def drain(limit=None):
                 continue
         except Exception as exc:
             log.warning(f"[RESUME] | {job_id} | queue gate failed, building anyway: {exc}")
+        lease, busy = _hold_row(job_id)
+        if busy:
+            log.info(f"[RESUME] | {job_id} | {job.get('company')} | held by another worker, skipped")
+            continue
         attempted += 1
+        ok, reason = True, None
         try:
             if not _check_deadline(job):
                 raise DeadlinePassedError(f"row {job_id}'s deadline has passed")
@@ -553,11 +585,14 @@ def drain(limit=None):
             break
         except Exception as exc:
             errors += 1
+            ok, reason = False, f"{type(exc).__name__}: {exc}"
             log.warning(f"[RESUME] | {job_id} | {job.get('company')} | drain failed: {exc}")
             try:
-                db.set_resume_error(job_id, f"{type(exc).__name__}: {exc}")
+                db.set_resume_error(job_id, reason)
             except Exception as write_exc:
                 log.warning(f"[RESUME] | {job_id} | could not record resume_error: {write_exc}")
+        finally:
+            _release_row(job_id, lease, ok, reason)
     log.info(f"[RESUME] | drain | DONE | built={built} | errors={errors}")
     return errors
 

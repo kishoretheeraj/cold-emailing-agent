@@ -12,6 +12,9 @@ import db
 import resume_agent
 import resume_lint
 
+_REAL_HOLD_ROW = resume_agent._hold_row
+_REAL_RELEASE_ROW = resume_agent._release_row
+
 
 @pytest.fixture(autouse=True)
 def _offline_queue_checks(mocker):
@@ -21,6 +24,9 @@ def _offline_queue_checks(mocker):
                         return_value=(resume_agent.job_sourcing.job_filters.load_preferences({}), {}))
     mocker.patch.object(resume_agent.job_liveness, "check", return_value="unknown")
     mocker.patch.object(resume_agent.db, "count_company_applications", return_value=0)
+    # the document lease is exercised explicitly below; elsewhere every row is claimable
+    mocker.patch.object(resume_agent, "_hold_row", return_value=("lease", False))
+    mocker.patch.object(resume_agent, "_release_row")
 
 
 # ── _check_deadline ──────────────────────────────────────────────────────────
@@ -777,3 +783,69 @@ def test_preflight_rejects_an_unknown_backend(mocker, monkeypatch):
     _preflight_env(mocker, monkeypatch, backend="bogus")
     mocker.patch("resume_agent.resume_scrub.check_fonts", return_value=[])
     assert any("RESUME_CLAUDE_BACKEND" in p for p in resume_agent._worker_preflight())
+
+
+# ── drain: shared document lease ───────────────────────────────────────────────
+
+def test_hold_row_returns_the_lease_when_the_claim_succeeds(mocker):
+    mocker.patch.object(db, "claim_application", return_value="L1")
+    assert _REAL_HOLD_ROW(1) == ("L1", False)
+
+
+@pytest.mark.parametrize("row,busy", [
+    ({"worker_lease_id": "other", "automation_status": "preparing"}, True),
+    ({"worker_lease_id": None, "automation_status": "preparing"}, True),
+    ({"worker_lease_id": "x", "automation_status": "idle"}, True),
+    ({"worker_lease_id": None, "automation_status": "needs_input"}, False),  # unclaimable legacy state: build unleased
+])
+def test_hold_row_skips_only_rows_something_else_holds(mocker, row, busy):
+    mocker.patch.object(db, "claim_application", return_value=None)
+    mocker.patch.object(db, "get_job_application", return_value=row)
+    assert _REAL_HOLD_ROW(1) == (None, busy)
+
+
+def test_hold_row_fails_closed_when_the_row_cannot_be_read(mocker):
+    mocker.patch.object(db, "claim_application", return_value=None)
+    mocker.patch.object(db, "get_job_application", side_effect=RuntimeError("db down"))
+    assert _REAL_HOLD_ROW(1) == (None, True)
+
+
+def test_release_row_is_a_noop_without_a_lease_and_never_raises(mocker):
+    finish = mocker.patch.object(db, "finish_document_generation", side_effect=RuntimeError("x"))
+    _REAL_RELEASE_ROW(1, None, True)
+    finish.assert_not_called()
+    _REAL_RELEASE_ROW(1, "L", False, "why")  # swallowed
+    finish.assert_called_once_with(1, "L", False, "why")
+
+
+def test_drain_skips_rows_held_by_the_v2_document_pass(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume",
+                        return_value=[{"id": 1, "company": "A"}, {"id": 2, "company": "B"}])
+    mocker.patch.object(resume_agent, "_hold_row", side_effect=[(None, True), ("L2", False)])
+    release = mocker.patch.object(resume_agent, "_release_row")
+    mocker.patch.object(resume_agent, "propose")
+    build = mocker.patch.object(resume_agent, "build")
+    assert resume_agent.drain() == 0
+    build.assert_called_once_with(2)
+    release.assert_called_once_with(2, "L2", True, None)
+
+
+def test_drain_releases_the_lease_as_failed_when_a_row_errors(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    mocker.patch.object(db, "set_resume_error")
+    release = mocker.patch.object(resume_agent, "_release_row")
+    mocker.patch.object(resume_agent, "propose", side_effect=ValueError("bad"))
+    assert resume_agent.drain() == 1
+    release.assert_called_once_with(1, "lease", False, "ValueError: bad")
+
+
+def test_drain_releases_the_lease_untouched_on_a_usage_limit(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    release = mocker.patch.object(resume_agent, "_release_row")
+    mocker.patch.object(resume_agent, "propose",
+                        side_effect=claude_subscription.ClaudeUsageLimitError("limit"))
+    resume_agent.drain()
+    release.assert_called_once_with(1, "lease", True, None)
