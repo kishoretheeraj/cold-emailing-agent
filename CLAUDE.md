@@ -1032,6 +1032,19 @@ on the box changes.
 
 @docs/beelink-server.md
 
+## 24/7 namespace (`jobagent24-*`)
+
+Coexists with the old Beelink stack; see deploy/beelink/RUNBOOK-24-7.md. Code `/opt/jobagent24`, state
+`/var/lib/jobagent24`, secrets `/etc/jobagent24`, display :2, API 127.0.0.1:8024. Never armed (submit stays
+on `apply-submit.service`). `config` secrets resolve on first access (`config.require_secrets()` is the
+ExecStartPre check; `from config import SECRET` still reads at the importing module's import).
+`job_contract.canonical_job` normalizes `{absolute_url, content}` and `{url, description}` job shapes at
+consumer boundaries (`job_sourcing.save`, `ats_api.resolve`). `apply_worker._prepare_documents`
+(`APPLY_RESUME_V2=1`) tailors via `resume/v2` from the Greenhouse/Lever API posting and uploads through
+`resume/v2/delivery.py`; `emit_run_digest` is a deliberate `NotImplementedError`. Dashboard approve/reject
+write `application_runs` rows (adapter `dashboard`) first and answer 503 on failure; an approval is intent
+only, the signed `approve_application` RPC is still the gate.
+
 ## Resume intelligence (full-fledged buildout, Phase 3)
 
 `resume_agent.py` (manual CLI: `--propose` then `--build`, plus `--drain` for the Beelink worker) generates a tailored

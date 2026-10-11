@@ -44,6 +44,16 @@ def test_every_expected_unit_exists():
         "job-pick.timer",
         "job-sourcing.service",
         "job-sourcing.timer",
+        "jobagent24-api.service",
+        "jobagent24-apply.service",
+        "jobagent24-apply.timer",
+        "jobagent24-discovery.service",
+        "jobagent24-discovery.timer",
+        "jobagent24-monitor.service",
+        "jobagent24-resume.service",
+        "jobagent24-resume.timer",
+        "jobagent24-screening.service",
+        "jobagent24-screening.timer",
         "notify-failure@.service",
         "novnc@.service",
         "resume-worker.service",
@@ -246,7 +256,9 @@ def test_resume_worker_runs_drain_as_jobagent_with_its_own_token_file():
 def test_only_the_workers_that_call_claude_load_the_claude_token():
     # apply-submit never calls Claude (it replays the reviewed answers), so it must not hold it.
     for path in _unit_paths():
-        if os.path.basename(path) not in ("resume-worker.service", "apply-prepare.service", "job-pick.service"):
+        if os.path.basename(path) not in (
+                "resume-worker.service", "apply-prepare.service", "job-pick.service",
+                "jobagent24-resume.service", "jobagent24-apply.service", "jobagent24-screening.service"):
             assert "claude.env" not in _read(path), path
 
 

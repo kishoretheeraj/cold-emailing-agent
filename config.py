@@ -4,11 +4,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Secrets ────────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
-GMAIL_ADDRESS      = os.environ["GMAIL_ADDRESS"]
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
-SUPABASE_URL       = os.environ["SUPABASE_URL"]
-SUPABASE_ANON_KEY  = os.environ["SUPABASE_ANON_KEY"]
+# Read on first attribute access (PEP 562), not at import, so tooling that only imports config
+# (unit ExecStartPre checks, py_compile, docs) works without secrets. Same names, same KeyError when
+# unset; the value is cached after the first read, as the old import-time read was fixed once.
+_REQUIRED_SECRETS = ("ANTHROPIC_API_KEY", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD", "SUPABASE_URL", "SUPABASE_ANON_KEY")
+
+
+def __getattr__(name):
+    if name in _REQUIRED_SECRETS:
+        value = os.environ[name]
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module 'config' has no attribute {name!r}")
+
+
+def require_secrets():
+    """Exit with every missing secret named at once; for ExecStartPre= checks."""
+    missing = [n for n in _REQUIRED_SECRETS if not os.environ.get(n)]
+    if missing:
+        raise SystemExit("missing required secrets: " + ", ".join(missing))
 
 # Optional — needed for Gmail API send path (/api/send-draft) and
 # draft ID lookup in gmail.py. Absent in CI until secrets are added.
@@ -685,6 +699,8 @@ APPLY_SUBMIT_LOCK_WAIT_SECONDS = 600
 APPLY_PREPARE_BATCH = 5
 APPLY_SUBMIT_BATCH = 3
 APPLY_WORKER_ADAPTER = "deterministic"
+# Resume v2 + ATS API documents step in apply_worker (jobagent24-apply sets "1"; the old units don't).
+APPLY_RESUME_V2 = os.environ.get("APPLY_RESUME_V2") == "1"
 # The pre-review document quality gate (application_quality.py). On by default; "0" turns it off.
 APPLY_QUALITY_GATE = os.environ.get("APPLY_QUALITY_GATE", "1") != "0"
 # Workday applications (workday_adapter.py): only where a human can take over (the Beelink).

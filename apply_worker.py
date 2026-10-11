@@ -19,6 +19,7 @@ import logging
 import os
 import socket
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -86,6 +87,47 @@ def _log_run(kind, job, started, outcome, error=None):
         error_class=type(error).__name__ if error else None)
 
 
+# ── v2 documents ───────────────────────────────────────────────────────────────
+
+def _prepare_documents(job):
+    """With APPLY_RESUME_V2 on, tailor and upload documents for a row that has none: the Greenhouse/Lever
+    posting comes from the ATS API (falling back to the saved snapshot), resume/v2 tailors the resume.
+    Best-effort: anything but a Claude subscription error returns False and leaves the row to the
+    existing resume_agent path. Returns True when documents were written."""
+    if not config.APPLY_RESUME_V2 or job.get("resume_file_ref"):
+        return False
+    from ats_api import resolve as ats_resolve
+    from resume.v2 import delivery, tailor_v2
+    try:
+        posting = ats_resolve.fetch_posting(job.get("job_url")) or {}
+        description = posting.get("description") or (job.get("posting_snapshot") or {}).get("description") or ""
+        if not description:
+            log.info(f"[APPLY-WORKER] | {job.get('company')} | v2 documents skipped: no job description")
+            return False
+        profile = tailor_v2.load_candidate_profile()
+        title = f"{job.get('company')} - Resume"
+        with tempfile.TemporaryDirectory(prefix=f"resume-v2-{job['id']}-") as workdir:
+            result = tailor_v2.tailor_resume(description, profile, os.path.join(workdir, "resume.pdf"))
+            if not result.get("pdf_path"):
+                log.warning(f"[APPLY-WORKER] | {job.get('company')} | v2 resume not usable: {result.get('violations')}")
+                return False
+            letter = delivery.generate_cover_letter(job, result["content_json"])
+            letter_pdf = delivery.render_cover_letter_pdf(letter, workdir)
+            resume_ref, resume_sha = delivery.upload_pdf(
+                job["id"], result["pdf_path"], "resume", title=title, keywords=job.get("role", ""))
+            letter_ref, letter_sha = delivery.upload_pdf(
+                job["id"], letter_pdf, "cover_letter", title=f"{job.get('company')} - Cover Letter",
+                keywords=job.get("role", ""))
+        db.set_resume_files(job["id"], resume_file_ref=resume_ref, cover_letter_file_ref=letter_ref,
+                            resume_sha256=resume_sha, cover_letter_sha256=letter_sha)
+        return True
+    except claude_subscription.ClaudeSubscriptionError:
+        raise
+    except Exception as exc:
+        log.warning(f"[APPLY-WORKER] | {job.get('company')} | v2 documents failed, using existing path: {exc}")
+        return False
+
+
 # ── Prepare ────────────────────────────────────────────────────────────────────
 
 def run_prepare(limit):
@@ -114,6 +156,8 @@ def run_prepare(limit):
                 break
             started = datetime.now(timezone.utc)
             try:
+                if _prepare_documents(job):
+                    job = db.get_job_application(job["id"]) or job
                 status = apply_agent._process_one_preview(job)
             except claude_subscription.ClaudeSubscriptionError as exc:
                 errors += 1

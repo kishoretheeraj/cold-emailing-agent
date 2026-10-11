@@ -1066,6 +1066,42 @@ def get_recent_application_runs(limit=50):
     return result.data or []
 
 
+# ── Dashboard decisions ────────────────────────────────────────────────────────
+
+DASHBOARD_ADAPTER = "dashboard"
+
+
+def record_dashboard_decision(application_id, decision, reason=None):
+    """Persist a dashboard approve/reject as an application_runs row (adapter 'dashboard') so a restart
+    does not lose it; a reject also withdraws the job_applications row. An approval here is intent only:
+    it never sets approved_at, and Submit still needs the signed approve_application RPC. Raises on
+    failure (the dashboard answers 503 and leaves its in-memory state alone)."""
+    if decision not in ("approved", "rejected"):
+        raise ValueError(f"unknown dashboard decision: {decision}")
+    row_id = int(application_id)
+    run_id = log_application_run(
+        application_id=row_id, kind="submit", adapter=DASHBOARD_ADAPTER, host="dashboard-api",
+        started_at=datetime.now(timezone.utc), outcome="skipped",
+        stop_reason=f"{decision} via dashboard" + (f": {reason}" if reason else ""),
+        details={"decision": decision, "reason": reason})
+    if run_id is None:
+        raise RuntimeError(f"could not record dashboard decision for {application_id}")
+    if decision == "rejected":
+        update_job_application_stage(row_id, "withdrawn")
+
+
+def get_dashboard_decisions():
+    """{application_id (str): (decision, reason)} from the dashboard's application_runs rows, newest wins."""
+    result = _retry(lambda: get_client().table("application_runs").select("application_id,details,ended_at")
+                    .eq("adapter", DASHBOARD_ADAPTER).order("ended_at").execute())
+    decisions = {}
+    for row in result.data or []:
+        details = row.get("details") or {}
+        if details.get("decision") in ("approved", "rejected"):
+            decisions[str(row["application_id"])] = (details["decision"], details.get("reason"))
+    return decisions
+
+
 def request_takeover(application_id, lease_id, kind, reason):
     """Ask a human to take over the browser. Only the live lease of a preparing/submitting row
     can ask; returns False otherwise."""

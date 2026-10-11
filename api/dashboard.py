@@ -2,8 +2,9 @@
 
 Provides approval queue and system status for the web dashboard.
 
-State lives in memory for the MVP.
-TODO: back DashboardStore with db.py (job_applications / application_runs).
+State is an in-memory read cache. Approve/reject are written through db.py (application_runs, plus a
+withdrawn stage on reject) BEFORE the in-memory transition; a failed write answers 503 and changes
+nothing. A dashboard approval is intent only: Submit still needs the signed approve_application RPC.
 DASHBOARD_API_TOKEN is required: every route except /api/health fails closed (403) while it is unset
 and answers 401 unless the request carries the matching bearer token.
 DASHBOARD_ORIGINS (comma-separated) sets the allowed CORS origins.
@@ -39,9 +40,11 @@ _ENTRY_PATH = [
 class DashboardStore:
     """In-memory application records plus a StateMachine for transitions."""
 
-    def __init__(self, machine: StateMachine | None = None) -> None:
-        """Create an empty store; pass machine to share a StateMachine."""
+    def __init__(self, machine: StateMachine | None = None, persister=None) -> None:
+        """Create an empty store; pass machine to share a StateMachine, persister (save/load) to persist decisions."""
         self.machine = machine or StateMachine()
+        self.persister = persister
+        self.decisions: dict[str, tuple] = {}
         self.records: dict[str, dict] = {}
         self.worker_status: dict[str, str] = {}
         self.claude_status = "unknown"
@@ -74,6 +77,30 @@ class DashboardStore:
                 "resume_path": resume_path,
                 "tailor_seconds": tailor_seconds,
             }
+            self._apply_decision(application_id)
+
+    def persist(self, application_id: str, decision: str, reason: str | None = None) -> None:
+        """Write a decision through the persister (raises on failure) and remember it."""
+        if self.persister is not None:
+            self.persister.save(application_id, decision, reason)
+        self.decisions[application_id] = (decision, reason)
+
+    def load_decisions(self) -> None:
+        """Reload persisted decisions (after a restart) and apply them to records awaiting approval."""
+        if self.persister is None:
+            return
+        with self._lock:
+            self.decisions = dict(self.persister.load())
+            for application_id in list(self.records):
+                self._apply_decision(application_id)
+
+    def _apply_decision(self, application_id: str) -> None:
+        decision = self.decisions.get(application_id)
+        if not decision or self.machine.get_state(application_id) is not S.AWAITING_APPROVAL:
+            return
+        kind = decision[0]
+        self.machine.transition(
+            application_id, S.APPLYING if kind == "approved" else S.BLOCKED, f"restored persisted decision: {kind}")
 
     def report_worker(self, name: str, status: str) -> None:
         """Set a worker's status string (called by the worker heartbeats)."""
@@ -84,7 +111,19 @@ class DashboardStore:
         return self.machine.get_state(application_id)
 
 
-STORE = DashboardStore()
+class _DbPersister:
+    """Writes dashboard decisions through db.py, imported lazily so importing this module needs no secrets."""
+
+    def save(self, application_id, decision, reason=None):
+        import db
+        db.record_dashboard_decision(application_id, decision, reason)
+
+    def load(self):
+        import db
+        return db.get_dashboard_decisions()
+
+
+STORE = DashboardStore(persister=_DbPersister())
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -101,6 +140,14 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.on_event("startup")
+def _restore_decisions() -> None:
+    try:
+        STORE.load_decisions()
+    except Exception as exc:
+        log.warning(f"[DASHBOARD] could not restore persisted decisions: {exc}")
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -144,11 +191,16 @@ def queue(state: str = Query(default="awaiting_approval")) -> list[dict]:
     return sorted(items, key=lambda r: r["created_at"])
 
 
-def _transition(application_id: str, to_state: ApplicationState, reason: str) -> None:
+def _transition(application_id: str, to_state: ApplicationState, reason: str, decision: str, detail: str | None = None) -> None:
     if application_id not in STORE.records:
         raise HTTPException(status_code=404, detail="unknown application")
     if STORE.state_of(application_id) is not S.AWAITING_APPROVAL:
         raise HTTPException(status_code=409, detail="application is not awaiting approval")
+    try:
+        STORE.persist(application_id, decision, detail)
+    except Exception as exc:
+        log.error(f"[DASHBOARD] {application_id} | persist failed: {exc}")
+        raise HTTPException(status_code=503, detail="could not persist the decision; nothing changed")
     try:
         STORE.machine.transition(application_id, to_state, reason)
     except InvalidTransition as exc:
@@ -159,7 +211,7 @@ def _transition(application_id: str, to_state: ApplicationState, reason: str) ->
 @app.post("/api/approve/{application_id}", dependencies=[Depends(require_token)])
 def approve(application_id: str) -> dict:
     """Approve an application: AWAITING_APPROVAL -> APPLYING (the worker resumes it)."""
-    _transition(application_id, S.APPLYING, "approved via dashboard")
+    _transition(application_id, S.APPLYING, "approved via dashboard", "approved")
     return {"approved": True}
 
 
@@ -168,7 +220,8 @@ def reject(application_id: str, body: RejectBody) -> dict:
     """Reject an application: AWAITING_APPROVAL -> BLOCKED, reason kept in the audit log."""
     if not body.reason.strip():
         raise HTTPException(status_code=422, detail="reason is required")
-    _transition(application_id, S.BLOCKED, f"rejected via dashboard: {body.reason.strip()}")
+    _transition(application_id, S.BLOCKED, f"rejected via dashboard: {body.reason.strip()}",
+                "rejected", body.reason.strip())
     return {"rejected": True}
 
 
