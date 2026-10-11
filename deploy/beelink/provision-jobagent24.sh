@@ -14,7 +14,7 @@ set -euo pipefail
 TAG="${1:?usage: provision-jobagent24.sh <signed-tag> [--enable-timers]}"
 ENABLE_TIMERS=0
 [ "${2:-}" = "--enable-timers" ] && ENABLE_TIMERS=1
-REPO_URL="${JOBAGENT24_REPO_URL:?set JOBAGENT24_REPO_URL to the 24/7 repo's git URL}"
+REPO_URL="${JOBAGENT24_REPO_URL:?set JOBAGENT24_REPO_URL to the 24/7 repo git URL}"
 APP=/opt/jobagent24
 STATE=/var/lib/jobagent24
 ETC=/etc/jobagent24
