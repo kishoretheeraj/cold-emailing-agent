@@ -504,18 +504,28 @@ def _queue_gate(job, company_cap):
 # ── Document lease (shared with apply_worker's v2 pass) ────────────────────────
 
 # Take the 'preparing' lease apply_worker._run_document_pass takes, so the two workers never generate
-# documents for the same row. Returns (lease, busy). A row the claim RPC refuses is still built unleased
-# unless something visibly holds it; an unreadable row is skipped (fail closed).
+# documents for the same row. Returns (lease, busy). Never builds unleased: a refused claim, an
+# unreadable row, or a row that is no longer eligible after the claim is skipped (busy=True).
 def _hold_row(job_id):
     try:
         lease = db.claim_application(job_id, "preparing")
-        if lease:
-            return lease, False
-        row = db.get_job_application(job_id) or {}
     except Exception as exc:
         log.warning(f"[RESUME] | {job_id} | could not claim the document lease, skipping: {exc}")
         return None, True
-    return None, bool(row.get("worker_lease_id") or row.get("automation_status") == "preparing")
+    if not lease:
+        return None, True
+    try:
+        row = db.get_job_application(job_id) or {}
+    except Exception as exc:
+        log.warning(f"[RESUME] | {job_id} | could not reread the row after claiming it, skipping: {exc}")
+        _release_row(job_id, lease, False, "could not reread row after claim")
+        return None, True
+    built = bool(row.get("resume_file_ref"))
+    if (row.get("stage") == "saved" and not built
+            and row.get("automation_status") == "preparing" and row.get("worker_lease_id") == lease):
+        return lease, False
+    _release_row(job_id, lease, built, None if built else "row no longer eligible for documents")
+    return None, True
 
 
 # Best-effort: a lost release is recovered by db.recover_stale_leases.
@@ -523,9 +533,37 @@ def _release_row(job_id, lease, ok, reason=None):
     if not lease:
         return
     try:
-        db.finish_document_generation(job_id, lease, ok, reason)
+        if not db.finish_document_generation(job_id, lease, ok, reason):
+            log.warning(f"[RESUME] | {job_id} | document lease release refused (lease lost or row changed)")
     except Exception as exc:
         log.warning(f"[RESUME] | {job_id} | could not release the document lease: {exc}")
+
+
+def _gate_held_row(job, lease, company_cap):
+    """Run the queue gate on a row whose lease we hold. True to build; otherwise the lease has been
+    released (or the row marked unsupported) and the row must be skipped."""
+    job_id = job.get("id")
+    try:
+        gate = _queue_gate(job, company_cap)
+    except Exception as exc:
+        log.warning(f"[RESUME] | {job_id} | queue gate failed, not building: {exc}")
+        _release_row(job_id, lease, False, f"queue gate failed: {exc}")
+        return False
+    if not gate:
+        return True
+    kind, reason = gate
+    log.info(f"[RESUME] | {job_id} | {job.get('company')} | {kind}: {reason}")
+    try:
+        if kind == "closed":
+            if not db.mark_unsupported_with_lease(job_id, lease, reason):
+                log.warning(f"[RESUME] | {job_id} | could not mark the closed posting unsupported")
+        else:
+            db.set_resume_error(job_id, reason)
+            _release_row(job_id, lease, False, reason)
+    except Exception as exc:
+        log.warning(f"[RESUME] | {job_id} | could not record the gate result: {exc}")
+        _release_row(job_id, lease, False, reason)
+    return False
 
 
 def drain(limit=None):
@@ -551,21 +589,11 @@ def drain(limit=None):
         if attempted >= limit:
             break
         job_id = job.get("id")
-        try:
-            gate = _queue_gate(job, company_cap)
-            if gate:
-                kind, reason = gate
-                log.info(f"[RESUME] | {job_id} | {job.get('company')} | {kind}: {reason}")
-                if kind == "closed":
-                    db.mark_unsupported(job_id, reason)
-                else:
-                    db.set_resume_error(job_id, reason)
-                continue
-        except Exception as exc:
-            log.warning(f"[RESUME] | {job_id} | queue gate failed, building anyway: {exc}")
         lease, busy = _hold_row(job_id)
         if busy:
             log.info(f"[RESUME] | {job_id} | {job.get('company')} | held by another worker, skipped")
+            continue
+        if not _gate_held_row(job, lease, company_cap):
             continue
         attempted += 1
         ok, reason = True, None
@@ -577,10 +605,12 @@ def drain(limit=None):
             build(job_id)
             built += 1
         except claude_subscription.ClaudeUsageLimitError as exc:
+            ok, reason = False, f"{type(exc).__name__}: {exc}"
             log.warning(f"[RESUME] | {job_id} | {job.get('company')} | usage limit, stopping drain: {exc}")
             break
         except claude_subscription.ClaudeSubscriptionError as exc:
             errors += 1
+            ok, reason = False, f"{type(exc).__name__}: {exc}"
             log.warning(f"[RESUME] | {job_id} | {job.get('company')} | Claude CLI failure, stopping drain: {exc}")
             break
         except Exception as exc:

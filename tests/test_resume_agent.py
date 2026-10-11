@@ -630,19 +630,67 @@ def test_drain_uses_configured_batch_by_default(mocker):
                                 exclude_platforms=resume_agent.ats_platform.unpreparable_platforms())
 
 
-def test_drain_parks_closed_and_capped_rows_without_spending_the_batch(mocker):
+def test_drain_parks_closed_and_capped_rows_under_the_lease_without_spending_the_batch(mocker):
     _drain_ready(mocker)
     mocker.patch.object(resume_agent, "_queue_gate", side_effect=[
         ("closed", "Posting closed"), ("cap", "Skipped: 3 applications"), None, None])
     mocker.patch.object(db, "get_strong_applications_without_resume",
                         return_value=[{"id": i, "company": "A", "resume_strategy": {"x": 1}} for i in (1, 2, 3, 4)])
-    unsupported = mocker.patch.object(db, "mark_unsupported")
+    unsupported = mocker.patch.object(db, "mark_unsupported_with_lease", return_value=True)
     set_error = mocker.patch.object(db, "set_resume_error")
+    release = mocker.patch.object(resume_agent, "_release_row")
     build = mocker.patch.object(resume_agent, "build")
     assert resume_agent.drain(limit=1) == 0
-    unsupported.assert_called_once_with(1, "Posting closed")
+    unsupported.assert_called_once_with(1, "lease", "Posting closed")
     set_error.assert_called_once_with(2, "Skipped: 3 applications")
+    assert mocker.call(2, "lease", False, "Skipped: 3 applications") in release.call_args_list
     assert [c.args[0] for c in build.call_args_list] == [3]
+
+
+def test_drain_takes_the_lease_before_the_gate_and_skips_a_busy_row_without_mutating_it(mocker):
+    _drain_ready(mocker)
+    gate = mocker.patch.object(resume_agent, "_queue_gate", return_value=("closed", "gone"))
+    mocker.patch.object(resume_agent, "_hold_row", return_value=(None, True))
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    unsupported = mocker.patch.object(db, "mark_unsupported_with_lease")
+    set_error = mocker.patch.object(db, "set_resume_error")
+    assert resume_agent.drain() == 0
+    gate.assert_not_called(); unsupported.assert_not_called(); set_error.assert_not_called()
+
+
+def test_drain_releases_the_lease_and_does_not_build_when_the_gate_raises(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(resume_agent, "_queue_gate", side_effect=RuntimeError("boom"))
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    release = mocker.patch.object(resume_agent, "_release_row")
+    build = mocker.patch.object(resume_agent, "build")
+    assert resume_agent.drain() == 0
+    build.assert_not_called()
+    assert release.call_args.args[:3] == (1, "lease", False)
+
+
+def test_drain_releases_the_lease_as_failed_on_usage_limit_and_cli_errors(mocker):
+    _drain_ready(mocker)
+    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
+    release = mocker.patch.object(resume_agent, "_release_row")
+    for exc in (claude_subscription.ClaudeUsageLimitError("limit"), claude_subscription.ClaudeSubscriptionError("cli")):
+        release.reset_mock()
+        mocker.patch.object(resume_agent, "propose", side_effect=exc)
+        resume_agent.drain()
+        args = release.call_args.args
+        assert args[:3] == (1, "lease", False) and type(exc).__name__ in args[3]
+
+
+def test_mark_unsupported_with_lease_releases_then_marks(mocker):
+    finish = mocker.patch.object(db, "finish_document_generation", return_value=True)
+    mark = mocker.patch.object(db, "mark_unsupported", return_value=True)
+    assert db.mark_unsupported_with_lease(1, "L", "gone") is True
+    finish.assert_called_once_with(1, "L", False, "gone")
+    mark.assert_called_once_with(1, "gone")
+    finish.return_value = False
+    mark.reset_mock()
+    assert db.mark_unsupported_with_lease(1, "L", "gone") is False
+    mark.assert_not_called()
 
 
 @pytest.mark.parametrize("liveness,count,cap,expected", [
@@ -787,27 +835,59 @@ def test_preflight_rejects_an_unknown_backend(mocker, monkeypatch):
 
 # ── drain: shared document lease ───────────────────────────────────────────────
 
-def test_hold_row_returns_the_lease_when_the_claim_succeeds(mocker):
+def _claimed_row(**over):
+    row = {"stage": "saved", "resume_file_ref": None, "automation_status": "preparing", "worker_lease_id": "L1"}
+    row.update(over)
+    return row
+
+
+def test_hold_row_returns_the_lease_when_the_claim_succeeds_and_the_row_is_eligible(mocker):
     mocker.patch.object(db, "claim_application", return_value="L1")
+    mocker.patch.object(db, "get_job_application", return_value=_claimed_row())
     assert _REAL_HOLD_ROW(1) == ("L1", False)
 
 
-@pytest.mark.parametrize("row,busy", [
-    ({"worker_lease_id": "other", "automation_status": "preparing"}, True),
-    ({"worker_lease_id": None, "automation_status": "preparing"}, True),
-    ({"worker_lease_id": "x", "automation_status": "idle"}, True),
-    ({"worker_lease_id": None, "automation_status": "needs_input"}, False),  # unclaimable legacy state: build unleased
-])
-def test_hold_row_skips_only_rows_something_else_holds(mocker, row, busy):
+def test_hold_row_never_builds_unleased(mocker):
     mocker.patch.object(db, "claim_application", return_value=None)
-    mocker.patch.object(db, "get_job_application", return_value=row)
-    assert _REAL_HOLD_ROW(1) == (None, busy)
-
-
-def test_hold_row_fails_closed_when_the_row_cannot_be_read(mocker):
-    mocker.patch.object(db, "claim_application", return_value=None)
-    mocker.patch.object(db, "get_job_application", side_effect=RuntimeError("db down"))
+    reread = mocker.patch.object(db, "get_job_application")
     assert _REAL_HOLD_ROW(1) == (None, True)
+    reread.assert_not_called()
+
+
+def test_hold_row_fails_closed_when_the_claim_raises(mocker):
+    mocker.patch.object(db, "claim_application", side_effect=RuntimeError("db down"))
+    assert _REAL_HOLD_ROW(1) == (None, True)
+
+
+@pytest.mark.parametrize("over,ok,reason", [
+    ({"stage": "ready_to_submit"}, False, "row no longer eligible for documents"),
+    ({"automation_status": "idle"}, False, "row no longer eligible for documents"),
+    ({"worker_lease_id": "other"}, False, "row no longer eligible for documents"),
+    ({"resume_file_ref": "r.pdf"}, True, None),
+])
+def test_hold_row_releases_and_skips_a_row_that_changed_after_the_claim(mocker, over, ok, reason):
+    mocker.patch.object(db, "claim_application", return_value="L1")
+    mocker.patch.object(db, "get_job_application", return_value=_claimed_row(**over))
+    mocker.patch.object(resume_agent, "_release_row", _REAL_RELEASE_ROW)
+    finish = mocker.patch.object(db, "finish_document_generation", return_value=True)
+    assert _REAL_HOLD_ROW(1) == (None, True)
+    finish.assert_called_once_with(1, "L1", ok, reason)
+
+
+def test_hold_row_releases_when_the_reread_fails(mocker):
+    mocker.patch.object(db, "claim_application", return_value="L1")
+    mocker.patch.object(db, "get_job_application", side_effect=RuntimeError("db down"))
+    mocker.patch.object(resume_agent, "_release_row", _REAL_RELEASE_ROW)
+    finish = mocker.patch.object(db, "finish_document_generation", return_value=True)
+    assert _REAL_HOLD_ROW(1) == (None, True)
+    assert finish.call_args.args[:3] == (1, "L1", False)
+
+
+def test_release_row_warns_when_the_release_is_refused(mocker, caplog):
+    mocker.patch.object(db, "finish_document_generation", return_value=False)
+    with caplog.at_level("WARNING"):
+        _REAL_RELEASE_ROW(7, "L", True)
+    assert "7" in caplog.text and "refused" in caplog.text
 
 
 def test_release_row_is_a_noop_without_a_lease_and_never_raises(mocker):
@@ -841,11 +921,3 @@ def test_drain_releases_the_lease_as_failed_when_a_row_errors(mocker):
     release.assert_called_once_with(1, "lease", False, "ValueError: bad")
 
 
-def test_drain_releases_the_lease_untouched_on_a_usage_limit(mocker):
-    _drain_ready(mocker)
-    mocker.patch.object(db, "get_strong_applications_without_resume", return_value=[{"id": 1, "company": "A"}])
-    release = mocker.patch.object(resume_agent, "_release_row")
-    mocker.patch.object(resume_agent, "propose",
-                        side_effect=claude_subscription.ClaudeUsageLimitError("limit"))
-    resume_agent.drain()
-    release.assert_called_once_with(1, "lease", True, None)

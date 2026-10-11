@@ -124,20 +124,28 @@ if have_systemd; then
         log "no $OLD_ETC/vncpasswd -- display :2 not started"
     fi
     systemctl enable jobagent24-api.service
-    # The api restarts only if it was running: on a first install the env files are still empty templates
-    # and it cannot start yet.
     if [ "$WAS_API_ACTIVE" -eq 1 ]; then
         systemctl restart jobagent24-api.service
-        healthy=0
-        for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8024/api/health 2>/dev/null | grep -q '"status":"ok"'; then healthy=1; break; fi
-            sleep 1
-        done
-        [ "$healthy" -eq 1 ] || { echo "jobagent24-api not healthy after restart: journalctl -u jobagent24-api -n 50" >&2; exit 1; }
-        log "api healthy"
+    else
+        # May fail on a first install, where the env files are still empty templates.
+        systemctl start jobagent24-api.service || true
     fi
-    # Timers come back only now, after the api answered its health check. A failed check exits above and
-    # leaves them stopped, like the rest of the namespace.
+    healthy=0
+    for _ in $(seq 1 30); do
+        if curl -fsS http://127.0.0.1:8024/api/health 2>/dev/null | grep -q '"status":"ok"'; then healthy=1; break; fi
+        sleep 1
+    done
+    if [ "$healthy" -eq 1 ]; then
+        log "api healthy"
+    elif [ "$WAS_API_ACTIVE" -eq 0 ] && ! grep -Eq '^DASHBOARD_API_TOKEN=.+' "$ETC/dashboard.env"; then
+        log "first install: fill $ETC/*.env, then: sudo systemctl start jobagent24-api jobagent24-*.timer"
+        exit 0
+    else
+        echo "jobagent24-api not healthy after restart: journalctl -u jobagent24-api -n 50" >&2
+        exit 1
+    fi
+    # Timers come back only now, after the api answered its health check. A failed check exits above
+    # (or, on a first install with unfilled env files, exits 0) and leaves them stopped.
     if [ "$ENABLE_TIMERS" -eq 1 ]; then
         for name in "${TIMERS[@]}"; do systemctl enable --now "jobagent24-$name.timer"; done
     else

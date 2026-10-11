@@ -1237,6 +1237,14 @@ def mark_unsupported(application_id, reason):
         "p_id": application_id, "p_reason": reason})))
 
 
+def mark_unsupported_with_lease(application_id, lease_id, reason):
+    """Mark a row unsupported while holding its 'preparing' lease: the lease is released first (the
+    unsupported RPC refuses a leased row), then the row is marked. False if either step is refused."""
+    if not finish_document_generation(application_id, lease_id, False, reason):
+        return False
+    return mark_unsupported(application_id, reason)
+
+
 _OUTCOME_STAGES = ("applied", "phone_screen", "onsite")
 
 

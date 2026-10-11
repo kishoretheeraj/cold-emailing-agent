@@ -139,3 +139,16 @@ def test_require_stopped_aborts_unless_the_unit_is_down(tmp_path, state, code):
     assert run.returncode == code
     if code:
         assert state in run.stderr
+
+
+def test_provision_always_starts_and_health_checks_the_api_and_handles_first_install():
+    text = _provision()
+    assert "systemctl start jobagent24-api.service" in text
+    # the health poll is no longer inside the WAS_API_ACTIVE branch
+    assert text.index("systemctl restart jobagent24-api.service") < text.index("/api/health")
+    health_block = text.split("/api/health")[0].rsplit("systemctl enable jobagent24-api.service", 1)[1]
+    assert health_block.count('"$WAS_API_ACTIVE" -eq 1') == 1  # only the restart-vs-start choice
+    assert "first install" in text and "DASHBOARD_API_TOKEN=.+" in text
+    first_install = text.split("first install:")[1].split("else")[0]
+    assert "exit 0" in first_install
+    assert text.index("first install:") < text.index('[ "$ENABLE_TIMERS" -eq 1 ]')

@@ -53,8 +53,8 @@ budget is shared).
 3. Stops the timers, then every `jobagent24-*` service (a running oneshot is waited for), and **verifies each unit is `inactive`/`failed`/`unknown`** (`require_stopped`). A unit that will not stop aborts the deploy (exit 1) before any checkout or pip. Old-stack units are never touched.
 4. Fetches, verifies the signed tag, checks it out, upgrades the venv (`pip install`).
 5. Installs units, `daemon-reload`.
-6. If the api was active: `systemctl restart jobagent24-api`, then polls `http://127.0.0.1:8024/api/health` for up to 30 s. No healthy answer exits 1 (`journalctl -u jobagent24-api -n 50`) with the timers still stopped.
-7. Only after that, restarts the timers that were active (all four with `--enable-timers`).
+6. Always starts the api (`restart` if it was active, else `start`), then polls `http://127.0.0.1:8024/api/health` for up to 30 s. No healthy answer exits 1 (`journalctl -u jobagent24-api -n 50`) with the timers still stopped. The one exception is a first install (api was not active and `dashboard.env` has no `DASHBOARD_API_TOKEN` value): it logs what to fill in and exits 0 with the timers stopped.
+7. Only after a healthy answer, restarts the timers that were active (all four with `--enable-timers`).
 
 If the script fails between 3 and 7 the namespace (including the timers) stays **stopped** deliberately. Fix the cause and re-run. Migration `20261013000000` must be pushed (`db_migrate.yml` dryrun, then push) before the new tag runs; the dashboard decision RPC and the document lease depend on it.
 

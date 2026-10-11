@@ -114,11 +114,13 @@ class DashboardStore:
         pending = getattr(self.persister, "pending", None)
         if pending is None:
             return 0
-        rows = pending()
-        decisions = self.persister.load()
-        live = {str(row["id"]) for row in rows}
         added = 0
+        # The lock is held during DB I/O on purpose: sync_one takes it too, so it cannot admit a row
+        # between this read and the reconcile below (a stale list would park that row in _dropped).
         with self._lock:
+            rows = pending()
+            decisions = self.persister.load()
+            live = {str(row["id"]) for row in rows}
             self.decisions.update(decisions)
             for application_id in list(self.records):
                 if application_id in live:

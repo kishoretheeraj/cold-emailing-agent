@@ -237,3 +237,19 @@ def test_single_awaiting_row_fetch(mocker):
     assert ("eq", ("id", 12), {}) in q.calls and ("eq", ("automation_status", "ready_for_review"), {}) in q.calls
     mocker.patch.object(db, "get_client", return_value=_Q([]))
     assert db.get_application_awaiting_approval(99) is None
+
+
+def test_sync_pending_reads_and_reconciles_under_the_lock(monkeypatch):
+    seen = {}
+
+    class P(_Persister):
+        def pending(self):
+            got = []
+            t = threading.Thread(target=lambda: got.append(store._lock.acquire(timeout=0.2)))
+            t.start(); t.join()
+            seen["other_thread_got_lock"] = got[0]
+            return self.rows
+
+    store = dashboard.DashboardStore(persister=P(rows=[ROW]))
+    assert store.sync_pending() == 1
+    assert seen["other_thread_got_lock"] is False
