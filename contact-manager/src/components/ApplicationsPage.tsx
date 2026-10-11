@@ -13,6 +13,8 @@ import {
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Loader2 } from "lucide-react";
 import { ApplicationDetailSheet } from "@/components/ApplicationDetailSheet";
+import { ApplicationFilters } from "@/components/ApplicationFilters";
+import { ApplicationStats } from "@/components/ApplicationStats";
 import { SystemHealthStrip } from "@/components/SystemHealthStrip";
 import { TakeoverBanner } from "@/components/TakeoverBanner";
 import { ApprovalQueue } from "@/components/ApprovalQueue";
@@ -25,8 +27,6 @@ import {
   type JobApplication,
   type JobApplicationStage,
 } from "@/lib/types";
-
-const SOURCE_OPTIONS = ["linkedin", "ats_scan", "jobright", "manual"] as const;
 
 export function ApplicationsPage() {
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -425,6 +425,8 @@ export function ApplicationsPage() {
 
       <h2 className="text-base font-medium text-fg">All applications</h2>
 
+      <ApplicationStats applications={applications} />
+
       <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-sm text-fg-muted">
           Company
@@ -462,40 +464,12 @@ export function ApplicationsPage() {
         </button>
       </form>
 
-      <div className="flex gap-3">
-        <label data-testid="stage-filter" className="flex flex-col gap-1 text-sm text-fg-muted">
-          Stage
-          <Select value={stageFilter} onValueChange={handleStageFilterChange}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">All stages</SelectItem>
-              {JOB_APPLICATION_STAGES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {JOB_APPLICATION_STAGE_LABELS[s]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-        <label data-testid="source-filter" className="flex flex-col gap-1 text-sm text-fg-muted">
-          Source
-          <Select value={sourceFilter} onValueChange={handleSourceFilterChange}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">All sources</SelectItem>
-              {SOURCE_OPTIONS.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-      </div>
+      <ApplicationFilters
+        stageFilter={stageFilter}
+        sourceFilter={sourceFilter}
+        onStageChange={handleStageFilterChange}
+        onSourceChange={handleSourceFilterChange}
+      />
 
       {loading ? (
         <p className="text-sm text-fg-dim">Loading...</p>

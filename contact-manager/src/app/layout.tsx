@@ -12,6 +12,8 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Cold Email Ops — Contact Manager",
   description: "Add job search contacts to the cold email pipeline",
+  manifest: "/manifest.json",
+  themeColor: "#1a1a2e",
 };
 
 export default function RootLayout({
