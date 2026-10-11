@@ -18,6 +18,12 @@ MIN_BULLETS = 5
 MAX_BULLETS = 6
 MAX_BULLETS_PER_ROLE = 6
 _NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?[%xXkKmM]?")
+# A generated bullet must share at least this fraction of its content words with one source bullet,
+# and may not be this similar (Jaccard) to an earlier bullet.
+_GROUND_MIN = 0.5
+_DUP_JACCARD = 0.8
+_STOP = frozenset("the and for with from that this into over using used via across their its our was were "
+                 "has have had are been being than then also per each all".split())
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -30,6 +36,38 @@ def _banned_words() -> tuple[str, ...]:
 
 def _numbers(text: str) -> set[str]:
     return {m.group(0).replace(",", "").lower() for m in _NUM_RE.finditer(text)}
+
+
+def _tokens(text: str) -> set[str]:
+    return {t[:5] for t in re.findall(r"[a-z0-9]+", text.lower())
+            if (len(t) > 2 or t.isdigit()) and t not in _STOP}
+
+
+def _bullet_violations(experience: list, profile_bullets: list) -> list[str]:
+    out = []
+    seen = []
+    for entry in experience:
+        same_role = [b for b in profile_bullets if b.get("role") == entry["role"]]
+        sources = [(_tokens(str(b.get("text", ""))), _numbers(str(b.get("text", ""))))
+                   for b in (same_role or profile_bullets)]
+        for bullet in entry["bullets"]:
+            toks, nums = _tokens(bullet), _numbers(bullet)
+            label = bullet[:60]
+            if any(toks == prev or (toks and len(toks & prev) / len(toks | prev) >= _DUP_JACCARD) for prev in seen):
+                out.append(f"duplicate bullet: '{label}'")
+            seen.append(toks)
+            best = None
+            for src_toks, src_nums in sources:
+                score = len(toks & src_toks) / len(toks) if toks else 0.0
+                key = (score, -len(nums - src_nums))
+                if best is None or key > best[0]:
+                    best = (key, src_nums)
+            if best is None or best[0][0] < _GROUND_MIN:
+                out.append(f"bullet not grounded in a source bullet: '{label}'")
+                continue
+            for n in sorted(nums - best[1]):
+                out.append(f"number not in its source bullet: {n} in '{label}'")
+    return out
 
 
 def _strings(obj):
@@ -91,10 +129,13 @@ def validate_resume(content_json: dict, candidate_profile: dict) -> tuple[bool, 
     if "\u2014" in text or "\u2013" in text:
         violations.append("em or en dash found (use a colon, comma or period)")
 
-    profile_bullets = candidate_profile.get("bullets") or []
+    profile_bullets = [b for b in (candidate_profile.get("bullets") or []) if isinstance(b, dict)]
     corpus = "\n".join(_strings(candidate_profile))
-    for n in sorted(_numbers(text) - _numbers(corpus)):
+    # Headline, summary and skills are checked against the whole profile; bullets against their own source.
+    loose = "\n".join([content_json["headline"], content_json["summary"], *content_json["skills"]])
+    for n in sorted(_numbers(loose) - _numbers(corpus)):
         violations.append(f"number not in candidate profile: {n}")
+    violations.extend(_bullet_violations(content_json["experience"], profile_bullets))
 
     known_roles = {b.get("role") for b in profile_bullets if b.get("role")}
     for entry in content_json["experience"]:

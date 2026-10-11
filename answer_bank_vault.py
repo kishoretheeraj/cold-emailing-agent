@@ -11,10 +11,11 @@ import json
 import logging
 import os
 import threading
+import time
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from credential_vault import VaultError
+from credential_vault import VaultError, file_lock
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class AnswerBankVault:
     def _write_blob(self, blob: bytes) -> None:
         directory = os.path.dirname(self.path) or "."
         os.makedirs(directory, mode=0o700, exist_ok=True)
-        tmp = f"{self.path}.tmp"
+        tmp = f"{self.path}.{os.getpid()}.{time.time_ns()}.tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             with os.fdopen(fd, "wb") as f:
@@ -91,7 +92,7 @@ class AnswerBankVault:
             raise VaultError("question_key must be a non-empty string")
         if not isinstance(value, str):
             raise VaultError("value must be a string")
-        with self._lock:
+        with self._lock, file_lock(self.path):
             entries = self._load()
             entries[question_key] = value
             self._save(entries)
@@ -99,7 +100,7 @@ class AnswerBankVault:
 
     def delete(self, question_key: str) -> None:
         """Remove one answer; a missing key is a no-op."""
-        with self._lock:
+        with self._lock, file_lock(self.path):
             entries = self._load()
             if question_key not in entries:
                 return
@@ -123,7 +124,7 @@ class AnswerBankVault:
 
     def import_encrypted(self, data: bytes) -> None:
         """Replace the bank with an exported blob; refuses data this key cannot decrypt."""
-        with self._lock:
+        with self._lock, file_lock(self.path):
             self._decode(data)
             self._write_blob(data)
         log.info("[ANSWER-BANK] import | replaced")

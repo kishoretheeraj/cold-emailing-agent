@@ -1124,7 +1124,8 @@ def _workday_reach_wizard(page, job_id, lease, tenant, vault, email, login_url):
                         config.WORKDAY_VERIFICATION_SENDERS, since, timeout_seconds=120,
                         allowed_link_hosts=(host,))
 
-                workday_adapter.authenticate(page, vault, tenant, email, login_url, verify)
+                workday_adapter.authenticate(page, vault, tenant, email, login_url, verify,
+                                             expected_origin=login_url)
                 continue
             workday_adapter.enter_apply_flow(page)
         except workday_adapter.WorkdayStop as stop:

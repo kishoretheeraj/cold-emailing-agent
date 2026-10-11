@@ -4,7 +4,8 @@ Provides approval queue and system status for the web dashboard.
 
 State lives in memory for the MVP.
 TODO: back DashboardStore with db.py (job_applications / application_runs).
-Set DASHBOARD_API_TOKEN to require a bearer token on approve/reject;
+DASHBOARD_API_TOKEN is required: every route except /api/health fails closed (403) while it is unset
+and answers 401 unless the request carries the matching bearer token.
 DASHBOARD_ORIGINS (comma-separated) sets the allowed CORS origins.
 """
 import hmac
@@ -103,10 +104,10 @@ app.add_middleware(
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
-    """Enforce the bearer token on mutating routes when DASHBOARD_API_TOKEN is set."""
+    """Fail-closed bearer token: 403 when DASHBOARD_API_TOKEN is unset, 401 on a missing or wrong token."""
     expected = os.environ.get("DASHBOARD_API_TOKEN")
     if not expected:
-        return
+        raise HTTPException(status_code=403, detail="dashboard auth is not configured")
     supplied = (authorization or "").encode()
     if not hmac.compare_digest(supplied, f"Bearer {expected}".encode()):
         raise HTTPException(status_code=401, detail="invalid or missing token")
@@ -126,7 +127,7 @@ def health() -> dict:
     return {"status": "ok", "version": __version__}
 
 
-@app.get("/api/queue")
+@app.get("/api/queue", dependencies=[Depends(require_token)])
 def queue(state: str = Query(default="awaiting_approval")) -> list[dict]:
     """List applications currently in the given state (default awaiting_approval)."""
     try:
@@ -171,7 +172,7 @@ def reject(application_id: str, body: RejectBody) -> dict:
     return {"rejected": True}
 
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[Depends(require_token)])
 def status() -> dict:
     """Worker health, approval queue depth and Claude status."""
     depth = sum(1 for a in STORE.records if STORE.state_of(a) is S.AWAITING_APPROVAL)
@@ -183,7 +184,7 @@ def status() -> dict:
     }
 
 
-@app.get("/api/metrics")
+@app.get("/api/metrics", dependencies=[Depends(require_token)])
 def metrics() -> dict:
     """Submission statistics. success_rate and avg_tailor_seconds are null with no data."""
     today = datetime.now(timezone.utc).date().isoformat()

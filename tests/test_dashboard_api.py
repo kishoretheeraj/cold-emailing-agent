@@ -10,8 +10,27 @@ from ops.state_machine import ApplicationState as S
 def env(monkeypatch):
     store = dashboard.DashboardStore()
     monkeypatch.setattr(dashboard, "STORE", store)
-    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
-    return TestClient(dashboard.app), store
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "test-token")
+    client = TestClient(dashboard.app, headers={"Authorization": "Bearer test-token"})
+    return client, store
+
+
+def test_fail_closed_when_token_unset(env, monkeypatch):
+    client, store = env
+    monkeypatch.delenv("DASHBOARD_API_TOKEN")
+    _seed(store)
+    for method, url in [("get", "/api/queue"), ("get", "/api/status"),
+                        ("get", "/api/metrics"), ("post", "/api/approve/a1")]:
+        resp = client.request(method, url)
+        assert resp.status_code == 403, (method, url)
+        assert resp.json()["detail"] == "dashboard auth is not configured"
+
+
+def test_wrong_token_is_401(env):
+    client, store = env
+    _seed(store)
+    resp = client.get("/api/queue", headers={"Authorization": "Bearer wrong"})
+    assert resp.status_code == 401
 
 
 def _seed(store, app_id="a1", **kw):

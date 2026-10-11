@@ -43,12 +43,15 @@ Rules:
 - No em dashes or en dashes. Do not use these words (or longer forms): {banned}"""
 
 _REPAIR = """Fix ONLY the violations listed below in this resume JSON. Change as little as possible, keep the
-same schema, and reply with the corrected JSON object only.
+same schema, use only facts from the source bullets, and reply with the corrected JSON object only.
+
+{requirements}
+
+{source}
 
 {resume}
 
-{violations}
-{source}"""
+{violations}"""
 
 
 class TailorV2Error(Exception):
@@ -70,11 +73,11 @@ def _generate(requirements: dict, ranked: list[dict]) -> dict:
     return _parse(llm.call_claude(prompt, _SYSTEM, config.RESUME_MODEL, "generate", SONNET_MAX_TOKENS))
 
 
-def _repair(content: dict, violations: list[str], ranked: list[dict]) -> dict:
-    source = "" if content else "\nThe previous reply was not usable. Source bullets:\n" \
-        + llm.tagged_json("BULLETS", _source_bullets(ranked))
+def _repair(content: dict, violations: list[str], ranked: list[dict], requirements: dict) -> dict:
     prompt = _REPAIR.format(
-        resume=llm.tagged_json("RESUME", content), source=source,
+        requirements=llm.tagged_json("REQUIREMENTS", requirements),
+        source=llm.tagged_json("BULLETS", _source_bullets(ranked)),
+        resume=llm.tagged_json("RESUME", content),
         violations=llm.tagged_json("VIOLATIONS", violations))
     return _parse(llm.call_claude(prompt, _SYSTEM, config.RESUME_MODEL, "repair", SONNET_MAX_TOKENS)) or content
 
@@ -86,13 +89,30 @@ def _parse(reply: str) -> dict:
         return {}
 
 
+def _education_lines(education) -> list[str]:
+    """Renderer input: one string per entry. Strings pass through; master.json objects are flattened."""
+    lines = []
+    for item in education or []:
+        if isinstance(item, str):
+            if item.strip():
+                lines.append(item.strip())
+        elif isinstance(item, dict):
+            head = ", ".join(str(item[k]) for k in ("institution", "location") if item.get(k))
+            parts = [p for p in (head, item.get("program"), item.get("graduation")) if p]
+            lines.append(" | ".join(str(p) for p in parts))
+            if item.get("coursework"):
+                lines.append(str(item["coursework"]))
+    return [ln for ln in lines if ln]
+
+
 # ── Orchestration ──────────────────────────────────────────────────────────────
 
 def tailor_resume(jd_text: str, candidate_profile: dict, output_path: str, ranker_backend: str = "auto") -> dict:
     """Tailor a one-page resume PDF to a job description.
 
     Returns {"pdf_path", "content_json", "validation_passed", "repair_attempts", "violations", "pages"}.
-    When validation still fails after MAX_REPAIRS repairs no PDF is written and pdf_path is None.
+    When validation still fails after MAX_REPAIRS repairs, or the render is not one page, no PDF is
+    kept and pdf_path is None with validation_passed False.
     Subscription errors (usage limit, missing token) propagate so the caller can retry later."""
     bullets = candidate_profile.get("bullets") or []
     if not bullets:
@@ -104,7 +124,7 @@ def tailor_resume(jd_text: str, candidate_profile: dict, output_path: str, ranke
     repairs = 0
     while not ok and repairs < MAX_REPAIRS:
         repairs += 1
-        content = _repair(content, violations, ranked)
+        content = _repair(content, violations, ranked, requirements)
         ok, violations = validate_resume(content, candidate_profile)
     log.info(f"resume_v2 | ranked={len(ranked)} | repairs={repairs} | passed={ok} | violations={len(violations)}")
 
@@ -113,12 +133,17 @@ def tailor_resume(jd_text: str, candidate_profile: dict, output_path: str, ranke
     if ok:
         final = {**content, "name": candidate_profile.get("name", ""),
                  "contact": candidate_profile.get("contact") or {},
-                 "education": candidate_profile.get("education") or []}
-        result["pages"] = render_pdf(final, output_path)
-        result["pdf_path"] = str(Path(output_path))
+                 "education": _education_lines(candidate_profile.get("education"))}
+        pages = render_pdf(final, output_path)
+        result["pages"] = pages
         result["content_json"] = final
-        if result["pages"] > 1:
-            log.warning(f"resume_v2 | rendered {result['pages']} pages, expected 1")
+        if pages != 1:
+            log.warning(f"resume_v2 | rendered {pages} pages, expected 1")
+            Path(output_path).unlink(missing_ok=True)
+            result["validation_passed"] = False
+            result["violations"] = violations + [f"layout: rendered {pages} pages, expected 1"]
+        else:
+            result["pdf_path"] = str(Path(output_path))
     return result
 
 
@@ -127,4 +152,5 @@ def load_candidate_profile() -> dict:
     root = Path(__file__).resolve().parents[1]
     master = json.loads((root / "data" / "master.json").read_text())
     bullets = json.loads((root / "bullets.json").read_text())["bullets"]
-    return {"name": master.get("name", ""), "contact": master.get("contact") or {}, "bullets": bullets}
+    return {"name": master.get("name", ""), "contact": master.get("contact") or {},
+            "education": _education_lines(master.get("education")), "bullets": bullets}

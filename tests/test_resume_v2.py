@@ -160,7 +160,7 @@ def test_invented_number_flagged():
     c = good_content()
     c["experience"][0]["bullets"][0] = "Built SQL dashboards that cut reporting time by 99%."
     ok, v = validator.validate_resume(c, PROFILE)
-    assert not ok and "number not in candidate profile: 99%" in v
+    assert not ok and any("number not in its source bullet: 99%" in x for x in v)
 
 
 def test_unknown_role_and_skill_flagged():
@@ -233,8 +233,9 @@ def test_tailor_resume_repairs_only_violations(pipeline, tmp_path):
     out = tailor_resume("jd", PROFILE, str(tmp_path / "r.pdf"), ranker_backend="tfidf")
     assert out["validation_passed"] and out["repair_attempts"] == 1
     repair_prompt = pipeline.call_args_list[1].args[0]
-    assert "number not in candidate profile: 99%" in repair_prompt
-    assert "<BULLETS>" not in repair_prompt
+    assert "number not in its source bullet: 99%" in repair_prompt
+    # Round 1 fix: repair prompts always carry the source-bullet facts.
+    assert "<BULLETS>" in repair_prompt
 
 
 def test_tailor_resume_gives_up_without_pdf(pipeline, tmp_path):
@@ -252,7 +253,7 @@ def test_tailor_resume_recovers_from_unparseable_reply(pipeline, tmp_path):
     pipeline.side_effect = ["sorry, no", json.dumps(good_content())]
     out = tailor_resume("jd", PROFILE, str(tmp_path / "r.pdf"), ranker_backend="tfidf")
     assert out["validation_passed"] and out["repair_attempts"] == 1
-    assert "Source bullets" in pipeline.call_args_list[1].args[0]
+    assert "<BULLETS>" in pipeline.call_args_list[1].args[0]
 
 
 def test_tailor_resume_requires_bullets(mocker, tmp_path):
