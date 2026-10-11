@@ -2,9 +2,16 @@
 
 Provides approval queue and system status for the web dashboard.
 
-State is an in-memory read cache. Approve/reject are written through db.py (application_runs, plus a
-withdrawn stage on reject) BEFORE the in-memory transition; a failed write answers 503 and changes
-nothing. A dashboard approval is intent only: Submit still needs the signed approve_application RPC.
+State is an in-memory read cache of job_applications rows awaiting approval (ready_for_review), filled
+from the database at startup, on /api/queue and /api/status, and when an unknown id is decided.
+Approve/reject are written through db.py in one transaction (record_dashboard_decision RPC: audit row +
+withdrawal, compare-and-swap against a prior decision) BEFORE the in-memory transition, with the store
+lock held across check -> persist -> transition. A failed write answers 503 and changes nothing; a
+decision that conflicts with one already recorded answers 409.
+A dashboard approval is INTENT ONLY. It never sets approved_at or approved_revision_hash. The submit gate
+is the signed approve_application RPC (contact-manager /api/applications/[id]/submit, HMAC with
+APPROVAL_SIGNING_KEY, which this API never holds); apply_worker --submit only takes rows that RPC
+approved and re-verifies the signature. The worker logs unsigned intents but cannot act on them.
 DASHBOARD_API_TOKEN is required: every route except /api/health fails closed (403) while it is unset
 and answers 401 unless the request carries the matching bearer token.
 DASHBOARD_ORIGINS (comma-separated) sets the allowed CORS origins.
@@ -79,6 +86,30 @@ class DashboardStore:
             }
             self._apply_decision(application_id)
 
+    @property
+    def lock(self) -> threading.RLock:
+        """The store lock; held across a decision's check, persist and transition."""
+        return self._lock
+
+    def sync_pending(self) -> int:
+        """Add rows the database holds awaiting approval that the cache has not seen (a persister with
+        pending() supplies them; a no-op without one). Returns how many were added."""
+        pending = getattr(self.persister, "pending", None)
+        if pending is None:
+            return 0
+        rows = pending()
+        added = 0
+        with self._lock:
+            for row in rows:
+                application_id = str(row["id"])
+                if application_id in self.records:
+                    continue
+                self.add_application(
+                    application_id, row.get("role") or "", row.get("company") or "",
+                    row.get("platform") or "unknown", row.get("resume_file_ref") or "")
+                added += 1
+        return added
+
     def persist(self, application_id: str, decision: str, reason: str | None = None) -> None:
         """Write a decision through the persister (raises on failure) and remember it."""
         if self.persister is not None:
@@ -122,6 +153,10 @@ class _DbPersister:
         import db
         return db.get_dashboard_decisions()
 
+    def pending(self):
+        import db
+        return db.get_applications_awaiting_approval()
+
 
 STORE = DashboardStore(persister=_DbPersister())
 
@@ -146,8 +181,16 @@ app.add_middleware(
 def _restore_decisions() -> None:
     try:
         STORE.load_decisions()
+        STORE.sync_pending()
     except Exception as exc:
-        log.warning(f"[DASHBOARD] could not restore persisted decisions: {exc}")
+        log.warning(f"[DASHBOARD] could not restore persisted state: {exc}")
+
+
+def _refresh() -> None:
+    try:
+        STORE.sync_pending()
+    except Exception as exc:
+        log.warning(f"[DASHBOARD] could not refresh the queue from the database: {exc}")
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -181,6 +224,7 @@ def queue(state: str = Query(default="awaiting_approval")) -> list[dict]:
         wanted = ApplicationState(state.lower())
     except ValueError:
         raise HTTPException(status_code=422, detail=f"unknown state: {state}")
+    _refresh()
     items = [
         {k: rec[k] for k in (
             "application_id", "job_title", "company", "ats_provider", "created_at", "resume_path"
@@ -193,18 +237,26 @@ def queue(state: str = Query(default="awaiting_approval")) -> list[dict]:
 
 def _transition(application_id: str, to_state: ApplicationState, reason: str, decision: str, detail: str | None = None) -> None:
     if application_id not in STORE.records:
-        raise HTTPException(status_code=404, detail="unknown application")
-    if STORE.state_of(application_id) is not S.AWAITING_APPROVAL:
-        raise HTTPException(status_code=409, detail="application is not awaiting approval")
-    try:
-        STORE.persist(application_id, decision, detail)
-    except Exception as exc:
-        log.error(f"[DASHBOARD] {application_id} | persist failed: {exc}")
-        raise HTTPException(status_code=503, detail="could not persist the decision; nothing changed")
-    try:
-        STORE.machine.transition(application_id, to_state, reason)
-    except InvalidTransition as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        _refresh()
+    # One lock across check -> persist -> transition: a concurrent request for the same application sees
+    # the finished transition and answers 409 BEFORE persisting. The database compare-and-swap covers
+    # another process; this covers threads in this one.
+    with STORE.lock:
+        if application_id not in STORE.records:
+            raise HTTPException(status_code=404, detail="unknown application")
+        if STORE.state_of(application_id) is not S.AWAITING_APPROVAL:
+            raise HTTPException(status_code=409, detail="application is not awaiting approval")
+        try:
+            STORE.persist(application_id, decision, detail)
+        except Exception as exc:
+            if getattr(exc, "conflict", False):
+                raise HTTPException(status_code=409, detail="a conflicting decision was already recorded")
+            log.error(f"[DASHBOARD] {application_id} | persist failed: {exc}")
+            raise HTTPException(status_code=503, detail="could not persist the decision; nothing changed")
+        try:
+            STORE.machine.transition(application_id, to_state, reason)
+        except InvalidTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     log.info(f"[DASHBOARD] {application_id} | {to_state.value}")
 
 
@@ -228,6 +280,7 @@ def reject(application_id: str, body: RejectBody) -> dict:
 @app.get("/api/status", dependencies=[Depends(require_token)])
 def status() -> dict:
     """Worker health, approval queue depth and Claude status."""
+    _refresh()
     depth = sum(1 for a in STORE.records if STORE.state_of(a) is S.AWAITING_APPROVAL)
     return {
         "workers": {w: STORE.worker_status.get(w, "unknown") for w in WORKERS},

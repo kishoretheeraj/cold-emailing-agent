@@ -43,6 +43,25 @@ install -d -o jobagent -g jobagent -m 0700 "$STATE/sessions"
 install -d -o root -g jobagent -m 0750 "$ETC"
 install -o root -g root -m 0644 "$OLD_ETC/allowed_signers" "$ETC/allowed_signers"
 
+# ── Quiesce the namespace ──────────────────────────────────────────────────────
+# Checkout and pip must not run under live code: stop every jobagent24-* timer and unit first (timers
+# first, so nothing restarts), remembering what was running. stop waits for a running oneshot to end.
+# Only jobagent24-* units are touched. If this script fails after this point the namespace stays
+# stopped on purpose: half-deployed code must not run. Fix the cause and re-run.
+exec 9>/var/lock/jobagent24-deploy.lock
+flock -n 9 || { echo "another provision-jobagent24.sh run is in progress" >&2; exit 1; }
+WAS_ACTIVE_TIMERS=()
+WAS_API_ACTIVE=0
+if have_systemd; then
+    for name in "${TIMERS[@]}"; do
+        if systemctl is-active --quiet "jobagent24-$name.timer"; then WAS_ACTIVE_TIMERS+=("$name"); fi
+    done
+    if systemctl is-active --quiet jobagent24-api.service; then WAS_API_ACTIVE=1; fi
+    log "quiescing jobagent24-*"
+    for name in "${TIMERS[@]}"; do systemctl stop "jobagent24-$name.timer" 2>/dev/null || true; done
+    for name in "${UNITS[@]}"; do systemctl stop "jobagent24-$name.service" 2>/dev/null || true; done
+fi
+
 # ── Repo at a signed tag, never main ───────────────────────────────────────────
 as_agent() { runuser -u jobagent -- "$@"; }
 if [ ! -d "$APP/.git" ]; then
@@ -92,7 +111,20 @@ if have_systemd; then
     if [ "$ENABLE_TIMERS" -eq 1 ]; then
         for name in "${TIMERS[@]}"; do systemctl enable --now "jobagent24-$name.timer"; done
     else
-        log "timers installed but NOT enabled (pass --enable-timers after the watched runs in RUNBOOK-24-7.md)"
+        for name in "${WAS_ACTIVE_TIMERS[@]}"; do systemctl start "jobagent24-$name.timer"; done
+        log "timers installed; only those running before this deploy were restarted (--enable-timers enables all)"
+    fi
+    # The api restarts only if it was running: on a first install the env files are still empty templates
+    # and it cannot start yet.
+    if [ "$WAS_API_ACTIVE" -eq 1 ]; then
+        systemctl restart jobagent24-api.service
+        healthy=0
+        for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8024/api/health 2>/dev/null | grep -q '"status":"ok"'; then healthy=1; break; fi
+            sleep 1
+        done
+        [ "$healthy" -eq 1 ] || { echo "jobagent24-api not healthy after restart: journalctl -u jobagent24-api -n 50" >&2; exit 1; }
+        log "api healthy"
     fi
 fi
 

@@ -71,42 +71,54 @@ def test_load_decisions_applies_to_records_already_present():
 
 # ── db.py ──────────────────────────────────────────────────────────────────────
 
-def test_record_dashboard_approval_writes_an_audit_row_only(mocker):
-    log = mocker.patch.object(db, "log_application_run", return_value="run-1")
-    stage = mocker.patch.object(db, "update_job_application_stage")
-    db.record_dashboard_decision("12", "approved")
-    kwargs = log.call_args.kwargs
-    assert kwargs["application_id"] == 12 and kwargs["adapter"] == "dashboard"
-    assert kwargs["details"] == {"decision": "approved", "reason": None}
-    stage.assert_not_called()
-
-
-def test_record_dashboard_reject_withdraws_the_row(mocker):
-    mocker.patch.object(db, "log_application_run", return_value="run-1")
+def test_record_dashboard_decision_is_a_single_rpc(mocker):
+    rpc = mocker.patch.object(db, "_rpc", return_value=41)
     stage = mocker.patch.object(db, "update_job_application_stage")
     db.record_dashboard_decision("12", "rejected", "bad fit")
-    stage.assert_called_once_with(12, "withdrawn")
+    name, params = rpc.call_args.args
+    assert rpc.call_count == 1 and name == "record_dashboard_decision"
+    assert params["p_application_id"] == 12 and params["p_decision"] == "rejected"
+    assert params["p_reason"] == "bad fit" and params["p_run_id"]
+    stage.assert_not_called()  # the withdrawal is inside the RPC's transaction, never a second write
 
 
 def test_record_dashboard_decision_fails_closed(mocker):
-    mocker.patch.object(db, "log_application_run", return_value=None)
-    stage = mocker.patch.object(db, "update_job_application_stage")
+    mocker.patch.object(db, "_rpc", return_value=None)
     with pytest.raises(RuntimeError):
-        db.record_dashboard_decision("12", "rejected", "x")
-    stage.assert_not_called()
+        db.record_dashboard_decision("12", "approved")
     with pytest.raises(ValueError):
         db.record_dashboard_decision("abc", "approved")
     with pytest.raises(ValueError):
         db.record_dashboard_decision("12", "maybe")
 
 
-def test_get_dashboard_decisions_newest_wins(mocker):
-    client = mocker.MagicMock()
-    chain = client.table.return_value.select.return_value.eq.return_value.order.return_value
-    chain.execute.return_value.data = [
-        {"application_id": 1, "details": {"decision": "approved", "reason": None}},
-        {"application_id": 1, "details": {"decision": "rejected", "reason": "late"}},
-        {"application_id": 2, "details": None},
-    ]
-    mocker.patch.object(db, "get_client", return_value=client)
-    assert db.get_dashboard_decisions() == {"1": ("rejected", "late")}
+def test_rpc_failure_propagates_as_a_plain_error(mocker):
+    mocker.patch.object(db.time, "sleep")
+    mocker.patch.object(db, "_rpc", side_effect=RuntimeError("db down"))
+    with pytest.raises(RuntimeError) as err:
+        db.record_dashboard_decision("12", "rejected", "x")
+    assert not isinstance(err.value, db.DecisionConflict)
+
+
+def test_conflict_is_not_retried_and_is_typed(mocker):
+    rpc = mocker.patch.object(db, "_rpc", side_effect=Exception("dashboard_decision_conflict: already approved"))
+    with pytest.raises(db.DecisionConflict) as err:
+        db.record_dashboard_decision("12", "rejected", "x")
+    assert rpc.call_count == 1 and err.value.conflict is True
+
+
+def test_get_dashboard_decisions_pages_by_keyset(mocker):
+    mocker.patch.object(db, "_DECISION_PAGE", 2)
+    rpc = mocker.patch.object(db, "_rpc", side_effect=[
+        [{"application_id": 1, "decision": "approved", "reason": None},
+         {"application_id": 2, "decision": "rejected", "reason": "late"}],
+        [{"application_id": 5, "decision": "approved", "reason": None}],
+    ])
+    assert db.get_dashboard_decisions() == {
+        "1": ("approved", None), "2": ("rejected", "late"), "5": ("approved", None)}
+    assert [c.args[1]["p_after"] for c in rpc.call_args_list] == [0, 2]
+
+
+def test_get_dashboard_decisions_empty(mocker):
+    mocker.patch.object(db, "_rpc", return_value=[])
+    assert db.get_dashboard_decisions() == {}

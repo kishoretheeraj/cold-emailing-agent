@@ -798,6 +798,29 @@ def get_preview_candidates(limit, exclude_platforms=()):
     return _retry(lambda: query().execute()).data or []
 
 
+def get_document_candidates(limit, exclude_platforms=()):
+    """Saved rows picked 'strong' that still have no resume (idle or failed_retryable, under the attempt
+    limit), best pick_score first: the rows the v2 document pass may claim. get_preview_candidates only
+    returns rows that already have documents, so without this the v2 path never saw a row."""
+    def query():
+        q = (get_client().table("job_applications").select("*")
+             .eq("stage", "saved").eq("pick_verdict", "strong")
+             .is_("resume_file_ref", "null").is_("resume_error", "null")
+             .in_("automation_status", list(config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES))
+             .lt("prepare_attempts", config.APPLY_PREPARE_MAX_ATTEMPTS))
+        if exclude_platforms:
+            q = q.or_(f"platform.is.null,platform.not.in.({','.join(exclude_platforms)})")
+        return q.order("pick_score", desc=True, nullsfirst=False).order("created_at", desc=False).limit(limit)
+    return _retry(lambda: query().execute()).data or []
+
+
+def finish_document_generation(application_id, lease_id, ok, reason=None):
+    """End a document-only lease (claim_application 'preparing'): ok -> idle with the attempt refunded,
+    otherwise failed_retryable with `reason`. Returns False if the lease was already lost."""
+    return bool(_retry(lambda: _rpc("finish_document_generation", {
+        "p_id": application_id, "p_lease": lease_id, "p_ok": bool(ok), "p_reason": _clip(reason, 900)})))
+
+
 # ── Job sourcing: board registry and identity backfill (fifty-a-day §3.3) ──────
 
 def get_sourcing_boards(limit):
@@ -1069,37 +1092,74 @@ def get_recent_application_runs(limit=50):
 # ── Dashboard decisions ────────────────────────────────────────────────────────
 
 DASHBOARD_ADAPTER = "dashboard"
+_DECISION_PAGE = 500  # matches the cap inside get_dashboard_decisions_page
+
+
+class DecisionConflict(RuntimeError):
+    """A dashboard decision lost a race or contradicts one already recorded (the dashboard answers 409)."""
+    conflict = True
+
+
+def _is_decision_conflict(exc):
+    return "dashboard_decision_conflict" in str(exc)
 
 
 def record_dashboard_decision(application_id, decision, reason=None):
-    """Persist a dashboard approve/reject as an application_runs row (adapter 'dashboard') so a restart
-    does not lose it; a reject also withdraws the job_applications row. An approval here is intent only:
-    it never sets approved_at, and Submit still needs the signed approve_application RPC. Raises on
-    failure (the dashboard answers 503 and leaves its in-memory state alone)."""
+    """Persist a dashboard approve/reject in ONE database transaction (record_dashboard_decision RPC):
+    the application_runs row (adapter 'dashboard') and, for a reject, the withdrawal commit together or
+    not at all. The RPC locks the row and refuses a decision that contradicts a recorded one or an
+    application no longer awaiting approval (DecisionConflict); a repeat of the same decision is a no-op.
+    An approval here is intent only: it never sets approved_at, and Submit still needs the signed
+    approve_application RPC. Raises on any failure (the dashboard answers 503/409, state untouched)."""
     if decision not in ("approved", "rejected"):
         raise ValueError(f"unknown dashboard decision: {decision}")
     row_id = int(application_id)
-    run_id = log_application_run(
-        application_id=row_id, kind="submit", adapter=DASHBOARD_ADAPTER, host="dashboard-api",
-        started_at=datetime.now(timezone.utc), outcome="skipped",
-        stop_reason=f"{decision} via dashboard" + (f": {reason}" if reason else ""),
-        details={"decision": decision, "reason": reason})
-    if run_id is None:
+    params = {"p_run_id": str(uuid.uuid4()), "p_application_id": row_id, "p_decision": decision,
+              "p_reason": _clip(reason, 500), "p_host": "dashboard-api"}
+    try:
+        run_id = _retry(lambda: _rpc("record_dashboard_decision", params), give_up=_is_decision_conflict)
+    except Exception as exc:
+        if _is_decision_conflict(exc):
+            raise DecisionConflict(str(exc)) from exc
+        raise
+    if not run_id:
         raise RuntimeError(f"could not record dashboard decision for {application_id}")
-    if decision == "rejected":
-        update_job_application_stage(row_id, "withdrawn")
 
 
 def get_dashboard_decisions():
-    """{application_id (str): (decision, reason)} from the dashboard's application_runs rows, newest wins."""
-    result = _retry(lambda: get_client().table("application_runs").select("application_id,details,ended_at")
-                    .eq("adapter", DASHBOARD_ADAPTER).order("ended_at").execute())
+    """{application_id (str): (decision, reason)}: the LATEST dashboard decision per application, read
+    server-side (DISTINCT ON) and keyset-paginated so no page cap can hide a newer decision."""
     decisions = {}
-    for row in result.data or []:
-        details = row.get("details") or {}
-        if details.get("decision") in ("approved", "rejected"):
-            decisions[str(row["application_id"])] = (details["decision"], details.get("reason"))
-    return decisions
+    after = 0
+    while True:
+        rows = _retry(lambda: _rpc("get_dashboard_decisions_page",
+                                   {"p_after": after, "p_limit": _DECISION_PAGE})) or []
+        for row in rows:
+            decisions[str(row["application_id"])] = (row["decision"], row.get("reason"))
+        if len(rows) < _DECISION_PAGE:
+            return decisions
+        after = max(row["application_id"] for row in rows)
+
+
+def get_applications_awaiting_approval(limit=200):
+    """Rows the operator can approve (preview done, not yet approved), oldest first: the dashboard queue."""
+    result = _retry(lambda: get_client().table("job_applications")
+                    .select("id,company,role,platform,resume_file_ref,created_at")
+                    .eq("stage", "ready_to_submit").eq("automation_status", "ready_for_review")
+                    .order("created_at", desc=False).limit(limit).execute())
+    return result.data or []
+
+
+def get_unsigned_approval_intents():
+    """Ids the dashboard approved (intent) that still wait for the signed approve_application step."""
+    approved = [int(k) for k, (decision, _) in get_dashboard_decisions().items() if decision == "approved"]
+    ids = []
+    for start in range(0, len(approved), 200):
+        chunk = approved[start:start + 200]
+        rows = _retry(lambda: get_client().table("job_applications").select("id").in_("id", chunk)
+                      .eq("automation_status", "ready_for_review").execute())
+        ids.extend(row["id"] for row in rows.data or [])
+    return ids
 
 
 def request_takeover(application_id, lease_id, kind, reason):

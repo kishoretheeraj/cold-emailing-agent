@@ -44,6 +44,24 @@ budget is shared).
    `dashboard.env` (`openssl rand -hex 32`).
 4. Watched first runs (section 4), then `sudo bash provision-jobagent24.sh <tag> --enable-timers`.
 
+### Redeploying a running install
+
+`provision-jobagent24.sh <new-tag>` is safe to repeat; it never edits code under live units. Exact sequence:
+
+1. Takes `/var/lock/jobagent24-deploy.lock` (a second concurrent run exits 1).
+2. Records which `jobagent24-*` timers and the api were active.
+3. Stops the timers, then every `jobagent24-*` service (a running oneshot is waited for). Old-stack units are never touched.
+4. Fetches, verifies the signed tag, checks it out, upgrades the venv (`pip install`).
+5. Installs units, `daemon-reload`.
+6. Restarts the timers that were active (all four with `--enable-timers`).
+7. If the api was active: `systemctl restart jobagent24-api`, then polls `http://127.0.0.1:8024/api/health` for up to 30 s. No healthy answer exits 1 (`journalctl -u jobagent24-api -n 50`).
+
+If the script fails between 3 and 7 the namespace stays **stopped** deliberately. Fix the cause and re-run. Migration `20261013000000` must be pushed (`db_migrate.yml` dryrun, then push) before the new tag runs; the dashboard decision RPC and the document lease depend on it.
+
+### Approval flow (where the gate lives)
+
+The dashboard's Approve is intent: it records an `application_runs` row (adapter `dashboard`) and never sets `approved_at`. Only the contact-manager's `/api/applications/[id]/submit`, which signs with `APPROVAL_SIGNING_KEY` and calls the `approve_application` RPC, makes a row submittable. `apply_worker --submit` takes only rows that RPC approved and re-verifies the signature. The dashboard API deliberately does not hold the key. The worker logs dashboard approvals still awaiting the signed step (`[APPLY-WORKER] ... await the signed approve_application step`).
+
 ## 4. Verify each service
 
 | Service | Command | Expect |

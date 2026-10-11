@@ -81,6 +81,29 @@ def test_provision_script_is_namespaced_and_leaves_the_old_stack_alone():
         text = f.read()
     assert "APP=/opt/jobagent24" in text and "ETC=/etc/jobagent24" in text
     assert not re.search(r"/opt/job-agent\b", text)
-    assert "rm -rf" not in text and "systemctl stop" not in text
+    assert "rm -rf" not in text
+    # the only stops are of this namespace's own units
+    stops = re.findall(r"systemctl stop (\S+)", text)
+    assert stops and all(s.startswith('"jobagent24-') for s in stops)
     assert "--enable-timers" in text and "uvicorn" in text
     assert _ARMED_SETTER not in text
+
+
+def _provision():
+    with open(os.path.join(_ROOT, "deploy", "beelink", "provision-jobagent24.sh")) as f:
+        return f.read()
+
+
+def test_provision_quiesces_before_touching_code_and_verifies_the_api_after():
+    text = _provision()
+    order = [text.index(s) for s in (
+        "flock -n 9", "systemctl stop", "checkout -q", 'install -q -r "$APP/requirements-beelink.txt"',
+        "systemctl daemon-reload", "systemctl restart jobagent24-api.service", "/api/health")]
+    assert order == sorted(order)
+
+
+def test_provision_restarts_only_what_was_running_and_fails_on_an_unhealthy_api():
+    text = _provision()
+    assert "WAS_ACTIVE_TIMERS" in text and '[ "$WAS_API_ACTIVE" -eq 1 ]' in text
+    assert '"status":"ok"' in text
+    assert "exit 1" in text.split("/api/health")[1]

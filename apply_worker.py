@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import apply_agent
+import ats_platform
 import claude_subscription
 import config
 import db
@@ -128,6 +129,49 @@ def _prepare_documents(job):
         return False
 
 
+# ── Document pass (v2) ─────────────────────────────────────────────────────────
+
+def _finish_documents(job, lease, ok, reason=None):
+    try:
+        if not db.finish_document_generation(job["id"], lease, ok, reason):
+            log.warning(f"[APPLY-WORKER] | {job.get('company')} | document lease was already lost")
+    except Exception as exc:
+        log.warning(f"[APPLY-WORKER] | {job.get('company')} | could not release the document lease: {exc}")
+
+
+def _run_document_pass(limit):
+    """With APPLY_RESUME_V2 on, claim saved rows that have no documents yet (their own query: the preview
+    queue only holds rows that already have them), tailor each under a 'preparing' lease and hand it on:
+    success -> idle (so the preview below can claim it), failure -> failed_retryable with a backoff and
+    the existing resume worker still free to build it. Returns the number of errors."""
+    if not config.APPLY_RESUME_V2:
+        return 0
+    now = datetime.now(timezone.utc)
+    excluded = sorted(set(ats_platform.unpreparable_platforms()))
+    pool = db.get_document_candidates(config.APPLY_PREVIEW_POOL, exclude_platforms=excluded)
+    jobs = [j for j in pool if apply_agent._backoff_elapsed(j, now)][:limit]
+    errors = 0
+    for job in jobs:
+        if _paused() or db.get_approved_application_ids():
+            break
+        lease = db.claim_application(job["id"], "preparing")
+        if lease is None:
+            continue
+        try:
+            ok = _prepare_documents(job)
+            reason = None if ok else "v2 documents were not produced"
+        except claude_subscription.ClaudeSubscriptionError as exc:
+            _finish_documents(job, lease, False, f"Claude subscription unavailable: {exc}")
+            log.warning(f"[APPLY-WORKER] | {job.get('company')} | Claude subscription unavailable, stopping: {exc}")
+            return errors + 1
+        except Exception as exc:
+            errors += 1
+            ok, reason = False, f"v2 documents failed: {exc}"
+            log.warning(f"[APPLY-WORKER] | {job.get('company')} | document error: {exc}")
+        _finish_documents(job, lease, ok, reason)
+    return errors
+
+
 # ── Prepare ────────────────────────────────────────────────────────────────────
 
 def run_prepare(limit):
@@ -140,9 +184,9 @@ def run_prepare(limit):
             log.info("[APPLY-WORKER] | prepare | display busy, skipping this run")
             return 0
         db.recover_stale_leases(config.APPLY_AGENT_LEASE_STALE_SECONDS)
+        errors = _run_document_pass(limit)
         jobs = apply_agent.preview_candidates()
         log.info(f"[APPLY-WORKER] | START | prepare | candidates={len(jobs)}")
-        errors = 0
         prepared = 0
         for job in jobs:
             # The limit counts rows actually worked on; a row this host has to skip costs nothing.
@@ -195,6 +239,19 @@ def _daily_room():
     return cap - used
 
 
+def _note_unsigned_intents():
+    # Dashboard approvals are intent only. They are surfaced here (ids only) and never turned into a
+    # submission: the signed approve_application RPC (contact-manager tap) is the one gate.
+    try:
+        waiting = db.get_unsigned_approval_intents()
+    except Exception as exc:
+        log.warning(f"[APPLY-WORKER] | submit | could not read dashboard approval intents: {exc}")
+        return
+    if waiting:
+        log.info(f"[APPLY-WORKER] | submit | {len(waiting)} dashboard approval(s) await the signed "
+                 f"approve_application step: {waiting}")
+
+
 def run_submit(limit):
     """Submit up to `limit` approved rows, oldest approval first. Returns the number that errored."""
     if os.environ.get("APPLY_AGENT_ARMED") != "1":
@@ -203,6 +260,7 @@ def run_submit(limit):
     if _paused():
         log.info("[APPLY-WORKER] | PAUSED | submit")
         return 0
+    _note_unsigned_intents()
     ids = db.get_approved_application_ids()[:limit]
     if not ids:
         return 0
