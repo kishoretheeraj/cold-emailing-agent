@@ -97,7 +97,7 @@ export default function ReviewDetail({
     RESUME_KEY_PATTERN.test(key),
   );
   const score = matchScore(app.pick_score);
-  const posted = formatDate(app.posted_at);
+  const posted = formatDate(app.posted_at ?? null);
 
   return (
     <div className="flex min-h-screen flex-col bg-bg text-fg">
