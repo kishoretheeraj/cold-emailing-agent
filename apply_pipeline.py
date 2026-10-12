@@ -80,13 +80,14 @@ OWNER_ID = f"{uuid.uuid4().hex}:{os.getpid()}"
 # Attempt phases, in order. "navigating" is persisted BEFORE the first navigation: from that point
 # the remote site has seen us (cookies, tracking, server-side drafts), so nothing at or after it
 # ever auto-requeues. Only a crash while still at "started" (nothing sent anywhere) is retryable.
-PHASES = ("started", "navigating", "navigated", "filled", "uploaded", "otp_requested", "otp_entered",
-          "final_reached")
+PHASES = ("started", "navigating", "navigated", "filled", "uploaded", "otp_requested",
+          "magic_link_open", "otp_entered", "final_reached")
 REQUEUE_OK_PHASES = ("started",)
 BAD_OUTCOMES = ("failed", "blocked", "unsupported", "needs_reconciliation", "dry_run_incomplete")
 STATE_FOR_STATUS = {"dry_run_ok": "done", "submitted": "done"}  # all others map to themselves
 STATE_STATUSES = frozenset(("pending", "in_progress", "done", "failed", "blocked", "unsupported",
-                            "needs_reconciliation", "dry_run_incomplete"))
+                            "needs_reconciliation", "dry_run_incomplete", "submitted_unconfirmed",
+                            "needs_review", "skipped"))
 
 
 class Shutdown(BaseException):
@@ -950,6 +951,11 @@ def dry_run_missing(facts):
     return miss
 
 
+def live_preconditions(facts):
+    """Live submit gate: the same bar as the dry run. Returns the missing list (empty = OK)."""
+    return dry_run_missing(facts)
+
+
 def write_result(job_id, started_at, finished_at, status, detail, latency_s, attempt_id=None):
     """The ONLY writer of result lines; makes 'submitted' impossible while DRY_RUN is on and
     'dry_run_ok' impossible unless every dry-run condition is met."""
@@ -1585,7 +1591,12 @@ def classify_question(text, kind="select"):
         rest = q[:m.start()] + " " + q[m.end():]
         if _NEG_RE.search(rest) or _REQUIRE_RE.search(rest) or not _WORK_RE.search(q):
             return _review("negation_ambiguous")
-        return _review("without_sponsorship_ambiguous")
+        if current_only:
+            # Present OPT eligibility differs from the future H-1B need, so "No" would be untrue.
+            return _review("current_scope_ambiguous")
+        # Operator-approved: authorized via OPT but needs H-1B sponsorship later,
+        # so a plain "work without sponsorship" ask is truthfully No.
+        action = ("answer", "sponsorship", "No", "")
     elif _NEG_RE.search(q):
         return _review("negation_ambiguous")
     elif _REQUIRE_RE.search(q):
@@ -2165,6 +2176,11 @@ def _run_job(scope, job, jid, platform, url, attempt_id):
             return "dry_run_incomplete", f"missing={','.join(missing)} " + fmt_facts(facts)
         ev("dry_run_submit_skipped", jid, submit_candidates=1)
         return "dry_run_ok", "dry_run_submit_skipped " + fmt_facts(facts)
+    # Live preconditions: the same bar as the dry run. Any gap ends the job as
+    # needs_review WITHOUT clicking submit.
+    missing = live_preconditions(facts)
+    if missing:
+        return "needs_review", "live_precondition_missing=" + ",".join(missing) + " " + fmt_facts(facts)
     return "submitted", live_submit(target, None)
 
 
