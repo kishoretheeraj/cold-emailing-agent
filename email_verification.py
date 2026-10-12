@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 import config
 import gmail
+import otp_client
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,15 @@ def _extract(body, allowed_link_hosts):
 def wait_for_verification(sender_domains, since, timeout_seconds=60, poll_seconds=5,
                           allowed_link_hosts=()):
     """{"code": ...} or {"link": ...} from the newest matching message after `since`, or None."""
+    try:
+        found = otp_client.get_verification_code(
+            sender_domains, since, timeout_seconds=timeout_seconds,
+            kind="link" if allowed_link_hosts else "otp", raise_unreachable=True)
+        if found:
+            log.info(f"[APPLY-VERIFY] | broker returned a {'code' if 'code' in found else 'link'}")
+        return found
+    except otp_client.BrokerUnreachable:
+        log.info("[APPLY-VERIFY] | broker unreachable, falling back to IMAP")
     address, password = config.RECEIPT_IMAP_ADDRESS, config.RECEIPT_IMAP_APP_PASSWORD
     if not (address and password):
         log.info("[APPLY-VERIFY] | receipt inbox not configured")
