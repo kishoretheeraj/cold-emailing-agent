@@ -19,14 +19,23 @@ installed in the dev environment and apply_pipeline imports it at module level.
 import sys
 from unittest.mock import MagicMock
 
+_sentinel = object()
+_had = {name: sys.modules.get(name, _sentinel) for name in ("playwright", "playwright.sync_api")}
 _pw = MagicMock()
 _pw_sync = MagicMock()
 _pw_sync.Error = Exception
 _pw_sync.TimeoutError = Exception
-sys.modules.setdefault("playwright", _pw)
-sys.modules.setdefault("playwright.sync_api", _pw_sync)
-
-import apply_pipeline as ap  # noqa: E402
+sys.modules["playwright"] = _pw
+sys.modules["playwright.sync_api"] = _pw_sync
+try:
+    import apply_pipeline as ap  # noqa: E402
+finally:
+    for _name, _prev in _had.items():
+        if _prev is _sentinel:
+            sys.modules.pop(_name, None)
+        else:
+            sys.modules[_name] = _prev
+del _sentinel, _had, _pw, _pw_sync, _name, _prev
 
 
 # ---------------------------------------------------------------- helpers
