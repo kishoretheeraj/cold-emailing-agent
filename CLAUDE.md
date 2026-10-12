@@ -1477,8 +1477,10 @@ records `active`/`rejected`. Passwords never appear in logs or reprs.
 (`gmail.fetch_inbox_since`), only matching senders after `since`, and returns a code (URLs stripped
 first; letter codes uppercase-only) or a link on an allowed host; never raises.
 `workday_adapter`: `enter_apply_flow` (Apply -> Apply Manually only), `authenticate` (vault sign-in,
-or signup with verification; "already in use", a refused login or a previously `rejected` entry
-raise `WorkdayStop("login")`, never a blind sign-in, reset or second account), `advance` (Next only
+or FULLY AUTOMATED signup with verification — Oct 12 2026 rule change: the "never create a Workday
+account" restriction is LIFTED per the user's full-automation directive; "already in use" triggers
+the forgot-password recovery flow via the OTP broker rather than stopping; a previously `rejected`
+entry raises `WorkdayStop("login")`), `advance` (Next only
 while the step bar shows a later step and the label is Next/Continue/Save and Continue; returns
 False on Review; refuses anything reading like Submit). Tested against a real browser and
 `tests/fixtures/workday_tenant.html` (both UI generations; the Review step's footer button turns
