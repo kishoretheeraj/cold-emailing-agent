@@ -1,0 +1,209 @@
+[
+ {
+  "id": "S01",
+  "name": "GET http://100.77.193.40:8765/health (tailscale address) must fail/refuse",
+  "status": "PASS",
+  "observed": "curl -> 'curl: (7) Failed to connect to 100.77.193.40 port 8765 after 0 ms: Could not connect to server\\n000'",
+  "severity": "-",
+  "fix": "Bind 127.0.0.1 only (uvicorn --host 127.0.0.1)",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S02",
+  "name": "GET http://10.20.48.31:8765/health (LAN address) must fail/refuse",
+  "status": "PASS",
+  "observed": "curl -> 'curl: (7) Failed to connect to 10.20.48.31 port 8765 after 0 ms: Could not connect to server\\n000'",
+  "severity": "-",
+  "fix": "Bind 127.0.0.1 only (uvicorn --host 127.0.0.1)",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S03",
+  "name": "only 127.0.0.1:8765 is listening (no 0.0.0.0 / [::])",
+  "status": "PASS",
+  "observed": "listeners on :8765 = '127.0.0.1:8765'",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S03b",
+  "name": "IPv6 loopback [::1]:8765 not listening",
+  "status": "PASS",
+  "observed": "curl -> 'curl: (7) Failed to connect to ::1 port 8765 after 0 ms: Could not connect to server\\n000'",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S04",
+  "name": "gmail_app_password mode 600",
+  "status": "PASS",
+  "observed": "600 jobagent:jobagent /etc/jobagent24/gmail_app_password",
+  "severity": "-",
+  "fix": "chmod 600; chown jobagent:jobagent",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S04b",
+  "name": "gmail_app_password owned by the service user (jobagent), not root-readable by others",
+  "status": "PASS",
+  "observed": "600 jobagent:jobagent /etc/jobagent24/gmail_app_password",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "S04c",
+  "name": "/etc/jobagent24 directory not world-writable",
+  "status": "PASS",
+  "observed": "750 root:jobagent /etc/jobagent24",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "S05",
+  "name": "SQLite db / -wal / -shm are mode 600",
+  "status": "PASS",
+  "observed": "600 jobagent:jobagent /opt/otp-broker/otp-broker.db | 600 jobagent:jobagent /opt/otp-broker/otp-broker.db-shm | 600 jobagent:jobagent /opt/otp-broker/otp-broker.db-wal",
+  "severity": "-",
+  "fix": "Store.__init__ umask(0o077)+chmod; also set UMask=0077 in unit (present)",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S05b",
+  "name": "/opt/otp-broker itself not world-accessible (750)",
+  "status": "PASS",
+  "observed": "750 jobagent:jobagent /opt/otp-broker | 775 jobagent:jobagent /opt/otp-broker/.venv",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "S05e",
+  "name": "/opt/otp-broker/.venv is 775 (group-writable by jobagent group)",
+  "status": "INFO",
+  "observed": "750 jobagent:jobagent /opt/otp-broker | 775 jobagent:jobagent /opt/otp-broker/.venv",
+  "severity": "-",
+  "fix": "chmod -R g-w,o-rwx .venv; the venv is executable code run by the service",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S05d",
+  "name": "SQLite stores orphan OTP results in plaintext (waiters.result); consumed table grows unbounded",
+  "status": "INFO",
+  "observed": "waiters columns / stored-results / consumed rows: \"['request_id', 'fingerprint', 'sender_domains', 'after_ts', 'kind', 'hint', 'allowed_link_hosts', 'expires_at', 'result']\\n(0,) (0,)\". Code: Store.set_result persists {'code': ...} until the waiter row is deleted (expiry or retry pickup); `consumed` is never purged.",
+  "severity": "-",
+  "fix": "Delete orphan result immediately on pickup, purge consumed rows > 7 days, keep db 600 (already)",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S06",
+  "name": "journal (last 1h): no 6-digit OTP-looking values after stripping timestamps/uuids/message-ids/ip:port",
+  "status": "PASS",
+  "observed": "2024 lines scanned; 6-digit candidates=0 []; keyword+digits lines=0 []. METHOD: strip journald prefix, embedded timestamps, UUIDs, <message-ids>, ip:port; regex (?<![\\w.:/-])\\d{6}(?![\\w.:/-]); plus keyword-adjacent 4-8 digit scan. Note: live traffic in this window was only non-matching test waiters, so a real delivery path (which logs sender/message-id/timestamp only, per broker.py) was NOT exercised against a real code; the simulated deliveries run outside journald in test_races.",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S06b",
+  "name": "journal (last 24h) same scan",
+  "status": "PASS",
+  "observed": "2024 lines; candidates=0 []; keyword lines=0",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S07",
+  "name": "journal contains no app-password-shaped token (16 lowercase letters / 4x4 groups)",
+  "status": "PASS",
+  "observed": "0 suspicious lines (values withheld)",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S08",
+  "name": "Log hygiene: wait registration logs sender_domains + timeout (job-site names), delivery logs sender + message-id",
+  "status": "INFO",
+  "observed": "294 registrations/h; sample: \"2:00:18,766 INFO otp_broker.broker wait a4bf8e7c-b1d5-47d7-8d91-4593f41c9a55 registered kind=otp domains=[''] timeout=1s\\nOct 12 02:00:19 beelink uvicorn[184584]: 2026-10-12 02:00:19,973 INFO otp_broker.broker wait d96a8104-7888-4f77-9e96-23f0f407e09d registered kind=otp domains=['*', '.'] timeout=1s\". Reveals which employers the agent is applying to to anyone with journal access; no codes/urls/hints logged.",
+  "severity": "-",
+  "fix": "Acceptable for a local box; hash or truncate domains if journal is shipped off-host",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S09",
+  "name": "service runs as non-root User=jobagent (unit AND live process)",
+  "status": "PASS",
+  "observed": "Restart=always TimeoutStopUSec=1min 30s WatchdogUSec=0 MemoryMax=infinity CapabilityBoundingSet=cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf cap_checkpoint_restore User=jobagent PrivateTmp=yes ProtectHome=yes ProtectSystem=strict NoNewPrivileges=yes RestrictAddressFamilies=~ | proc: jobagent  186175 /opt/otp-broker/.venv/bin/python3 /opt/otp-broker/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8765 --workers 1 | Uid:\t999\t999\t999\t999 CapEff:\t0000000000000000 NoNewPrivs:\t1",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "S10",
+  "name": "no effective capabilities",
+  "status": "PASS",
+  "observed": "Uid:\t999\t999\t999\t999 CapEff:\t0000000000000000 NoNewPrivs:\t1",
+  "severity": "-",
+  "fix": "CapabilityBoundingSet= (empty), AmbientCapabilities=",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S11",
+  "name": "systemd hardening exposure score",
+  "status": "INFO",
+  "observed": "\u2192 Overall exposure level for otp-broker.service: 8.3 EXPOSED :-(",
+  "severity": "-",
+  "fix": "Add: MemoryMax=256M, RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX, CapabilityBoundingSet=, SystemCallFilter=@system-service, ProtectKernelTunables/Modules, RestrictNamespaces, LockPersonality, TimeoutStopSec=15, IPAddressDeny/Allow to Gmail only if feasible",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S12",
+  "name": "resource limits set (MemoryMax / TasksMax)",
+  "status": "FAIL",
+  "observed": "Restart=always TimeoutStopUSec=1min 30s WatchdogUSec=0 MemoryMax=infinity CapabilityBoundingSet=cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf cap_checkpoint_restore User=jobagent PrivateTmp=yes ProtectHome=yes ProtectSystem=strict NoNewPrivileges=yes RestrictAddressFamilies=~",
+  "severity": "P2",
+  "fix": "MemoryMax=256M TasksMax=64",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S13",
+  "name": "API requires local authentication (any local user can call /health, /v1/wait)",
+  "status": "FAIL",
+  "observed": "as user `nobody`: '{\"imap_connected\":true,\"last_successful_poll\":\"2026-10-12T06:28:43.529023+00:00\",\"active_waiter_count\":0,\"degraded\":false,\"uptime_seconds\":677.0,\"last_auth_failure\":null}'. /v1/wait is unauthenticated: any local account, container with host networking, or SSRF-able local service can request OTPs/magic links for any sender domain (allowed_link_hosts is also caller-supplied).",
+  "severity": "P1",
+  "fix": "Bind a unix socket with mode 660 owned by jobagent:jobagent-clients, or require a bearer token from a 600 file; restrict sender_domains to a server-side allowlist",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "S14",
+  "name": "API schema endpoints disabled",
+  "status": "FAIL",
+  "observed": "/openapi.json -> 200",
+  "severity": "P2",
+  "fix": "FastAPI(docs_url=None, redoc_url=None, openapi_url=None)",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "S15",
+  "name": "[CODE-REVIEW] sender authenticity: From header trusted, no SPF/DKIM/DMARC check",
+  "status": "FAIL",
+  "observed": "broker._matches/domain_matches use only the parsed From address. Gmail normally spam-folders spoofed mail, but anything delivered to INBOX with a forged From: noreply@<allowed-domain> (or a legit-but-compromised/forwarding sender, or a lookalike 'Reply-To' trick) is accepted as the OTP. Also kind=link returns attacker-chosen URLs on any allowlisted host.",
+  "severity": "P1",
+  "fix": "Require Authentication-Results: dkim=pass/dmarc=pass (Gmail adds it) with header.d aligned to sender_domains, and Return-Path/envelope domain consistent; skip messages in SPAM/with X-Gm-Spam",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "S16",
+  "name": "[CODE-REVIEW] hint is caller-controlled substring match over full message body",
+  "status": "PASS",
+  "observed": "Not exploitable beyond own mailbox; noted only.",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ }
+]
