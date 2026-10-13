@@ -1347,12 +1347,25 @@ CHALLENGE_JS = r"""
       if (!ok) unsolved++;
     }
   }
+  // Unknown-provider containers (fail closed): a visible element whose class, id, or
+  // iframe src mentions "captcha" but belongs to no known provider widget has no response
+  // field this detector can read, so it must never be reported 'clear'. Return the
+  // 'unknown' sentinel; parse_challenge_result maps it to 'error'.
+  const knownSel = providers.map((p) => p.widget).join(', ');
+  for (const el of document.querySelectorAll('[class*="captcha" i], [id*="captcha" i], iframe[src*="captcha" i]')) {
+    if (el.closest(knownSel) || el.querySelector(knownSel)) continue;
+    if (el.tagName === 'IFRAME' && providers.some((p) => p.frame.test((el.src || '').toLowerCase()))) continue;
+    if ([...seen].some((w) => w === el || w.contains(el) || el.contains(w))) continue;
+    if (vis(el)) return 'unknown';
+  }
   return (total === 0 || unsolved === 0) ? 'clear' : 'active';
 }
 """
 
 
 def parse_challenge_result(value):
+    # 'unknown' = visible captcha container of an unrecognized provider (CHALLENGE_JS sentinel):
+    # fail closed as 'error', never 'clear'. Anything else unrecognized is also 'error'.
     return value if value in ("clear", "active") else "error"
 
 

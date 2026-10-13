@@ -194,3 +194,106 @@ on, the context redesign. Until then, the fail-closed tri-state stands.
 All three redesigns are **blocked on Kishore's decision** re: the bot-detection tradeoff of
 per-job storage partitions (see "The redesign" above). No code for the redesign has been
 written.
+
+## Agreed revised designs (2026-10-12 closeout)
+
+This section records the designs agreed between the Codex review and the Claude solutions
+(claude_solutions.md ITEMS B, C, D) at closeout. It supersedes nothing above; it refines the
+deferred designs and states exactly what was and was not changed in this closeout.
+
+### Finding 1 — service-worker isolation: agreed revisions
+
+- **Storage filtering on both import and export.** When a per-tenant `storage_state` is
+  loaded into a fresh context, and again when it is captured at job end, cookies and origin
+  storage are filtered to the approved origin allowlist. IndexedDB is included in that filter
+  whenever IndexedDB capture is enabled (`storage_state(indexed_db=True)`); it is never cloned
+  unfiltered.
+- **B2 uses a sanitized tenant-specific profile.** If the persistent-context fallback (B2) is
+  used, each tenant gets its own profile directory, sanitized before first use. There is never
+  a shared "golden copy" profile cloned across tenants or jobs.
+- **Fingerprint continuity is a measured hypothesis, not a claim.** A fresh context in the same
+  browser build is expected to be close to the warm profile, but viewport, screen, and other
+  context defaults may differ and must be measured against the fake ATS and one supervised
+  real ATS before the soak. The design does not assert identical fingerprints.
+- **Enforcement installed before any job page exists.** Routes, init scripts
+  (`LIVE_NET_GUARD_JS`), and WebSocket handlers are installed on the context before the first
+  job page is created or navigated. A job page that is created before enforcement is in place
+  is a defect, not a race to be tolerated.
+- **A revert reopens the finding.** Reverting to CDP attach on the shared default context
+  reopens Finding 1 in full; the "What was done without the redesign" mitigations are not a
+  substitute.
+
+### Finding 2 — WebSocket enforcement: agreed revisions
+
+- **Worker socket coverage is a mandatory acceptance gate in the spike.** Dedicated and
+  shared-worker WebSocket paths must be covered. The constructor overrides are tested
+  adversarially across frames, popups, and every worker creation path (`new Worker`,
+  `SharedWorker`, blob and data URLs, module workers). The spike does not pass until these
+  tests exist and pass.
+- **Pin the tested Playwright version.** The `route_web_socket` behavior relied on is
+  version-specific. The spike pins the exact Playwright version it validated, and an upgrade
+  reruns the gate.
+- **Tests must show zero upstream handshakes.** Acceptance is measured at the network edge
+  (fake ATS server logs or a local capture), not by the absence of a JS error: no WebSocket
+  handshake reaches any upstream host during a job.
+- **Explicit operator decision on workers.** The operator decides whether workers are
+  prohibited outright for job contexts. If prohibited, the compatibility consequences (ATS
+  pages that depend on workers failing or degrading) are accepted and documented; if not,
+  worker socket coverage above is the only acceptable alternative.
+- **Extension exclusion verified.** Browser extensions are excluded from job contexts and the
+  exclusion is verified, with particular attention to B2 persistent contexts where an
+  extension can be loaded from the profile.
+- **Scope of the claim.** The design claims per-job WebSocket enforcement for the job's own
+  context only. It does not claim universal network-exfiltration prevention, and no document
+  or report may describe it that way.
+
+### No code for Findings 1 and 2 in this change
+
+No code for Findings 1 or 2 is implemented in this closeout. Implementation is blocked on the
+operator's Phase-0 decision, which must cover all four points:
+
+1. Accept the isolated-context architecture (per-job Playwright-created context) in place of
+   CDP attach to the shared Chrome.
+2. B1 first (fresh context plus per-tenant `storage_state`), with B2 (sanitized per-tenant
+   persistent context) as the fallback.
+3. The per-tenant `storage_state` session model, including the import/export filtering above.
+4. The soak go/no-go criteria (challenge rate, login persistence, zero upstream handshakes,
+   zero service-worker registrations) before any live traffic.
+
+### Finding 3 — nested widget token dedup: closeout
+
+Deferral of the `ChallengeLedger` is **agreed, with adjustments**. Three assertions made in the
+deferral argument (claude_solutions.md ITEM D) are **withdrawn** as unsupported:
+
+- No claim that a ledger necessarily requires hooking provider globals (`grecaptcha.render`,
+  `turnstile.render`) in the main world. Other designs exist; this was not evaluated.
+- No claim that a ledger necessarily raises challenge rates. That was a consequence of the
+  hooking assumption above and falls with it.
+- No claim that a ledger constitutes a solver or the first half of one. Token bookkeeping is
+  not solving.
+
+The deferral stands on the remaining grounds: the pipeline has no token consumer under the
+detect-and-hand-off policy, the detector already fails closed on every ambiguity, and a ledger
+cannot be tested here without real widgets.
+
+**Closeout checks.** The six detector fixtures from ITEM D are implemented as
+`tests/test_challenge_detector.py` (24 tests, fake page, no browser): zero widgets clear; one
+empty field active; one filled field clear; two widgets with one filled active, with a source
+assertion that the per-widget nearest-ancestor binding is present; unrecognized provider
+error; SPA remount reflects the latest DOM with no caching on either side.
+
+**One real bug fixed.** A visible captcha container from an unrecognized provider (no known
+widget selector, no known iframe pattern) previously fell through the provider loop with
+`total === 0` and read `'clear'`. `CHALLENGE_JS` now returns the `'unknown'` sentinel for such
+containers (class, id, or iframe src matching "captcha", excluding known providers and
+already-counted widgets), and `parse_challenge_result` maps `'unknown'` to `'error'`, so the
+job is blocked at `challenge_inspection_error` instead of proceeding. Unreadable fields on a
+*known* provider are unchanged: they remain `'active'` (one 30 s wait, then blocked).
+
+**Accepted residual.** The operator accepts that a stale or wrong-widget token can read
+`'clear'` for the seconds before the widget itself clears it, leading to a server-side
+rejection classified `rejected` or `ambiguous`, never a silent `submitted`. The operator must
+confirm that the pipeline stays detect-and-hand-off. Finding 3 reopens only if the pipeline
+ever acts on a human-solved challenge automatically; at that point the `ChallengeLedger` is
+built with real-widget fixtures on a staging ATS, independent of the context redesign.
+
