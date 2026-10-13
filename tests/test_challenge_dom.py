@@ -145,6 +145,25 @@ def test_captcha_help_text_is_clear(context):
     assert detect(context, body) == "clear"
 
 
+def test_captcha_help_with_button_is_clear(context):
+    # Regression: a help div whose only widget-like descendant is a plain button is
+    # not a challenge widget (buttons alone do not satisfy the structure check).
+    body = FORM + (
+        '<div id="captcha-help" style="width:300px;height:80px">'
+        "<p>Having trouble? <button>Contact support</button></p></div>"
+    )
+    assert detect(context, body) == "clear"
+
+
+def test_standalone_captcha_input_is_unknown(context):
+    # A visible input whose own id is captcha-named is a challenge field even with
+    # no descendants; the structure check covers the element itself, not only children.
+    body = FORM + (
+        '<input id="captcha-answer" style="width:300px;height:40px">'
+    )
+    assert detect(context, body) == "unknown"
+
+
 # ── Unknown providers ──────────────────────────────────────────────────────────
 
 def test_unknown_provider_box_is_unknown_and_parses_to_error(context):

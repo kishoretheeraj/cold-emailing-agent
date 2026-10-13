@@ -164,8 +164,12 @@ widgets, stale tokens after expiry (~120s reCAPTCHA / ~300s Turnstile), and widg
   active / error): detect → wait once (30s) → give up (`blocked`). There is no code path that
   consumes a token, so token *binding* has no security consumer — only the fail-closed
   detector matters. It fails closed on inspection errors and on unrecognised providers
-  (a visible captcha-looking widget that maps to no known provider reads `unknown`, which
-  the Python side treats as `error` and blocks the job). It does NOT fail closed on a stale
+  detected by the scan (a visible captcha-looking element with widget-like structure —
+  an iframe, or an input/textarea/select inside or itself — that maps to no known
+  provider reads `unknown`, which the Python side treats as `error` and blocks the job).
+  The scan is heuristic and has documented gaps: it can miss a challenge input nested
+  inside a container that also wraps the invisible-reCAPTCHA badge, and a challenge
+  widget made only of buttons or links. It does NOT fail closed on a stale
   token or on a token belonging to a different widget instance: such a token can read
   `clear` until the provider itself clears or resets the response field. That window is an
   accepted residual: the submit then fails server-side and is classified

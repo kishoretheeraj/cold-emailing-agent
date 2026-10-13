@@ -1377,7 +1377,8 @@ CHALLENGE_JS = r"""
     if (isFrame ? isKnownFrame(el) : [...el.querySelectorAll('iframe')].some(isKnownFrame)) continue;
     if (counted.some((w) => w === el || w.contains(el) || el.contains(w))) continue;
     if (el.querySelector('.grecaptcha-badge')) continue;
-    if (!isFrame && !el.querySelector('iframe, input, textarea, select, button')) continue;
+    const isField = /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+    if (!isFrame && !isField && !el.querySelector('iframe, input, textarea, select')) continue;
     if (!vis(el)) continue;
     return 'unknown';
   }

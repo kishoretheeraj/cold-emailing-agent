@@ -144,8 +144,8 @@ def test_fixture5_js_unknown_check_excludes_known_providers_and_counted_widgets(
     # merely wraps the badge must be skipped.
     assert "el.querySelector('.grecaptcha-badge')" in CHALLENGE_JS
     # The help-text false positive: a candidate needs widget-like structure
-    # (an iframe or a frame/form control inside it) to count.
-    assert "iframe, input, textarea, select, button" in CHALLENGE_JS
+    # (an iframe or a frame/form control inside it, or be one itself) to count.
+    assert "iframe, input, textarea, select" in CHALLENGE_JS
 
 
 def test_fixture5_known_provider_with_unreadable_field_stays_active_not_error():
