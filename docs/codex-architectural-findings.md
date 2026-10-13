@@ -163,8 +163,13 @@ widgets, stale tokens after expiry (~120s reCAPTCHA / ~300s Turnstile), and widg
 - The pipeline **never solves captchas**. `check_challenge` is a tri-state gate (clear /
   active / error): detect → wait once (30s) → give up (`blocked`). There is no code path that
   consumes a token, so token *binding* has no security consumer — only the fail-closed
-  detector matters, and it already fails closed on every ambiguity (stale token, re-render,
-  invisible widget owning a field, inspection error).
+  detector matters. It fails closed on inspection errors and on unrecognised providers
+  (a visible captcha-looking widget that maps to no known provider reads `unknown`, which
+  the Python side treats as `error` and blocks the job). It does NOT fail closed on a stale
+  token or on a token belonging to a different widget instance: such a token can read
+  `clear` until the provider itself clears or resets the response field. That window is an
+  accepted residual: the submit then fails server-side and is classified
+  `rejected`/`ambiguous`, never counted as submitted.
 - The full fix (plan item 10c: `ChallengeLedger` with WeakMap uid per widget, provider APIs
   `grecaptcha.getResponse(widgetId)`, per-widget TTL tracking, five call-site updates) is
   **untestable in this environment** — no real challenge widgets, and the fake site can't
@@ -273,14 +278,17 @@ deferral argument (claude_solutions.md ITEM D) are **withdrawn** as unsupported:
   not solving.
 
 The deferral stands on the remaining grounds: the pipeline has no token consumer under the
-detect-and-hand-off policy, the detector already fails closed on every ambiguity, and a ledger
-cannot be tested here without real widgets.
+detect-and-hand-off policy; the detector fails closed on inspection errors and unrecognised
+providers, while a stale or wrong-widget token reading `clear` is an accepted residual
+handled server-side; and a ledger cannot be tested here without real widgets.
 
-**Closeout checks.** The six detector fixtures from ITEM D are implemented as
-`tests/test_challenge_detector.py` (24 tests, fake page, no browser): zero widgets clear; one
-empty field active; one filled field clear; two widgets with one filled active, with a source
-assertion that the per-widget nearest-ancestor binding is present; unrecognized provider
-error; SPA remount reflects the latest DOM with no caching on either side.
+**Closeout checks.** Coverage. Python-side behaviour (the `unknown`/`error` parse mapping, tri-state aggregation
+across the page and the application frame, and the wait-once-then-block flow) is covered by
+`tests/test_challenge_detector.py` (24 tests). Real-DOM behaviour of `CHALLENGE_JS` (badge
+exclusion, captcha-named wrappers and help text, unrecognised providers, empty / filled /
+mixed known widgets, invisible reCAPTCHA, SPA remount) is covered by
+`tests/test_challenge_dom.py`: executable fixtures run in headless Chromium via Playwright,
+skipped as a whole when no browser can be launched.
 
 **One real bug fixed.** A visible captcha container from an unrecognized provider (no known
 widget selector, no known iframe pattern) previously fell through the provider loop with

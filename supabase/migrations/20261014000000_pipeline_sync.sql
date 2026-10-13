@@ -218,6 +218,7 @@ begin
         with deduped as (
             select distinct on (r.id) r.*
             from jsonb_populate_recordset(null::public.pipeline_jobs, batch) as r
+            where r.id is not null and r.version is not null
             order by r.id, r.version desc
         )
         insert into public.pipeline_jobs as t
@@ -225,7 +226,6 @@ begin
         select r.id, r.company, r.role, r.url, r.platform, r.state,
                coalesce(r.queued_at, now()), r.version, now()
         from deduped as r
-        where r.id is not null and r.version is not null
         on conflict (id) do update set
             company   = excluded.company,
             role      = excluded.role,
@@ -241,6 +241,7 @@ begin
         with deduped as (
             select distinct on (r.attempt_id) r.*
             from jsonb_populate_recordset(null::public.pipeline_attempts, batch) as r
+            where r.attempt_id is not null and r.version is not null
             order by r.attempt_id, r.version desc
         )
         insert into public.pipeline_attempts as t
@@ -249,7 +250,6 @@ begin
         select r.attempt_id, r.job_id, r.phase, r.status, r.state, r.started_at, r.finished_at,
                r.detail, r.latency_s, r.dry_run, r.version, now()
         from deduped as r
-        where r.attempt_id is not null and r.version is not null
         on conflict (attempt_id) do update set
             job_id      = excluded.job_id,
             phase       = excluded.phase,
@@ -269,13 +269,13 @@ begin
         with deduped as (
             select distinct on (r.id) r.*
             from jsonb_populate_recordset(null::public.pipeline_submissions, batch) as r
+            where r.id is not null and r.version is not null
             order by r.id, r.version desc
         )
         insert into public.pipeline_submissions as t
             (id, job_id, attempt_id, submitted_at, confirmed, version, synced_at)
         select r.id, r.job_id, r.attempt_id, r.submitted_at, r.confirmed, r.version, now()
         from deduped as r
-        where r.id is not null and r.version is not null
         on conflict (id) do update set
             job_id       = excluded.job_id,
             attempt_id   = excluded.attempt_id,
@@ -290,6 +290,7 @@ begin
         with deduped as (
             select distinct on (r.id) r.*
             from jsonb_populate_recordset(null::public.pipeline_documents, batch) as r
+            where r.id is not null and r.version is not null
             order by r.id, r.version desc
         )
         insert into public.pipeline_documents as t
@@ -298,7 +299,6 @@ begin
         select r.id, r.job_id, r.attempt_id, r.kind, r.filename, r.sha256, r.byte_size,
                r.storage_path, r.created_at, r.version, now()
         from deduped as r
-        where r.id is not null and r.version is not null
         on conflict (id) do update set
             job_id       = excluded.job_id,
             attempt_id   = excluded.attempt_id,
@@ -317,6 +317,7 @@ begin
         with deduped as (
             select distinct on (r.id) r.*
             from jsonb_populate_recordset(null::public.pipeline_replies, batch) as r
+            where r.id is not null and r.version is not null
             order by r.id, r.version desc
         )
         insert into public.pipeline_replies as t
@@ -327,7 +328,6 @@ begin
                r.from_domain, r.received_at, r.kind, r.status_after, r.confidence,
                r.match_method, r.needs_review, r.subject, r.version, now()
         from deduped as r
-        where r.id is not null and r.version is not null
         on conflict (id) do update set
             application_id = excluded.application_id,
             job_id         = excluded.job_id,
@@ -351,13 +351,13 @@ begin
         with deduped as (
             select distinct on (r.id) r.*
             from jsonb_populate_recordset(null::public.pipeline_status_events, batch) as r
+            where r.id is not null and r.version is not null
             order by r.id, r.version desc
         )
         insert into public.pipeline_status_events as t
             (id, application_id, status, reply_id, "at", actor, version, synced_at)
         select r.id, r.application_id, r.status, r.reply_id, r."at", r.actor, r.version, now()
         from deduped as r
-        where r.id is not null and r.version is not null
         on conflict (id) do update set
             application_id = excluded.application_id,
             status         = excluded.status,

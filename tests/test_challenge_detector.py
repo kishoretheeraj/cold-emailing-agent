@@ -128,18 +128,24 @@ def test_fixture5_parse_unknown_is_error():
 
 def test_fixture5_js_returns_unknown_sentinel_for_unrecognized_captcha_containers():
     assert "return 'unknown'" in CHALLENGE_JS
-    # Narrow heuristic: class, id, or iframe src mentioning "captcha".
-    assert '[class*="captcha" i]' in CHALLENGE_JS
-    assert '[id*="captcha" i]' in CHALLENGE_JS
-    assert 'iframe[src*="captcha" i]' in CHALLENGE_JS
+    # Name heuristic covers captcha-like vendor names across id/class/name/title/aria-label/iframe-src.
+    assert "unknownName" in CHALLENGE_JS
+    assert "captcha|turnstile|arkose|geetest|datadome|perimeterx|awswaf" in CHALLENGE_JS
+    assert "nameOf(el)" in CHALLENGE_JS
 
 
 def test_fixture5_js_unknown_check_excludes_known_providers_and_counted_widgets():
-    # Known provider widgets/frames and anything already counted in `seen` must not be
+    # Known provider widgets/frames and anything already counted must not be
     # reported as unknown, otherwise every reCAPTCHA page would read 'error'.
     assert "el.closest(knownSel)" in CHALLENGE_JS
-    assert "providers.some((p) => p.frame.test(" in CHALLENGE_JS
-    assert "[...seen].some(" in CHALLENGE_JS
+    assert "knownFrame" in CHALLENGE_JS
+    assert "counted.some(" in CHALLENGE_JS
+    # The invisible-badge wrapper false positive: a captcha-named ancestor that
+    # merely wraps the badge must be skipped.
+    assert "el.querySelector('.grecaptcha-badge')" in CHALLENGE_JS
+    # The help-text false positive: a candidate needs widget-like structure
+    # (an iframe or a frame/form control inside it) to count.
+    assert "iframe, input, textarea, select, button" in CHALLENGE_JS
 
 
 def test_fixture5_known_provider_with_unreadable_field_stays_active_not_error():

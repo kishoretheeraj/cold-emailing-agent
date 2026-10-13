@@ -1347,16 +1347,39 @@ CHALLENGE_JS = r"""
       if (!ok) unsolved++;
     }
   }
-  // Unknown-provider containers (fail closed): a visible element whose class, id, or
-  // iframe src mentions "captcha" but belongs to no known provider widget has no response
-  // field this detector can read, so it must never be reported 'clear'. Return the
-  // 'unknown' sentinel; parse_challenge_result maps it to 'error'.
-  const knownSel = providers.map((p) => p.widget).join(', ');
-  for (const el of document.querySelectorAll('[class*="captcha" i], [id*="captcha" i], iframe[src*="captcha" i]')) {
+  // Unknown-provider containers: a visible captcha-looking element that is not
+  // (part of) a recognised provider widget is a challenge this detector cannot
+  // read. Report 'unknown' (-> 'error' Python-side, fail closed) instead of
+  // letting the known-provider count above report 'clear' for it.
+  // Exclusions, in order: structural tags; no captcha-ish name; inside or
+  // wrapping a known widget; a known provider frame (itself or a descendant);
+  // related to a widget already counted above; wrapping the invisible-reCAPTCHA
+  // badge; no widget-like structure (not an iframe and no frame/form control
+  // inside, e.g. help text); not visible.
+  const knownSel = '.g-recaptcha, .h-captcha, .cf-turnstile';
+  const knownFrame = /recaptcha|hcaptcha|challenges\.cloudflare|turnstile/;
+  const unknownName = /captcha|turnstile|arkose|geetest|datadome|perimeterx|awswaf/;
+  const skipTags = new Set(['HTML', 'HEAD', 'BODY', 'SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE']);
+  const isKnownFrame = (f) => knownFrame.test((f.src || '').toLowerCase());
+  const nameOf = (el) => [
+    el.id || '',
+    typeof el.className === 'string' ? el.className : '',
+    el.getAttribute('name') || '',
+    el.getAttribute('title') || '',
+    el.getAttribute('aria-label') || '',
+    el.tagName === 'IFRAME' ? (el.src || '') : '',
+  ].join(' ').toLowerCase();
+  const counted = [...seen];
+  for (const el of document.querySelectorAll('*')) {
+    if (skipTags.has(el.tagName) || !unknownName.test(nameOf(el))) continue;
     if (el.closest(knownSel) || el.querySelector(knownSel)) continue;
-    if (el.tagName === 'IFRAME' && providers.some((p) => p.frame.test((el.src || '').toLowerCase()))) continue;
-    if ([...seen].some((w) => w === el || w.contains(el) || el.contains(w))) continue;
-    if (vis(el)) return 'unknown';
+    const isFrame = el.tagName === 'IFRAME';
+    if (isFrame ? isKnownFrame(el) : [...el.querySelectorAll('iframe')].some(isKnownFrame)) continue;
+    if (counted.some((w) => w === el || w.contains(el) || el.contains(w))) continue;
+    if (el.querySelector('.grecaptcha-badge')) continue;
+    if (!isFrame && !el.querySelector('iframe, input, textarea, select, button')) continue;
+    if (!vis(el)) continue;
+    return 'unknown';
   }
   return (total === 0 || unsolved === 0) ? 'clear' : 'active';
 }
