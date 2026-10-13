@@ -1694,8 +1694,10 @@ combobox with no options in the inventory gets its open-list options read for th
 `_generate_screening_answers` from `candidate_profile.form_answers()` (derived from `master.json`; a
 fact it does not hold, such as a start year or GPA, is absent) and never from the answer bank or the
 model. `_PROFILE_QUESTION_PATTERNS` match the whole label, so a long question that merely mentions a
-school is not answered. A choice field takes a real option equal to a candidate, or the shortest one
-beginning with a multi-word candidate (`_pick_candidates`); a free-text box takes the first candidate.
+school is not answered. A choice field matches an explicit candidate alias (`_pick_candidates`),
+allowing only phone-code decorations or country suffixes on a city/state. Arbitrary prefixes can
+name a different country or school and are rejected, including in single-candidate comboboxes.
+A free-text box takes the first candidate.
 The chosen text lands in `screening_answers`, so the reviewer sees and can edit it and `submit()`
 replays it. `work_authorized_us` also matches "eligible to work", but never "work authorization
 status" (a status list must not get a "Yes"). The inventory reads Lever custom questions from the

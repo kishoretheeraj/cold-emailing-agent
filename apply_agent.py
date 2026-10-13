@@ -408,14 +408,15 @@ def _combobox_queries(candidates):
     return queries
 
 
-def _combobox_choose(page, field, candidates, timeout, click):
+def _combobox_choose(page, field, candidates, timeout, click, strict=False):
     # Finds the option the candidates match, trying the open list first and then a typed search
     # per candidate; clicks it when `click`. Returns the chosen option text or None.
     box = page.locator(field["selector"]).first
     single = len(candidates) == 1
     for query in _combobox_queries(candidates):
         options, labels = _combobox_menu(page, box, query, timeout)
-        choice = _pick_option(labels, candidates[0]) if single else _pick_candidates(labels, candidates)
+        choice = (_pick_option(labels, candidates[0]) if single and not strict
+                  else _pick_candidates(labels, candidates))
         if choice is None:
             _combobox_close(page, box, query)
             continue
@@ -450,23 +451,27 @@ def _combobox_options(page, field):
 
 
 def _pick_candidates(options, candidates):
-    # A list of acceptable answers, best first (candidate_profile.form_answers): an option equal to
-    # one wins; otherwise the shortest option beginning with a multi-word candidate ("Hanover, New
-    # Hampshire" -> "Hanover, New Hampshire, United States"; "United States" -> "United States +1",
-    # never "United States Minor Outlying Islands" when the shorter one is there). A one-word
-    # candidate never prefix-matches: "Engineering" must not pick "Engineering Physics".
+    # Profile facts need exact aliases. Allow only phone-code decorations and a country suffix
+    # on a city/state, never arbitrary prefixes that can name a different country or school.
     normed = [(o, _norm_option(o)) for o in (options or []) if _norm_option(o)]
     wanted = [_norm_option(c) for c in candidates if _norm_option(c)]
     for want in wanted:
         for original, o in normed:
             if o == want:
                 return original
-    for want in wanted:
-        if " " not in want:
+    for candidate in candidates:
+        want = _norm_option(candidate)
+        if not want:
             continue
-        hits = [(len(o), original) for original, o in normed if o.startswith(want + " ")]
-        if hits:
-            return min(hits)[1]
+        for original, _ in normed:
+            undecorated = re.sub(r"\s*\(?\+\d[\d -]*\)?\s*$", "", str(original))
+            if _norm_option(undecorated) == want:
+                return original
+            if "," in str(candidate):
+                city_state = re.sub(r",\s*(United States(?: of America)?|USA|US)\s*$", "",
+                                    str(original), flags=re.IGNORECASE)
+                if _norm_option(city_state) == want:
+                    return original
     return None
 
 
@@ -838,7 +843,8 @@ def _profile_answer(page, field, candidates):
         return candidates[0]
     if kind == "combobox":
         try:
-            choice = _combobox_choose(page, field, candidates, config.APPLY_AGENT_FIELD_TIMEOUT_MS, click=False)
+            choice = _combobox_choose(page, field, candidates, config.APPLY_AGENT_FIELD_TIMEOUT_MS,
+                                      click=False, strict=True)
         except Exception as exc:
             log.info(f"[APPLY-AGENT] | options not readable: {field.get('label', '')[:60]!r} | {exc}")
             return None

@@ -282,6 +282,9 @@ def test_lever_eligibility_radio_is_answered_by_its_question(lever):
 @pytest.mark.parametrize("options,candidates,expected", [
     (["United States Minor Outlying Islands +1", "United States +1"], FACTS["country"], "United States +1"),
     (["Canada", "United States"], FACTS["country"], "United States"),
+    (["United States Minor Outlying Islands +1", "Canada"], FACTS["country"], None),
+    (["United States (+1)"], FACTS["country"], "United States (+1)"),
+    (["Dartmouth College of Medicine"], ["Dartmouth College"], None),
     (["Engineering Physics", "Engineering"], FACTS["discipline"], "Engineering"),
     (["Engineering Physics"], FACTS["discipline"], None),
     (["Hanover, Pennsylvania, United States", "Hanover, New Hampshire, United States"], FACTS["city"],
@@ -292,6 +295,12 @@ def test_lever_eligibility_radio_is_answered_by_its_question(lever):
 ])
 def test_pick_candidates(options, candidates, expected):
     assert apply_agent._pick_candidates(options, candidates) == expected
+
+
+def test_profile_combobox_with_one_candidate_does_not_use_fuzzy_answer_matching(page):
+    field = _field(page, "School")
+    # A partial name is not an explicit alias for the fixture's Dartmouth College option.
+    assert apply_agent._profile_answer(page, field, ["Dartmouth"]) is None
 
 
 @pytest.mark.parametrize("label,key", [

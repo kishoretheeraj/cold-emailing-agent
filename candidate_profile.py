@@ -123,7 +123,7 @@ def _gpa_answers(entry):
 def form_answers():
     """{key: [acceptable answers, best first]} for the standard questions application forms ask
     (country, city, school, degree, discipline, start/graduation year, GPA), all derived from
-    master.json. A form option must equal one of these (or begin with a multi-word one) to be chosen;
+    master.json. A form option must match an alias (allowing phone codes or city country suffixes);
     a free-text box gets the first, a number box the first bare number. A fact master.json does not
     hold is simply absent."""
     try:
