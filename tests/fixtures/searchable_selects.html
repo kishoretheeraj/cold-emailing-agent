@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Searchable selects</title>
+<style>
+  body { font-family: sans-serif; }
+  .field { margin: 12px 0; width: 420px; }
+  .select__control { border: 1px solid #999; min-height: 30px; display: flex; flex-wrap: wrap; align-items: center; }
+  .select__input { width: 2px; min-width: 2px; border: 0; outline: 0; }
+  .select__menu { border: 1px solid #ccc; }
+  .select__option { padding: 4px; cursor: pointer; }
+  .select__option--is-focused { background: #def; }
+</style>
+</head>
+<body>
+<!--
+  A stand-in for react-select as Greenhouse's job boards use it (class names select__*), written for
+  tests, not copied from any site. The behaviours that matter:
+  - the input is 2px wide and has role=combobox; the chosen value renders as .select__single-value
+    while the input itself stays empty;
+  - the menu renders 150 ms after it is asked for, so Enter pressed right after typing selects
+    nothing (the 2026-10-07 live failure);
+  - "async" lists show nothing until at least two characters are typed, then answer after 300 ms;
+  - clicking an option chooses it and clears the typed text; Escape and blur clear the typed text.
+-->
+<form id="app" onsubmit="window.SUBMITS = (window.SUBMITS || 0) + 1; return false;">
+  <div class="field"><label id="country-label" for="country">Country*</label>
+    <div class="select__container" data-options='["United States Minor Outlying Islands +1","Canada +1","United States +1","India +91"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="country" class="select__input" role="combobox" aria-required="true" aria-expanded="false" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="candidate-location">Location (City)*</label>
+    <div class="select__container" data-async='["Hanover, Pennsylvania, United States","Hanover, New Hampshire, United States","Hanover, Maryland, United States","Boston, Massachusetts, United States"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="candidate-location" class="select__input" role="combobox" aria-required="true" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="school--0">School*</label>
+    <div class="select__container" data-async='["Dartmouth College","Anna University","Other"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="school--0" class="select__input" role="combobox" aria-required="true" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="degree--0">Degree*</label>
+    <div class="select__container" data-options='["Bachelor&#39;s Degree","Master&#39;s Degree","Doctor of Philosophy (Ph.D.)"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="degree--0" class="select__input" role="combobox" aria-required="true" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="discipline--0">Discipline*</label>
+    <div class="select__container" data-options='["Engineering Physics","Computer Science","Engineering"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="discipline--0" class="select__input" role="combobox" aria-required="true" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="start-year--0">Start date year*</label>
+    <input id="start-year--0" type="text" aria-required="true"></div>
+
+  <div class="field"><label for="other_school">If you do not see your University listed in the previous question, please choose "other" and let us know your school name here.</label>
+    <input id="other_school" type="text"></div>
+
+  <div class="field"><label for="question_auth">Are you currently eligible to work in the United States?*</label>
+    <div class="select__container" data-options='["Yes","No"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="question_auth" class="select__input" role="combobox" aria-required="true" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="question_sponsor">Do you require visa sponsorship, now or in the future, to continue working in the United States?*</label>
+    <div class="select__container" data-options='["Yes","No"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="question_sponsor" class="select__input" role="combobox" aria-required="true" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="question_pref">What is your first location preference?*</label>
+    <div class="select__container" data-options='["New York","San Francisco","Seattle"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="question_pref" class="select__input" role="combobox" aria-required="true" autocomplete="off"></div></div></div>
+
+  <div class="field"><label for="question_city">If located in the US, in what city and state do you reside?*</label>
+    <input id="question_city" type="text" aria-required="true"></div>
+
+  <div class="field"><label for="veteran_status">Veteran Status</label>
+    <div class="select__container" data-options='["I am not a protected veteran","I identify as one or more of the classifications of protected veteran","I don&#39;t wish to answer"]'>
+      <div class="select__control"><div class="select__value-container"></div>
+        <input id="veteran_status" class="select__input" role="combobox" autocomplete="off"></div></div></div>
+
+  <button type="submit">Submit application</button>
+</form>
+<script>
+(function () {
+  let seq = 0;
+  document.querySelectorAll('.select__container').forEach((box) => {
+    const input = box.querySelector('input');
+    const values = box.querySelector('.select__value-container');
+    const fixed = box.dataset.options ? JSON.parse(box.dataset.options) : null;
+    const remote = box.dataset.async ? JSON.parse(box.dataset.async) : null;
+    const id = seq++;
+    let menu = null, timer = null, focused = 0, shown = [];
+
+    const close = () => { clearTimeout(timer); if (menu) { menu.remove(); menu = null; } input.setAttribute('aria-expanded', 'false'); };
+    const choose = (text) => {
+      values.innerHTML = '';
+      const chip = document.createElement('div');
+      chip.className = 'select__single-value';
+      chip.textContent = text;
+      values.appendChild(chip);
+      input.value = '';
+      close();
+    };
+    const render = (items) => {
+      close();
+      shown = items;
+      menu = document.createElement('div');
+      menu.className = 'select__menu';
+      if (!items.length) {
+        const none = document.createElement('div');
+        none.className = 'select__menu-notice';
+        none.textContent = remote ? 'Type to search' : 'No options';
+        menu.appendChild(none);
+      }
+      items.forEach((text, i) => {
+        const opt = document.createElement('div');
+        opt.className = 'select__option' + (i === 0 ? ' select__option--is-focused' : '');
+        opt.id = 'react-select-' + id + '-option-' + i;
+        opt.setAttribute('role', 'option');
+        opt.textContent = text;
+        opt.addEventListener('mousedown', (e) => e.preventDefault());
+        opt.addEventListener('click', () => choose(text));
+        menu.appendChild(opt);
+      });
+      focused = 0;
+      box.appendChild(menu);
+      input.setAttribute('aria-expanded', 'true');
+    };
+    const request = () => {
+      clearTimeout(timer);
+      const q = input.value.trim().toLowerCase();
+      if (remote) {
+        if (q.length < 2) { timer = setTimeout(() => render([]), 150); return; }
+        timer = setTimeout(() => render(remote.filter((o) => o.toLowerCase().includes(q))), 300);
+      } else {
+        timer = setTimeout(() => render(fixed.filter((o) => o.toLowerCase().includes(q))), 150);
+      }
+    };
+    input.addEventListener('input', request);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (!menu) request(); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (menu && shown.length) choose(shown[focused]); }
+      else if (e.key === 'Escape') { input.value = ''; close(); }
+    });
+    input.addEventListener('blur', () => { input.value = ''; close(); });
+    box.querySelector('.select__control').addEventListener('mousedown', (e) => {
+      if (e.target !== input) e.preventDefault();
+      input.focus();
+      if (!menu) request();
+    });
+  });
+})();
+</script>
+</body>
+</html>
