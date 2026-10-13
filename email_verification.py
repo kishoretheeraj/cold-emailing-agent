@@ -53,12 +53,13 @@ def _extract(body, allowed_link_hosts):
 
 
 def wait_for_verification(sender_domains, since, timeout_seconds=60, poll_seconds=5,
-                          allowed_link_hosts=()):
+                          allowed_link_hosts=(), *, purpose=None):
     """{"code": ...} or {"link": ...} from the newest matching message after `since`, or None."""
     try:
+        kind = purpose if purpose is not None else ("link" if allowed_link_hosts else "otp")
         found = otp_client.get_verification_code(
             sender_domains, since, timeout_seconds=timeout_seconds,
-            kind="link" if allowed_link_hosts else "otp", raise_unreachable=True)
+            kind=kind, raise_unreachable=True)
         if found:
             log.info(f"[APPLY-VERIFY] | broker returned a {'code' if 'code' in found else 'link'}")
         return found
