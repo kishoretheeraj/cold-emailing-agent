@@ -37,6 +37,8 @@ import ats_fillers
 import config
 import email_verification
 import submit_guard
+from answers.workauth import (  # noqa: F401 - SKIP/pick_option stay importable from here
+    SKIP, WORK_AUTH_FACTS, classify_question, pick_option, pick_option_ex)
 import universal_filler
 import workday_adapter
 
@@ -75,7 +77,7 @@ KNOWN_PLATFORMS = ("generic", "greenhouse", "lever", "ashby", "workday", "smartr
                    "workable", "oracle", "icims", "test_local")
 
 # Confirmed facts the work-authorization answers are derived from (never guessed).
-FACTS = {"authorized_us_via_opt": True, "needs_sponsorship_future": True, "needs_sponsorship_now": False}
+FACTS = dict(WORK_AUTH_FACTS)  # single source of truth: answers/workauth.py
 
 STOP = threading.Event()
 log = logging.getLogger("apply")
@@ -846,6 +848,16 @@ def claim_job(job_id):
     return attempt_id
 
 
+def renew_lease(job_id, attempt_id):
+    """Bump lease_expires without adding a phase. Raises JobEnd('failed','claim_lost')."""
+    with locked_state() as st:
+        rec = st.get(job_id)
+        if not _owned(rec, attempt_id):
+            raise JobEnd("failed", "claim_lost")
+        rec["lease_expires"] = time.time() + LEASE_S
+        rec["updated_at"] = now_iso()
+
+
 def _owned(rec, attempt_id):
     return bool(rec) and rec.get("status") == "in_progress" and rec.get("owner") == OWNER_ID \
         and rec.get("attempt_id") == attempt_id
@@ -1554,173 +1566,7 @@ def blank_textareas(inventory):
 
 
 # ---------------------------------------------------------------- work-authorization answers
-_AUTH_RE = re.compile(r"authori[sz]ed to work|legally authori[sz]ed|work authori[sz]ation|eligible to work|"
-                      r"right to work|legally (?:permitted|entitled) to work", re.I)
-_SPONSOR_RE = re.compile(r"sponsor", re.I)
-_ATTEST_RE = re.compile(
-    r"\b(?:certif\w*|attest\w*|acknowledg\w*|i\s+agree|agree\s+to|consent\w*|i\s+declare|declar\w*|affirm\w*|"
-    r"under\s+penalty|true\s+and\s+(?:correct|complete|accurate)|terms\s+(?:and|&)\s+conditions|"
-    r"privacy\s+(?:policy|notice))\b", re.I)
-_COUNTRIES = (
-    "canada", "united kingdom", "u.k.", "uk", "great britain", "britain", "england", "scotland", "wales",
-    "ireland", "india", "germany", "france", "spain", "italy", "netherlands", "poland", "portugal", "sweden",
-    "norway", "denmark", "finland", "switzerland", "austria", "belgium", "australia", "new zealand",
-    "singapore", "japan", "china", "hong kong", "korea", "taiwan", "israel", "uae", "united arab emirates",
-    "mexico", "brazil", "argentina", "colombia", "chile", "philippines", "vietnam", "thailand", "indonesia",
-    "malaysia", "pakistan", "bangladesh", "nigeria", "kenya", "south africa", "egypt", "turkey", "russia",
-    "ukraine", "czech republic", "czechia", "romania", "hungary", "greece", "europe", "european union",
-    "eu", "eea", "emea", "apac", "latam",
-)
-_COUNTRY_RE = re.compile(r"(?<![\w.])(?:" + "|".join(re.escape(c) for c in _COUNTRIES) + r")(?![\w])", re.I)
-_NEG_RE = re.compile(r"\b(?:not|no|never|none|neither|nor|unable|cannot|can\s*not|without|except|other\s+than)\b|n['’]t", re.I)
-_AUTH_US_RE = re.compile(r"authori[sz]ed to work in (?:the )?(?:US|U\.S\.|U\.S\.A\.|USA|United States(?: of America)?)(?!\w)", re.I)
-_WITHOUT_RE = re.compile(r"without\s+(?:visa\s+)?sponsorship", re.I)
-_NOT_REQUIRE_RE = re.compile(r"not\s+require\s+(?:visa\s+)?sponsorship|no\s+need\s+for\s+sponsorship", re.I)
-_REQUIRE_RE = re.compile(r"\b(?:requir\w*|need\w*)\b.*\bspons(?:or|ors|orship)\b|\bspons\w*\b.*\brequired?\b", re.I)
-_WORK_RE = re.compile(r"\b(?:work|employ\w*)\b", re.I)
-# Qualifiers that make the question about a stronger/other status than the facts cover (OPT is not
-# permanent, not citizenship, not "any employer").
-_STATUS_RE = re.compile(
-    r"permanen\w*|indefinite\w*|citizen\w*|green\s*card|\bLPR\b|unrestricted|without\s+(?:any\s+)?restriction\w*|"
-    r"no\s+restriction\w*|any\s+employer|work\s+permit|lifetime|unlimited", re.I)
-# Temporal scope: "currently/now" alone -> the current status; any future wording -> the future need.
-_CURRENT_RE = re.compile(r"\b(?:currently|presently|right\s+now|at\s+this\s+time|at\s+present|today|now)\b", re.I)
-_FUTURE_RE = re.compile(
-    r"\bfuture\b|\blater\b|\beventually\b|\bwill\b|\bwould\b|\bever\b|\bat\s+any\s+(?:time|point)\b|\bafter\b|"
-    r"\bupon\b|\bwithin\b|\bnext\b|\bgoing\s+forward\b|\bonce\b|\bbeyond\b|\bexpir\w*", re.I)
-# Words that may surround a work-auth/sponsorship core without adding an assertion of their own.
-# Anything else ("and at least 21 years old", "on an H-1B", "willing to relocate") is an extra
-# condition that no known fact covers.
-_FILLER = frozenset((
-    "are you do does did will would can could is be am i we now currently presently at this time present today "
-    "right or and in the future any point to work working able legally lawfully authorized authorised "
-    "authorization authorisation eligible employment employ us u.s. u.s.a. usa united states america of for a an "
-    "with without visa sponsorship sponsor require requires required need needs needed employer company our from "
-    "please answer yes no have legal permitted entitled now ever u.s u.s.a".split()))
-_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.'’\-]*", re.I)
-
-SKIP = ("skip", None, None, "unrelated")
-
-
-def _yn(flag):
-    return "Yes" if flag else "No"
-
-
-def _review(reason):
-    return "review", None, None, reason
-
-
-def _extra_conditions(q):
-    """True when the question carries words beyond a plain work-auth / sponsorship ask."""
-    for tok in _TOKEN_RE.findall(q.lower()):
-        tok = tok.rstrip(".'’-") if tok not in ("u.s.", "u.s.a.") else tok
-        if tok and tok not in _FILLER:
-            return True
-    return False
-
-
-def classify_question(text, kind="select"):
-    """Decide a work-authorization / sponsorship question from its MEANING.
-    Returns (action, key, answer, reason): action is 'answer' (key + 'Yes'/'No'), 'review' (leave
-    unanswered, report) or 'skip' (not a work-auth question). Never guesses: qualifiers
-    ("permanently"), compound conditions, and future scope on authorization all go to review."""
-    q = " ".join((text or "").split())
-    if not q:
-        return SKIP
-    if _ATTEST_RE.search(q):
-        return _review("attestation")
-    has_auth, has_spons = bool(_AUTH_RE.search(q)), bool(_SPONSOR_RE.search(q))
-    if not has_auth and not has_spons:
-        return SKIP
-    if _COUNTRY_RE.search(q):
-        return _review("foreign_country")
-    if _STATUS_RE.search(q):
-        return _review("stronger_status_qualifier")
-    if has_auth and has_spons:
-        return _review("auth_and_sponsor_ambiguous")
-    future = bool(_FUTURE_RE.search(q))
-    current_only = bool(_CURRENT_RE.search(q)) and not future
-    needs = FACTS["needs_sponsorship_future"]
-    if has_auth:
-        if _NEG_RE.search(q):
-            return _review("negation_ambiguous")
-        if future:
-            return _review("future_authorization")  # OPT expires: authorization later is not a known fact
-        if _AUTH_US_RE.search(q):
-            action = ("answer", "work_auth", _yn(FACTS["authorized_us_via_opt"]), "")
-        else:
-            return _review("auth_country_unclear")
-    elif _NOT_REQUIRE_RE.search(q):
-        return _review("negated_sponsorship")
-    elif _WITHOUT_RE.search(q):
-        m = _WITHOUT_RE.search(q)
-        rest = q[:m.start()] + " " + q[m.end():]
-        if _NEG_RE.search(rest) or _REQUIRE_RE.search(rest) or not _WORK_RE.search(q):
-            return _review("negation_ambiguous")
-        if current_only:
-            # Present OPT eligibility differs from the future H-1B need, so "No" would be untrue.
-            return _review("current_scope_ambiguous")
-        # Operator-approved: authorized via OPT but needs H-1B sponsorship later,
-        # so a plain "work without sponsorship" ask is truthfully No.
-        action = ("answer", "sponsorship", "No", "")
-    elif _NEG_RE.search(q):
-        return _review("negation_ambiguous")
-    elif _REQUIRE_RE.search(q):
-        action = ("answer", "sponsorship", _yn(needs), "")
-    else:
-        return _review("sponsorship_unrecognized")
-    if _extra_conditions(q):
-        return _review("extra_conditions")
-    if kind == "checkbox" and action[2] != "Yes":
-        return _review("checkbox_no_answer")  # an unchecked box is not an answer
-    return action
-
-
-_OPT_PREFIX_RE = re.compile(r"^\s*(yes|no)\s*(?:[,;:.\-–—(]\s*|$)(.*)$", re.I | re.S)
-_US = r"(?:the\s+)?(?:us|u\.s\.|u\.s\.a\.|usa|united\s+states(?:\s+of\s+america)?)"
-# The only appended assertions an option may carry: restatements of the known facts, per question.
-_KNOWN_TAILS = {
-    ("work_auth", "yes"): re.compile(
-        rf"^(?:(?:i|we)\s+)?(?:am\s+)?(?:legally\s+)?authori[sz]ed\s+to\s+work\s+in\s+{_US}$", re.I),
-    ("sponsorship", "yes"): re.compile(
-        r"^(?:(?:i|we)\s+)?(?:will\s+)?requires?\s+(?:visa\s+)?sponsorship"
-        r"(?:\s+(?:now\s+or\s+)?in\s+the\s+future)?$", re.I),
-    ("sponsorship", "no"): re.compile(
-        r"^(?:(?:i|we)\s+)?(?:do|does)\s+not\s+(?:now\s+)?require\s+(?:visa\s+)?sponsorship$", re.I),
-}
-
-
-def _tail_ok(tail, answer, key):
-    tail = re.sub(r"[\s.)]+$", "", re.sub(r"^[\s(]+", "", tail or ""))
-    if not tail:
-        return True
-    pat = _KNOWN_TAILS.get((key, answer.lower())) if key else None
-    return bool(pat and pat.match(tail))
-
-
-def pick_option_ex(options, answer, key=None):
-    """(option, status). status: 'ok' | 'absent' | 'ambiguous' | 'assertion'. A bare Yes/No (any case)
-    wins; a prefix-matched 'Yes, ...' / 'No - ...' option is checked against its FULL text: an
-    appended assertion that is not a known fact for this question (`key`) is 'assertion' (-> review)."""
-    want = answer.lower()
-    exact = [o for o in options if o.strip().lower() == want]
-    if exact:
-        return (exact[0], "ok") if len(exact) == 1 else (None, "ambiguous")
-    near = []
-    for o in options:
-        m = _OPT_PREFIX_RE.match(o)
-        if m and m.group(1).lower() == want:
-            near.append((o, m.group(2)))
-    if not near:
-        return None, "absent"
-    if len(near) > 1:
-        return None, "ambiguous"
-    o, tail = near[0]
-    return (o, "ok") if _tail_ok(tail, answer, key) else (None, "assertion")
-
-
-def pick_option(options, answer, key=None):
-    return pick_option_ex(options, answer, key)[0]
+# classify_question / pick_option_ex / pick_option live in answers/workauth.py (imported at the top).
 
 
 def plan_workauth(inventory):
@@ -2296,10 +2142,10 @@ def observe_acceptance(target, selector, before, ctx, polls=6, interval=1.0):
     return "unknown"
 
 
-def upload_confirmed(probe, inventory, page_text=""):
+def upload_confirmed(probe, inventory, page_text="", *, expected_name=None):
     """The resume counts as uploaded only when the input itself reported the file (name + size) and
     the page still shows it after the rebuild (file input with that name, or the name in the page)."""
-    name = os.path.basename(RESUME_PATH)
+    name = expected_name or os.path.basename(RESUME_PATH)
     if not probe or probe[0] != name or not probe[1]:
         return False
     if any(f.get("kind") == "file" and f.get("file_name") == name for f in inventory):
@@ -2332,14 +2178,20 @@ class RunCtx:
             raise JobEnd("blocked", "destination_changed")
 
 
-def run_job(context, job, test_base, attempt_id=None):
+def run_job(context, job, test_base, attempt_id=None, assets=None):
     """Runs one job. Every exception that is not an explicit job outcome is converted here, while
     the in-flight secrets are still registered, into a redacted JobEnd: nothing downstream formats
     a raw exception that could contain the verification code."""
     global ACTIVE_APPROVED
     jid, platform = job["id"], str(job.get("platform") or "generic").lower()
     live_gate()
-    if not os.path.isfile(RESUME_PATH):
+    if not DRY_RUN and not config.APPLY_RESUME_V2 and os.environ.get("APPLY_ALLOW_STATIC_RESUME") != "1":
+        raise JobEnd("failed", "static_resume_not_allowed_live")
+    if config.APPLY_RESUME_V2 and not DRY_RUN and not (assets and assets.resume_pdf):
+        raise JobEnd("failed", "resume_not_tailored")
+    resume_path = (assets.resume_pdf if (assets and config.APPLY_RESUME_V2 and assets.resume_pdf)
+                   else RESUME_PATH)
+    if not resume_path or not os.path.isfile(resume_path):
         raise JobEnd("failed", "resume_missing")
     url = resolve_job_url(job["url"], test_base)
     ACTIVE_APPROVED = approved_for_job(platform)  # explicit per-job origin list
@@ -2348,7 +2200,8 @@ def run_job(context, job, test_base, attempt_id=None):
     try:
         validate_job_url(url)  # BEFORE any browser action or network request; the queue URL is never its own trust reference
         ev("approved_origins", jid, count=len(ACTIVE_APPROVED))
-        return _run_job(scope, job, jid, platform, url, attempt_id)
+        return _run_job(scope, job, jid, platform, url, attempt_id,
+                        assets=assets, resume_path=resume_path)
     except (JobEnd, Shutdown):
         raise
     except Exception as exc:
@@ -2363,7 +2216,30 @@ def run_job(context, job, test_base, attempt_id=None):
     raise JobEnd("failed", failure)  # outside the except block: no raw exception rides along as context
 
 
-def _run_job(scope, job, jid, platform, url, attempt_id):
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _upload_and_observe(loc, target, path):
+    """set_input_files, then (probe, rebuilt inventory, page text); the upload may add/replace controls."""
+    loc.set_input_files(path)
+    try:
+        probe = loc.evaluate(UPLOAD_PROBE_JS)
+    except Exception:
+        probe = None
+    inventory = build_inventory(target)
+    try:
+        text = target.evaluate("() => (document.body && document.body.innerText) || ''")
+    except Exception:
+        text = ""
+    return probe, inventory, text
+
+
+def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_path=None):
     notes = str(job.get("notes") or "")
     m = re.search(r"verify_timeout_s=(\d+)", notes)
     verify_timeout = min(max(int(m.group(1)), 1), 600) if m else 60
@@ -2462,20 +2338,38 @@ def _run_job(scope, job, jid, platform, url, attempt_id):
     file_sel = universal_filler.file_targets(inventory).get("resume")
     field = field_for(inventory, file_sel) if file_sel else None
     facts["resume_uploaded"] = 0
+    resume_path = resume_path or RESUME_PATH
+    if assets is not None:
+        facts["cover_letter_uploaded"] = 0
     if field is not None:
+        if assets is not None:
+            actual = _sha256_file(resume_path)
+            if actual != (assets.resume_manifest or {}).get("pdf_sha256"):
+                raise JobEnd("failed", "resume_tampered")
+            if assets.resume_pdf and os.path.isfile(RESUME_PATH) and actual == _sha256_file(RESUME_PATH):
+                raise JobEnd("failed", "resume_not_tailored")
         mark("uploaded")
         loc = gate_field(target, field, ctx)
-        loc.set_input_files(RESUME_PATH)
-        try:
-            probe = loc.evaluate(UPLOAD_PROBE_JS)
-        except Exception:
-            probe = None
-        inventory = build_inventory(target)  # the upload may add/replace controls
-        try:
-            text = target.evaluate("() => (document.body && document.body.innerText) || ''")
-        except Exception:
-            text = ""
-        facts["resume_uploaded"] = int(upload_confirmed(probe, inventory, text))  # counted only once observed
+        probe, inventory, text = _upload_and_observe(loc, target, resume_path)
+        facts["resume_uploaded"] = int(upload_confirmed(  # counted only once observed
+            probe, inventory, text, expected_name=os.path.basename(resume_path)))
+    if assets is not None:
+        cover_sel = universal_filler.file_targets(inventory).get("cover_letter")
+        cover_field = field_for(inventory, cover_sel) if cover_sel else None
+        letter = getattr(assets, "letter", None)
+        letter_pdf = getattr(letter, "pdf_path", None)
+        usable = bool(letter_pdf and config.APPLY_COVER_LETTER)
+        if cover_field is not None and cover_field.get("required") and not usable:
+            raise JobEnd("needs_review", "cover_letter_required_ungrounded")
+        if cover_field is not None and usable:
+            expected = (getattr(letter, "manifest", None) or {}).get("pdf_sha256")
+            if expected and _sha256_file(letter_pdf) != expected:
+                raise JobEnd("failed", "cover_letter_tampered")
+            mark("uploaded")
+            cprobe, inventory, ctext = _upload_and_observe(
+                gate_field(target, cover_field, ctx), target, letter_pdf)
+            facts["cover_letter_uploaded"] = int(upload_confirmed(
+                cprobe, inventory, ctext, expected_name=os.path.basename(letter_pdf)))
     ev("upload_done", jid, uploaded=facts["resume_uploaded"])
     check_challenge(page, jid, target)
 
@@ -2640,6 +2534,49 @@ def fmt_facts(facts):
     return " ".join(f"{k}={v}" for k, v in facts.items())
 
 
+def prepare_assets(job, attempt_id):
+    """Pre-browser asset stage. Returns AssetBundle|None. Every failure raises JobEnd(needs_review,...)."""
+    if not config.APPLY_RESUME_V2:
+        return None
+    # An empty tuple in an except clause matches nothing, so the AssetBuildError clause below is inert
+    # (and cannot raise NameError) if the imports fail with anything other than ImportError.
+    _v2build_error = ()
+    try:
+        from resume.v2 import build as _v2build
+        from resume.v2 import tailor_v2
+        _v2build_error = _v2build.AssetBuildError
+        jd_text = ((job.get("posting_snapshot") or {}).get("description")
+                   or job.get("description") or "")
+        if len(str(jd_text).strip()) < 200:
+            raise JobEnd("needs_review", "resume_build_failed:no_jd")
+        profile = tailor_v2.load_candidate_profile()
+        bank_facts = {
+            "full_name": STANDARD_FIELD_VALUES.get("name", ""),
+            "email": STANDARD_FIELD_VALUES.get("email", ""),
+            "phone": STANDARD_FIELD_VALUES.get("phone", ""),
+            "linkedin": STANDARD_FIELD_VALUES.get("linkedin", ""),
+            "location": STANDARD_FIELD_VALUES.get("location", ""),
+        }
+        master_sha = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()
+        artifacts_root = os.environ.get("APPLY_ARTIFACTS_DIR") or "/opt/jobagent24/artifacts"
+        return _v2build.build_assets(
+            job, jd_text, profile, bank_facts, artifacts_root, master_md_sha=master_sha,
+            renew_lease=lambda: renew_lease(job["id"], attempt_id))
+    except JobEnd:
+        raise
+    except Shutdown:
+        raise
+    except ImportError:
+        ev("resume_build_failed", job["id"], stage="unavailable")
+        raise JobEnd("needs_review", "resume_build_failed:unavailable") from None
+    except _v2build_error as exc:
+        ev("resume_build_failed", job["id"], stage=exc.stage)
+        raise JobEnd("needs_review", f"resume_build_failed:{exc.stage}") from None
+    except Exception as exc:
+        ev("resume_build_failed", job["id"], stage="unexpected", error=type(exc).__name__)
+        raise JobEnd("needs_review", "resume_build_failed:unexpected") from None
+
+
 def process_job(context, job, test_base):
     """Returns the final result status, or None when the job was not claimable."""
     jid = job["id"]
@@ -2663,7 +2600,8 @@ def process_job(context, job, test_base):
     ev("job_start", jid, company=job.get("company", ""), platform=job.get("platform", ""),
        dry_run=int(DRY_RUN), attempt_id=attempt_id)
     try:
-        status, detail = run_job(context, job, test_base, attempt_id)
+        assets = prepare_assets(job, attempt_id)  # pre-browser; a JobEnd lands in the shared tail below
+        status, detail = run_job(context, job, test_base, attempt_id, assets=assets)
     except Shutdown:
         new = release_after_shutdown(jid, attempt_id)
         ev("job_result", jid, status=new, detail="shutdown_requeued" if new == "pending" else "shutdown_needs_reconciliation")

@@ -105,6 +105,20 @@ def _education_lines(education) -> list[str]:
     return [ln for ln in lines if ln]
 
 
+# ── Public wrappers ────────────────────────────────────────────────────────────
+
+def generate_content(requirements, ranked):
+    return _generate(requirements, ranked)
+
+
+def repair_content(content, violations, ranked, requirements):
+    return _repair(content, violations, ranked, requirements)
+
+
+def education_lines(education):
+    return _education_lines(education)
+
+
 # ── Orchestration ──────────────────────────────────────────────────────────────
 
 def tailor_resume(jd_text: str, candidate_profile: dict, output_path: str, ranker_backend: str = "auto") -> dict:

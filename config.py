@@ -828,3 +828,16 @@ WARM_MAX_PEOPLE_PER_APPLICATION = 3
 # ── Application outcomes (rejections and interview invites from the receipt inbox) ──
 APPLY_OUTCOME_LOOKBACK_DAYS = 3       # each monitor pass reads this many days of mail (it runs every 20 min)
 APPLY_OUTCOME_MAX_AGE_DAYS = 180      # applications older than this are not matched any more
+
+# ── Answer tailoring v2 (answers/) ──────────────────────────────────────────────
+# Question classifier + answer-bank mapping + audit. "0" disables callers' use of answers.resolve_field;
+# the work-auth classifier itself moved to answers/workauth.py and is always used via apply_pipeline.
+APPLY_ANSWERS_V2 = os.environ.get("APPLY_ANSWERS_V2", "1") != "0"
+# Cover-letter stage (cover_letter/): "0" skips letter building entirely.
+APPLY_COVER_LETTER = os.environ.get("APPLY_COVER_LETTER", "1") != "0"
+
+# ── Resume v2 asset build ──────────────────────────────────────────────────────
+# Hard per-build timeout, seconds (plan item 2.7).
+RESUME_V2_TOTAL_TIMEOUT_S = min(max(int(os.environ.get("RESUME_V2_TOTAL_TIMEOUT_S", "360")), 60), 360)
+# APPLY_ALLOW_STATIC_RESUME=1 is a deliberately awkward live-mode escape hatch for the static-resume
+# fallback; apply_pipeline reads it straight from os.environ and it is documented here only.
