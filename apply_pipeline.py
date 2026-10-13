@@ -845,6 +845,25 @@ def _owned(rec, attempt_id):
         and rec.get("attempt_id") == attempt_id
 
 
+_OUTBOX_CONN = None
+
+
+def _outbox_conn():
+    global _OUTBOX_CONN
+    if _OUTBOX_CONN is not None:
+        return _OUTBOX_CONN
+    try:
+        import outbox
+        import reply_repo
+        conn = reply_repo.connect()
+        outbox.ensure_schema(conn)
+        _OUTBOX_CONN = conn
+        return conn
+    except Exception as exc:
+        log.info(f"outbox_unavailable reason={type(exc).__name__}")
+        return None
+
+
 def set_phase(job_id, attempt_id, phase):
     """Persist a phase marker BEFORE the side effect it names, and renew the lease."""
     with locked_state() as st:
@@ -857,6 +876,24 @@ def set_phase(job_id, attempt_id, phase):
         rec["phases"] = phases
         rec["lease_expires"] = time.time() + LEASE_S
         rec["updated_at"] = now_iso()
+        n_phases = len(phases)
+
+    # The local write above is a JSON state file under a lock, not SQLite, so this enqueue cannot
+    # share its transaction; it runs immediately after, best-effort (a failure only skips the sync).
+    # Version 11+ per phase: pipeline_upsert only applies strictly-higher versions, so each new
+    # phase supersedes the last and the terminal write_result row (version 100) supersedes them all.
+    try:
+        import outbox
+        conn = _outbox_conn()
+        if conn is not None:
+            aid = outbox.normalize_uuid(attempt_id)
+            ver = 10 + n_phases
+            outbox.enqueue(conn, "attempt", aid, "upsert",
+                           {"attempt_id": aid, "job_id": job_id, "phase": phase,
+                            "status": "in_progress", "state": "in_progress",
+                            "version": ver}, version=ver)
+    except Exception as exc:
+        log.info(f"outbox_skipped entity=attempt reason={type(exc).__name__}")
 
 
 def finish_job(job_id, attempt_id, state_status):
@@ -984,6 +1021,29 @@ def write_result(job_id, started_at, finished_at, status, detail, latency_s, att
         os.fsync(fh.fileno())
     if not existed:
         fsync_dir(RESULTS_PATH)
+
+    # version 100 on the final row: pipeline_upsert applies a row only when its version is
+    # strictly higher than the stored one, so the terminal attempt state supersedes the
+    # version-11+ in_progress phase rows (attempts realistically have far fewer than 89 phases).
+    try:
+        import outbox
+        conn = _outbox_conn()
+        if conn is not None:
+            aid = outbox.normalize_uuid(attempt_id or outbox.derive_attempt_id(job_id, started_at))
+            outbox.enqueue(conn, "attempt", aid, "upsert",
+                           {"attempt_id": aid, "job_id": job_id, "started_at": started_at,
+                            "finished_at": finished_at, "status": status, "detail": detail,
+                            "latency_s": rec["latency_s"], "dry_run": bool(rec.get("dry_run")),
+                            "version": 100}, version=100)
+            if status in ("submitted", "submitted_unconfirmed"):
+                sid = outbox.derive_uuid("submission", aid)
+                outbox.enqueue(conn, "submission", sid, "upsert",
+                               {"id": sid, "job_id": job_id, "attempt_id": aid,
+                                "submitted_at": finished_at, "confirmed": status == "submitted",
+                                "version": 1}, version=1)
+    except Exception as exc:
+        log.info(f"outbox_skipped entity=result reason={type(exc).__name__}")
+
     return status
 
 
@@ -2195,6 +2255,18 @@ def process_job(context, job, test_base):
     if attempt_id is None:
         ev("job_claim_skipped", jid, reason="not_pending")
         return None
+    # version 3: supersedes the version-2 backfilled "queued" rows (and version-1 stubs).
+    try:
+        import outbox
+        conn = _outbox_conn()
+        if conn is not None:
+            outbox.enqueue(conn, "job", jid, "upsert",
+                           {"id": jid, "company": job.get("company", ""), "role": job.get("role", ""),
+                            "url": job.get("url", ""), "platform": job.get("platform", ""),
+                            "state": "claimed", "version": 3}, version=3)
+    except Exception as exc:
+        log.info(f"outbox_skipped entity=job reason={type(exc).__name__}")
+
     started, t0 = now_iso(), time.monotonic()
     ev("job_start", jid, company=job.get("company", ""), platform=job.get("platform", ""),
        dry_run=int(DRY_RUN), attempt_id=attempt_id)
