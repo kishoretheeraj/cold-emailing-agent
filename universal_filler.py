@@ -338,6 +338,10 @@ def lift_guard(page):
     page.evaluate("() => { window.__ufGuardOff = true; }")
 
 
+def rearm_guard(page):
+    page.evaluate("() => { window.__ufGuardOff = false; }")
+
+
 # ── The application's own page, frame and form ─────────────────────────────────
 
 class Stop(Exception):

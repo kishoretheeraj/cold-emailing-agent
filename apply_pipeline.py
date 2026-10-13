@@ -4,7 +4,10 @@
 queue -> new tab in the already-running Chrome (CDP) -> existing fillers ->
 email verification via OTP broker -> final step -> result log.
 
-Live submission is deliberately NOT wired: see live_submit().
+live_submit() is wired but fails closed: DRY_RUN is the default, and a live run additionally needs
+/etc/jobagent24/pipeline_live_ok plus the armed environment flag set to exactly "1" (see live_gate).
+Exactly-once: every click is preceded by a durable ledger intent (submit_guard.SubmitLedger); an
+unresolved intent blocks its job and posting until a human resolves it (reconcile_submits.py).
 """
 import argparse
 import contextlib
@@ -33,12 +36,15 @@ from playwright.sync_api import sync_playwright
 import ats_fillers
 import config
 import email_verification
+import submit_guard
 import universal_filler
 import workday_adapter
 
 # ---------------------------------------------------------------- settings
 DRY_RUN = os.environ.get("APPLY_DRY_RUN", "1") != "0"  # only exact "0" disables
 LIVE_OK_FILE = "/etc/jobagent24/pipeline_live_ok"
+SUBMIT_LEDGER_PATH = os.environ.get("APPLY_SUBMIT_LEDGER_PATH", "/var/lib/jobagent24/submit_ledger.jsonl")
+SUBMIT_ARTIFACTS_DIR = os.environ.get("APPLY_SUBMIT_ARTIFACTS_DIR", "/var/lib/jobagent24/submit_artifacts")
 CDP_URL = os.environ.get("APPLY_CDP_URL", "http://127.0.0.1:9222")
 QUEUE_PATH = os.environ.get("APPLY_QUEUE_PATH", "/opt/jobagent24/job_queue.json")
 STATE_PATH = os.environ.get("APPLY_STATE_PATH", "/var/lib/jobagent24/pipeline_state.json")
@@ -1848,12 +1854,398 @@ def live_gate():
         raise JobEnd("failed", "live_flag_file_missing")
 
 
-def live_submit(target, control):
-    """WIRE LIVE SUBMISSION HERE (future version): remove the SUBMIT_GUARD for this page,
-    click the control located by universal_filler.final_control, confirm the outcome, and
-    return a detail string. Until then this fails closed even when fully armed."""
-    raise RuntimeError("live submit not wired")
+# ---------------------------------------------------------------- live submit (exactly once)
 
+def _submit_gap_wait_s(last_ts, spacing_s, now=None):
+    if last_ts is None:
+        return 0.0
+    now = time.time() if now is None else now
+    return max(0.0, last_ts + spacing_s - now)
+
+
+def _artifact_dir(jid):
+    return os.path.join(SUBMIT_ARTIFACTS_DIR, re.sub(r"[^A-Za-z0-9_-]", "_", str(jid))[:64] or "job")
+
+
+def _write_private(path, text):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        ensure_private(path)
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    fsync_dir(path)
+
+
+def _page_text(target):
+    try:
+        text = target.evaluate("() => document.body ? document.body.innerText.slice(0, 20000) : ''")
+    except Exception:
+        return ""
+    return text if isinstance(text, str) else ""
+
+
+# Port of universal_filler._STRICT_SUBMIT (built from its pattern so the two cannot drift). Counts every
+# visible submit-class control, enabled or not: a disabled Submit still means the form is on the page.
+_SUBMIT_PROBE_JS = r"""() => {
+  const re = new RegExp(%s, 'i');
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    const st = getComputedStyle(el);
+    return st.display !== 'none' && st.visibility !== 'hidden';
+  };
+  let n = 0;
+  for (const el of document.querySelectorAll('button, input[type=submit], input[type=button]')) {
+    if (el.closest('[role=search], form[role=search]') || !shown(el)) continue;
+    const label = (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+    if (re.test(label)) n += 1;
+  }
+  return n;
+}""" % json.dumps(universal_filler._STRICT_SUBMIT.pattern)
+
+
+def _form_present(target):
+    # True: a submit control is on the page. False: affirmatively none. None: the probe failed, which
+    # proves neither state (final_control() cannot tell zero controls from several, or a read error).
+    try:
+        count = target.evaluate(_SUBMIT_PROBE_JS)
+    except Exception:
+        return None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return count >= 1
+
+
+def _compact_evidence(evidence):
+    e = evidence if isinstance(evidence, dict) else {}
+    parts = []
+    try:
+        reqs = ",".join(f"{redact(str(m))}:{redact(str(s))}" for m, _p, s in (e.get("requests") or [])[:6])
+        if reqs:
+            parts.append("reqs=" + reqs)
+        for key, label in (("final_url_path", "path"), ("url_changed", "changed"),
+                           ("form_present", "form"), ("text_hit", "text")):
+            if key in e:
+                value = e[key]
+                value = int(value) if isinstance(value, bool) else value
+                parts.append(f"{label}={redact(str(value))}")
+        for key in ("click_error", "code_step", "observe", "error"):
+            if e.get(key):
+                parts.append(f"{key}={redact(str(e[key]))}")
+    except Exception:
+        pass
+    return submit_guard.redact_text(" ".join(parts), 300)
+
+
+def _mark_reconcile(jid, attempt_id, reason):
+    with locked_state() as st:
+        rec = st.get(jid)
+        if _owned(rec, attempt_id):
+            rec["reconcile_reason"] = reason
+            rec["updated_at"] = now_iso()
+
+
+def _scrub_evidence(value):
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {k: _scrub_evidence(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrub_evidence(v) for v in value]
+    return value
+
+
+def _close_intent(ledger, key, result, evidence, jid, page=None, target=None, attempt_id=None, reconcile=None):
+    """Record the outcome that closes an intent, then the (redacted) confirmation artifacts."""
+    try:
+        ledger.append_outcome(key, result, _scrub_evidence(evidence))
+    except OSError as exc:  # the intent stays unresolved, which keeps the job blocked: the safe side
+        ev("submit_outcome_unrecorded", jid, reason=type(exc).__name__)
+    directory = _artifact_dir(jid)
+    try:
+        text = submit_guard.redact_text(redact(_page_text(target))) if target is not None else ""
+        _write_private(os.path.join(directory, "confirmation.txt"), text)
+    except OSError:
+        pass
+    try:
+        png = os.path.join(directory, "confirmation.png")
+        # Kept for human reconciliation. The confirmation page necessarily shows the user's own
+        # application, so it is contained, not scrubbed: a 0600 file in a 0700 per-job directory.
+        page.screenshot(path=png, full_page=True)
+        os.chmod(png, 0o600)
+    except Exception:
+        pass
+    ev("submit_outcome", jid, outcome=result)
+    if reconcile and attempt_id:
+        _mark_reconcile(jid, attempt_id, reconcile)
+
+
+def _snapshot(target, ctx, seen):
+    final_url = str(getattr(target, "url", "") or "")
+    changed = submit_guard.canonical_apply_url(final_url) != ctx.pre_click_url
+    return submit_guard.classify_submit_outcome(
+        list(seen), final_url, changed, _page_text(target), _form_present(target), ctx.platform)
+
+
+def _observe_outcome(target, ctx, jid, seen, polls):
+    """Poll once a second until the page proves 'confirmed' or 'rejected'. Silence never proves that
+    nothing was sent, so a quiet page (or the polls running out) is 'ambiguous', never 'not sent'."""
+    kind, evidence = None, {}
+    for _ in range(polls):
+        if STOP.wait(1.0):
+            raise Shutdown()
+        try:
+            assert_destination(target, ctx.url, ctx.scope, jid)
+        except JobEnd:  # left the allowlist: stop reading the page, judge by what was seen
+            kind, evidence = submit_guard.classify_submit_outcome(
+                list(seen), str(getattr(target, "url", "") or ""), True, "", None, ctx.platform)
+            evidence["observe"] = "destination_left_allowlist"
+            return (kind if kind == "confirmed" else "ambiguous"), evidence
+        kind, evidence = _snapshot(target, ctx, seen)
+        if kind in ("confirmed", "rejected"):
+            return kind, evidence
+    evidence["observe"] = "quiet_but_unproven" if kind == "provably_not_sent" else "timeout"
+    return "ambiguous", evidence
+
+
+def _click_and_observe(target, page, ctx, jid, seen, loc, ledger, key):
+    """The one place the approved Submit is clicked: re-check arming, lift the page guard, click
+    once (never retried), then watch the outcome. Returns (kind, evidence)."""
+    if DRY_RUN:
+        raise JobEnd("failed", "invariant_live_submit_in_dry_run")
+    live_gate()  # the gap wait can be long: arming is re-read right before the click
+    ctx.pre_click_url = submit_guard.canonical_apply_url(str(getattr(target, "url", "") or ""))
+    ctx.submit_mut0 = ctx.scope.mutating
+    ctx.click_since = datetime.now(timezone.utc)
+    if STOP.is_set():
+        raise Shutdown()
+    try:  # final duplicate + gap check and the dispatch record under one lock; on any failure nothing has been clicked yet
+        ledger.recheck_and_dispatch(key, ctx.jid, submit_guard.posting_key(ctx.url),
+                                    submit_guard.submit_pacing_from_env()[1])
+    except submit_guard.SubmitConflict as exc:
+        raise JobEnd("failed", exc.reason)
+    except (OSError, submit_guard.LedgerError):
+        raise JobEnd("failed", "ledger_unwritable")
+    ctx.click_dispatched = True  # from here a request may leave the machine: failures stay ambiguous
+    try:
+        universal_filler.lift_guard(page)
+        loc.click(timeout=15000)
+    except Exception as exc:
+        return "click_failed", {"click_error": type(exc).__name__}
+    ev("submit_clicked", jid)
+    return _observe_outcome(target, ctx, jid, seen, 45)
+
+
+def _post_click_code_needed(target, ctx):
+    """True: a code field is on the page. False: the page was read and has none. None: it could not be
+    read, or the field is ambiguous, which proves nothing either way."""
+    try:
+        field, why = find_code_field(build_inventory(target))
+    except Exception:
+        return None
+    if field is not None:
+        return True
+    return None if why == "ambiguous" else False
+
+
+def _post_click_code_step(target, page, ctx, jid, seen, facts, evidence):
+    """A site holding the submission for an emailed code: one attempt, then 20s more of watching.
+    Returns (kind, evidence, accepted); accepted is True only when this code was observed accepted."""
+    evidence = dict(evidence)
+    if STOP.is_set():
+        raise Shutdown()
+    code_facts = {}  # fresh: a pre-click verify_confirmed must not vouch for this code
+    try:
+        evidence["code_step"] = "attempted"
+        # wait_for_verification is bounded by verify_timeout (default 60s) and cannot be interrupted
+        # mid-poll: a stop request is honoured before it starts and again while observing afterwards.
+        res = email_verification.wait_for_verification(
+            ctx.verif_domains, ctx.click_since, timeout_seconds=ctx.verify_timeout, allowed_link_hosts=())
+        if not res or "code" not in res:
+            evidence["code_step"] = "no_code"
+            return "ambiguous", evidence, False
+        code = str(res["code"])
+        register_secret(code)
+        del res
+        try:
+            # a no-op mark: appending otp_entered after submit_clicked would read as out-of-order phases
+            _accept_otp_code(target, page, ctx, ctx.scope, jid, ctx.url, code_facts, code,
+                             ctx.verify_timeout, lambda *a, **k: None)
+        finally:
+            del code
+    except Exception as exc:
+        evidence["code_step"] = "failed_" + type(exc).__name__
+        return "ambiguous", evidence, False
+    accepted = code_facts.get("verify_confirmed") == 1
+    kind, observed = _observe_outcome(target, ctx, jid, seen, 20)
+    observed["code_step"] = evidence["code_step"]
+    return kind, observed, accepted
+
+
+def _settle_code_gate(target, page, ctx, jid, seen, facts, kind, evidence):
+    """A site may hold the submission for an emailed code. Only a page that was read and has no code
+    field keeps `kind`. An unreadable page, a gate we cannot serve, a code that was not accepted, or a
+    code field still on the page afterwards is ambiguous, never confirmed."""
+    need = _post_click_code_needed(target, ctx)
+    if need is False:
+        return kind, evidence
+    evidence = dict(evidence)
+    if need is None:
+        if kind == "confirmed":
+            evidence["code_step"] = "inspection_failed"
+            return "ambiguous", evidence
+        return kind, evidence
+    if not ctx.verif_domains:
+        evidence["code_step"] = "unserviceable"
+        return "ambiguous", evidence
+    kind, evidence, accepted = _post_click_code_step(target, page, ctx, jid, seen, facts, evidence)
+    if not accepted:
+        return "ambiguous", evidence
+    if kind == "confirmed" and _post_click_code_needed(target, ctx) is not False:
+        return "ambiguous", dict(evidence, code_step="code_field_remains")
+    return kind, evidence
+
+
+def _conflict_end(exc):
+    return JobEnd("needs_review" if exc.reason.startswith("duplicate") else "failed", exc.reason)
+
+
+def _close_unclicked(ledger, key):
+    with contextlib.suppress(Exception):  # an unrecorded close leaves the intent live: the safe side
+        ledger.append_outcome(key, "not_sent", {"stage": "pre_click"})
+
+
+def live_submit(target, page, ctx, facts, attempt_id):
+    """Click the approved Submit exactly once and return (status, detail). Fails closed: refuses in
+    dry-run or unarmed, writes a durable ledger intent BEFORE the click, never retries, and reports
+    anything it cannot prove as ambiguous (submitted_unconfirmed), never as not sent."""
+    if DRY_RUN:
+        raise JobEnd("failed", "invariant_live_submit_in_dry_run")
+    live_gate()
+    missing = live_preconditions(facts)
+    if missing:
+        raise JobEnd("needs_review", "live_precondition_missing=" + ",".join(missing))
+    jid = ctx.jid
+    if not attempt_id:
+        raise JobEnd("failed", "attempt_id_missing")
+    posting = submit_guard.posting_key(ctx.url)
+    if posting is None:
+        raise JobEnd("failed", "posting_key_invalid")
+    ledger = submit_guard.SubmitLedger(SUBMIT_LEDGER_PATH)
+    max_per_day, spacing_s = submit_guard.submit_pacing_from_env()
+    key = submit_guard.idempotency_key(jid, attempt_id, posting)
+    try:  # duplicates, the daily cap and the intent are ONE atomic step: no check-then-act window
+        ts, wait_s = ledger.reserve_intent(key, jid, attempt_id, posting, max_per_day, spacing_s)
+    except submit_guard.SubmitConflict as exc:
+        raise _conflict_end(exc)
+    except submit_guard.LedgerError:
+        raise JobEnd("failed", "ledger_unreadable")
+    ev("submit_intent", jid, platform=ctx.platform, key=key[:8])
+    seen = []
+
+    def on_response(resp):
+        try:
+            req = resp.request
+            method = str(req.method).upper()
+            if method not in ("GET", "HEAD") and origin_allowed(req.url):
+                seen.append((method, req.url, int(resp.status)))
+        except Exception:
+            pass  # a missed response can only keep the outcome ambiguous; scope.mutating backs it up
+
+    try:
+        if wait_s > 0:
+            ev("submit_gap_wait", jid, wait_s=f"{wait_s:.0f}")
+            if STOP.wait(wait_s):
+                raise Shutdown()
+        try:
+            ledger.recheck_reservation(key, jid, posting, spacing_s)
+        except submit_guard.SubmitConflict as exc:
+            raise _conflict_end(exc)
+        except submit_guard.LedgerError:
+            raise JobEnd("failed", "ledger_unreadable")
+        assert_destination(target, ctx.url, ctx.scope, jid)
+        ctx.assert_pinned(target)
+        check_challenge(page, jid, target)
+        try:
+            n, _label, _form = universal_filler.final_control(target)
+        except universal_filler.Stop as exc:
+            raise JobEnd("needs_review", "submit_control_" + str(getattr(exc, "kind", None) or "unknown"))
+        loc = universal_filler.control(target, n)
+        try:
+            usable = bool(loc.is_visible() and loc.is_enabled())
+        except Exception:
+            usable = False
+        if not usable:
+            raise JobEnd("needs_review", "submit_control_changed")
+        _write_private(os.path.join(_artifact_dir(jid), "submit_attempted.json"), json.dumps(
+            {"key": key, "job_id": jid, "attempt_id": attempt_id, "posting_key": posting, "ts": ts,
+             "platform": ctx.platform, "url": submit_guard.canonical_apply_url(ctx.url)}, sort_keys=True))
+        set_phase(jid, attempt_id, "submit_clicked")
+        page.on("response", on_response)
+    except BaseException:  # nothing was clicked yet: close the intent so the job is not blocked for nothing
+        _close_unclicked(ledger, key)
+        raise
+
+    kind, evidence = "ambiguous", {}
+    ctx.click_dispatched = False
+    try:
+        try:
+            kind, evidence = _click_and_observe(target, page, ctx, jid, seen, loc, ledger, key)
+            if kind in ("confirmed", "ambiguous"):
+                # the site may be holding the submission for an emailed code: confirmed only once accepted
+                kind, evidence = _settle_code_gate(target, page, ctx, jid, seen, facts, kind, evidence)
+        except Shutdown:
+            if ctx.click_dispatched:  # a request may still be in flight: ambiguous, never not_sent
+                _close_intent(ledger, key, "ambiguous", {"shutdown": True}, jid, page, target)
+            else:
+                _close_unclicked(ledger, key)
+            raise
+        except JobEnd:
+            if not ctx.click_dispatched:  # refused before anything could leave the machine
+                _close_unclicked(ledger, key)
+                raise
+            kind, evidence = "ambiguous", {"error": "JobEnd"}
+        except Exception as exc:
+            kind, evidence = "ambiguous", {"error": type(exc).__name__}
+    finally:
+        with contextlib.suppress(Exception):
+            universal_filler.rearm_guard(page)
+        with contextlib.suppress(Exception):
+            page.remove_listener("response", on_response)
+
+    status, text, result, reconcile = {
+        "confirmed": ("submitted", "live_submit_confirmed", "confirmed", None),
+        "rejected": ("needs_review", "submit_rejected", "rejected", None),
+        "click_failed": ("submitted_unconfirmed", "submit_click_failed", "ambiguous", "submit_click_failed"),
+    }.get(kind, ("submitted_unconfirmed", "submit_ambiguous", "ambiguous", "submit_ambiguous"))
+    _close_intent(ledger, key, result, evidence, jid, page, target, attempt_id, reconcile)
+    return status, f"{text} {_compact_evidence(evidence)}".strip()
+
+
+def _accept_otp_code(target, page, ctx, scope, jid, url, facts, code, verify_timeout, mark):
+    assert_destination(target, url, scope, jid)  # still on the validated application page/frame
+    ctx.assert_pinned(target)                    # ... and on the pinned application origin
+    box, why = find_code_field(build_inventory(target))
+    if box is None:
+        raise JobEnd("failed", f"verify_code_field_{why}")
+    before = probe_acceptance(target, box["selector"])
+    mark("otp_entered")
+    pace()
+    loc = gate_field(target, box, ctx)  # destination + pin + uniqueness + label/name re-check
+    type_into(loc, code)
+    facts["code_entered"] = 1
+    if loc.input_value() != code:
+        raise JobEnd("failed", "verify_incomplete")
+    # The typed value is NOT evidence. Confirmed only on an observed acceptance signal.
+    state = observe_acceptance(target, box["selector"], before, ctx)
+    facts["verify_state"] = state
+    if state == "rejected":
+        raise JobEnd("failed", "verify_rejected")
+    facts["verify_confirmed"] = int(state == "accepted")
 
 # ---------------------------------------------------------------- verification acceptance (observed, not assumed)
 ACCEPT_PROBE_JS = r"""(sel) => {
@@ -2241,7 +2633,7 @@ def _run_job(scope, job, jid, platform, url, attempt_id):
     missing = live_preconditions(facts)
     if missing:
         return "needs_review", "live_precondition_missing=" + ",".join(missing) + " " + fmt_facts(facts)
-    return "submitted", live_submit(target, None)
+    return live_submit(target, page, ctx, facts, attempt_id)
 
 
 def fmt_facts(facts):
