@@ -1707,8 +1707,12 @@ never rounding up). "First/second/third location preference" questions take the 
 option in the order of `job_search_preferences.preferred_locations` (`job_filters.DEFAULT_PREFERENCES`,
 "city|alias" per rank), never the model. `_pick_option` matches whole words only ("No" no longer picks
 "I do not agree"), and maps a "Yes" onto the single agreeing choice ("I agree", "I acknowledge") of a
-consent question. Kishore's live `applicant_eligibility` gained `github`, `how did you hear`,
-`work authorization status` (F-1 OPT) and `optional practical training` (2026-10-13).
+consent question, and a "No" onto its single declining choice ("I do not consent", "No, thank you").
+Among user-added `applicant_eligibility` keys the longest matching key wins (nCino's SMS consent questions
+also mention the privacy policy; `promotional text` must beat `privacy policy`); known keys with a question
+pattern still come first. Kishore's live `applicant_eligibility` gained `github`, `how did you hear`,
+`work authorization status` (F-1 OPT), `optional practical training`, `updates from a recruiter` (Yes) and
+`promotional text` (No) (2026-10-13).
 `scripts/apply_dryrun.py` also fills these profile answers (`_profile_answers`, no model) and prints
 `profile facts filled` per label. Tests: `tests/test_apply_agent_combobox.py` (real browser,
 `tests/fixtures/searchable_selects.html` and `lever_cards.html`, written for tests).

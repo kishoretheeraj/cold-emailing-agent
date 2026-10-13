@@ -285,6 +285,11 @@ def _pick_option(options, value):
         agreeing = [original for original, o in normed if _AFFIRMATIVE_OPTION.match(o) and not _NEGATED.search(o)]
         if len(agreeing) == 1:
             return agreeing[0]
+    if want == "no":
+        # The same question answered "No" whose choices read "I do not consent" / "No, thank you".
+        declining = [original for original, o in normed if _NEGATED.search(o)]
+        if len(declining) == 1:
+            return declining[0]
     return None
 
 
@@ -515,6 +520,11 @@ def _fill_field(page, field, value, is_salary=False):
 
 
 def _eligibility_match(label, answers):
+    # Known keys (with a question pattern) first, in order. Otherwise a key the user added to
+    # applicant_eligibility themselves (e.g. "desired salary") matches any question label containing
+    # it, and the longest such key wins: nCino's "I would like to receive promotional texts ...
+    # subject to our privacy policy" must get the "promotional text" answer, not "privacy policy".
+    best = None
     for key, value in (answers or {}).items():
         if not value:
             continue
@@ -523,10 +533,9 @@ def _eligibility_match(label, answers):
             if pattern.search(label):
                 return key, value
         elif _norm_label(key) and _norm_label(key) in _norm_label(label):
-            # A key the user added to applicant_eligibility themselves (e.g. "desired salary")
-            # matches any question label containing it.
-            return key, value
-    return None, None
+            if best is None or len(_norm_label(key)) > len(_norm_label(best[0])):
+                best = (key, value)
+    return best if best is not None else (None, None)
 
 
 def _eligibility_value_for(label, answers):

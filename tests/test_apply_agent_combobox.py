@@ -388,11 +388,35 @@ def test_gpa_option_picks_the_range_holding_the_number(options, expected):
     ("Yes", ["I acknowledge", "I don't acknowledge"], "I acknowledge"),
     ("Yes", ["Yes, I have read it", "No"], "Yes, I have read it"),
     ("Yes", ["I will require sponsorship", "I will not require sponsorship"], None),
-    ("No", ["I agree", "I do not agree"], None),
+    ("No", ["I agree", "I do not agree"], "I do not agree"),
+    ("No", ["I consent", "No, thank you"], "No, thank you"),
+    ("No", ["Yes, text me", "Email only"], None),                   # nothing reads as declining
+    ("No", ["I do not consent", "I don't want texts"], None),       # two declining options: ambiguous
     ("Yes", ["I agree", "I accept"], None),          # two agreeing options: ambiguous, left blank
 ])
 def test_pick_option_maps_yes_onto_the_single_agreeing_choice(value, options, expected):
     assert apply_agent._pick_option(options, value) == expected
+
+
+SAVED = {"work_authorized_us": "Yes", "privacy policy": "Yes",
+         "updates from a recruiter": "Yes", "promotional text": "No"}
+
+
+@pytest.mark.parametrize("label,expected", [
+    # nCino's required SMS consent questions (2026-10-07 inventory), which also mention the privacy
+    # policy: the longer, more specific saved key must win.
+    ("I would like to receive promotional texts and SMS messages about job opportunities and recruiting "
+     "events at nCino. I consent to the transfer and processing of my personal data subject to the "
+     "privacy policy.", ("promotional text", "No")),
+    ("I would like to receive updates from a recruiter about my job application via text and/or SMS. "
+     "I consent to the transfer and processing of my personal data subject to the privacy policy.",
+     ("updates from a recruiter", "Yes")),
+    ("Please confirm you have read the terms of our Applicant Privacy Policy.", ("privacy policy", "Yes")),
+    ("Are you legally authorized to work in the United States?", ("work_authorized_us", "Yes")),
+    ("Why do you want to work here?", (None, None)),
+])
+def test_most_specific_saved_answer_wins(label, expected):
+    assert apply_agent._eligibility_match(label, SAVED) == expected
 
 
 def test_profile_answer_snaps_a_gpa_to_a_range_dropdown(page):
