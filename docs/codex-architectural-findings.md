@@ -351,6 +351,28 @@ Every page in the context is the job's, so the shared-context machinery is delet
 branch. `detach` closes the context, and never raises. The route of a detached scope aborts
 everything, and its callbacks do nothing.
 
+**Sessions, the answer to "which origins are safe to clone".** There is no global `warm_state.json`;
+each job gets only its own tenant's state.
+- **Filtering on load.** `ats_sessions.load_state_for(key, host, allowed_origins)` keeps:
+  - cookies whose domain is the job's host or a subdomain of it, never a parent or sibling domain,
+    which would ride along to other tenants;
+  - storage only for explicit `(scheme, host, port)` origins;
+  - on a shared multi-company host (Lever, Greenhouse, Ashby, ...), cookies only, since origin-wide
+    `localStorage`/IndexedDB there belongs to every company's tenant.
+- **Failing closed.** A file that isn't 0600, is over 1 MiB or is malformed blocks the job
+  (`session_state_untrusted`).
+- **Refresh.** The session is saved back, IndexedDB included, only after a clean finish, never
+  after a violation.
+- **Entry.** `python apply_pipeline.py --warm-login <job_url>` is the only way a session enters.
+  A human signs in on `:2`, the pipeline types nothing, and each run uses a fresh sentinel. The
+  session is saved only once the page is on the tenant's host and shows no sign-in wall.
+- **Expiry.** A restored session that shows a sign-in wall on two polls is renamed `.expired`
+  (kept seven days), and the job goes to `needs_review/session_expired`. Automatic vault sign-in
+  stays out of this change.
+
+Tests: `tests/test_job_sessions.py`, plus the session round trip in
+`tests/test_job_context_browser.py`.
+
 **Finding 1, closed.**
 - `service_workers="block"` stops registration outright: zero script fetches, measured.
 - A `serviceworker` event is now a tripwire: it records `service_worker_despite_block`, and the

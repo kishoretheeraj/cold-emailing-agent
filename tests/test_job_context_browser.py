@@ -50,16 +50,21 @@ class _Site(BaseHTTPRequestHandler):
             return
         if path == "/sw.js":
             _count("sw")
-        name = path.lstrip("/") or "vectors.html"
+        name = {"/login": "login.html", "/whoami": "whoami.html"}.get(path) or path.lstrip("/") or "vectors.html"
         target = SITE / name
         if "/" in name or not target.is_file():
             self.send_error(404)
             return
         body = target.read_bytes()
+        if path == "/whoami":
+            who = (self.headers.get("Cookie") or "anonymous").replace("<", "")
+            body += f"<pre id='who'>{who}</pre>".encode()
         ctype = "application/javascript" if name.endswith(".js") else "text/html; charset=utf-8"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if path == "/login":
+            self.send_header("Set-Cookie", "sid=site-session; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax")
         self.end_headers()
         self.wfile.write(body)
 
@@ -262,3 +267,62 @@ def test_one_jobs_storage_never_reaches_the_next(ap, browser, site):
         assert page.evaluate("() => [localStorage.getItem('k'), document.cookie]") == [None, ""]
     finally:
         second.detach()
+
+
+# ── sessions: saved after a clean finish, restored only for that tenant ────────
+
+def _whoami(ap, browser, site, storage_state):
+    scope = ap.JobScope(browser, "w", storage_state=storage_state)
+    scope.attach()
+    try:
+        page = scope.open_page()
+        page.goto(f"{site}/whoami", wait_until="domcontentloaded")
+        page.wait_for_function("document.getElementById('idb').textContent !== 'pending'", timeout=5000)
+        return {k: page.inner_text(f"#{k}") for k in ("who", "marker", "idb")}
+    finally:
+        scope.detach()
+
+
+def _sign_in_and_save(ap, browser, site, key, host):
+    scope = ap.JobScope(browser, "login")
+    scope.attach()
+    page = scope.open_page()
+    page.goto(f"{site}/login", wait_until="domcontentloaded")
+    page.wait_for_function("window.__events.includes('saved')", timeout=5000)
+    scope.detach(persist_key=key, persist_domain=host)  # what run_job does after a clean finish
+
+
+def test_session_round_trip_restores_cookie_storage_and_indexed_db(ap, browser, site, tmp_path, monkeypatch):
+    import ats_sessions
+    monkeypatch.setattr(ats_sessions.config, "APPLY_SESSIONS_DIR", str(tmp_path))
+    host = "127.0.0.1"
+    _sign_in_and_save(ap, browser, site, host, host)
+    state = ats_sessions.load_state_for(host, host, ap._storage_origins(host))
+    restored = _whoami(ap, browser, site, state)
+    assert "sid=site-session" in restored["who"]
+    assert restored["marker"] == "signed-in" and restored["idb"] == "idb-session"
+    fresh = _whoami(ap, browser, site, None)
+    assert fresh == {"who": "anonymous", "marker": "none", "idb": "none"}
+
+
+def test_shared_host_tenant_gets_its_cookie_but_no_origin_storage(ap, browser, site, tmp_path, monkeypatch):
+    import ats_sessions
+    monkeypatch.setattr(ats_sessions.config, "APPLY_SESSIONS_DIR", str(tmp_path))
+    host, key = "127.0.0.1", "127.0.0.1/acme"  # a slug in the key = a multi-company host
+    _sign_in_and_save(ap, browser, site, key, host)
+    state = ats_sessions.load_state_for(key, host, ap._storage_origins(host))
+    restored = _whoami(ap, browser, site, state)
+    assert "sid=site-session" in restored["who"]
+    assert restored["marker"] == "none" and restored["idb"] == "none"
+
+
+def test_a_violated_job_never_saves_its_session(ap, browser, site, tmp_path, monkeypatch):
+    import ats_sessions
+    monkeypatch.setattr(ats_sessions.config, "APPLY_SESSIONS_DIR", str(tmp_path))
+    scope = ap.JobScope(browser, "login")
+    scope.attach()
+    page = scope.open_page()
+    page.goto(f"{site}/login", wait_until="domcontentloaded")
+    scope.note_violation("popup_host_not_allowed")
+    scope.detach(persist_key="127.0.0.1", persist_domain="127.0.0.1")
+    assert ats_sessions.state_path("127.0.0.1") is None

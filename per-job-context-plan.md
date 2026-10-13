@@ -335,17 +335,36 @@ section wins.
      is closed and relaunched before another job, and a browser that cannot be closed stops the
      loop (rc 2).
    - A detached scope's callbacks do nothing, and its route aborts everything.
-5. **Storage acceptance.** This is the storage slice: `load_state_for`, approved origins with scheme
-   and port, cookie-domain boundaries, shared-host tenants restoring cookies only, IndexedDB via
-   `storage_state(indexed_db=True)` (validated by the spike), and the malformed and foreign-origin
-   tests.
+5. **Storage acceptance.** Done in the storage slice.
+   - `ats_sessions.load_state_for(key, host, allowed_origins)` keeps cookies whose domain is the
+     host or a subdomain of it, never a parent or sibling domain.
+   - It restores origins only if they appear in an explicit `{(scheme, host, port)}` set
+     (`apply_pipeline._storage_origins`).
+   - A shared multi-company host (a key with a company slug) gets cookies only, never origin-wide
+     storage.
+   - It raises `SessionStateUntrusted`, so the job is blocked with `session_state_untrusted`, on a
+     file that isn't 0600, is over 1 MiB, or is malformed. It re-checks its own output.
+   - IndexedDB is captured with `storage_state(indexed_db=True)`, on both warm-login and the
+     after-job refresh.
+   - Tests: `tests/test_job_sessions.py`, and the real-browser round trip in
+     `tests/test_job_context_browser.py`.
 6. **Spike and config details.**
    - The version is read with `importlib.metadata`.
    - `no_viewport` is set only when headful.
    - `PIPELINE_BROWSER_TESTS_REQUIRED=1` turns a missing Chromium into a failure.
-7. **Warm-login and soak.** This is the storage slice too:
-   - a fresh sentinel per invocation, authentication verified before saving, and the display lock
-     held;
+7. **Warm-login and soak.** Warm-login is done in the storage slice:
+   - each `--warm-login` uses a fresh `warm_login_done.<uuid>` sentinel;
+   - nothing is saved unless the page is on the tenant's host, shows no sign-in wall over two polls,
+     and the scope saw no violation;
+   - the display lock is held;
+   - the context uses live network rules (a human sign-in POSTs) without the submit guard, with
+     WebSockets, service workers and workers still blocked;
+   - an expired session (a restored state that lands on a sign-in wall twice, 1.5 s apart) is
+     renamed `.expired` (pruned after seven days) and the job ends `needs_review/session_expired`;
+   - a refreshed session is saved only after a clean finish (`scope.persist`, set after the final
+     `scope.check()`), never after a violation.
+
+   The soak is still Kishore's:
    - soak criteria: worker-refusal counts (now in every result's facts as `workers_refused`), the
      challenge rate, and at least 100 jobs to exercise the recycle.
 8. **Rollback.** Recorded in `docs/codex-architectural-findings.md`, "What was built (2026-10-13)":

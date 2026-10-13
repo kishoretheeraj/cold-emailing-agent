@@ -1056,8 +1056,14 @@ tripwires. `_loop` owns the browser: display lock, self-test after every launch 
 so the browser-level layers are probed), recycle on `BROWSER_UNUSABLE` or `APPLY_BROWSER_MAX_JOBS`, stop when
 it can't be closed. Unit `jobagent24-pipeline.service` (dry run, not enabled by provisioning). Record:
 docs/codex-architectural-findings.md ("What was built"), spike docs/reviews/2026-10-13-context-isolation-spike.md.
+Sessions: no global state file; `ats_sessions.load_state_for` restores one tenant's state filtered to the
+job's host (cookies on the host or below it, origins only from an explicit (scheme, host, port) set, cookies
+only on shared multi-company hosts; a non-0600, >1 MiB or malformed file blocks the job). Saved back
+(IndexedDB included) only after a clean finish (`scope.persist`), never after a violation; enters only via
+`--warm-login` (human signs in, fresh sentinel, saved only when on the tenant's host with no sign-in wall);
+a sign-in wall on two polls expires it (`.expired`, seven days) -> `needs_review/session_expired`.
 Tests: `tests/test_job_context.py`, `tests/test_job_context_browser.py` (`PIPELINE_BROWSER_TESTS_REQUIRED=1`
-makes them fail instead of skip), `tests/test_ws_route_no_deadlock.py`.
+makes them fail instead of skip), `tests/test_ws_route_no_deadlock.py`, `tests/test_job_sessions.py`.
 
 ## Resume intelligence (full-fledged buildout, Phase 3)
 

@@ -1,0 +1,14 @@
+<!doctype html>
+<html><body>
+<!-- The server appends the Cookie header it received into #who (see the test's handler). -->
+<pre id="marker"></pre><pre id="idb">pending</pre>
+<script>
+document.getElementById('marker').textContent = localStorage.getItem('marker') || 'none';
+const r = indexedDB.open('site', 1);
+r.onupgradeneeded = () => r.result.createObjectStore('s');
+r.onsuccess = () => {
+  const g = r.result.transaction('s').objectStore('s').get('k');
+  g.onsuccess = () => { document.getElementById('idb').textContent = g.result || 'none'; };
+};
+</script>
+</body></html>

@@ -35,6 +35,7 @@ from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 import ats_fillers
+import ats_sessions
 import config
 import email_verification
 import submit_guard
@@ -138,6 +139,11 @@ class JobEnd(Exception):
 def ref(value):
     """Stable short opaque reference for an identifier/free text that must not reach a log."""
     return "h-" + hashlib.sha256(str(value).encode()).hexdigest()[:8]
+
+
+def _tenant_ref(key):
+    # Which employer a saved session belongs to is private: logs carry an opaque reference.
+    return ref(key)
 
 
 def _ev_value(key, value):
@@ -401,7 +407,7 @@ def make_route_handler(scope):
                 frame = page = None
             top = frame is not None and getattr(frame, "parent_frame", None) is None
             allow, reason = net_decision(request.method, request.resource_type, request.url,
-                                         main_frame=top or frame is None)
+                                         dry_run=getattr(scope, "dry_run", None), main_frame=top or frame is None)
             if allow:
                 if request.method.upper() not in ("GET", "HEAD"):
                     scope.mutating += 1
@@ -414,7 +420,7 @@ def make_route_handler(scope):
                     _hops += 1
                     _cur = _urljoin(_cur, _resp.headers["location"])
                     _ok, _why = net_decision("GET", request.resource_type, _cur,
-                                             main_frame=top or frame is None)
+                                             dry_run=getattr(scope, "dry_run", None), main_frame=top or frame is None)
                     if _hops > 10 or not _ok:
                         _bad = _why if not _ok else "too_many_redirects"
                         break
@@ -524,12 +530,17 @@ class JobScope:
     the submit guard and the mode's network guard as init scripts, and the request route.
     Callbacks of a detached scope do nothing and its route aborts everything."""
 
-    def __init__(self, browser, jid="-", storage_state=None, page_guards=True):
+    def __init__(self, browser, jid="-", storage_state=None, page_guards=True, dry_run=None, submit_guard=True):
         self.browser, self.jid, self.storage_state = browser, jid, storage_state
         # False only for network_self_test: without the submit/network JS guards its probes reach
         # the browser-level protections themselves (route, WebSocket route, service-worker block),
         # proving each layer on its own rather than the JS layer in front of it.
         self.page_guards = page_guards
+        # The network policy this context enforces; --warm-login uses live rules (a human signs in,
+        # which POSTs) with no submit guard. Jobs always follow the module's DRY_RUN.
+        self.dry_run = DRY_RUN if dry_run is None else dry_run
+        self.submit_guard = submit_guard
+        self.persist = False  # set after the job's final scope.check(): its session may be saved
         self.context = None
         self.owned, self.main = [], None
         self.violation, self.blocked = None, 0
@@ -556,8 +567,9 @@ class JobScope:
                 raise JobEnd("blocked", "websocket_interception_unavailable") from None
             self.context.add_init_script(NO_WORKERS_JS)
             if self.page_guards:
-                self.context.add_init_script(SUBMIT_GUARD_JS)
-                self.context.add_init_script(DRY_RUN_JS if DRY_RUN else LIVE_NET_GUARD_JS)
+                if self.submit_guard:
+                    self.context.add_init_script(SUBMIT_GUARD_JS)
+                self.context.add_init_script(DRY_RUN_JS if self.dry_run else LIVE_NET_GUARD_JS)
             self.context.on("page", self.adopt)
             self.context.on("serviceworker", self._service_worker)
             self._route = make_route_handler(self)
@@ -654,15 +666,24 @@ class JobScope:
             ev("scope_violation", self.jid, reason=self.violation)
             raise JobEnd("blocked", self.violation)
 
-    def detach(self):
+    def detach(self, persist_key=None, persist_domain=None):
         """Closes the job's context: its pages, frames, popups, route and storage partition with it.
-        A context that cannot be closed marks the browser unusable (BROWSER_UNUSABLE): it is closed
-        and relaunched before another job runs. Never raises."""
+        With `persist_key` (run_job passes it only after a clean finish) the tenant's session is
+        saved first, filtered to `persist_domain`, IndexedDB included -- never after a violation,
+        so state planted by a hostile redirect or popup cannot persist. A context that cannot be
+        closed marks the browser unusable (BROWSER_UNUSABLE): it is closed and relaunched before
+        another job runs. Never raises."""
         self.live = False
         context, self.context = self.context, None
         self._hooks = []
         if context is None:
             return
+        if persist_key and persist_domain and not self.violation:
+            try:
+                ats_sessions.save_state(context, persist_key, domain=persist_domain, indexed_db=True)
+                ev("session_saved", self.jid, tenant=_tenant_ref(persist_key))
+            except Exception as exc:
+                ev("session_save_failed", self.jid, reason=type(exc).__name__)
         try:
             context.close()
         except Exception as exc:
@@ -2227,6 +2248,68 @@ class RunCtx:
             raise JobEnd("blocked", "destination_changed")
 
 
+# ---------------------------------------------------------------- per-tenant sessions
+# Polls a restored session must look signed out on before it is set aside: one read of a page that
+# is still rendering must not throw away a good login.
+SESSION_RECHECK_MS = 1500
+_SIGNED_OUT_WALLS = ("workday_signin", "workday_create", "unexpected", "sso_only")
+
+
+def _session_target(url, platform):
+    """(tenant key, host) whose saved session this job may use; (None, None) for the local fixture."""
+    if platform == "test_local":
+        return None, None
+    return ats_sessions.tenant_key(url), (urlsplit(url).hostname or "").lower() or None
+
+
+def _storage_origins(host):
+    # Origins whose saved storage may be restored for `host`: its https origin when approved, or the
+    # registered local fixture origin. Scheme and port are explicit.
+    out = set()
+    if origin_allowed(f"https://{host}/"):
+        out.add(("https", host, 443))
+    for local_host, port in LOCAL_ORIGINS:
+        if local_host == host:
+            out.add(("http", host, port))
+    return out
+
+
+def _load_session(jid, key, host):
+    try:
+        state = ats_sessions.load_state_for(key, host, _storage_origins(host))
+    except ats_sessions.SessionStateUntrusted as exc:
+        ev("session_state_untrusted", jid, tenant=_tenant_ref(key), reason=str(exc))
+        raise JobEnd("blocked", "session_state_untrusted") from None
+    if state is not None:
+        ev("session_restored", jid, tenant=_tenant_ref(key), cookies=len(state["cookies"]),
+           origins=len(state["origins"]))
+    return state
+
+
+def _signed_out(page):
+    from ats_accounts import detect as account_detect
+
+    for poll in range(2):
+        if account_detect.detect_account_wall(page) not in _SIGNED_OUT_WALLS:
+            return False
+        if poll == 0:
+            page.wait_for_timeout(SESSION_RECHECK_MS)
+    return True
+
+
+def check_session(page, scope, url, jid):
+    """A restored session that lands on a sign-in wall (two polls apart) has expired: it is set
+    aside (renamed .expired, kept seven days) and the job goes to a human -- re-run --warm-login,
+    then requeue. Never signs in by itself."""
+    if scope.storage_state is None or not _signed_out(page):
+        return
+    key = ats_sessions.tenant_key(url)
+    if key:
+        ats_sessions.expire(key)
+    ev("session_expired", jid, tenant=_tenant_ref(key))
+    raise JobEnd("needs_review", "session_expired")
+
+
 def run_job(browser, job, test_base, attempt_id=None, assets=None):
     """Runs one job. Every exception that is not an explicit job outcome is converted here, while
     the in-flight secrets are still registered, into a redacted JobEnd: nothing downstream formats
@@ -2246,11 +2329,18 @@ def run_job(browser, job, test_base, attempt_id=None, assets=None):
     ACTIVE_APPROVED = approved_for_job(platform)  # explicit per-job origin list
     scope = JobScope(browser, jid)
     failure = None
+    session_key = session_host = None
+    finished = False
     try:
         validate_job_url(url)  # BEFORE any browser action or network request; the queue URL is never its own trust reference
         ev("approved_origins", jid, count=len(ACTIVE_APPROVED))
-        return _run_job(scope, job, jid, platform, url, attempt_id,
-                        assets=assets, resume_path=resume_path)
+        session_key, session_host = _session_target(url, platform)
+        if session_key:
+            scope.storage_state = _load_session(jid, session_key, session_host)
+        result = _run_job(scope, job, jid, platform, url, attempt_id,
+                          assets=assets, resume_path=resume_path)
+        finished = scope.persist
+        return result
     except (JobEnd, Shutdown):
         raise
     except Exception as exc:
@@ -2259,7 +2349,9 @@ def run_job(browser, job, test_base, attempt_id=None, assets=None):
     finally:
         forget_secrets()
         try:
-            scope.detach()  # closes the job's whole context; never raises (a failed close poisons the browser)
+            # Closes the job's whole context; never raises (a failed close poisons the browser). The
+            # tenant's session is saved first only after a clean finish.
+            scope.detach(persist_key=session_key if finished else None, persist_domain=session_host)
         finally:
             ACTIVE_APPROVED = None
     raise JobEnd("failed", failure)  # outside the except block: no raw exception rides along as context
@@ -2315,6 +2407,7 @@ def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_pat
         raise
     settle(page)
     assert_destination(page, url, scope, jid)  # after redirects, before anything reads the page
+    check_session(page, scope, url, jid)  # a restored session that now shows a sign-in wall has expired
     check_challenge(page, jid)
     assert_destination(page, url, scope, jid)
     if safe_count(universal_filler.guard_count, page) < 0:
@@ -2545,6 +2638,7 @@ def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_pat
     facts["workers_refused"] = scope.worker_refusals()  # soak diagnostic: forms that wanted a worker
     facts["title_unchanged"] = int(title0 == safe_title(page))
     scope.check()  # any popup that appeared meanwhile ends the job as blocked
+    scope.persist = True  # clean to here: run_job may save this tenant's refreshed session
 
     if DRY_RUN:
         missing = dry_run_missing(facts)
@@ -2784,11 +2878,93 @@ def network_self_test(browser, test_base):
         scope.detach()
 
 
+WARM_LOGIN_TIMEOUT_S = 20 * 60
+WARM_LOGIN_POLL_MS = 2000
+
+
+def warm_login(url, sentinel_dir=None, timeout_s=None):
+    """The one way a session enters the sessions dir for this pipeline. Opens the tenant's page in a
+    fresh context on the pipeline's display and waits while a human signs in (over noVNC, at human
+    pace; nothing is ever typed here). The human then touches the sentinel file printed on stdout,
+    a fresh name per invocation, so a leftover file from an earlier run can never trigger a save.
+    The session is saved -- filtered to the tenant's host, IndexedDB included -- only if the page
+    is on that host, shows no sign-in wall, and the scope saw no violation. Returns an exit code:
+    0 saved, 1 nothing saved, 2 bad URL, 3 display busy."""
+    try:
+        validate_job_url(url)
+    except JobEnd as end:
+        ev("warm_login_refused", reason=end.detail)
+        return 2
+    key = ats_sessions.tenant_key(url)
+    host = (urlsplit(url).hostname or "").lower()
+    if not key or not host:
+        ev("warm_login_refused", reason="no_tenant")
+        return 2
+    display = take_display_lock(DISPLAY_LOCK_PATH) if DISPLAY_LOCK_PATH else None
+    if DISPLAY_LOCK_PATH and display is None:
+        ev("display_busy", lock=DISPLAY_LOCK_PATH)
+        return 3
+    sentinel = os.path.join(sentinel_dir or os.path.dirname(os.path.abspath(STATE_PATH)),
+                            f"warm_login_done.{uuid.uuid4().hex}")
+    deadline = time.monotonic() + (WARM_LOGIN_TIMEOUT_S if timeout_s is None else timeout_s)
+    try:
+        with sync_playwright() as pw:
+            browser = launch_browser(pw)
+            if browser is None:
+                return 1
+            # Live network rules (signing in POSTs) and no submit guard; WebSockets, service workers
+            # and workers stay blocked exactly as in a job.
+            scope = JobScope(browser, "warm-login", dry_run=False, submit_guard=False)
+            try:
+                scope.attach()
+                page = scope.open_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                print(f"Sign in on the pipeline's display, then run:  touch {sentinel}", flush=True)
+                ev("warm_login_waiting", tenant=_tenant_ref(key))
+                while not os.path.exists(sentinel):
+                    if STOP.is_set() or time.monotonic() > deadline:
+                        ev("warm_login_timeout", tenant=_tenant_ref(key))
+                        return 1
+                    page.wait_for_timeout(WARM_LOGIN_POLL_MS)
+                scope.check()
+                if (urlsplit(page.url).hostname or "").lower() != host:
+                    ev("warm_login_not_saved", tenant=_tenant_ref(key), reason="left_tenant_host")
+                    return 1
+                if _signed_out(page):
+                    ev("warm_login_not_saved", tenant=_tenant_ref(key), reason="still_signed_out")
+                    return 1
+                ats_sessions.save_state(scope.context, key, domain=host, indexed_db=True)
+                ev("warm_login_saved", tenant=_tenant_ref(key))
+                return 0
+            except JobEnd as end:
+                ev("warm_login_not_saved", tenant=_tenant_ref(key), reason=end.detail)
+                return 1
+            finally:
+                scope.detach()
+                close_browser(browser)
+    finally:
+        release_display_lock(display)
+        with contextlib.suppress(OSError):
+            os.remove(sentinel)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="process all pending jobs then exit")
     ap.add_argument("--self-test", action="store_true", help="run the dry-run network-isolation self-test and exit")
+    ap.add_argument("--warm-login", metavar="JOB_URL",
+                    help="open the tenant's page for a human to sign in, then save its session")
     args = ap.parse_args()
+    if args.warm_login:
+        os.umask(0o077)
+        try:
+            setup_logging()
+        except StorageError as exc:
+            sys.stderr.write(f"FATAL: {exc}\n")
+            return 2
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: STOP.set())
+        return warm_login(args.warm_login)
     once = args.once
     os.umask(0o077)  # every file we create (state, lock, tmp, results, log) is owner-only
     try:

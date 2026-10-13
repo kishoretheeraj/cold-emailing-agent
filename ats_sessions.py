@@ -61,10 +61,22 @@ def _within(host, domain):
     return host == domain or host.endswith("." + domain)
 
 
-def save_state(context, key, domain=None):
+def _storage_state(context, indexed_db):
+    # IndexedDB is captured only on request (Playwright >= 1.51); an older Playwright without the
+    # keyword falls back to cookies + localStorage.
+    if indexed_db:
+        try:
+            return context.storage_state(indexed_db=True)
+        except TypeError:
+            pass
+    return context.storage_state()
+
+
+def save_state(context, key, domain=None, indexed_db=False):
     """Write the context's cookies and storage for this tenant, atomically, readable only by us.
     With `domain`, only that site's cookies and origins are kept: a human who signed in with
-    Google during a takeover must not leave the operator's Google session in this file."""
+    Google during a takeover must not leave the operator's Google session in this file. With
+    `indexed_db`, origins carry their IndexedDB too (some tenants keep session material there)."""
     os.makedirs(config.APPLY_SESSIONS_DIR, mode=0o700, exist_ok=True)
     os.chmod(config.APPLY_SESSIONS_DIR, 0o700)
     path = _path(key)
@@ -73,12 +85,15 @@ def save_state(context, key, domain=None):
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.close(fd)
         if domain:
-            state = context.storage_state()
+            state = _storage_state(context, indexed_db)
             state = {"cookies": [c for c in state.get("cookies", []) if _within(c.get("domain"), domain)],
                      "origins": [o for o in state.get("origins", [])
                                  if _within(urlparse(o.get("origin", "")).hostname, domain)]}
             with open(tmp, "w") as fh:
                 json.dump(state, fh)
+        elif indexed_db:
+            with open(tmp, "w") as fh:
+                json.dump(_storage_state(context, True), fh)
         else:
             context.storage_state(path=tmp)
         os.chmod(tmp, 0o600)
@@ -111,3 +126,117 @@ def restore_cookies(context, key):
         return False
     context.add_cookies(cookies)
     return True
+
+
+# ── Loading a saved state into a fresh per-job context (apply_pipeline) ────────
+
+_MAX_STATE_BYTES = 1 << 20
+
+
+class SessionStateUntrusted(Exception):
+    """A saved storage_state that must not be loaded: wrong mode, too large, malformed, or holding
+    cookies/origins outside the job's host after filtering."""
+
+
+def shared_host(key):
+    """True for a tenant on a multi-company host (key carries a company slug): its origin-wide
+    localStorage/IndexedDB is shared with other companies' tenants and is never restored."""
+    return "/" in (key or "")
+
+
+def _origin_parts(origin):
+    try:
+        parsed = urlparse(origin or "")
+        port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+    except ValueError:
+        return None
+    if not parsed.hostname or parsed.path not in ("", "/") or parsed.query or parsed.username:
+        return None
+    return parsed.scheme, parsed.hostname.lower(), port
+
+
+def load_state_for(key, host, allowed_origins):
+    """The saved storage_state for this tenant, filtered for one job on `host`, as a dict for
+    `new_context(storage_state=...)`; None when nothing is saved. Fails closed
+    (SessionStateUntrusted) on a file that is not 0600, larger than 1 MiB, or malformed.
+
+    Kept: cookies whose domain is `host` itself or a subdomain of it (never a parent or sibling
+    domain, which would ride along to other tenants' hosts), and storage for origins in
+    `allowed_origins` ({(scheme, host, port)}, scheme and port explicit) -- except on a shared
+    multi-company host, where origin-wide storage belongs to every tenant there and only cookies
+    are restored."""
+    path = state_path(key)
+    if not path:
+        return None
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    if info.st_mode & 0o077:
+        raise SessionStateUntrusted("session state is readable by others")
+    if info.st_size > _MAX_STATE_BYTES:
+        raise SessionStateUntrusted("session state is too large")
+    try:
+        with open(path) as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        raise SessionStateUntrusted("session state is malformed") from None
+    if (not isinstance(state, dict) or not isinstance(state.get("cookies", []), list)
+            or not isinstance(state.get("origins", []), list)):
+        raise SessionStateUntrusted("session state is malformed")
+    host = (host or "").lower()
+    cookies = [c for c in state.get("cookies", [])
+               if isinstance(c, dict) and isinstance(c.get("domain"), str) and _within(c["domain"], host)]
+    origins = []
+    if not shared_host(key):
+        for origin in state.get("origins", []):
+            if not isinstance(origin, dict):
+                continue
+            parts = _origin_parts(origin.get("origin"))
+            if parts is not None and parts in allowed_origins and parts[1] == host:
+                origins.append(origin)
+    # Fail closed if filtering ever let something foreign through.
+    if any(not _within(c["domain"], host) for c in cookies) or any(
+            (_origin_parts(o.get("origin")) or (None, None, None))[1] != host for o in origins):
+        raise SessionStateUntrusted("session state escaped its host")
+    return {"cookies": cookies, "origins": origins}
+
+
+def expire(key):
+    """Set a stale session aside instead of deleting it: renamed to <file>.expired, so an operator
+    can restore it if the sign-in wall was misread. Returns the new path, or None."""
+    path = _path(key)
+    target = f"{path}.expired"
+    try:
+        os.replace(path, target)
+    except FileNotFoundError:
+        return None
+    try:
+        os.utime(target)  # the seven days count from when it was set aside, not when it was saved
+    except OSError:
+        pass
+    prune_expired()
+    return target
+
+
+_EXPIRED_KEEP_SECONDS = 7 * 24 * 3600
+
+
+def prune_expired(now=None):
+    """Delete set-aside .expired sessions older than seven days. Never raises."""
+    import time
+
+    now = time.time() if now is None else now
+    try:
+        names = os.listdir(config.APPLY_SESSIONS_DIR)
+    except OSError:
+        return
+    for name in names:
+        if not name.endswith(".json.expired"):
+            continue
+        path = os.path.join(config.APPLY_SESSIONS_DIR, name)
+        try:
+            if now - os.path.getmtime(path) > _EXPIRED_KEEP_SECONDS:
+                os.remove(path)
+        except OSError:
+            pass
