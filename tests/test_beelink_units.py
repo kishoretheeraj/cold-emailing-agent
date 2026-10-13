@@ -50,6 +50,7 @@ def test_every_expected_unit_exists():
         "jobagent24-discovery.service",
         "jobagent24-discovery.timer",
         "jobagent24-monitor.service",
+        "jobagent24-pipeline.service",
         "jobagent24-resume.service",
         "jobagent24-resume.timer",
         "jobagent24-screening.service",

@@ -1,10 +1,11 @@
-"""Service-worker / WebSocket hardening: per-scope SW violations and live-mode page guard.
+"""Service-worker / worker tripwires and the route's fail-closed rules for a per-job context.
 
-Covers: a service worker on a non-approved origin is flagged (never ignored); SW violations are
-per JobScope and never leak into other jobs' route handlers; LIVE_NET_GUARD_JS blocks WebSocket and
-service-worker registration without blocking submits; adopt() installs the WebSocket block in LIVE
-mode and fails closed when route_web_socket is unavailable. Pure tests: no network, no browser.
-playwright is stubbed because apply_pipeline imports it at module level.
+Covers: any serviceworker or worker event in a job's context is a violation (the browser and the
+NO_WORKERS_JS init script refuse both, so an event means a bypass); violations are per JobScope and
+never leak into other jobs' route handlers; a detached scope's callbacks do nothing and its route
+aborts everything; LIVE_NET_GUARD_JS blocks WebSocket and service-worker registration without
+blocking submits. attach()/detach() wiring is in test_job_context.py. Pure tests: no network, no
+browser. playwright is stubbed because apply_pipeline imports it at module level.
 """
 
 import sys
@@ -51,81 +52,46 @@ def _route():
     return route
 
 
-class _LivePage:
-    """Fake page with route_web_socket; hashable so it can live in scope._explicit_adopt."""
-
-    def __init__(self):
-        self.init_scripts = []
-        self.ws_patterns = []
-        self.on = MagicMock()
-        self.url = ALLOWED_URL
-
-    def add_init_script(self, script):
-        self.init_scripts.append(script)
-
-    def route_web_socket(self, pattern, handler):
-        self.ws_patterns.append(pattern)
-
-    def is_closed(self):
-        return False
-
-    def opener(self):
-        return None
-
-
-class _NoWsPage:
-    """Fake page WITHOUT route_web_socket (old Playwright / interception unavailable)."""
-
-    def __init__(self):
-        self.init_scripts = []
-        self.on = MagicMock()
-        self.url = ALLOWED_URL
-
-    def add_init_script(self, script):
-        self.init_scripts.append(script)
-
-    def is_closed(self):
-        return False
-
-    def opener(self):
-        return None
-
-
-def test_service_worker_unapproved_origin_is_flagged(monkeypatch):
-    monkeypatch.setattr(ap, "origin_allowed", _allow_only_approved)
-    worker = SimpleNamespace(url=EVIL_SW)
-    scope = ap.JobScope(MagicMock(), "j")
-    # The job itself has a page on the evil origin, so a worker there is in scope for this job.
-    scope.owned.append(SimpleNamespace(url="https://evil.example/apply"))
-
-    scope._service_worker(worker)
-
-    assert scope.violation == "service_worker_unapproved_origin"
-    assert scope.sw_violations == [EVIL_SW]
-
-
-def test_service_worker_from_foreign_tab_is_ignored(monkeypatch):
+def test_service_worker_event_is_a_tripwire(monkeypatch):
+    # The context blocks service workers (service_workers="block"): any serviceworker event means the
+    # block failed, on whatever origin -- there is no foreign tab to be lenient about any more.
     monkeypatch.setattr(ap, "origin_allowed", _allow_only_approved)
     scope = ap.JobScope(MagicMock(), "j")
+
+    scope._service_worker(SimpleNamespace(url=ALLOWED_URL + "/sw.js"))
+
+    assert scope.violation == "service_worker_despite_block"
+    assert scope.sw_violations == [ALLOWED_URL + "/sw.js"]
+
+
+def test_worker_event_is_a_tripwire():
+    scope = ap.JobScope(MagicMock(), "j")
+
+    scope._worker(SimpleNamespace(url="blob:https://boards.example.com/1"))
+
+    assert scope.violation == "worker_despite_block"
+    assert scope.worker_violations == ["blob:https://boards.example.com/1"]
+
+
+def test_detached_scope_callbacks_do_nothing():
+    # A leaked context's late events must not act under (or leak into) the next job's policy.
+    scope = ap.JobScope(MagicMock(), "j")
+    scope.detach()
 
     scope._service_worker(SimpleNamespace(url=EVIL_SW))
+    scope._worker(SimpleNamespace(url=EVIL_SW))
 
-    assert scope.violation is None
-    assert scope.sw_violations == []
+    assert scope.violation is None and scope.sw_violations == [] and scope.worker_violations == []
+    assert scope.adopt(MagicMock()) is False
 
 
 def test_sw_violation_does_not_leak_across_scopes(monkeypatch):
     monkeypatch.setattr(ap, "origin_allowed", lambda url: True)
     monkeypatch.setattr(ap, "net_decision", lambda *a, **k: (True, ""))
 
-    ctx1 = MagicMock()
-    ctx1.pages = []
-    scope1 = ap.JobScope(ctx1, "j1")
-    # Owned page on the worker's origin -> the worker is attributed to this job and flagged on scope1 only.
-    scope1.owned.append(SimpleNamespace(url=ALLOWED_URL + "/apply"))
+    scope1 = ap.JobScope(MagicMock(), "j1")
     scope1._service_worker(SimpleNamespace(url=ALLOWED_URL + "/sw.js"))
     assert scope1.sw_violations == [ALLOWED_URL + "/sw.js"]
-    assert scope1.violation == "service_worker"
 
     scope2 = ap.JobScope(MagicMock(), "j2")
     assert scope2.sw_violations == []
@@ -141,18 +107,23 @@ def test_sw_violation_does_not_leak_across_scopes(monkeypatch):
     route1.abort.assert_called_once_with("blockedbyclient")
     route1.fulfill.assert_not_called()
 
-    # A pre-existing foreign tab's request is left alone even through the violated job's handler.
-    foreign_page = MagicMock()
-    scope1.before = [foreign_page]
-    assert scope1.owns(foreign_page) is False
-    foreign_request = SimpleNamespace(
-        frame=SimpleNamespace(page=foreign_page, parent_frame=None),
-        method="GET", resource_type="document", url=ALLOWED_URL, headers={},
-    )
-    route_foreign = _route()
-    handler1(route_foreign, foreign_request)
-    route_foreign.fulfill.assert_called_once()
-    route_foreign.abort.assert_not_called()
+
+@pytest.mark.parametrize("trip", ["sw", "worker", "detached"])
+def test_route_handler_fails_closed_after_a_tripwire_or_detach(monkeypatch, trip):
+    monkeypatch.setattr(ap, "origin_allowed", lambda url: True)
+    monkeypatch.setattr(ap, "net_decision", lambda *a, **k: (True, ""))
+    scope = ap.JobScope(MagicMock(), "j")
+    handler = ap.make_route_handler(scope)
+    if trip == "sw":
+        scope._service_worker(SimpleNamespace(url=ALLOWED_URL + "/sw.js"))
+    elif trip == "worker":
+        scope._worker(SimpleNamespace(url=ALLOWED_URL + "/w.js"))
+    else:
+        scope.detach()
+    route = _route()
+    handler(route, _get_request())
+    route.abort.assert_called_once_with("blockedbyclient")
+    route.fulfill.assert_not_called()
 
 
 def test_live_net_guard_js_blocks_ws_and_sw_register_not_submit():
@@ -161,30 +132,3 @@ def test_live_net_guard_js_blocks_ws_and_sw_register_not_submit():
     assert "serviceWorker" in js
     assert "submit" not in js.lower()
     assert "preventDefault" not in js
-
-
-def test_adopt_blocks_websocket_in_live_mode(monkeypatch):
-    monkeypatch.setattr(ap, "DRY_RUN", False)
-    monkeypatch.setattr(ap, "origin_allowed", lambda url: True)
-    page = _LivePage()
-    scope = ap.JobScope(MagicMock(), "j")
-    scope._explicit_adopt.add(page)
-
-    assert scope.adopt(page) is True
-
-    assert any("WebSocket" in s for s in page.init_scripts)
-    assert ap.DRY_RUN_JS not in page.init_scripts
-    assert page.ws_patterns == ["**/*"]
-
-
-def test_adopt_fails_closed_when_ws_interception_unavailable_in_live_mode(monkeypatch):
-    monkeypatch.setattr(ap, "DRY_RUN", False)
-    monkeypatch.setattr(ap, "origin_allowed", lambda url: True)
-    page = _NoWsPage()
-    scope = ap.JobScope(MagicMock(), "j")
-    scope._explicit_adopt.add(page)
-
-    with pytest.raises(ap.JobEnd) as exc:
-        scope.adopt(page)
-
-    assert "websocket_interception_unavailable" in str(exc.value)

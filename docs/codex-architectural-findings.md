@@ -1,7 +1,13 @@
-# Codex Architectural Findings — Deferred (require isolated browser context per job)
+# Codex Architectural Findings — per-job browser contexts
 
-**Date:** 2026-10-12
-**Status:** DEFERRED — not implementable without the redesign below. No half-fixes attempted.
+**Date:** 2026-10-12 (updated 2026-10-13)
+**Status (2026-10-13):** Findings 1 and 2 CLOSED for pages, frames and popups by the per-job context
+redesign (branch `feat/per-job-contexts`, PR #20), **with workers closed by a JavaScript-level
+refusal** rather than by the browser — see "What was built (2026-10-13)" at the end. Finding 3
+unchanged (closed separately, see its closeout). Everything between here and that section is the
+2026-10-12 record, kept as written.
+
+**Original status (2026-10-12):** DEFERRED — not implementable without the redesign below. No half-fixes attempted.
 **Context:** Commit `6878d68` ("Pipeline security hardening: Codex feedback implementation")
 closed the implementable findings. Codex's verdict: 3 findings remain, all architectural —
 they require an isolated browser context per job instead of the current CDP-shared Chrome
@@ -196,8 +202,8 @@ on, the context redesign. Until then, the fail-closed tri-state stands.
 
 | Finding | Without redesign | Needs redesign |
 |---|---|---|
-| 1. Service-worker isolation | Done: flag unapproved-origin workers; per-scope violations (no cross-job leak); register-block in live mode | True prevention via `service_workers="block"` on a per-job isolated context |
-| 2. WebSocket enforcement | Done: WS block on adopted pages in live mode too, fail-closed | Foreign/pre-existing tabs' sockets; per-job attribution |
+| 1. Service-worker isolation | Done: flag unapproved-origin workers; per-scope violations (no cross-job leak); register-block in live mode | **Closed 2026-10-13 (isolated context):** `service_workers="block"`, event is a fail-closed tripwire |
+| 2. WebSocket enforcement | Done: WS block on adopted pages in live mode too, fail-closed | **Closed 2026-10-13 for pages/frames/popups (isolated context)**; dedicated/shared workers refused at JS level (the browser routes do not reach them) |
 | 3. Nested widget token dedup | Intentionally not built (untestable; no security consumer; fail-closed detector suffices) | If ever needed: `ChallengeLedger` with real-widget fixtures — not gated on the context redesign |
 
 All three redesigns are **blocked on Kishore's decision** re: the bot-detection tradeoff of
@@ -310,3 +316,87 @@ confirm that the pipeline stays detect-and-hand-off. Finding 3 reopens only if t
 ever acts on a human-solved challenge automatically; at that point the `ChallengeLedger` is
 built with real-widget fixtures on a staging ATS, independent of the context redesign.
 
+
+---
+
+## What was built (2026-10-13)
+
+Plan: `per-job-context-plan.md`. Spike, with every result and the decision record:
+`docs/reviews/2026-10-13-context-isolation-spike.md`. All results were measured at a local server,
+each against an unprotected control.
+
+**Browser.** `apply_pipeline.launch_browser` launches the pipeline's own Chrome.
+- There is no CDP attach, no remote-debugging port, and no flags that hide automation. Kishore
+  decided "pacing, not evasion" on 2026-10-13, so `navigator.webdriver` reads true.
+- `_loop` owns the browser:
+  - It holds the display lock (`APPLY_DISPLAY_LOCK`) for the browser's whole life.
+  - It runs `network_self_test` after every launch, in both modes.
+  - It recycles the browser after `APPLY_BROWSER_MAX_JOBS` jobs, or when a job context failed to
+    close (`BROWSER_UNUSABLE`).
+  - It stops (rc 2) when the browser itself can't be closed.
+- The old pre-job service-worker sweep of the shared context is gone; a fresh context has nothing
+  to sweep.
+
+**Per-job context.** `JobScope.attach` creates
+`browser.new_context(service_workers="block", accept_downloads=False)`. It sets `no_viewport` only
+when headful, and passes the tenant's filtered `storage_state` when one exists. Before any page
+exists, it installs:
+- `context.route_web_socket("**/*", _swallow_websocket)`;
+- `NO_WORKERS_JS`, `SUBMIT_GUARD_JS`, and `DRY_RUN_JS` or `LIVE_NET_GUARD_JS` as init scripts;
+- the `page` and `serviceworker` listeners;
+- the request route.
+
+Every page in the context is the job's, so the shared-context machinery is deleted: `before`,
+`owns()`, `closable`, `refresh()`, `_opened_by_job()`, `_explicit_adopt`, and the foreign-tab route
+branch. `detach` closes the context, and never raises. The route of a detached scope aborts
+everything, and its callbacks do nothing.
+
+**Finding 1, closed.**
+- `service_workers="block"` stops registration outright: zero script fetches, measured.
+- A `serviceworker` event is now a tripwire: it records `service_worker_despite_block`, and the
+  route then aborts all of the job's traffic.
+
+**Finding 2, closed for pages, frames and popups.**
+- `context.route_web_socket` covers the main page, iframes on the same and on other origins, and a
+  popup whose first script opens a socket. Zero handshakes were measured, with the JS overrides
+  removed.
+- The handler never calls `ws.close()`. In the sync API that call deadlocks: the handler runs on
+  Playwright's own event loop. The page-level handler on this branch had that bug before this
+  change (commit `9cc9fed`).
+- The `WebSocket` JS override stays as defence in depth.
+
+**Workers: the gap the redesign did not close by itself.** The spike measured, on Playwright 1.60.0
+and 1.63.0, that the browser-level routes do not reach workers:
+- `context.route_web_socket` does not reach a dedicated worker's WebSocket.
+- `context.route` does not reach a shared worker's HTTP.
+
+So:
+- **Refusal.** `NO_WORKERS_JS` makes `Worker` and `SharedWorker` throw in every frame. The
+  properties are non-writable and non-configurable. A fresh `about:blank` iframe and
+  `window.open('about:blank')` were both tried as ways around it, and both failed.
+- **Count.** Refusals are counted per page (`__pipelineWorkerRefusals`), so the soak shows how many
+  real forms tried to start a worker.
+- **Backstop.** `page.on("worker")` is the backstop for a bypass. It records
+  `worker_despite_block`, `check()` also scans `page.workers`, and the route then aborts.
+  Shared workers raise no Playwright event, so the refusal is their only layer.
+- **Incidental.** The pipeline's route answers allowed requests with `route.fetch`, which cannot
+  complete a WebSocket upgrade, so a dedicated worker's socket is also stopped there. That is a side
+  effect, not a designed layer.
+
+Residual: the worker refusal is a JavaScript-level refusal, not a browser-enforced one.
+
+**Tests.**
+- `tests/test_job_context.py` (pure): attach order, fail-closed cleanup, popups, tripwires, the
+  `_loop` lifecycle, the display lock, and structural checks.
+- `tests/test_job_context_browser.py` (real Chromium): every vector, plus sensitivity tests
+  (removing one layer must let traffic through) and the self-test in both modes. These fail rather
+  than skip with `PIPELINE_BROWSER_TESTS_REQUIRED=1`.
+- `tests/test_ws_route_no_deadlock.py`: the deadlock regression, run in a subprocess with a timeout.
+- `tests/test_sw_ws_hardening.py`: the rewritten tripwire tests.
+
+**Rollback.** A rollback is not just a revert:
+1. `systemctl disable --now jobagent24-pipeline.service`, and remove
+   `/etc/systemd/system/jobagent24-pipeline.service`.
+2. Either start a verified CDP Chrome on `:2` again, or leave the pipeline stopped.
+
+Reverting reopens Findings 1 and 2 as recorded above. Finding 3's closeout is unaffected.

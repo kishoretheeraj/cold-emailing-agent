@@ -80,6 +80,16 @@ The dashboard's Approve is intent: it records an `application_runs` row (adapter
 - The apply worker launches its own Playwright Chrome (`APPLY_BROWSER_CHANNEL=chrome`,
   `APPLY_BROWSER_HEADLESS=0`) on display `:2`, serialized by `APPLY_DISPLAY_LOCK=/var/lib/jobagent24/display2.lock`.
 - Logins persist as per-tenant `storage_state` files in `APPLY_SESSIONS_DIR=/var/lib/jobagent24/sessions` (0700).
+- `apply_pipeline.py` (unit `jobagent24-pipeline.service`, dry run, never armed, **not enabled by
+  provisioning**) launches its own Chrome the same way, with no debugging port and no flags that hide
+  automation, and gives every job a fresh browser context: service workers blocked, WebSockets never
+  connected, `Worker`/`SharedWorker` refused (each refusal counted as `workers_refused` in the job's
+  result facts). It holds `display2.lock` for its browser's lifetime, so `jobagent24-apply` skips
+  runs while it is up. It runs the network self-test after every launch and recycles Chrome every
+  `APPLY_BROWSER_MAX_JOBS` (100) jobs. Supervised soak:
+  `sudo systemctl start jobagent24-pipeline` then `journalctl -u jobagent24-pipeline -f`; stop with
+  `sudo systemctl stop jobagent24-pipeline`. Soak criteria: per-job-context-plan.md section g and
+  "How each correction was carried out" item 7.
 - A persistent profile, if ever needed, follows `chrome-profile@.service`: unit `jobagent24-chrome@%i.service`,
   `--user-data-dir=/var/lib/jobagent24/profiles/%i`, `HOME=/var/lib/jobagent24`, `JoinsNamespaceOf=xvfb@%i.service`,
   never `--headless` or `--remote-debugging-port`. Slot 2 is reserved (`profiles/2` exists); no such unit ships
@@ -89,7 +99,7 @@ The dashboard's Approve is intent: it records an `application_runs` row (adapter
 
 ```
 sudo systemctl disable --now jobagent24-{discovery,screening,resume,apply}.timer
-sudo systemctl disable --now jobagent24-api xvfb@2 x11vnc@2 novnc@2
+sudo systemctl disable --now jobagent24-api jobagent24-pipeline xvfb@2 x11vnc@2 novnc@2
 sudo rm /etc/systemd/system/jobagent24-* && sudo systemctl daemon-reload
 ```
 Old units are unaffected. Optional cleanup: `sudo rm -rf /opt/jobagent24 /var/lib/jobagent24 /etc/jobagent24`.
