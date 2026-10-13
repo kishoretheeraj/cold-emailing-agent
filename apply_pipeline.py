@@ -37,10 +37,10 @@ import ats_fillers
 import config
 import email_verification
 import submit_guard
-from answers.workauth import (  # noqa: F401 - SKIP/pick_option stay importable from here
-    SKIP, WORK_AUTH_FACTS, classify_question, pick_option, pick_option_ex)
 import universal_filler
 import workday_adapter
+from answers.workauth import (  # noqa: F401 - SKIP/pick_option stay importable from here
+    SKIP, WORK_AUTH_FACTS, classify_question, pick_option, pick_option_ex)
 
 # ---------------------------------------------------------------- settings
 DRY_RUN = os.environ.get("APPLY_DRY_RUN", "1") != "0"  # only exact "0" disables
@@ -89,7 +89,7 @@ OWNER_ID = f"{uuid.uuid4().hex}:{os.getpid()}"
 # the remote site has seen us (cookies, tracking, server-side drafts), so nothing at or after it
 # ever auto-requeues. Only a crash while still at "started" (nothing sent anywhere) is retryable.
 PHASES = ("started", "navigating", "navigated", "filled", "uploaded", "otp_requested",
-          "magic_link_open", "otp_entered", "final_reached")
+          "magic_link_open", "otp_entered", "final_reached", "submit_clicked")
 REQUEUE_OK_PHASES = ("started",)
 BAD_OUTCOMES = ("failed", "blocked", "unsupported", "needs_reconciliation", "dry_run_incomplete")
 STATE_FOR_STATUS = {"dry_run_ok": "done", "submitted": "done"}  # all others map to themselves
@@ -412,6 +412,8 @@ def make_route_handler(scope):
             allow, reason = net_decision(request.method, request.resource_type, request.url,
                                          main_frame=top or frame is None)
             if allow:
+                if request.method.upper() not in ("GET", "HEAD"):
+                    scope.mutating += 1
                 from urllib.parse import urljoin as _urljoin
                 _cur = request.url
                 _resp = route.fetch(max_redirects=0)
@@ -505,6 +507,7 @@ class JobScope:
         self.before, self.owned, self.closable, self.main = [], [], [], None
         self._explicit_adopt = set()  # pages explicitly created by open_page()
         self.violation, self.blocked = None, 0
+        self.mutating = 0  # mutating (non-GET/HEAD) requests the route let through
         self.sw_violations = []  # service-worker URLs flagged for THIS job only (never global)
         self._route = self._listener = self._sw_listener = None
         self._hooks = []  # (page, event, callback)
@@ -2186,9 +2189,12 @@ class RunCtx:
     """What the per-field gates need: job id, the (untrusted) queue URL, the job's scope, and the
     pinned origin of the application target that PII/upload/OTP may be entered on."""
 
-    def __init__(self, jid, url, scope):
+    def __init__(self, jid, url, scope, platform="generic"):
         self.jid, self.url, self.scope = jid, url, scope
         self.pinned = None
+        self.platform = platform
+        self.verif_domains, self.verify_timeout = (), 60
+        self.pre_click_url = self.submit_mut0 = self.click_since = None
 
     def pin(self, target):
         self.pinned = origin_of(str(getattr(target, "url", "") or ""))
@@ -2275,7 +2281,8 @@ def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_pat
         if attempt_id:
             set_phase(jid, attempt_id, phase)
 
-    ctx = RunCtx(jid, url, scope)
+    ctx = RunCtx(jid, url, scope, platform)
+    ctx.verif_domains, ctx.verify_timeout = domains, verify_timeout
     scope.attach()  # page listener + route, installed before any navigation
     pace()
     page = scope.open_page()  # one new tab per job; existing tabs are never touched
@@ -2492,25 +2499,7 @@ def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_pat
             register_secret(code)
             del res
             try:
-                assert_destination(target, url, scope, jid)  # still on the validated application page/frame
-                ctx.assert_pinned(target)                    # ... and on the pinned application origin
-                box, why = find_code_field(build_inventory(target))
-                if box is None:
-                    raise JobEnd("failed", f"verify_code_field_{why}")
-                before = probe_acceptance(target, box["selector"])
-                mark("otp_entered")
-                pace()
-                loc = gate_field(target, box, ctx)  # destination + pin + uniqueness + label/name re-check
-                type_into(loc, code)
-                facts["code_entered"] = 1
-                if loc.input_value() != code:
-                    raise JobEnd("failed", "verify_incomplete")
-                # The typed value is NOT evidence. Confirmed only on an observed acceptance signal.
-                state = observe_acceptance(target, box["selector"], before, ctx)
-                facts["verify_state"] = state
-                if state == "rejected":
-                    raise JobEnd("failed", "verify_rejected")
-                facts["verify_confirmed"] = int(state == "accepted")
+                _accept_otp_code(target, page, ctx, scope, jid, url, facts, code, verify_timeout, mark)
             finally:
                 del code
         elif outcome == "none" and verif_type == "magic_link" and not DRY_RUN:
