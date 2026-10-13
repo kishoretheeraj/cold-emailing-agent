@@ -377,18 +377,12 @@ def net_decision(method, resource_type, url, dry_run=None, main_frame=True):
     return True, ""
 
 
-_SW_VIOLATIONS = []
-
-
 def make_route_handler(scope):
     """Context-level handler, the continuous enforcement point: every request of a page this job
     owns (all resource types, every redirect hop, frames, popups, service-worker traffic) is
     decided here; other tabs are left alone."""
     def handler(route, request):
         try:
-            if _SW_VIOLATIONS:
-                route.abort("blockedbyclient")
-                return
             try:
                 frame = request.frame
                 page = frame.page
@@ -397,6 +391,10 @@ def make_route_handler(scope):
             if page is not None and not scope.owns(page):
                 # Pre-existing tabs (existed before job) are allowed through;
                 # only truly unattributed newcomers are blocked.
+                # This branch runs BEFORE the SW fail-closed abort below so a
+                # violated job never disturbs foreign tabs' page traffic.
+                # (Frameless requests, e.g. a foreign worker's own fetch, have no
+                # attributable page and are still fail-closed once violated.)
                 if page in scope.before:
                     pass  # pre-existing tab, allow through normal policy
                 else:
@@ -404,6 +402,12 @@ def make_route_handler(scope):
                     scope.note_violation("unattributed_tab_blocked")
                     route.abort("blockedbyclient")
                     return
+            elif scope.sw_violations:
+                # Fail closed once a service worker was flagged for this job: abort
+                # this job's owned pages and any frameless (owner-unknown) requests.
+                # Pre-existing tabs' page traffic above is unaffected.
+                route.abort("blockedbyclient")
+                return
             top = frame is not None and getattr(frame, "parent_frame", None) is None
             allow, reason = net_decision(request.method, request.resource_type, request.url,
                                          main_frame=top or frame is None)
@@ -478,6 +482,18 @@ DRY_RUN_JS = r"""
 """
 
 
+# Live-mode page guard: the pipeline never needs WebSockets or service workers, so both are
+# blocked at page level in live mode as well as dry run. Unlike DRY_RUN_JS this does NOT block
+# form submits (live mode must submit).
+LIVE_NET_GUARD_JS = r"""
+(() => {
+  const deny = () => { throw new Error('blocked by network policy'); };
+  try { window.WebSocket = function () { deny(); }; } catch (e) {}
+  try { if (navigator.serviceWorker) navigator.serviceWorker.register = () => Promise.reject(new Error('blocked')); } catch (e) {}
+})();
+"""
+
+
 class JobScope:
     """Everything one job opened in the shared context: pages (diff vs. 'before' + 'page' events),
     the route and the listeners. Only pages THIS job created (its tab and its popups) are ever
@@ -489,6 +505,7 @@ class JobScope:
         self.before, self.owned, self.closable, self.main = [], [], [], None
         self._explicit_adopt = set()  # pages explicitly created by open_page()
         self.violation, self.blocked = None, 0
+        self.sw_violations = []  # service-worker URLs flagged for THIS job only (never global)
         self._route = self._listener = self._sw_listener = None
         self._hooks = []  # (page, event, callback)
 
@@ -503,30 +520,33 @@ class JobScope:
 
     def _service_worker(self, worker):
         url = str(getattr(worker, "url", "") or "")
-        if not origin_allowed(url):
+        if not self._job_has_page_on_origin(url):
+            # The worker's origin hosts none of this job's pages: it belongs to a
+            # foreign tab. Service workers are origin-scoped and cannot observe this
+            # job's pages, so flagging it would block the job over unrelated tabs.
+            # (A worker that activates after the job opens a page on its origin
+            # fires this event then and is flagged at that point.)
             return
-        # A worker on an allowed origin is only legitimate if one of
-        # this job's pages from the same origin is open. Otherwise it's
-        # a dormant worker (no open tabs) which is also suspicious.
+        if not origin_allowed(url):
+            # The job has a page on a non-approved origin AND a worker for it:
+            # the dangerous case (exfiltration outside the trust boundary).
+            self.note_violation("service_worker_unapproved_origin")
+        else:
+            self.note_violation("service_worker")
+        self.sw_violations.append(url)
+
+    def _job_has_page_on_origin(self, url):
+        """True if any page this job owns is on the worker's origin."""
         def _origin(u):
             from urllib.parse import urlsplit as _us
             p = _us(str(u or ""))
             return (p.scheme, p.netloc)
         w_origin = _origin(url)
-        pages = list(self.owned)
-        with contextlib.suppress(Exception):
-            pages += [p for p in self.context.pages if p not in pages]
-        has_page = False
-        for pg in pages:
+        for pg in list(self.owned):
             with contextlib.suppress(Exception):
                 if _origin(pg.url) == w_origin:
-                    has_page = True
-                    break
-        if has_page:
-            self.note_violation("service_worker")
-        else:
-            self.note_violation("dormant_service_worker")
-        _SW_VIOLATIONS.append(url)
+                    return True
+        return False
 
     def owns(self, page):
         if page in self.owned:
@@ -583,19 +603,22 @@ class JobScope:
         if DRY_RUN:
             with contextlib.suppress(Exception):
                 page.add_init_script(DRY_RUN_JS)
-            # WebSockets bypass context.route - must block at browser level.
-            # Fail closed: if route_web_socket is unavailable or fails, abort the job.
-            _ws_blocked = False
-            if callable(getattr(page, "route_web_socket", None)):
-                try:
-                    page.route_web_socket("**/*", lambda ws: ws.close())
-                    _ws_blocked = True
-                except Exception:
-                    pass
-            if not _ws_blocked:
-                # Cannot enforce WebSocket policy - fail closed rather than
-                # allowing potential PII exfiltration via WebSocket
-                raise JobEnd("blocked", "websocket_interception_unavailable")
+        else:
+            with contextlib.suppress(Exception):
+                page.add_init_script(LIVE_NET_GUARD_JS)
+        # WebSockets bypass context.route - must block at browser level in BOTH modes.
+        # Fail closed: if route_web_socket is unavailable or fails, abort the job.
+        _ws_blocked = False
+        if callable(getattr(page, "route_web_socket", None)):
+            try:
+                page.route_web_socket("**/*", lambda ws: ws.close())
+                _ws_blocked = True
+            except Exception:
+                pass
+        if not _ws_blocked:
+            # Cannot enforce WebSocket policy - fail closed rather than
+            # allowing potential PII exfiltration via WebSocket
+            raise JobEnd("blocked", "websocket_interception_unavailable")
         if callable(getattr(page, "on", None)):
             cb = lambda frame, p=page: self._navigated(p, frame)  # noqa: E731
             with contextlib.suppress(Exception):
