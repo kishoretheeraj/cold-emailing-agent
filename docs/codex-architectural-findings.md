@@ -282,8 +282,9 @@ deferral argument (claude_solutions.md ITEM D) are **withdrawn** as unsupported:
   not solving.
 
 The deferral stands on the remaining grounds: the pipeline has no token consumer under the
-detect-and-hand-off policy; the detector fails closed on inspection errors and unrecognised
-providers, while a stale or wrong-widget token reading `clear` is an accepted residual
+detect-and-hand-off policy; the detector fails closed on inspection errors and on
+unrecognised providers detected by the scan (heuristic — see the documented gaps above),
+while a stale or wrong-widget token reading `clear` is an accepted residual
 handled server-side; and a ledger cannot be tested here without real widgets.
 
 **Closeout checks.** Coverage. Python-side behaviour (the `unknown`/`error` parse mapping, tri-state aggregation
