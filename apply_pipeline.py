@@ -496,6 +496,14 @@ LIVE_NET_GUARD_JS = r"""
 """
 
 
+def _swallow_websocket(ws):
+    # Never connect_to_server(): no handshake leaves the browser, and the page sees a mocked socket
+    # that reaches nothing. NOT ws.close(): with the sync API this handler runs on Playwright's own
+    # event loop, and the blocking close() waits on that loop forever -- the first page that opened a
+    # WebSocket hung the whole pipeline (reproduced on 1.60.0, docs/reviews/2026-10-13-context-isolation-spike.md).
+    return None
+
+
 class JobScope:
     """Everything one job opened in the shared context: pages (diff vs. 'before' + 'page' events),
     the route and the listeners. Only pages THIS job created (its tab and its popups) are ever
@@ -614,7 +622,7 @@ class JobScope:
         _ws_blocked = False
         if callable(getattr(page, "route_web_socket", None)):
             try:
-                page.route_web_socket("**/*", lambda ws: ws.close())
+                page.route_web_socket("**/*", _swallow_websocket)
                 _ws_blocked = True
             except Exception:
                 pass
