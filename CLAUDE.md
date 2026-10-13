@@ -1059,8 +1059,8 @@ docs/codex-architectural-findings.md ("What was built"), spike docs/reviews/2026
 Sessions: no global state file; `ats_sessions.load_state_for` restores one tenant's state filtered to the
 job's host (cookies on the host or below it, origins only from an explicit (scheme, host, port) set, cookies
 only on shared multi-company hosts; a non-0600, >1 MiB or malformed file blocks the job). Saved back
-(IndexedDB included) only after a clean finish (`scope.persist`), never after a violation; enters only via
-`--warm-login` (human signs in, fresh sentinel, saved only when on the tenant's host with no sign-in wall);
+(IndexedDB included) only after a clean finish (`scope.persist`), never after a violation; enters only via the
+`jobagent24-warm-login` unit (`--warm-login`; a unit because :2's X11 socket is in xvfb@2's private /tmp; human signs in, fresh sentinel, saved only when on the tenant's host with no sign-in wall);
 a sign-in wall on two polls expires it (`.expired`, seven days) -> `needs_review/session_expired`.
 Tests: `tests/test_job_context.py`, `tests/test_job_context_browser.py` (`PIPELINE_BROWSER_TESTS_REQUIRED=1`
 makes them fail instead of skip), `tests/test_ws_route_no_deadlock.py`, `tests/test_job_sessions.py`.

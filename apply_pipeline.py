@@ -2919,7 +2919,7 @@ def warm_login(url, sentinel_dir=None, timeout_s=None):
                 scope.attach()
                 page = scope.open_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                print(f"Sign in on the pipeline's display, then run:  touch {sentinel}", flush=True)
+                print(f"Sign in on the pipeline's display, then run:  sudo -u jobagent touch {sentinel}", flush=True)
                 ev("warm_login_waiting", tenant=_tenant_ref(key))
                 while not os.path.exists(sentinel):
                     if STOP.is_set() or time.monotonic() > deadline:

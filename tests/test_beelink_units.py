@@ -55,6 +55,7 @@ def test_every_expected_unit_exists():
         "jobagent24-resume.timer",
         "jobagent24-screening.service",
         "jobagent24-screening.timer",
+        "jobagent24-warm-login.service",
         "notify-failure@.service",
         "novnc@.service",
         "resume-worker.service",

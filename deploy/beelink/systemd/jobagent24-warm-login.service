@@ -1,0 +1,37 @@
+# One human-attended sign-in for apply_pipeline.py: opens WARM_LOGIN_URL on display :2, waits while the
+# operator signs in over noVNC (nothing is typed by the pipeline), and saves that tenant's session when the
+# operator touches the sentinel the unit prints (journalctl -u jobagent24-warm-login). Run by hand only;
+# never enabled. A unit (not a shell) because the X11 socket lives in xvfb@2's private /tmp, which only a
+# unit with JoinsNamespaceOf= can reach. The URL comes from /var/lib/jobagent24/warm_login.env
+# (WARM_LOGIN_URL=https://...), written by the operator. Exits 3 while another process holds the display
+# lock (the jobagent24-apply timer or the pipeline): wait and start it again.
+[Unit]
+Description=jobagent24 warm-login: a human signs in once on display :2 (never submits)
+After=xvfb@2.service
+Requires=xvfb@2.service
+JoinsNamespaceOf=xvfb@2.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/jobagent24
+EnvironmentFile=/etc/jobagent24/base.env
+EnvironmentFile=/var/lib/jobagent24/warm_login.env
+Environment=HOME=/var/lib/jobagent24
+Environment=DISPLAY=:2
+Environment=APPLY_DRY_RUN=1
+Environment=APPLY_BROWSER_HEADLESS=0
+Environment=APPLY_BROWSER_CHANNEL=chrome
+Environment=APPLY_DISPLAY_LOCK=/var/lib/jobagent24/display2.lock
+Environment=APPLY_SESSIONS_DIR=/var/lib/jobagent24/sessions
+Environment=APPLY_AGENT_ARMED=
+ExecStartPre=/opt/jobagent24/.venv/bin/python -c "import config; config.require_secrets()"
+ExecStart=/opt/jobagent24/.venv/bin/python apply_pipeline.py --warm-login ${WARM_LOGIN_URL}
+TimeoutStartSec=1500
+MemoryMax=2048M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/jobagent24 /var/lib/jobagent24

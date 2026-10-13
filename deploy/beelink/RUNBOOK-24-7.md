@@ -90,15 +90,16 @@ The dashboard's Approve is intent: it records an `application_runs` row (adapter
   `sudo systemctl start jobagent24-pipeline` then `journalctl -u jobagent24-pipeline -f`; stop with
   `sudo systemctl stop jobagent24-pipeline`. Soak criteria: per-job-context-plan.md section g and
   "How each correction was carried out" item 7.
-- Sessions for the pipeline enter only through `--warm-login`, one tenant at a time, with the
-  pipeline unit stopped (it holds the display lock):
-  `sudo -u jobagent env DISPLAY=:2 APPLY_DISPLAY_LOCK=/var/lib/jobagent24/display2.lock
-  APPLY_SESSIONS_DIR=/var/lib/jobagent24/sessions APPLY_BROWSER_HEADLESS=0 APPLY_BROWSER_CHANNEL=chrome
-  /opt/jobagent24/.venv/bin/python /opt/jobagent24/apply_pipeline.py --warm-login <job_url>`. Sign in over
-  noVNC (`ssh -N -L 6082:localhost:6082 kishore@beelink`, display 2), then run the `touch` command it prints.
-  Exit 0 = saved; 1 = nothing saved (still signed out, left the tenant's host, or 20-minute timeout).
-  A job whose restored session hits a sign-in wall ends `needs_review/session_expired` and its file
-  is renamed `.expired` (kept seven days): warm-login again, then requeue.
+- Sessions for the pipeline enter only through `jobagent24-warm-login.service`, one tenant at a time. It
+  is a unit, not a shell command, because the X11 socket lives in xvfb@2's private `/tmp`:
+  1. `echo 'WARM_LOGIN_URL=<job_url>' | sudo -u jobagent tee /var/lib/jobagent24/warm_login.env`
+  2. `sudo systemctl start --no-block jobagent24-warm-login` then `journalctl -u jobagent24-warm-login -f`
+     (exit 3 = the display lock is held by `jobagent24-apply` or the pipeline: wait, start again).
+  3. Open noVNC (`ssh -N -L 6082:localhost:6082 kishore@beelink`, `http://localhost:6082/vnc.html`), sign in.
+  4. Run the `sudo -u jobagent touch /var/lib/jobagent24/warm_login_done.<id>` line from the journal.
+  Exit 0 = saved; 1 = nothing saved (still signed out, left the tenant's host, or the 20-minute timeout).
+  A job whose restored session hits a sign-in wall ends `needs_review/session_expired` and its file is
+  renamed `.expired` (kept seven days): warm-login again, then requeue.
 - A persistent profile, if ever needed, follows `chrome-profile@.service`: unit `jobagent24-chrome@%i.service`,
   `--user-data-dir=/var/lib/jobagent24/profiles/%i`, `HOME=/var/lib/jobagent24`, `JoinsNamespaceOf=xvfb@%i.service`,
   never `--headless` or `--remote-debugging-port`. Slot 2 is reserved (`profiles/2` exists); no such unit ships
