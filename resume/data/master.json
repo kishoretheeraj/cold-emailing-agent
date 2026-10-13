@@ -45,7 +45,9 @@
       "institution": "Dartmouth College",
       "location": "Hanover, NH",
       "program": "Master of Engineering Management (MEM) | Joint program by Thayer School of Engineering and Tuck School of Business",
+      "start": "Sep 2025",
       "graduation": "Expected Nov 2026",
+      "gpa": null,
       "coursework": "Coursework: Strategy, Pricing Strategy, Data Analytics, Finance, Accounting, Operations Management, Marketing, Organizational Behavior"
     },
     {
@@ -53,6 +55,8 @@
       "location": "Chennai, India",
       "program": "Bachelor of Engineering, Computer Science and Engineering",
       "graduation": "Apr 2022",
+      "gpa": "8.75/10",
+      "gpa_us": "3.73/4.0",
       "coursework": null
     }
   ],

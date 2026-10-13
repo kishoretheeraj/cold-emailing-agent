@@ -1700,6 +1700,15 @@ The chosen text lands in `screening_answers`, so the reviewer sees and can edit 
 replays it. `work_authorized_us` also matches "eligible to work", but never "work authorization
 status" (a status list must not get a "Yes"). The inventory reads Lever custom questions from the
 enclosing `.application-label` (`nearLabel`), and treats U+2731 as a required star.
+Also from master.json: start year (`start`), and GPA: a degree whose school issues none carries
+`"gpa": null` and answers "N/A" (never a number); `gpa_us`/`gpa` give "3.73/4.0 (8.75/10)" for a text
+box, "3.73" for a number box, and the range or floor holding 3.73 in a GPA dropdown (`_gpa_option`,
+never rounding up). "First/second/third location preference" questions take the Nth distinct form
+option in the order of `job_search_preferences.preferred_locations` (`job_filters.DEFAULT_PREFERENCES`,
+"city|alias" per rank), never the model. `_pick_option` matches whole words only ("No" no longer picks
+"I do not agree"), and maps a "Yes" onto the single agreeing choice ("I agree", "I acknowledge") of a
+consent question. Kishore's live `applicant_eligibility` gained `github`, `how did you hear`,
+`work authorization status` (F-1 OPT) and `optional practical training` (2026-10-13).
 `scripts/apply_dryrun.py` also fills these profile answers (`_profile_answers`, no model) and prints
 `profile facts filled` per label. Tests: `tests/test_apply_agent_combobox.py` (real browser,
 `tests/fixtures/searchable_selects.html` and `lever_cards.html`, written for tests).

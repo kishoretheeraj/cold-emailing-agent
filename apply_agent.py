@@ -26,6 +26,7 @@ import config
 import credential_vault
 import db
 import email_verification
+import job_filters
 import job_identity
 import takeover
 import universal_filler
@@ -269,8 +270,9 @@ def _pick_option(options, value):
     if not want:
         return None
     normed = [(o, _norm_option(o)) for o in (options or []) if _norm_option(o)]
-    for checks in (lambda o: o == want, lambda o: o.startswith(want), lambda o: want.startswith(o),
-                   lambda o: want in o):
+    # Whole words only: "No" must not pick "I do not agree" or "None of the above".
+    for checks in (lambda o: o == want, lambda o: o.startswith(want + " "), lambda o: want.startswith(o + " "),
+                   lambda o: f" {want} " in f" {o} "):
         for original, o in normed:
             if checks(o):
                 return original
@@ -278,7 +280,36 @@ def _pick_option(options, value):
         for original, o in normed:
             if _DECLINE_OPTION.search(original):
                 return original
+    if _AFFIRMATIVE.fullmatch(want):
+        # A consent question answered "Yes" whose choices read "I agree" / "I acknowledge".
+        agreeing = [original for original, o in normed if _AFFIRMATIVE_OPTION.match(o) and not _NEGATED.search(o)]
+        if len(agreeing) == 1:
+            return agreeing[0]
     return None
+
+
+_AFFIRMATIVE = re.compile(r"yes|i agree|agree|i acknowledge|acknowledge|i accept|accept|i consent|consent")
+_AFFIRMATIVE_OPTION = re.compile(r"(yes|i agree|agree|i acknowledge|acknowledge|i accept|accept|i consent"
+                                 r"|consent|i have read)\b")
+_NEGATED = re.compile(r"\b(not|no|don t|do not|disagree|decline)\b")
+
+
+def _gpa_option(options, number):
+    # GPA dropdowns list ranges ("3.50 - 3.74") or floors ("3.5+", "3.0 or above"): the range
+    # holding the number, else the highest floor at or below it. Never rounds up.
+    try:
+        value = float(number)
+    except (TypeError, ValueError):
+        return None
+    floors = []
+    for option in options or []:
+        nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", str(option))]
+        if len(nums) >= 2 and nums[0] <= value <= nums[1] and re.search(r"\d\s*(-|–|to)\s*\d", str(option)):
+            return option
+        if len(nums) == 1 and re.search(r"\+|or (above|higher|more)|and (above|higher)|above", str(option),
+                                        re.IGNORECASE) and nums[0] <= value:
+            floors.append((nums[0], option))
+    return max(floors)[1] if floors else None
 
 
 def _listbox_options(page, field):
@@ -562,11 +593,22 @@ def _generate_screening_answers(page, job):
     profile_summary = candidate_profile.profile_text()
     eligibility = _eligibility_answers()
     facts = candidate_profile.form_answers()
+    ranking = None
 
     for field in inventory:
         label = field.get("label") or ""
         if (field.get("filled") or not field.get("required") or field.get("kind") == "file"
                 or _eligibility_value_for(label, eligibility) is not None):
+            continue
+        rank = _location_rank(label)
+        if rank is not None:
+            # The operator's ranked cities, never the model: a free-text answer can't be one of the
+            # form's choices anyway, and a guess here would be a preference they didn't state.
+            if ranking is None:
+                ranking = _preferred_locations()
+            answer = _location_preference_answer(page, field, rank, ranking)
+            if answer:
+                answers[label] = answer
             continue
         fact_key = _profile_key_for(label)
         if fact_key is not None:
@@ -759,6 +801,12 @@ _PROFILE_QUESTION_PATTERNS = (
     ("discipline", re.compile(r"^(discipline|major|field of study|area of study)$", re.IGNORECASE)),
     ("end_year", re.compile(r"^(end date year|end year|graduation year|year of graduation"
                             r"|expected graduation year)$", re.IGNORECASE)),
+    ("start_year", re.compile(r"^(start date year|start year)$", re.IGNORECASE)),
+    ("gpa_undergraduate", re.compile(r"^((undergraduate|undergrad|bachelor'?s) gpa"
+                                     r"|gpa \((undergraduate|undergrad|bachelor'?s)\))$", re.IGNORECASE)),
+    ("gpa_graduate", re.compile(r"^((graduate|grad|master'?s) gpa|gpa \((graduate|grad|master'?s)\))$",
+                                re.IGNORECASE)),
+    ("gpa", re.compile(r"^(gpa|cumulative gpa|overall gpa|grade point average)$", re.IGNORECASE)),
 )
 
 
@@ -773,18 +821,80 @@ def _profile_answer(page, field, candidates):
     if not candidates:
         return None
     kind = field.get("kind")
+    number = next((c for c in candidates if re.fullmatch(r"\d+(\.\d+)?", str(c))), None)
+    if kind == "input" and field.get("input_type") == "number":
+        # "3.73/4.0 (8.75/10)" can't go in a number box; "3.73" can, and "N/A" never.
+        return number
     if kind in ("input", "textarea"):
         return candidates[0]
     if kind == "combobox":
         try:
-            return _combobox_choose(page, field, candidates, config.APPLY_AGENT_FIELD_TIMEOUT_MS, click=False)
+            choice = _combobox_choose(page, field, candidates, config.APPLY_AGENT_FIELD_TIMEOUT_MS, click=False)
         except Exception as exc:
             log.info(f"[APPLY-AGENT] | options not readable: {field.get('label', '')[:60]!r} | {exc}")
             return None
+        if choice is None and number is not None and "gpa" in _norm_option(field.get("label")):
+            choice = _gpa_option(_combobox_options(page, field), number)
+        return choice
     options = field.get("options") or []
     if kind == "listbox" and not options:
         options = _listbox_options(page, field)
-    return _pick_candidates(options, candidates)
+    choice = _pick_candidates(options, candidates)
+    if choice is None and number is not None and "gpa" in _norm_option(field.get("label")):
+        choice = _gpa_option(options, number)
+    return choice
+
+
+# "What is your first location preference?" / "Second location preference": the Nth distinct
+# option, in the order of job_search_preferences.preferred_locations (job_filters).
+_LOCATION_PREFERENCE_PATTERN = re.compile(
+    r"\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th)\b.*\blocation preference"
+    r"|\blocation preference\s*#?\s*([1-5])\b", re.IGNORECASE)
+_ORDINALS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4,
+             "fifth": 5, "5th": 5}
+
+
+def _location_rank(label):
+    match = _LOCATION_PREFERENCE_PATTERN.search(str(label or ""))
+    if not match:
+        return None
+    return _ORDINALS[match.group(1).lower()] if match.group(1) else int(match.group(2))
+
+
+def _preferred_locations():
+    try:
+        return job_filters.load_preferences(db.load_prompts()).get("preferred_locations") or []
+    except Exception as exc:
+        log.info(f"[APPLY-AGENT] | location preferences unavailable: {exc}")
+        return []
+
+
+def _city_of(option):
+    # "Seattle, WA" / "New York - NY" / "Chicago (Hybrid)" -> the city part.
+    return re.split(r",| - |\(", str(option or ""), maxsplit=1)[0]
+
+
+def _ranked_locations(options, ranking):
+    # One option per rank, best rank first; an option matches a rank when its city part (or the
+    # whole option) equals one of that rank's aliases.
+    picked = []
+    for entry in ranking:
+        aliases = {_norm_option(a) for a in str(entry).split("|") if _norm_option(a)}
+        for option in options or []:
+            if option not in picked and (_norm_option(_city_of(option)) in aliases or _norm_option(option) in aliases):
+                picked.append(option)
+                break
+    return picked
+
+
+def _location_preference_answer(page, field, rank, ranking):
+    options = field.get("options") or []
+    if not options and field.get("kind") == "listbox":
+        options = _listbox_options(page, field)
+    elif not options and field.get("kind") == "combobox":
+        options = _combobox_options(page, field)
+    picked = _ranked_locations(options, ranking)
+    return picked[rank - 1] if len(picked) >= rank else None
 
 
 def _profile_answers(page):
@@ -793,11 +903,19 @@ def _profile_answers(page):
     for scripts/apply_dryrun.py. Never calls a model."""
     facts = candidate_profile.form_answers()
     eligibility = _eligibility_answers()
+    ranking = None
     answers = {}
     for field in _form_inventory(page) or []:
         label = field.get("label") or ""
         if (field.get("filled") or not field.get("required") or field.get("kind") == "file"
                 or _eligibility_value_for(label, eligibility) is not None):
+            continue
+        rank = _location_rank(label)
+        if rank is not None:
+            ranking = _preferred_locations() if ranking is None else ranking
+            answer = _location_preference_answer(page, field, rank, ranking)
+            if answer:
+                answers[label] = answer
             continue
         key = _profile_key_for(label)
         if key is None:

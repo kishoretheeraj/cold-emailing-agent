@@ -99,14 +99,33 @@ def _education_answers(entry):
     answers["discipline"] = disciplines
     year = _year(entry.get("graduation"))
     answers["end_year"] = [year] if year else []
+    start = _year(entry.get("start"))
+    answers["start_year"] = [start] if start else []
     return answers
+
+
+def _gpa_answers(entry):
+    # "3.73/4.0" + "8.75/10" -> ["3.73/4.0 (8.75/10)", "3.73"]: the text a free-text box gets, then
+    # the bare number a number box takes. A school that issues no GPA ("gpa": null) -> ["N/A"].
+    if "gpa" in entry and entry["gpa"] is None:
+        return ["N/A"]
+    us, native = entry.get("gpa_us"), entry.get("gpa")
+    text = us or native
+    if not text:
+        return []
+    out = [f"{us} ({native})" if us and native and us != native else text]
+    number = str(text).split("/")[0].strip()
+    if re.fullmatch(r"\d+(\.\d+)?", number):
+        out.append(number)
+    return out
 
 
 def form_answers():
     """{key: [acceptable answers, best first]} for the standard questions application forms ask
-    (country, city, school, degree, discipline, graduation year), all derived from master.json.
-    A form option must equal one of these (or begin with a multi-word one) to be chosen; a free-text
-    box gets the first. A fact master.json does not hold (start year, GPA) is simply absent."""
+    (country, city, school, degree, discipline, start/graduation year, GPA), all derived from
+    master.json. A form option must equal one of these (or begin with a multi-word one) to be chosen;
+    a free-text box gets the first, a number box the first bare number. A fact master.json does not
+    hold is simply absent."""
     try:
         with open(_MASTER_DATA_PATH) as f:
             master = json.load(f)
@@ -128,4 +147,14 @@ def form_answers():
             key = {"master": "school_graduate", "bachelor": "school_undergraduate"}.get(level)
             if key and key not in answers and entry.get("institution"):
                 answers[key] = [entry["institution"]]
+            gpa_key = {"master": "gpa_graduate", "bachelor": "gpa_undergraduate"}.get(level)
+            if gpa_key and gpa_key not in answers:
+                answers[gpa_key] = _gpa_answers(entry)
+        # One unlabeled "GPA" box: the most recent degree's GPA if it has one, else the undergraduate
+        # one, saying which it is.
+        numeric = [_gpa_answers(e) for e in education if _gpa_answers(e) and _gpa_answers(e) != ["N/A"]]
+        if numeric:
+            first = numeric[0]
+            label = "" if _gpa_answers(education[0]) == first else " (undergraduate)"
+            answers["gpa"] = [first[0] + label] + first[1:]
     return {key: values for key, values in answers.items() if values}
