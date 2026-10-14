@@ -19,7 +19,7 @@ APP=/opt/jobagent24
 STATE=/var/lib/jobagent24
 ETC=/etc/jobagent24
 OLD_ETC=/etc/job-agent
-UNITS=(discovery screening resume apply monitor api)
+UNITS=(discovery screening resume apply monitor api pipeline warm-login)
 TIMERS=(discovery screening resume apply)
 
 log() { echo "==> $*"; }

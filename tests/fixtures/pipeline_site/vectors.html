@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>vectors</title></head>
+<body>
+<script>window.__events = []; const report = (e) => window.__events.push(e);</script>
+<script src="/probe.js"></script>
+<script>
+// ?v=main|popup|worker-classic|worker-module|worker-blob|worker-shared|sw
+const v = new URLSearchParams(location.search).get('v');
+const origin = location.origin;
+const listen = (target) => { target.onmessage = (m) => report(m.data); };
+try {
+  if (v === 'main') probe(origin, report);
+  else if (v === 'popup') { window.open('/popup-child.html'); addEventListener('message', (m) => report(m.data)); }
+  else if (v === 'worker-classic') listen(new Worker('/w.js'));
+  else if (v === 'worker-module') listen(new Worker('/wm.js', {type: 'module'}));
+  else if (v === 'worker-blob') {
+    fetch('/w.js').then((r) => r.text()).then((src) => {
+      try { listen(new Worker(URL.createObjectURL(new Blob([src], {type: 'text/javascript'})))); }
+      catch (e) { report('worker-throw'); }
+    });
+  }
+  else if (v === 'worker-shared') { const w = new SharedWorker('/shared.js'); w.port.onmessage = (m) => report(m.data); w.port.start(); }
+  else if (v === 'sw') {
+    navigator.serviceWorker.register('/sw.js').then(() => report('sw-registered'), () => report('sw-refused'));
+  }
+} catch (e) { report('throw:' + e.message); }
+</script>
+</body>
+</html>

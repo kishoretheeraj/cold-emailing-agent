@@ -6,7 +6,7 @@ import pytest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SYSTEMD = os.path.join(_ROOT, "deploy", "beelink", "systemd")
-_ROLES = ("discovery", "screening", "resume", "apply", "monitor", "api")
+_ROLES = ("discovery", "screening", "resume", "apply", "monitor", "api", "pipeline", "warm-login")
 _TIMERS = ("discovery", "screening", "resume", "apply")
 _ARMED_SETTER = "APPLY_AGENT_" + "ARMED=1"
 
@@ -65,6 +65,31 @@ def test_apply_unit_has_its_own_display_lock_sessions_and_never_submits():
     assert "APPLY_DISPLAY_LOCK=/var/lib/jobagent24/display2.lock" in text
     assert "APPLY_SESSIONS_DIR=/var/lib/jobagent24/sessions" in text
     assert "APPLY_RESUME_V2=1" in text and "--prepare" in text and "--submit" not in text
+
+
+def test_pipeline_unit_is_dry_run_on_its_own_display_lock_and_never_attaches_over_cdp():
+    raw = _read("jobagent24-pipeline.service")
+    text = _directives("jobagent24-pipeline.service")
+    assert "Type=simple" in text and "Restart=on-failure" in text
+    assert "Environment=APPLY_DRY_RUN=1" in text  # the soak is dry run; live needs a separate change
+    assert "Environment=DISPLAY=:2" in text and "JoinsNamespaceOf=xvfb@2.service" in text
+    assert "APPLY_DISPLAY_LOCK=/var/lib/jobagent24/display2.lock" in text  # same lock as the apply unit
+    assert "APPLY_SESSIONS_DIR=/var/lib/jobagent24/sessions" in text
+    assert "ExecStart=/opt/jobagent24/.venv/bin/python apply_pipeline.py" in text
+    assert "--submit" not in text
+    for gone in ("remote-debugging", "APPLY_CDP_URL", "AutomationControlled"):
+        assert gone not in raw
+
+
+def test_warm_login_unit_reaches_display_2_and_reads_its_url_from_an_operator_file():
+    text = _directives("jobagent24-warm-login.service")
+    # The X11 socket is in xvfb@2's private /tmp: only a unit that joins that namespace can open :2.
+    assert "JoinsNamespaceOf=xvfb@2.service" in text and "PrivateTmp=yes" in text
+    assert "Environment=DISPLAY=:2" in text
+    assert "EnvironmentFile=/var/lib/jobagent24/warm_login.env" in text
+    assert "--warm-login ${WARM_LOGIN_URL}" in text
+    assert "APPLY_DISPLAY_LOCK=/var/lib/jobagent24/display2.lock" in text
+    assert "Type=oneshot" in text and "[Install]" not in text  # run by hand, never enabled
 
 
 def test_timers_are_offset_from_the_old_ones():

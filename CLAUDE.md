@@ -1047,6 +1047,24 @@ only, the signed `approve_application` RPC is still the gate. `resume_agent.drai
 lease as `apply_worker`'s v2 document pass (skips held rows); the dashboard queue is keyset-paginated and
 reconciled on every refresh; `provision-jobagent24.sh` verifies each stop and restarts timers only after the api is healthy.
 
+**apply_pipeline.py: one browser context per job (2026-10-13).** It launches its own Chrome (no CDP attach,
+no debugging port, no stealth flags) and `JobScope.attach` gives each job `new_context(service_workers="block")`
+with, before any page: `route_web_socket` to `_swallow_websocket` (**never `ws.close()`**: with the sync API it
+deadlocks the event loop), `NO_WORKERS_JS` (Worker/SharedWorker throw: the browser routes do not reach workers,
+measured), the submit/network guards, the request route. `serviceworker` and `worker` events are fail-closed
+tripwires. `_loop` owns the browser: display lock, self-test after every launch (both modes, `page_guards=False`
+so the browser-level layers are probed), recycle on `BROWSER_UNUSABLE` or `APPLY_BROWSER_MAX_JOBS`, stop when
+it can't be closed. Unit `jobagent24-pipeline.service` (dry run, not enabled by provisioning). Record:
+docs/codex-architectural-findings.md ("What was built"), spike docs/reviews/2026-10-13-context-isolation-spike.md.
+Sessions: no global state file; `ats_sessions.load_state_for` restores one tenant's state filtered to the
+job's host (cookies on the host or below it, origins only from an explicit (scheme, host, port) set, cookies
+only on shared multi-company hosts; a non-0600, >1 MiB or malformed file blocks the job). Saved back
+(IndexedDB included) only after a clean finish (`scope.persist`), never after a violation; enters only via the
+`jobagent24-warm-login` unit (`--warm-login`; a unit because :2's X11 socket is in xvfb@2's private /tmp; human signs in, fresh sentinel, saved only when the final tenant key still matches after the sign-in-wall check, including employer slugs on shared hosts);
+a sign-in wall on two polls expires it (`.expired`, seven days) -> `needs_review/session_expired`.
+Tests: `tests/test_job_context.py`, `tests/test_job_context_browser.py` (`PIPELINE_BROWSER_TESTS_REQUIRED=1`
+makes them fail instead of skip), `tests/test_ws_route_no_deadlock.py`, `tests/test_job_sessions.py`.
+
 ## Resume intelligence (full-fledged buildout, Phase 3)
 
 `resume_agent.py` (manual CLI: `--propose` then `--build`, plus `--drain` for the Beelink worker) generates a tailored

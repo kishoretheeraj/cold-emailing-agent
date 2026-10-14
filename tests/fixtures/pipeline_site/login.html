@@ -1,0 +1,15 @@
+<!doctype html>
+<html><body>
+<!-- The server sets the session cookie on this response; the page adds localStorage and IndexedDB. -->
+<script>
+window.__events = [];
+localStorage.setItem('marker', 'signed-in');
+const r = indexedDB.open('site', 1);
+r.onupgradeneeded = () => r.result.createObjectStore('s');
+r.onsuccess = () => {
+  const tx = r.result.transaction('s', 'readwrite');
+  tx.objectStore('s').put('idb-session', 'k');
+  tx.oncomplete = () => window.__events.push('saved');
+};
+</script>
+</body></html>

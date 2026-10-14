@@ -298,4 +298,78 @@ Use a fresh invocation-specific completion sentinel and verify authenticated sta
 ### 8. Complete rollback and preserve Finding 3
 Reverting code does not remove an installed systemd unit or provision the old CDP Chrome. Specify stopping/disabling the new unit, service-file cleanup, and either verified CDP restoration or remaining stopped; explicitly state that rollback reopens Findings 1 and 2. Finding 3's separately closed status must be preserved.
 
-All 8 corrections are incorporated into the implementation below.
+## How each correction was carried out (2026-10-13)
+
+The line that stood here ("All 8 corrections are incorporated into the implementation below") had
+nothing below it. This is the record of what the implementation (branch `feat/per-job-contexts`,
+PR #20) actually did, correction by correction. Where it departs from sections a–j above, this
+section wins.
+
+1. **Worker coverage.** Done; this check found the plan's central gap.
+   - The spike covers dedicated workers (classic, module, blob: URL, data: URL), shared workers,
+     iframes on the same and other origins, and an immediate popup, each with an unprotected
+     control.
+   - On 1.60.0 and 1.63.0, neither the browser-level routes nor the JS overrides reach workers.
+   - Kishore chose a JS-level worker refusal (`NO_WORKERS_JS`) with a `page.on("worker")` backstop.
+   - Playwright is pinned to the validated `1.60.0` in both requirements files.
+2. **Layers tested separately.** `tests/test_job_context_browser.py` measures each layer on its own:
+   - the native WebSocket route with the JS overrides removed;
+   - the JS overrides with no native route;
+   - the worker refusal and its backstop, separately;
+   - and every layer together, in both modes.
+
+   Removing a layer turns its sensitivity test red. The plan's "`onclose` and never `onopen`"
+   criterion is replaced by "zero upstream handshakes". A routed socket that never connects looks
+   open to the page, and `ws.close()` in the handler deadlocks the sync API (reproduced, now
+   regression-tested).
+3. **Self-test lifecycle.** The gate resets after every launch and recycle (`_loop`), and runs in
+   both modes.
+   - It probes a service worker (zero script fetches), a WebSocket (zero handshakes) and
+     Worker/SharedWorker (both refused, zero fetches), plus the dry-run POST checks.
+   - Its scope is built with `page_guards=False`, so the probes reach the browser-level protections
+     themselves, not the submit/network JS guards in front of them.
+4. **Cleanup fails closed.**
+   - A missing WebSocket route, or one whose installation raises, becomes `JobEnd("blocked",
+     "websocket_interception_unavailable")`, with the context closed.
+   - A context-close failure, including during attach cleanup, sets `BROWSER_UNUSABLE`. The browser
+     is closed and relaunched before another job, and a browser that cannot be closed stops the
+     loop (rc 2).
+   - A detached scope's callbacks do nothing, and its route aborts everything.
+5. **Storage acceptance.** Done in the storage slice.
+   - `ats_sessions.load_state_for(key, host, allowed_origins)` keeps cookies whose domain is the
+     host or a subdomain of it, never a parent or sibling domain.
+   - It restores origins only if they appear in an explicit `{(scheme, host, port)}` set
+     (`apply_pipeline._storage_origins`).
+   - A shared multi-company host (a key with a company slug) gets cookies only, never origin-wide
+     storage.
+   - It raises `SessionStateUntrusted`, so the job is blocked with `session_state_untrusted`, on a
+     file that isn't 0600, is over 1 MiB, or is malformed. It re-checks its own output.
+   - IndexedDB is captured with `storage_state(indexed_db=True)`, on both warm-login and the
+     after-job refresh.
+   - Tests: `tests/test_job_sessions.py`, and the real-browser round trip in
+     `tests/test_job_context_browser.py`.
+6. **Spike and config details.**
+   - The version is read with `importlib.metadata`.
+   - `no_viewport` is set only when headful.
+   - `PIPELINE_BROWSER_TESTS_REQUIRED=1` turns a missing Chromium into a failure.
+7. **Warm-login and soak.** Warm-login is done in the storage slice:
+   - each `--warm-login` uses a fresh `warm_login_done.<uuid>` sentinel;
+   - nothing is saved unless the page is on the tenant's host, shows no sign-in wall over two polls,
+     and the scope saw no violation;
+   - the display lock is held;
+   - the context uses live network rules (a human sign-in POSTs) without the submit guard, with
+     WebSockets, service workers and workers still blocked;
+   - an expired session (a restored state that lands on a sign-in wall twice, 1.5 s apart) is
+     renamed `.expired` (pruned after seven days) and the job ends `needs_review/session_expired`;
+   - a refreshed session is saved only after a clean finish (`scope.persist`, set after the final
+     `scope.check()`), never after a violation.
+
+   The soak is still Kishore's:
+   - soak criteria: worker-refusal counts (now in every result's facts as `workers_refused`), the
+     challenge rate, and at least 100 jobs to exercise the recycle.
+8. **Rollback.** Recorded in `docs/codex-architectural-findings.md`, "What was built (2026-10-13)":
+   disable and remove the unit, then restore a verified CDP Chrome or stay stopped. Reverting
+   reopens Findings 1 and 2, and Finding 3's closeout is untouched.
+
+**No stealth flags** (Kishore, 2026-10-13): a structural test asserts that `AutomationControlled`
+and `remote-debugging-port` are absent from `apply_pipeline.py`.

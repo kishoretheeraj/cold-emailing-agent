@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Job-application pipeline orchestrator (DRY RUN by default).
 
-queue -> new tab in the already-running Chrome (CDP) -> existing fillers ->
-email verification via OTP broker -> final step -> result log.
+queue -> a fresh browser context per job in the pipeline's own Chrome (service workers blocked,
+WebSockets never connected, workers refused) -> existing fillers -> email verification via OTP
+broker -> final step -> result log.
 
 live_submit() is wired but fails closed: DRY_RUN is the default, and a live run additionally needs
 /etc/jobagent24/pipeline_live_ok plus the armed environment flag set to exactly "1" (see live_gate).
@@ -34,6 +35,7 @@ from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 import ats_fillers
+import ats_sessions
 import config
 import email_verification
 import submit_guard
@@ -47,7 +49,6 @@ DRY_RUN = os.environ.get("APPLY_DRY_RUN", "1") != "0"  # only exact "0" disables
 LIVE_OK_FILE = "/etc/jobagent24/pipeline_live_ok"
 SUBMIT_LEDGER_PATH = os.environ.get("APPLY_SUBMIT_LEDGER_PATH", "/var/lib/jobagent24/submit_ledger.jsonl")
 SUBMIT_ARTIFACTS_DIR = os.environ.get("APPLY_SUBMIT_ARTIFACTS_DIR", "/var/lib/jobagent24/submit_artifacts")
-CDP_URL = os.environ.get("APPLY_CDP_URL", "http://127.0.0.1:9222")
 QUEUE_PATH = os.environ.get("APPLY_QUEUE_PATH", "/opt/jobagent24/job_queue.json")
 STATE_PATH = os.environ.get("APPLY_STATE_PATH", "/var/lib/jobagent24/pipeline_state.json")
 RESULTS_PATH = os.environ.get("APPLY_RESULTS_PATH", "/opt/jobagent24/application_results.jsonl")
@@ -55,7 +56,13 @@ RESUME_PATH = os.environ.get("APPLY_RESUME_PATH", "/opt/jobagent24/resume_master
 LOG_PATH = os.environ.get("APPLY_LOG_PATH", "")  # optional log file (stdout is always on)
 PIPELINE_DIR = os.path.dirname(os.path.abspath(__file__))
 FORM_PATH = os.path.join(PIPELINE_DIR, "test_form.html")
-IDLE_S, CDP_BACKOFF_S, CHALLENGE_WAIT_S, MAX_ATTEMPTS = 30, 60, 30, 2
+IDLE_S, BROWSER_BACKOFF_S, CHALLENGE_WAIT_S, MAX_ATTEMPTS = 30, 60, 30, 2
+# Jobs per browser process before it is closed and relaunched between jobs (bounds memory growth).
+BROWSER_MAX_JOBS = max(1, int(os.environ.get("APPLY_BROWSER_MAX_JOBS", "100") or 100))
+# Set when a job context could not be closed: the browser is closed and relaunched before the next job.
+BROWSER_UNUSABLE = threading.Event()
+# Held for the browser's lifetime when set (the pipeline unit sets it): one headful Chrome per display.
+DISPLAY_LOCK_PATH = os.environ.get("APPLY_DISPLAY_LOCK") or None
 LEASE_S = 900  # a claim is valid for 15 min and renewed at every phase marker
 
 STANDARD_FIELD_VALUES = {
@@ -132,6 +139,11 @@ class JobEnd(Exception):
 def ref(value):
     """Stable short opaque reference for an identifier/free text that must not reach a log."""
     return "h-" + hashlib.sha256(str(value).encode()).hexdigest()[:8]
+
+
+def _tenant_ref(key):
+    # Which employer a saved session belongs to is private: logs carry an opaque reference.
+    return ref(key)
 
 
 def _ev_value(key, value):
@@ -378,39 +390,24 @@ def net_decision(method, resource_type, url, dry_run=None, main_frame=True):
 
 
 def make_route_handler(scope):
-    """Context-level handler, the continuous enforcement point: every request of a page this job
-    owns (all resource types, every redirect hop, frames, popups, service-worker traffic) is
-    decided here; other tabs are left alone."""
+    """Context-level handler, the continuous enforcement point: every request in this job's own
+    context (all resource types, every redirect hop, frames, popups, dedicated-worker HTTP) is
+    decided here. The context holds nothing but this job's pages, so there is no foreign tab to
+    spare. Fail closed: a detached scope, or one with a service-worker or worker tripwire hit,
+    aborts everything."""
     def handler(route, request):
         try:
+            if not scope.live or scope.sw_violations or scope.worker_violations:
+                route.abort("blockedbyclient")
+                return
             try:
                 frame = request.frame
                 page = frame.page
-            except Exception:  # service-worker / detached request: owner unknown -> policy still applies
+            except Exception:  # worker / detached request: no page -> policy still applies
                 frame = page = None
-            if page is not None and not scope.owns(page):
-                # Pre-existing tabs (existed before job) are allowed through;
-                # only truly unattributed newcomers are blocked.
-                # This branch runs BEFORE the SW fail-closed abort below so a
-                # violated job never disturbs foreign tabs' page traffic.
-                # (Frameless requests, e.g. a foreign worker's own fetch, have no
-                # attributable page and are still fail-closed once violated.)
-                if page in scope.before:
-                    pass  # pre-existing tab, allow through normal policy
-                else:
-                    # Fail closed: unattributed newcomers get blocked, not bypassed.
-                    scope.note_violation("unattributed_tab_blocked")
-                    route.abort("blockedbyclient")
-                    return
-            elif scope.sw_violations:
-                # Fail closed once a service worker was flagged for this job: abort
-                # this job's owned pages and any frameless (owner-unknown) requests.
-                # Pre-existing tabs' page traffic above is unaffected.
-                route.abort("blockedbyclient")
-                return
             top = frame is not None and getattr(frame, "parent_frame", None) is None
             allow, reason = net_decision(request.method, request.resource_type, request.url,
-                                         main_frame=top or frame is None)
+                                         dry_run=getattr(scope, "dry_run", None), main_frame=top or frame is None)
             if allow:
                 if request.method.upper() not in ("GET", "HEAD"):
                     scope.mutating += 1
@@ -423,7 +420,7 @@ def make_route_handler(scope):
                     _hops += 1
                     _cur = _urljoin(_cur, _resp.headers["location"])
                     _ok, _why = net_decision("GET", request.resource_type, _cur,
-                                             main_frame=top or frame is None)
+                                             dry_run=getattr(scope, "dry_run", None), main_frame=top or frame is None)
                     if _hops > 10 or not _ok:
                         _bad = _why if not _ok else "too_many_redirects"
                         break
@@ -496,142 +493,126 @@ LIVE_NET_GUARD_JS = r"""
 """
 
 
-class JobScope:
-    """Everything one job opened in the shared context: pages (diff vs. 'before' + 'page' events),
-    the route and the listeners. Only pages THIS job created (its tab and its popups) are ever
-    closed; pre-existing tabs and unattributed newcomers are policed but never closed. Cleanup
-    closes pages first, while the route still enforces, and only then removes the hooks."""
+def _swallow_websocket(ws):
+    # Never connect_to_server(): no handshake leaves the browser, and the page sees a mocked socket
+    # that reaches nothing. NOT ws.close(): with the sync API this handler runs on Playwright's own
+    # event loop, and the blocking close() waits on that loop forever -- the first page that opened a
+    # WebSocket hung the whole pipeline (reproduced on 1.60.0, docs/reviews/2026-10-13-context-isolation-spike.md).
+    return None
 
-    def __init__(self, context, jid="-"):
-        self.context, self.jid = context, jid
-        self.before, self.owned, self.closable, self.main = [], [], [], None
-        self._explicit_adopt = set()  # pages explicitly created by open_page()
+
+# Pages may not start workers at all. Neither context.route_web_socket nor context.route reaches a
+# dedicated worker's WebSocket or a shared worker's HTTP (measured on Playwright 1.60/1.63,
+# docs/reviews/2026-10-13-context-isolation-spike.md), so the constructors throw in every frame. The
+# count of refused constructions is readable per page (WORKER_REFUSALS_JS) so a soak shows how many
+# real forms tried to use one; a page cannot reset it. page.on("worker") is the backstop if this is
+# ever bypassed (JobScope._worker).
+NO_WORKERS_JS = r"""
+(() => {
+  let refused = 0;
+  const refuse = function () { refused += 1; throw new Error('workers are blocked by policy'); };
+  for (const name of ['Worker', 'SharedWorker']) {
+    try { Object.defineProperty(window, name, {value: refuse, writable: false, configurable: false}); } catch (e) {}
+  }
+  try {
+    Object.defineProperty(window, '__pipelineWorkerRefusals', {get: () => refused, configurable: false});
+  } catch (e) {}
+})();
+"""
+WORKER_REFUSALS_JS = "() => (typeof window.__pipelineWorkerRefusals === 'number' ? window.__pipelineWorkerRefusals : -1)"
+
+
+class JobScope:
+    """One job's own browser context: created by attach(), closed by detach(). Everything in it --
+    the main tab, its popups, their frames -- belongs to this job, so nothing has to be told apart
+    from a foreign tab. Protections are installed on the context before any page exists:
+    service workers blocked by the browser, WebSockets routed and never connected, workers refused,
+    the submit guard and the mode's network guard as init scripts, and the request route.
+    Callbacks of a detached scope do nothing and its route aborts everything."""
+
+    def __init__(self, browser, jid="-", storage_state=None, page_guards=True, dry_run=None, submit_guard=True):
+        self.browser, self.jid, self.storage_state = browser, jid, storage_state
+        # False only for network_self_test: without the submit/network JS guards its probes reach
+        # the browser-level protections themselves (route, WebSocket route, service-worker block),
+        # proving each layer on its own rather than the JS layer in front of it.
+        self.page_guards = page_guards
+        # The network policy this context enforces; --warm-login uses live rules (a human signs in,
+        # which POSTs) with no submit guard. Jobs always follow the module's DRY_RUN.
+        self.dry_run = DRY_RUN if dry_run is None else dry_run
+        self.submit_guard = submit_guard
+        self.persist = False  # set after the job's final scope.check(): its session may be saved
+        self.context = None
+        self.owned, self.main = [], None
         self.violation, self.blocked = None, 0
         self.mutating = 0  # mutating (non-GET/HEAD) requests the route let through
-        self.sw_violations = []  # service-worker URLs flagged for THIS job only (never global)
-        self._route = self._listener = self._sw_listener = None
+        self.sw_violations = []  # service workers seen despite service_workers="block"
+        self.worker_violations = []  # dedicated workers seen despite NO_WORKERS_JS
+        self.live = True
+        self._route = None
         self._hooks = []  # (page, event, callback)
 
     def attach(self):
-        self.before = list(self.context.pages)  # tabs that existed before this job: never touched
-        self._listener = self.adopt
-        self.context.on("page", self._listener)
-        self._sw_listener = self._service_worker
-        self.context.on("serviceworker", self._sw_listener)
-        self._route = make_route_handler(self)  # dry run AND live: documents/redirects are always held
-        self.context.route("**/*", self._route)
+        kwargs = {"service_workers": "block", "accept_downloads": False}
+        if self.storage_state is not None:
+            kwargs["storage_state"] = self.storage_state
+        if not config.APPLY_BROWSER_HEADLESS:
+            kwargs["no_viewport"] = True  # headful: the real window size, as the old attached Chrome had
+        self.context = self.browser.new_context(**kwargs)
+        try:
+            if not callable(getattr(self.context, "route_web_socket", None)):
+                raise JobEnd("blocked", "websocket_interception_unavailable")
+            try:
+                self.context.route_web_socket("**/*", _swallow_websocket)
+            except Exception:
+                raise JobEnd("blocked", "websocket_interception_unavailable") from None
+            self.context.add_init_script(NO_WORKERS_JS)
+            if self.page_guards:
+                if self.submit_guard:
+                    self.context.add_init_script(SUBMIT_GUARD_JS)
+                self.context.add_init_script(DRY_RUN_JS if self.dry_run else LIVE_NET_GUARD_JS)
+            self.context.on("page", self.adopt)
+            self.context.on("serviceworker", self._service_worker)
+            self._route = make_route_handler(self)
+            self.context.route("**/*", self._route)
+        except BaseException:
+            self.detach()
+            raise
 
     def _service_worker(self, worker):
-        url = str(getattr(worker, "url", "") or "")
-        if not self._job_has_page_on_origin(url):
-            # The worker's origin hosts none of this job's pages: it belongs to a
-            # foreign tab. Service workers are origin-scoped and cannot observe this
-            # job's pages, so flagging it would block the job over unrelated tabs.
-            # (A worker that activates after the job opens a page on its origin
-            # fires this event then and is flagged at that point.)
+        # The browser refuses registration (service_workers="block"): this event must never fire.
+        if not self.live:
             return
-        if not origin_allowed(url):
-            # The job has a page on a non-approved origin AND a worker for it:
-            # the dangerous case (exfiltration outside the trust boundary).
-            self.note_violation("service_worker_unapproved_origin")
-        else:
-            self.note_violation("service_worker")
-        self.sw_violations.append(url)
+        self.note_violation("service_worker_despite_block")
+        self.sw_violations.append(str(getattr(worker, "url", "") or ""))
 
-    def _job_has_page_on_origin(self, url):
-        """True if any page this job owns is on the worker's origin."""
-        def _origin(u):
-            from urllib.parse import urlsplit as _us
-            p = _us(str(u or ""))
-            return (p.scheme, p.netloc)
-        w_origin = _origin(url)
-        for pg in list(self.owned):
-            with contextlib.suppress(Exception):
-                if _origin(pg.url) == w_origin:
-                    return True
-        return False
-
-    def owns(self, page):
-        if page in self.owned:
-            return True
-        if page in self.before:
-            return False
-        _op = None
-        with contextlib.suppress(Exception):
-            _op = page.opener()
-        # Adoption requires a real opener chain into owned. The job's first tab
-        # must be registered explicitly via adopt(), never implicitly here.
-        # (Old guard `if self.owned and ...` was skipped when owned was empty,
-        # letting any openerless tab fall through to adopt().)
-        if _op is None or _op not in self.owned:
-            return False
-        self.adopt(page)
-        return True
+    def _worker(self, worker):
+        # NO_WORKERS_JS refuses Worker/SharedWorker: a dedicated worker existing means it was bypassed.
+        if not self.live:
+            return
+        self.note_violation("worker_despite_block")
+        self.worker_violations.append(str(getattr(worker, "url", "") or ""))
 
     def note_violation(self, why):
         self.violation = self.violation or why
 
-    def _opened_by_job(self, page):
-        try:
-            op = page.opener() if callable(getattr(page, "opener", None)) else None
-        except Exception:
-            op = None
-        return op is not None and op in self.owned
-
     def adopt(self, page):
-        # Returns True if adopted (or already owned), False if rejected.
-        # Setup (closable, scripts, listeners, policing) runs for all adopted pages.
-        adopted = False
-        if page in self.owned:
-            adopted = True
-        elif page in self._explicit_adopt:
-            self.owned.append(page)
-            adopted = True
-        else:
-            try:
-                _op = page.opener() if callable(page.opener) else page.opener
-            except Exception:
-                _op = "error"
-            # Not explicitly created and no known parent: never adopt.
-            # (Old guard `if self.owned and ...` was skipped when owned was empty,
-            # letting any openerless tab fall through to adopt().)
-            if _op is not None and _op != "error" and _op in self.owned:
-                self.owned.append(page)
-                adopted = True
-        if not adopted:
+        """Every page in the job's context is the job's: hook it once, then police it. Returns
+        False only for a scope that is already detached."""
+        if not self.live:
             return False
-        # Setup runs for all adopted pages (fixes unreachable-code issue)
-        if self._opened_by_job(page) and page not in self.closable:
-            self.closable.append(page)
-        if DRY_RUN:
-            with contextlib.suppress(Exception):
-                page.add_init_script(DRY_RUN_JS)
-        else:
-            with contextlib.suppress(Exception):
-                page.add_init_script(LIVE_NET_GUARD_JS)
-        # WebSockets bypass context.route - must block at browser level in BOTH modes.
-        # Fail closed: if route_web_socket is unavailable or fails, abort the job.
-        _ws_blocked = False
-        if callable(getattr(page, "route_web_socket", None)):
-            try:
-                page.route_web_socket("**/*", lambda ws: ws.close())
-                _ws_blocked = True
-            except Exception:
-                pass
-        if not _ws_blocked:
-            # Cannot enforce WebSocket policy - fail closed rather than
-            # allowing potential PII exfiltration via WebSocket
-            raise JobEnd("blocked", "websocket_interception_unavailable")
-        if callable(getattr(page, "on", None)):
-            cb = lambda frame, p=page: self._navigated(p, frame)  # noqa: E731
-            with contextlib.suppress(Exception):
-                page.on("framenavigated", cb)
-                self._hooks.append((page, "framenavigated", cb))
+        if page not in self.owned:
+            self.owned.append(page)
+            if callable(getattr(page, "on", None)):
+                for event, cb in (("framenavigated", lambda frame, p=page: self._navigated(p, frame)),
+                                  ("worker", self._worker)):
+                    with contextlib.suppress(Exception):
+                        page.on(event, cb)
+                        self._hooks.append((page, event, cb))
         self._police(page)
         return True
 
     def _navigated(self, page, frame):
-        if getattr(frame, "parent_frame", None) is not None:
+        if not self.live or getattr(frame, "parent_frame", None) is not None:
             return
         self._police(page, str(getattr(frame, "url", "") or ""))
 
@@ -648,62 +629,66 @@ class JobScope:
             self.note_violation("host_not_allowed")
         else:
             self.note_violation("popup_host_not_allowed")
-            if page in self.closable:
-                with contextlib.suppress(Exception):
-                    page.close()
+            with contextlib.suppress(Exception):
+                page.close()
 
     def open_page(self):
         page = self.context.new_page()
-        self._explicit_adopt.add(page)
-        self.adopt(page)
-        if page not in self.closable:
-            self.closable.append(page)
+        self.adopt(page)  # the "page" event adopts it too; adopt() is idempotent
         self.main = page
         return page
 
-    def refresh(self):
-        for p in list(self.context.pages):
-            if p not in self.before and p not in self.owned:
-                self.adopt(p)
+    def worker_refusals(self):
+        """Worker constructions refused across this job's open pages (-1 when unreadable)."""
+        total = 0
+        for page in list(self.owned):
+            try:
+                if page.is_closed():
+                    continue
+                n = page.evaluate(WORKER_REFUSALS_JS)
+            except Exception:
+                return -1
+            if not isinstance(n, int) or n < 0:
+                return -1
+            total += n
+        return total
 
     def check(self):
-        self.refresh()
+        if self.context is not None:
+            for p in list(self.context.pages):
+                self.adopt(p)
         for p in list(self.owned):
             self._police(p)
+            with contextlib.suppress(Exception):
+                for worker in list(p.workers):  # a worker whose event fired before the hook was attached
+                    self._worker(worker)
         if self.violation:
             ev("scope_violation", self.jid, reason=self.violation)
             raise JobEnd("blocked", self.violation)
 
-    def detach(self):
-        if self._listener is not None:  # never adopt anything for a scope that was not attached
-            with contextlib.suppress(Exception):
-                self.refresh()
-        # 1) close what this job opened FIRST, while the route is still enforcing the policy
-        for p in list(self.closable):
-            with contextlib.suppress(Exception):
-                if not p.is_closed():
-                    p.close()
-        # 2) only then remove the hooks and the route
-        for page, event, cb in self._hooks:
-            with contextlib.suppress(Exception):
-                page.remove_listener(event, cb)
+    def detach(self, persist_key=None, persist_domain=None):
+        """Closes the job's context: its pages, frames, popups, route and storage partition with it.
+        With `persist_key` (run_job passes it only after a clean finish) the tenant's session is
+        saved first, filtered to `persist_domain`, IndexedDB included -- never after a violation,
+        so state planted by a hostile redirect or popup cannot persist. A context that cannot be
+        closed marks the browser unusable (BROWSER_UNUSABLE): it is closed and relaunched before
+        another job runs. Never raises."""
+        self.live = False
+        context, self.context = self.context, None
         self._hooks = []
-        for event, cb in (("page", self._listener), ("serviceworker", self._sw_listener)):
-            if cb is not None:
-                with contextlib.suppress(Exception):
-                    self.context.remove_listener(event, cb)
-        if self._route is not None:
-            _still = []
-            for _p in list(self.closable):
-                try:
-                    if not _p.is_closed():
-                        _still.append(_p)
-                except Exception:
-                    _still.append(_p)
-            if _still:
-                raise RuntimeError('cleanup: owned pages still open; enforcement kept')
-            with contextlib.suppress(Exception):
-                self.context.unroute("**/*", self._route)
+        if context is None:
+            return
+        if persist_key and persist_domain and not self.violation:
+            try:
+                ats_sessions.save_state(context, persist_key, domain=persist_domain, indexed_db=True)
+                ev("session_saved", self.jid, tenant=_tenant_ref(persist_key))
+            except Exception as exc:
+                ev("session_save_failed", self.jid, reason=type(exc).__name__)
+        try:
+            context.close()
+        except Exception as exc:
+            ev("context_close_failed", self.jid, reason=type(exc).__name__)
+            BROWSER_UNUSABLE.set()
 
 
 # ---------------------------------------------------------------- state / results
@@ -1233,8 +1218,13 @@ def announce_reconciliation():
 
 # ---------------------------------------------------------------- local test server
 POST_HITS = []  # every POST the local fixture server actually received (the self-test asserts none)
+SW_HITS = []  # fetches of the probe service-worker script (blocked registration never fetches it)
+WS_HITS = []  # WebSocket handshakes that reached the server (a routed socket never connects)
+WORKER_HITS = []  # fetches of the probe worker script (a refused Worker never fetches it)
 PROBE_HTML = (b"<html><body><form id=f method=post action=/__probe_post><input name=a value=1></form>"
               b"</body></html>")
+PROBE_WORKER_JS = b"postMessage('worker-ran');"
+PROBE_SW_JS = b"self.addEventListener('install', () => self.skipWaiting());"
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -1246,6 +1236,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path == "/__ws":
+            if self.headers.get("Upgrade"):
+                WS_HITS.append(path)
+            self.send_error(400)
+            return
+        if path in ("/__sw.js", "/__worker.js"):
+            (SW_HITS if path == "/__sw.js" else WORKER_HITS).append(path)
+            body = PROBE_SW_JS if path == "/__sw.js" else PROBE_WORKER_JS
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path not in ("/test_form.html", "/__probe"):
             self.send_error(404)
             return
@@ -2244,7 +2248,69 @@ class RunCtx:
             raise JobEnd("blocked", "destination_changed")
 
 
-def run_job(context, job, test_base, attempt_id=None, assets=None):
+# ---------------------------------------------------------------- per-tenant sessions
+# Polls a restored session must look signed out on before it is set aside: one read of a page that
+# is still rendering must not throw away a good login.
+SESSION_RECHECK_MS = 1500
+_SIGNED_OUT_WALLS = ("workday_signin", "workday_create", "unexpected", "sso_only")
+
+
+def _session_target(url, platform):
+    """(tenant key, host) whose saved session this job may use; (None, None) for the local fixture."""
+    if platform == "test_local":
+        return None, None
+    return ats_sessions.tenant_key(url), (urlsplit(url).hostname or "").lower() or None
+
+
+def _storage_origins(host):
+    # Origins whose saved storage may be restored for `host`: its https origin when approved, or the
+    # registered local fixture origin. Scheme and port are explicit.
+    out = set()
+    if origin_allowed(f"https://{host}/"):
+        out.add(("https", host, 443))
+    for local_host, port in LOCAL_ORIGINS:
+        if local_host == host:
+            out.add(("http", host, port))
+    return out
+
+
+def _load_session(jid, key, host):
+    try:
+        state = ats_sessions.load_state_for(key, host, _storage_origins(host))
+    except ats_sessions.SessionStateUntrusted as exc:
+        ev("session_state_untrusted", jid, tenant=_tenant_ref(key), reason=str(exc))
+        raise JobEnd("blocked", "session_state_untrusted") from None
+    if state is not None:
+        ev("session_restored", jid, tenant=_tenant_ref(key), cookies=len(state["cookies"]),
+           origins=len(state["origins"]))
+    return state
+
+
+def _signed_out(page):
+    from ats_accounts import detect as account_detect
+
+    for poll in range(2):
+        if account_detect.detect_account_wall(page) not in _SIGNED_OUT_WALLS:
+            return False
+        if poll == 0:
+            page.wait_for_timeout(SESSION_RECHECK_MS)
+    return True
+
+
+def check_session(page, scope, url, jid):
+    """A restored session that lands on a sign-in wall (two polls apart) has expired: it is set
+    aside (renamed .expired, kept seven days) and the job goes to a human -- re-run --warm-login,
+    then requeue. Never signs in by itself."""
+    if scope.storage_state is None or not _signed_out(page):
+        return
+    key = ats_sessions.tenant_key(url)
+    if key:
+        ats_sessions.expire(key)
+    ev("session_expired", jid, tenant=_tenant_ref(key))
+    raise JobEnd("needs_review", "session_expired")
+
+
+def run_job(browser, job, test_base, attempt_id=None, assets=None):
     """Runs one job. Every exception that is not an explicit job outcome is converted here, while
     the in-flight secrets are still registered, into a redacted JobEnd: nothing downstream formats
     a raw exception that could contain the verification code."""
@@ -2261,13 +2327,20 @@ def run_job(context, job, test_base, attempt_id=None, assets=None):
         raise JobEnd("failed", "resume_missing")
     url = resolve_job_url(job["url"], test_base)
     ACTIVE_APPROVED = approved_for_job(platform)  # explicit per-job origin list
-    scope = JobScope(context, jid)
+    scope = JobScope(browser, jid)
     failure = None
+    session_key = session_host = None
+    finished = False
     try:
         validate_job_url(url)  # BEFORE any browser action or network request; the queue URL is never its own trust reference
         ev("approved_origins", jid, count=len(ACTIVE_APPROVED))
-        return _run_job(scope, job, jid, platform, url, attempt_id,
-                        assets=assets, resume_path=resume_path)
+        session_key, session_host = _session_target(url, platform)
+        if session_key:
+            scope.storage_state = _load_session(jid, session_key, session_host)
+        result = _run_job(scope, job, jid, platform, url, attempt_id,
+                          assets=assets, resume_path=resume_path)
+        finished = scope.persist
+        return result
     except (JobEnd, Shutdown):
         raise
     except Exception as exc:
@@ -2276,7 +2349,9 @@ def run_job(context, job, test_base, attempt_id=None, assets=None):
     finally:
         forget_secrets()
         try:
-            scope.detach()  # pages first (route still enforcing), then hooks/route; never the browser or other tabs
+            # Closes the job's whole context; never raises (a failed close poisons the browser). The
+            # tenant's session is saved first only after a clean finish.
+            scope.detach(persist_key=session_key if finished else None, persist_domain=session_host)
         finally:
             ACTIVE_APPROVED = None
     raise JobEnd("failed", failure)  # outside the except block: no raw exception rides along as context
@@ -2320,12 +2395,9 @@ def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_pat
 
     ctx = RunCtx(jid, url, scope, platform)
     ctx.verif_domains, ctx.verify_timeout = domains, verify_timeout
-    scope.attach()  # page listener + route, installed before any navigation
+    scope.attach()  # the job's own context: every protection installed before any page exists
     pace()
-    page = scope.open_page()  # one new tab per job; existing tabs are never touched
-    page.add_init_script(SUBMIT_GUARD_JS)  # per page, installed before any navigation
-    if DRY_RUN:
-        page.add_init_script(DRY_RUN_JS)
+    page = scope.open_page()  # the job's main tab in its own context
     ev("page_open", jid, platform=platform, url=clean_url(url))
     mark("navigating")  # BEFORE the first request: a crash from here on is never auto-requeued
     try:
@@ -2335,6 +2407,7 @@ def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_pat
         raise
     settle(page)
     assert_destination(page, url, scope, jid)  # after redirects, before anything reads the page
+    check_session(page, scope, url, jid)  # a restored session that now shows a sign-in wall has expired
     check_challenge(page, jid)
     assert_destination(page, url, scope, jid)
     if safe_count(universal_filler.guard_count, page) < 0:
@@ -2562,8 +2635,10 @@ def _run_job(scope, job, jid, platform, url, attempt_id, assets=None, resume_pat
     facts["guard_blocked"] = g1 - g0 if min(g0, g1) >= 0 else -1
     facts["net_blocked"] = n1 - n0 if min(n0, n1) >= 0 else -1
     facts["route_blocked"] = scope.blocked
+    facts["workers_refused"] = scope.worker_refusals()  # soak diagnostic: forms that wanted a worker
     facts["title_unchanged"] = int(title0 == safe_title(page))
     scope.check()  # any popup that appeared meanwhile ends the job as blocked
+    scope.persist = True  # clean to here: run_job may save this tenant's refreshed session
 
     if DRY_RUN:
         missing = dry_run_missing(facts)
@@ -2626,7 +2701,7 @@ def prepare_assets(job, attempt_id):
         raise JobEnd("needs_review", "resume_build_failed:unexpected") from None
 
 
-def process_job(context, job, test_base):
+def process_job(browser, job, test_base):
     """Returns the final result status, or None when the job was not claimable."""
     jid = job["id"]
     attempt_id = claim_job(jid)
@@ -2650,7 +2725,7 @@ def process_job(context, job, test_base):
        dry_run=int(DRY_RUN), attempt_id=attempt_id)
     try:
         assets = prepare_assets(job, attempt_id)  # pre-browser; a JobEnd lands in the shared tail below
-        status, detail = run_job(context, job, test_base, attempt_id, assets=assets)
+        status, detail = run_job(browser, job, test_base, attempt_id, assets=assets)
     except Shutdown:
         new = release_after_shutdown(jid, attempt_id)
         ev("job_result", jid, status=new, detail="shutdown_requeued" if new == "pending" else "shutdown_needs_reconciliation")
@@ -2668,15 +2743,59 @@ def process_job(context, job, test_base):
 
 
 # ---------------------------------------------------------------- main loop
-def connect(pw):
+def launch_browser(pw):
+    """The pipeline's own Chrome, owned by _main and closed in its finally. No remote-debugging port
+    and no flags that hide automation (decided 2026-10-13: pacing, not evasion). Returns None when
+    the launch fails; the loop backs off and the jobs stay pending."""
     try:
-        browser = pw.chromium.connect_over_cdp(CDP_URL, timeout=10000)
-        if browser.contexts:
-            return browser
-        ev("cdp_unreachable", reason="no_context")
+        browser = pw.chromium.launch(
+            headless=config.APPLY_BROWSER_HEADLESS, channel=config.APPLY_BROWSER_CHANNEL,
+            executable_path=config.APPLY_BROWSER_EXECUTABLE, args=["--disable-dev-shm-usage"])
     except Exception as exc:
-        ev("cdp_unreachable", reason=type(exc).__name__)
-    return None
+        ev("browser_launch_failed", reason=type(exc).__name__)
+        return None
+    with contextlib.suppress(Exception):
+        browser.on("disconnected", lambda *_: ev("browser_disconnected"))
+    BROWSER_UNUSABLE.clear()
+    ev("browser_launched", version=str(getattr(browser, "version", "") or ""))
+    return browser
+
+
+def take_display_lock(path):
+    """An open handle holding an exclusive flock on `path` (the same convention as apply_worker's
+    display lock), or None while another process holds it. The pipeline keeps it for its browser's
+    whole lifetime so two headful Chromes never share one display."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    handle = open(path, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def release_display_lock(handle):
+    if handle is None:
+        return
+    with contextlib.suppress(Exception):
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    with contextlib.suppress(Exception):
+        handle.close()
+
+
+def close_browser(browser):
+    """True when the browser is gone (closed now, or already disconnected)."""
+    if browser is None:
+        return True
+    try:
+        browser.close()
+        return True
+    except Exception as exc:
+        ev("browser_close_failed", reason=type(exc).__name__)
+        with contextlib.suppress(Exception):
+            return not browser.is_connected()
+        return False
 
 
 def setup_logging():
@@ -2689,24 +2808,49 @@ def setup_logging():
     logging.basicConfig(handlers=handlers, level=logging.INFO, format="%(levelname)s %(message)s", force=True)
 
 
-def network_self_test(context, test_base):
-    """Dry-run only. Tries to SEND three things from a real page under the job route (a native form
-    POST, a fetch POST to the local server, a fetch POST to a foreign host) and passes only if all
-    were blocked at the route and the local server never received a POST. Live mode: not applicable."""
-    if not DRY_RUN:
-        return True
-    scope = JobScope(context, "selftest")
-    hits0 = len(POST_HITS)
+# Run in a job context against the local server: each must be refused with nothing reaching it.
+_SELFTEST_SW_JS = """async () => {
+  try {
+    const t = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000));
+    await Promise.race([navigator.serviceWorker.register('/__sw.js'), t]);
+    return 'registered';
+  } catch (e) { return 'refused'; }
+}"""
+_SELFTEST_WS_JS = """() => { try { new WebSocket('ws://' + location.host + '/__ws'); return 'opened'; }
+                              catch (e) { return 'threw'; } }"""
+_SELFTEST_WORKERS_JS = """() => {
+  const out = [];
+  for (const make of [() => new Worker('/__worker.js'), () => new SharedWorker('/__worker.js')]) {
+    try { make(); out.push('created'); } catch (e) { out.push('refused'); }
+  }
+  return out;
+}"""
+
+
+def network_self_test(browser, test_base):
+    """Gate before any job, re-run after every browser launch, in both modes: a real job context
+    must refuse a service worker (zero script fetches), never connect a WebSocket (zero handshakes)
+    and refuse Worker/SharedWorker (zero worker-script fetches). Dry run additionally tries to SEND
+    three things (a native form POST, a fetch POST to the local server, a fetch POST to a foreign
+    host) and passes only if all were blocked at the route and the server never got a POST."""
+    scope = JobScope(browser, "selftest", page_guards=False)
+    hits0 = {name: len(hits) for name, hits in (("post", POST_HITS), ("sw", SW_HITS), ("ws", WS_HITS),
+                                                ("worker", WORKER_HITS))}
     try:
         scope.attach()
         page = scope.open_page()
         page.goto(test_base + "/__probe", wait_until="domcontentloaded", timeout=15000)
+        sw = page.evaluate(_SELFTEST_SW_JS)
+        with contextlib.suppress(PWError):
+            page.evaluate(_SELFTEST_WS_JS)
+        workers = page.evaluate(_SELFTEST_WORKERS_JS)
         blocked0 = scope.blocked
-        for js in (f"fetch({json.dumps(test_base + '/__probe_post')}, {{method: 'POST', body: 'x'}}).then(() => 'sent', () => 'failed')",
-                   "fetch('https://selftest.invalid/p', {method: 'POST', body: 'x'}).then(() => 'sent', () => 'failed')",
-                   "document.getElementById('f').submit()"):
-            with contextlib.suppress(PWError):  # the form submit tears the document down mid-evaluate
-                page.evaluate(js)
+        if DRY_RUN:
+            for js in (f"fetch({json.dumps(test_base + '/__probe_post')}, {{method: 'POST', body: 'x'}}).then(() => 'sent', () => 'failed')",
+                       "fetch('https://selftest.invalid/p', {method: 'POST', body: 'x'}).then(() => 'sent', () => 'failed')",
+                       "document.getElementById('f').submit()"):
+                with contextlib.suppress(PWError):  # the form submit tears the document down mid-evaluate
+                    page.evaluate(js)
         # The sync API only delivers route events while it is pumped: time.sleep/STOP.wait would
         # leave the aborted POST unobserved, so wait through the page.
         pump = getattr(page, "wait_for_timeout", None)
@@ -2715,8 +2859,17 @@ def network_self_test(context, test_base):
         else:
             STOP.wait(1.5)
         blocked = scope.blocked - blocked0
-        ok = len(POST_HITS) == hits0 and blocked >= 3
-        ev("network_self_test", ok=int(ok), blocked=blocked, server_posts=len(POST_HITS) - hits0)
+        got = {"post": len(POST_HITS) - hits0["post"], "sw": len(SW_HITS) - hits0["sw"],
+               "ws": len(WS_HITS) - hits0["ws"], "worker": len(WORKER_HITS) - hits0["worker"]}
+        # The service-worker verdict is the server's (zero script fetches) and the absence of a
+        # serviceworker event: under service_workers="block" register() may resolve without ever
+        # fetching or running anything, so the page-side outcome is logged, not trusted.
+        ok = (workers == ["refused", "refused"] and not any(got.values())
+              and not scope.sw_violations and not scope.worker_violations
+              and (blocked >= 3 if DRY_RUN else True))
+        ev("network_self_test", ok=int(ok), dry_run=int(DRY_RUN), blocked=blocked, sw=sw,
+           workers=",".join(map(str, workers or [])), server_posts=got["post"], sw_fetches=got["sw"],
+           ws_handshakes=got["ws"], worker_fetches=got["worker"])
         return ok
     except Exception as exc:
         ev("network_self_test", ok=0, reason=describe(exc))
@@ -2725,11 +2878,99 @@ def network_self_test(context, test_base):
         scope.detach()
 
 
+WARM_LOGIN_TIMEOUT_S = 20 * 60
+WARM_LOGIN_POLL_MS = 2000
+
+
+def warm_login(url, sentinel_dir=None, timeout_s=None):
+    """The one way a session enters the sessions dir for this pipeline. Opens the tenant's page in a
+    fresh context on the pipeline's display and waits while a human signs in (over noVNC, at human
+    pace; nothing is ever typed here). The human then touches the sentinel file printed on stdout,
+    a fresh name per invocation, so a leftover file from an earlier run can never trigger a save.
+    The session is saved -- filtered to the tenant's host, IndexedDB included -- only if the page
+    is on that host, shows no sign-in wall, and the scope saw no violation. Returns an exit code:
+    0 saved, 1 nothing saved, 2 bad URL, 3 display busy."""
+    try:
+        validate_job_url(url)
+    except JobEnd as end:
+        ev("warm_login_refused", reason=end.detail)
+        return 2
+    key = ats_sessions.tenant_key(url)
+    host = (urlsplit(url).hostname or "").lower()
+    if not key or not host:
+        ev("warm_login_refused", reason="no_tenant")
+        return 2
+    display = take_display_lock(DISPLAY_LOCK_PATH) if DISPLAY_LOCK_PATH else None
+    if DISPLAY_LOCK_PATH and display is None:
+        ev("display_busy", lock=DISPLAY_LOCK_PATH)
+        return 3
+    sentinel = os.path.join(sentinel_dir or os.path.dirname(os.path.abspath(STATE_PATH)),
+                            f"warm_login_done.{uuid.uuid4().hex}")
+    deadline = time.monotonic() + (WARM_LOGIN_TIMEOUT_S if timeout_s is None else timeout_s)
+    try:
+        with sync_playwright() as pw:
+            browser = launch_browser(pw)
+            if browser is None:
+                return 1
+            # Live network rules (signing in POSTs) and no submit guard; WebSockets, service workers
+            # and workers stay blocked exactly as in a job.
+            scope = JobScope(browser, "warm-login", dry_run=False, submit_guard=False)
+            try:
+                scope.attach()
+                page = scope.open_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                print(f"Sign in on the pipeline's display, then run:  sudo -u jobagent touch {sentinel}", flush=True)
+                ev("warm_login_waiting", tenant=_tenant_ref(key))
+                while not os.path.exists(sentinel):
+                    if STOP.is_set() or time.monotonic() > deadline:
+                        ev("warm_login_timeout", tenant=_tenant_ref(key))
+                        return 1
+                    page.wait_for_timeout(WARM_LOGIN_POLL_MS)
+                scope.check()
+                if (urlsplit(page.url).hostname or "").lower() != host:
+                    ev("warm_login_not_saved", tenant=_tenant_ref(key), reason="left_tenant_host")
+                    return 1
+                if _signed_out(page):
+                    ev("warm_login_not_saved", tenant=_tenant_ref(key), reason="still_signed_out")
+                    return 1
+                # The sign-in check pumps browser events. Recheck after it: another employer on
+                # the same shared ATS host must never be saved under the requested tenant's key.
+                scope.check()
+                if ats_sessions.tenant_key(page.url) != key:
+                    ev("warm_login_not_saved", tenant=_tenant_ref(key), reason="left_tenant")
+                    return 1
+                ats_sessions.save_state(scope.context, key, domain=host, indexed_db=True)
+                ev("warm_login_saved", tenant=_tenant_ref(key))
+                return 0
+            except JobEnd as end:
+                ev("warm_login_not_saved", tenant=_tenant_ref(key), reason=end.detail)
+                return 1
+            finally:
+                scope.detach()
+                close_browser(browser)
+    finally:
+        release_display_lock(display)
+        with contextlib.suppress(OSError):
+            os.remove(sentinel)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="process all pending jobs then exit")
     ap.add_argument("--self-test", action="store_true", help="run the dry-run network-isolation self-test and exit")
+    ap.add_argument("--warm-login", metavar="JOB_URL",
+                    help="open the tenant's page for a human to sign in, then save its session")
     args = ap.parse_args()
+    if args.warm_login:
+        os.umask(0o077)
+        try:
+            setup_logging()
+        except StorageError as exc:
+            sys.stderr.write(f"FATAL: {exc}\n")
+            return 2
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: STOP.set())
+        return warm_login(args.warm_login)
     once = args.once
     os.umask(0o077)  # every file we create (state, lock, tmp, results, log) is owner-only
     try:
@@ -2762,7 +3003,8 @@ def _main(once, self_test_only):
     except Exception as exc:
         ev("config_invalid", reason=type(exc).__name__)
         return 2
-    ev("pipeline_start", dry_run=int(DRY_RUN), once=int(once), cdp=clean_url(CDP_URL), owner=OWNER_ID)
+    ev("pipeline_start", dry_run=int(DRY_RUN), once=int(once), headless=int(config.APPLY_BROWSER_HEADLESS),
+       channel=config.APPLY_BROWSER_CHANNEL or "bundled", owner=OWNER_ID)
     why = preflight_storage()
     if why:
         ev("storage_preflight_failed", reason=why)
@@ -2776,7 +3018,6 @@ def _main(once, self_test_only):
     register_local_origin(test_base)
     rc, outcomes, skipped = 0, [], set()
     recovery = {"terminal": [], "requeued": [], "reconcile": [], "crash_loop": []}
-    selftest_done = not DRY_RUN
 
     def absorb(out):
         for kind in recovery:
@@ -2788,88 +3029,7 @@ def _main(once, self_test_only):
             absorb(recover_in_progress_ex())
             announce_reconciliation()
         with sync_playwright() as pw:
-            browser = None
-            while not STOP.is_set():
-                try:
-                    if not self_test_only and absorb(recover_in_progress_ex()):
-                        announce_reconciliation()
-                    queue = []
-                    if not self_test_only:
-                        try:
-                            queue = load_queue()
-                        except QueueError:
-                            if once:
-                                rc = max(rc, 2)
-                                break
-                            STOP.wait(IDLE_S)
-                            continue
-                    jobs = [j for j in pending_jobs(queue) if j["id"] not in skipped]
-                    if not jobs and not self_test_only:
-                        if once:
-                            break
-                        ev("idle", wait_s=IDLE_S)
-                        STOP.wait(IDLE_S)
-                        continue
-                    if browser is None or not browser.is_connected():
-                        browser = connect(pw)
-                    if browser is None:
-                        if once or self_test_only:
-                            rc = max(rc, 1)
-                            break
-                        STOP.wait(CDP_BACKOFF_S)  # jobs stay pending
-                        continue
-                    if not selftest_done or self_test_only:
-                        if not network_self_test(browser.contexts[0], test_base):
-                            ev("network_self_test_failed")  # no job may run on an unproven isolation
-                            rc = 2
-                            break
-                        selftest_done = True
-                        if self_test_only:
-                            break
-                    from urllib.parse import urlparse as _up
-                    _ctx0 = browser.contexts[0]
-                    _allowed = set()
-                    if isinstance(test_base, str) and test_base:
-                        _p = _up(test_base)
-                        _allowed.add(f"{_p.scheme}://{_p.netloc}")
-                    _bad = []
-                    for _sw in list(_ctx0.service_workers):
-                        _p = _up(_sw.url)
-                        _o = f"{_p.scheme}://{_p.netloc}"
-                        if _o not in _allowed:
-                            _bad.append(_sw.url)
-                    for _pg0 in list(_ctx0.pages):
-                        try:
-                            if not _pg0.url.startswith("http"):
-                                continue
-                            _regs = _pg0.evaluate(
-                                "() => navigator.serviceWorker.getRegistrations().then("
-                                "r => r.map(x => x.scope))"
-                            )
-                        except Exception:
-                            continue
-                        for _sc in _regs or []:
-                            _p = _up(_sc)
-                            if f"{_p.scheme}://{_p.netloc}" not in _allowed:
-                                _bad.append(_sc)
-                    if _bad:
-                        raise RuntimeError(f"service worker registration for non-allowed origin: {_bad}")
-                    final = process_job(browser.contexts[0], jobs[0], test_base)
-                    if final is None:
-                        skipped.add(jobs[0]["id"])
-                    else:
-                        outcomes.append(final)
-                except Shutdown:
-                    break
-                except StateCorrupt:
-                    rc = 2
-                    break
-                except Exception as exc:  # main loop must never crash
-                    ev("loop_error", reason=describe(exc))
-                    if once:
-                        rc = max(rc, 1)
-                        break
-                    STOP.wait(IDLE_S)
+            rc = _loop(pw, once, self_test_only, test_base, outcomes, skipped, absorb, rc)
     except Shutdown:
         pass
     except StateCorrupt:
@@ -2886,6 +3046,102 @@ def _main(once, self_test_only):
         if bad or stuck or live or recovered:
             rc = max(rc, 1)
     ev("pipeline_stop", rc=rc, outcomes=",".join(outcomes) or "none")
+    return rc
+
+
+def _loop(pw, once, self_test_only, test_base, outcomes, skipped, absorb, rc):
+    """The job loop. Owns the browser: launched here, self-tested after every launch, recycled
+    between jobs after BROWSER_MAX_JOBS or when a job context could not be closed, and always closed
+    on the way out. A browser that cannot be closed stops the loop (rc 2): no job runs next to a
+    leaked context."""
+    browser, jobs_on_browser, selftest_ok, display = None, 0, False, None
+
+    def retire(reason):
+        nonlocal browser, jobs_on_browser, selftest_ok, display
+        ev("browser_recycle", reason=reason, jobs=jobs_on_browser)
+        gone = close_browser(browser)
+        browser, jobs_on_browser, selftest_ok = None, 0, False
+        if gone:  # a browser that may still be up keeps the display
+            release_display_lock(display)
+            display = None
+        return gone
+
+    try:
+        while not STOP.is_set():
+            try:
+                if not self_test_only and absorb(recover_in_progress_ex()):
+                    announce_reconciliation()
+                queue = []
+                if not self_test_only:
+                    try:
+                        queue = load_queue()
+                    except QueueError:
+                        if once:
+                            rc = max(rc, 2)
+                            break
+                        STOP.wait(IDLE_S)
+                        continue
+                jobs = [j for j in pending_jobs(queue) if j["id"] not in skipped]
+                if not jobs and not self_test_only:
+                    if once:
+                        break
+                    ev("idle", wait_s=IDLE_S)
+                    STOP.wait(IDLE_S)
+                    continue
+                if browser is not None and (BROWSER_UNUSABLE.is_set() or jobs_on_browser >= BROWSER_MAX_JOBS
+                                            or not browser.is_connected()):
+                    why = ("context_close_failed" if BROWSER_UNUSABLE.is_set() else
+                           "max_jobs" if jobs_on_browser >= BROWSER_MAX_JOBS else "disconnected")
+                    if not retire(why):
+                        ev("browser_unrecoverable")  # a leaked context may still be alive: stop
+                        rc = 2
+                        break
+                if browser is None and DISPLAY_LOCK_PATH and display is None:
+                    display = take_display_lock(DISPLAY_LOCK_PATH)
+                    if display is None:
+                        ev("display_busy", lock=DISPLAY_LOCK_PATH)
+                        if once or self_test_only:
+                            rc = max(rc, 1)
+                            break
+                        STOP.wait(BROWSER_BACKOFF_S)  # jobs stay pending
+                        continue
+                if browser is None:
+                    browser = launch_browser(pw)
+                if browser is None:
+                    if once or self_test_only:
+                        rc = max(rc, 1)
+                        break
+                    STOP.wait(BROWSER_BACKOFF_S)  # jobs stay pending
+                    continue
+                if not selftest_ok:  # after every launch and recycle, in both modes
+                    if not network_self_test(browser, test_base):
+                        ev("network_self_test_failed")  # no job may run on an unproven isolation
+                        rc = 2
+                        break
+                    selftest_ok = True
+                    if self_test_only:
+                        break
+                final = process_job(browser, jobs[0], test_base)
+                jobs_on_browser += 1
+                if final is None:
+                    skipped.add(jobs[0]["id"])
+                else:
+                    outcomes.append(final)
+            except Shutdown:
+                break
+            except StateCorrupt:
+                rc = 2
+                break
+            except Exception as exc:  # main loop must never crash
+                ev("loop_error", reason=describe(exc))
+                if once:
+                    rc = max(rc, 1)
+                    break
+                STOP.wait(IDLE_S)
+    finally:
+        if browser is not None and not close_browser(browser):
+            rc = max(rc, 2)
+        release_display_lock(display)
     return rc
 
 
