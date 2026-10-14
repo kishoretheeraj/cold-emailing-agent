@@ -2933,6 +2933,12 @@ def warm_login(url, sentinel_dir=None, timeout_s=None):
                 if _signed_out(page):
                     ev("warm_login_not_saved", tenant=_tenant_ref(key), reason="still_signed_out")
                     return 1
+                # The sign-in check pumps browser events. Recheck after it: another employer on
+                # the same shared ATS host must never be saved under the requested tenant's key.
+                scope.check()
+                if ats_sessions.tenant_key(page.url) != key:
+                    ev("warm_login_not_saved", tenant=_tenant_ref(key), reason="left_tenant")
+                    return 1
                 ats_sessions.save_state(scope.context, key, domain=host, indexed_db=True)
                 ev("warm_login_saved", tenant=_tenant_ref(key))
                 return 0

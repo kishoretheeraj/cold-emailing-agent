@@ -363,6 +363,22 @@ def test_warm_login_on_another_host_saves_nothing(warm, monkeypatch):
     assert warm["saved"] == []
 
 
+@pytest.mark.parametrize("move_during_check", [False, True])
+def test_warm_login_on_another_tenant_of_the_same_host_saves_nothing(warm, monkeypatch, move_during_check):
+    first = "https://jobs.lever.co/tenant-a/apply"
+    other = "https://jobs.lever.co/tenant-b/dashboard"
+    warm["page"].url = first if move_during_check else other
+
+    def signed_out(page):
+        if move_during_check:
+            page.url = other
+        return False
+
+    monkeypatch.setattr(ap, "_signed_out", signed_out)
+    assert ap.warm_login(first, sentinel_dir=warm["dir"], timeout_s=30) == 1
+    assert warm["saved"] == []
+
+
 def test_warm_login_times_out_without_the_sentinel(warm, monkeypatch):
     warm["touch"] = False
     monkeypatch.setattr(ap, "_signed_out", lambda page: False)
