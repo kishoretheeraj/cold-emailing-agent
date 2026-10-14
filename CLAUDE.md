@@ -1680,6 +1680,45 @@ only view of a live form's structure. `_application_url` opens Ashby `/applicati
 instead of the posting page. `requeue_preview` (migration `20261006000000`) also accepts
 `ready_for_review` and clears `apply_preview`; the UI shows "Re-prepare" on those rows too.
 
+**Searchable dropdowns and standard questions (2026-10-13)**: the 2026-10-07 preview left every
+Greenhouse react-select dropdown empty (Country, Location (City), School, Degree, work authorization,
+sponsorship) while `_fill_field` reported success: it typed and pressed Enter before the menu rendered.
+Comboboxes are now filled only by `_pick_combobox_option`: focus (the 2px input is never clicked), open
+the menu or type a search, read the visible `[role=option]`/`*-option-*` texts, click the matching one,
+then confirm the box shows a value; no match clears the typed text and returns False. Enter is never
+pressed on any combobox. In a react-select box (`[class*=control]` inside the container) only a chosen
+value counts as filled, never typed search text (inventory and `_COMBOBOX_FILLED_JS` agree). A required
+combobox with no options in the inventory gets its open-list options read for the screening prompt
+(`_combobox_options`, at most 60). **Standard questions** -- country, city, school (also the
+`(Undergraduate)`/`(Graduate)` variants), degree, discipline, graduation year -- are answered in
+`_generate_screening_answers` from `candidate_profile.form_answers()` (derived from `master.json`; a
+fact it does not hold, such as a start year or GPA, is absent) and never from the answer bank or the
+model. `_PROFILE_QUESTION_PATTERNS` match the whole label, so a long question that merely mentions a
+school is not answered. A choice field matches an explicit candidate alias (`_pick_candidates`),
+allowing only phone-code decorations or country suffixes on a city/state. Arbitrary prefixes can
+name a different country or school and are rejected, including in single-candidate comboboxes.
+A free-text box takes the first candidate.
+The chosen text lands in `screening_answers`, so the reviewer sees and can edit it and `submit()`
+replays it. `work_authorized_us` also matches "eligible to work", but never "work authorization
+status" (a status list must not get a "Yes"). The inventory reads Lever custom questions from the
+enclosing `.application-label` (`nearLabel`), and treats U+2731 as a required star.
+Also from master.json: start year (`start`), and GPA: a degree whose school issues none carries
+`"gpa": null` and answers "N/A" (never a number); `gpa_us`/`gpa` give "3.73/4.0 (8.75/10)" for a text
+box, "3.73" for a number box, and the range or floor holding 3.73 in a GPA dropdown (`_gpa_option`,
+never rounding up). "First/second/third location preference" questions take the Nth distinct form
+option in the order of `job_search_preferences.preferred_locations` (`job_filters.DEFAULT_PREFERENCES`,
+"city|alias" per rank), never the model. `_pick_option` matches whole words only ("No" no longer picks
+"I do not agree"), and maps a "Yes" onto the single agreeing choice ("I agree", "I acknowledge") of a
+consent question, and a "No" onto its single declining choice ("I do not consent", "No, thank you").
+Among user-added `applicant_eligibility` keys the longest matching key wins (nCino's SMS consent questions
+also mention the privacy policy; `promotional text` must beat `privacy policy`); known keys with a question
+pattern still come first. Kishore's live `applicant_eligibility` gained `github`, `how did you hear`,
+`work authorization status` (F-1 OPT), `optional practical training`, `updates from a recruiter` (Yes) and
+`promotional text` (No) (2026-10-13).
+`scripts/apply_dryrun.py` also fills these profile answers (`_profile_answers`, no model) and prints
+`profile facts filled` per label. Tests: `tests/test_apply_agent_combobox.py` (real browser,
+`tests/fixtures/searchable_selects.html` and `lever_cards.html`, written for tests).
+
 **Salary answers from H-1B wages (2026-10-07)**: the preview calls `salary_estimate.estimate(job)`
 and, when it returns a range, overrides the `salary` eligibility answer for that row only (stored in
 `apply_preview.eligibility_answers`, so submit replays what was reviewed) and stores

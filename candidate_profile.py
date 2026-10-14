@@ -9,6 +9,7 @@ dependency into apply_agent.py's lighter requirements-apply.txt environment.
 """
 
 import json
+import re
 from pathlib import Path
 
 _MASTER_DATA_PATH = Path(__file__).resolve().parent / "resume" / "data" / "master.json"
@@ -42,3 +43,118 @@ def candidate_name():
             return str(json.load(f).get("name") or "")
     except (OSError, ValueError):
         return ""
+
+
+# ── Standard application-form facts ───────────────────────────────────────────
+
+def _city_candidates(location):
+    # "Hanover, NH" -> also "Hanover, New Hampshire" / "..., United States": location pickers list
+    # the state spelled out, and the value has to equal or begin one of their options.
+    import job_filters
+
+    city, _, state = (part.strip() for part in str(location or "").partition(","))
+    if not city:
+        return []
+    out = [f"{city}, {state}" if state else city]
+    name = next((n for n, code in job_filters._US_STATES if code == state.lower()), None)
+    if name:
+        spelled = f"{city}, {name.title()}"
+        out += [spelled, f"{spelled}, United States", f"{spelled}, USA", f"{city}, {state}, USA"]
+    return out
+
+
+def _year(text):
+    match = re.search(r"\b(19|20)\d{2}\b", str(text or ""))
+    return match.group(0) if match else None
+
+
+def _degree(program):
+    # "Master of Engineering Management (MEM) | Joint program ..." -> ("master",
+    # "Master of Engineering Management", "Engineering Management").
+    # "Bachelor of Engineering, Computer Science and Engineering" -> ("bachelor",
+    # "Bachelor of Engineering", "Computer Science and Engineering").
+    head = re.sub(r"\s*\([^)]*\)", "", str(program or "").split("|")[0]).strip()
+    title, _, field = (part.strip() for part in head.partition(","))
+    level = title.split(" ")[0].lower() if title else ""
+    if not field and " of " in title:
+        field = title.split(" of ", 1)[1]
+    return level, title, field
+
+
+_DEGREE_NAMES = {
+    "master": ["Master's Degree", "Master's", "Masters"],
+    "bachelor": ["Bachelor's Degree", "Bachelor's", "Bachelors"],
+}
+
+
+def _education_answers(entry):
+    level, title, field = _degree(entry.get("program"))
+    answers = {"school": [entry["institution"]] if entry.get("institution") else []}
+    answers["degree"] = ([title] if title else []) + _DEGREE_NAMES.get(level, [])
+    disciplines = [field] if field else []
+    if " and " in field:
+        disciplines.append(field.split(" and ")[0])
+    elif len(field.split()) == 2:
+        disciplines.append(field.split()[0])  # "Engineering Management" -> "Engineering"
+    answers["discipline"] = disciplines
+    year = _year(entry.get("graduation"))
+    answers["end_year"] = [year] if year else []
+    start = _year(entry.get("start"))
+    answers["start_year"] = [start] if start else []
+    return answers
+
+
+def _gpa_answers(entry):
+    # "3.73/4.0" + "8.75/10" -> ["3.73/4.0 (8.75/10)", "3.73"]: the text a free-text box gets, then
+    # the bare number a number box takes. A school that issues no GPA ("gpa": null) -> ["N/A"].
+    if "gpa" in entry and entry["gpa"] is None:
+        return ["N/A"]
+    us, native = entry.get("gpa_us"), entry.get("gpa")
+    text = us or native
+    if not text:
+        return []
+    out = [f"{us} ({native})" if us and native and us != native else text]
+    number = str(text).split("/")[0].strip()
+    if re.fullmatch(r"\d+(\.\d+)?", number):
+        out.append(number)
+    return out
+
+
+def form_answers():
+    """{key: [acceptable answers, best first]} for the standard questions application forms ask
+    (country, city, school, degree, discipline, start/graduation year, GPA), all derived from
+    master.json. A form option must match an alias (allowing phone codes or city country suffixes);
+    a free-text box gets the first, a number box the first bare number. A fact master.json does not
+    hold is simply absent."""
+    try:
+        with open(_MASTER_DATA_PATH) as f:
+            master = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    answers = {}
+    location = (master.get("contact") or {}).get("location")
+    cities = _city_candidates(location)
+    if cities:
+        answers["city"] = cities
+        if len(cities) > 1:  # a US state was recognized
+            answers["country"] = ["United States", "United States of America", "USA"]
+    education = [e for e in master.get("education") or [] if isinstance(e, dict)]
+    if education:
+        # A form with one School/Degree block asks about the most recent degree (listed first).
+        answers.update(_education_answers(education[0]))
+        for entry in education:
+            level = _degree(entry.get("program"))[0]
+            key = {"master": "school_graduate", "bachelor": "school_undergraduate"}.get(level)
+            if key and key not in answers and entry.get("institution"):
+                answers[key] = [entry["institution"]]
+            gpa_key = {"master": "gpa_graduate", "bachelor": "gpa_undergraduate"}.get(level)
+            if gpa_key and gpa_key not in answers:
+                answers[gpa_key] = _gpa_answers(entry)
+        # One unlabeled "GPA" box: the most recent degree's GPA if it has one, else the undergraduate
+        # one, saying which it is.
+        numeric = [_gpa_answers(e) for e in education if _gpa_answers(e) and _gpa_answers(e) != ["N/A"]]
+        if numeric:
+            first = numeric[0]
+            label = "" if _gpa_answers(education[0]) == first else " (undergraduate)"
+            answers["gpa"] = [first[0] + label] + first[1:]
+    return {key: values for key, values in answers.items() if values}

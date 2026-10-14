@@ -49,11 +49,22 @@ DEFAULT_PREFERENCES = {
     "per_company_cap_30d": 3,
     "daily_submit_cap": 50,
     "skip_no_sponsorship": True,
+    # Ranked answers for "first/second/third location preference" questions (apply_agent), best
+    # first; "city|alias|alias" is one rank. West-coast big cities first, then the operator's order
+    # (2026-10-13).
+    "preferred_locations": [
+        "seattle|bellevue|redmond", "san diego",
+        "san francisco|bay area|san francisco bay area|san jose|south san francisco|palo alto"
+        "|mountain view|sunnyvale|menlo park|oakland",
+        "los angeles|santa monica|irvine", "boston|cambridge", "new york|new york city|nyc|brooklyn",
+        "philadelphia", "chicago", "washington|washington dc|washington d c", "charlotte",
+        "raleigh|durham|research triangle", "austin", "dallas", "houston",
+    ],
 }
 
 _LIST_KEYS = (("titles", "include"), ("titles", "exclude"), ("seniority_exclude",), ("seniority_allow",),
               ("locations", "always_allow"), ("locations", "allow"), ("locations", "block"),
-              ("locations", "block_hard"))
+              ("locations", "block_hard"), ("preferred_locations",))
 _INT_KEYS = ("max_posting_age_days", "per_company_cap_30d", "daily_submit_cap")
 
 

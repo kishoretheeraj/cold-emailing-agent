@@ -26,6 +26,7 @@ import config
 import credential_vault
 import db
 import email_verification
+import job_filters
 import job_identity
 import takeover
 import universal_filler
@@ -116,25 +117,51 @@ _NEEDS_REVIEW_PREFIX = "NEEDS HUMAN REVIEW"
 # reads every real control instead: its question label, kind, required flag, options, whether it
 # currently holds a value, and a selector to reach it again. Values are never returned.
 _FORM_INVENTORY_JS = r"""() => {
-  const clean = (t) => (t || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim().slice(0, 300);
-  const starred = (t) => /\*\s*$/.test((t || '').trim());
+  // Lever marks required questions with U+2731 instead of '*'.
+  const clean = (t) => (t || '').replace(/\s+/g, ' ').replace(/\s*[*✱]\s*$/, '').trim().slice(0, 300);
+  const starred = (t) => /[*✱]\s*$/.test((t || '').trim());
   const textOf = (ids) => (ids || '').split(/\s+/).map((i) => {
     const n = document.getElementById(i); return n ? n.innerText : '';
   }).join(' ');
   const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
   const sel = (el) => el.id ? '#' + CSS.escape(el.id)
     : (el.name ? el.tagName.toLowerCase() + '[name="' + el.name.replace(/"/g, '\\"') + '"]' : null);
+  // Question text that is not tied to the control: Lever's custom questions put it in the
+  // .application-label of the enclosing .application-question, with inputs named
+  // cards[<uuid>][field0]. Walks up while the container holds only this question's controls.
+  const nearLabel = (el) => {
+    const own = (c) => c === el || (el.name && c.name === el.name);
+    let node = el.parentElement;
+    for (let depth = 0; node && node !== document.body && depth < 6; depth++, node = node.parentElement) {
+      if (!Array.from(node.querySelectorAll('input, select, textarea')).every(own)) return '';
+      for (const c of node.querySelectorAll('.application-label, legend, label, [class*="label"]')) {
+        if (c.contains(el) || c.querySelector('input, select, textarea')) continue;
+        const t = (c.innerText || '').trim();
+        if (t && t.length <= 300) return t;
+      }
+    }
+    return '';
+  };
+  // Same rule as _COMBOBOX_FILLED_JS: in a react-select style box only a chosen value counts (text
+  // typed into its search input is not an answer); a plain autocomplete input counts its text.
+  const comboboxFilled = (el) => {
+    const box = el.closest('[class*="container"]');
+    const chosen = !!(box && box.querySelector(
+      '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
+    const searchOnly = !!(box && box.querySelector('[class*="control"]'));
+    return chosen || (!searchOnly && el.value.trim() !== '');
+  };
   const rawLabel = (el) => {
     if (el.getAttribute('aria-labelledby')) return textOf(el.getAttribute('aria-labelledby'));
     if (el.labels && el.labels[0]) return el.labels[0].innerText;
-    return el.getAttribute('aria-label') || el.placeholder || el.name || el.id || '';
+    return el.getAttribute('aria-label') || el.placeholder || nearLabel(el) || el.name || el.id || '';
   };
   const groupLabel = (el) => {
     const g = el.closest('fieldset, [role=radiogroup], [role=group]');
     if (!g) {
       // A lone checkbox ("I agree to ...") is its own question; a radio's own label is an option.
       if (el.type === 'checkbox' && el.labels && el.labels[0]) return el.labels[0].innerText;
-      return el.name || '';
+      return nearLabel(el) || el.name || '';
     }
     if (g.getAttribute('aria-labelledby')) return textOf(g.getAttribute('aria-labelledby'));
     if (g.getAttribute('aria-label')) return g.getAttribute('aria-label');
@@ -182,9 +209,7 @@ _FORM_INVENTORY_JS = r"""() => {
       f.filled = el.value !== '';
     } else if (el.getAttribute('role') === 'combobox') {
       f.kind = 'combobox';
-      const box = el.closest('[class*="container"]') || (el.parentElement && el.parentElement.parentElement);
-      f.filled = el.value.trim() !== '' || !!(box && box.querySelector(
-        '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
+      f.filled = comboboxFilled(el);
     } else { f.filled = (el.value || '').trim() !== ''; }
     out.push(f);
   }
@@ -245,8 +270,9 @@ def _pick_option(options, value):
     if not want:
         return None
     normed = [(o, _norm_option(o)) for o in (options or []) if _norm_option(o)]
-    for checks in (lambda o: o == want, lambda o: o.startswith(want), lambda o: want.startswith(o),
-                   lambda o: want in o):
+    # Whole words only: "No" must not pick "I do not agree" or "None of the above".
+    for checks in (lambda o: o == want, lambda o: o.startswith(want + " "), lambda o: want.startswith(o + " "),
+                   lambda o: f" {want} " in f" {o} "):
         for original, o in normed:
             if checks(o):
                 return original
@@ -254,7 +280,41 @@ def _pick_option(options, value):
         for original, o in normed:
             if _DECLINE_OPTION.search(original):
                 return original
+    if _AFFIRMATIVE.fullmatch(want):
+        # A consent question answered "Yes" whose choices read "I agree" / "I acknowledge".
+        agreeing = [original for original, o in normed if _AFFIRMATIVE_OPTION.match(o) and not _NEGATED.search(o)]
+        if len(agreeing) == 1:
+            return agreeing[0]
+    if want == "no":
+        # The same question answered "No" whose choices read "I do not consent" / "No, thank you".
+        declining = [original for original, o in normed if _NEGATED.search(o)]
+        if len(declining) == 1:
+            return declining[0]
     return None
+
+
+_AFFIRMATIVE = re.compile(r"yes|i agree|agree|i acknowledge|acknowledge|i accept|accept|i consent|consent")
+_AFFIRMATIVE_OPTION = re.compile(r"(yes|i agree|agree|i acknowledge|acknowledge|i accept|accept|i consent"
+                                 r"|consent|i have read)\b")
+_NEGATED = re.compile(r"\b(not|no|don t|do not|disagree|decline)\b")
+
+
+def _gpa_option(options, number):
+    # GPA dropdowns list ranges ("3.50 - 3.74") or floors ("3.5+", "3.0 or above"): the range
+    # holding the number, else the highest floor at or below it. Never rounds up.
+    try:
+        value = float(number)
+    except (TypeError, ValueError):
+        return None
+    floors = []
+    for option in options or []:
+        nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", str(option))]
+        if len(nums) >= 2 and nums[0] <= value <= nums[1] and re.search(r"\d\s*(-|–|to)\s*\d", str(option)):
+            return option
+        if len(nums) == 1 and re.search(r"\+|or (above|higher|more)|and (above|higher)|above", str(option),
+                                        re.IGNORECASE) and nums[0] <= value:
+            floors.append((nums[0], option))
+    return max(floors)[1] if floors else None
 
 
 def _listbox_options(page, field):
@@ -295,6 +355,126 @@ def _pick_listbox_option(page, field, value, timeout):
     return _norm_option(button.inner_text(timeout=timeout)) == _norm_option(choice)
 
 
+# Searchable dropdowns (react-select on Greenhouse's current boards, autocompletes elsewhere).
+# Live preview 2026-10-07: typing the answer and pressing Enter left every one of them empty --
+# the menu had not rendered yet, so Enter chose nothing, while the filler still reported success;
+# and the 2px-wide react-select input was "not stable" to click. Now: focus (no click), open the
+# menu, read the real options, click the one the answer matches, and confirm the control shows a
+# value. No match leaves it empty, so the required-question gate stops the preview.
+_COMBOBOX_OPTIONS = "[role='option'], [id*='-option-']"
+# Mirrors comboboxFilled in _FORM_INVENTORY_JS.
+_COMBOBOX_FILLED_JS = """(el) => {
+  const box = el.closest('[class*="container"]');
+  const chosen = !!(box && box.querySelector(
+    '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
+  const searchOnly = !!(box && box.querySelector('[class*="control"]'));
+  return chosen || (!searchOnly && el.value.trim() !== '');
+}"""
+# Long lists (countries, schools) are not worth putting in a screening prompt.
+_COMBOBOX_MAX_PROMPT_OPTIONS = 60
+
+
+def _combobox_menu(page, box, query, timeout):
+    # Opens the menu (typing `query` first when given) and returns (options locator, their texts).
+    box.focus(timeout=timeout)
+    if query:
+        box.fill(query, timeout=timeout)
+    else:
+        page.keyboard.press("ArrowDown")
+    options = page.locator(_COMBOBOX_OPTIONS).filter(visible=True)
+    try:
+        # A typed search may be answered by the server, so it gets longer than an open list.
+        options.first.wait_for(state="visible", timeout=timeout * (2 if query else 1))
+    except Exception:
+        return options, []
+    return options, [t.strip() for t in options.all_inner_texts()]
+
+
+def _combobox_close(page, box, typed):
+    try:
+        if typed:
+            box.fill("")
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+
+
+def _combobox_queries(candidates):
+    queries = [None]
+    for value in candidates:
+        for query in (str(value), str(value).split(",")[0].strip()):
+            if query and query not in queries:
+                queries.append(query)
+    return queries
+
+
+def _combobox_choose(page, field, candidates, timeout, click, strict=False):
+    # Finds the option the candidates match, trying the open list first and then a typed search
+    # per candidate; clicks it when `click`. Returns the chosen option text or None.
+    box = page.locator(field["selector"]).first
+    single = len(candidates) == 1
+    for query in _combobox_queries(candidates):
+        options, labels = _combobox_menu(page, box, query, timeout)
+        choice = (_pick_option(labels, candidates[0]) if single and not strict
+                  else _pick_candidates(labels, candidates))
+        if choice is None:
+            _combobox_close(page, box, query)
+            continue
+        if not click:
+            _combobox_close(page, box, query)
+            return choice
+        options.nth(labels.index(choice)).click(timeout=timeout)
+        if page.locator(_COMBOBOX_OPTIONS).filter(visible=True).count():
+            page.keyboard.press("Escape")
+        return choice
+    return None
+
+
+def _pick_combobox_option(page, field, value, timeout):
+    candidates = value if isinstance(value, list) else [value]
+    if _combobox_choose(page, field, candidates, timeout, click=True) is None:
+        return False
+    return bool(page.locator(field["selector"]).first.evaluate(_COMBOBOX_FILLED_JS))
+
+
+def _combobox_options(page, field):
+    # The open list's options, for a screening prompt; [] for a search-only box or a long list.
+    timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
+    box = page.locator(field["selector"]).first
+    try:
+        _, labels = _combobox_menu(page, box, None, timeout)
+    except Exception:
+        labels = []
+    _combobox_close(page, box, None)
+    labels = [label for label in labels if label]
+    return labels if len(labels) <= _COMBOBOX_MAX_PROMPT_OPTIONS else []
+
+
+def _pick_candidates(options, candidates):
+    # Profile facts need exact aliases. Allow only phone-code decorations and a country suffix
+    # on a city/state, never arbitrary prefixes that can name a different country or school.
+    normed = [(o, _norm_option(o)) for o in (options or []) if _norm_option(o)]
+    wanted = [_norm_option(c) for c in candidates if _norm_option(c)]
+    for want in wanted:
+        for original, o in normed:
+            if o == want:
+                return original
+    for candidate in candidates:
+        want = _norm_option(candidate)
+        if not want:
+            continue
+        for original, _ in normed:
+            undecorated = re.sub(r"\s*\(?\+\d[\d -]*\)?\s*$", "", str(original))
+            if _norm_option(undecorated) == want:
+                return original
+            if "," in str(candidate):
+                city_state = re.sub(r",\s*(United States(?: of America)?|USA|US)\s*$", "",
+                                    str(original), flags=re.IGNORECASE)
+                if _norm_option(city_state) == want:
+                    return original
+    return None
+
+
 def _numbers_in(value):
     # "$140,000 - $175,000" -> [140000, 175000]; a number-only box gets their midpoint.
     return [int(float(n.replace(",", ""))) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", str(value or ""))]
@@ -332,26 +512,8 @@ def _fill_field(page, field, value, is_salary=False):
             if not target:
                 return False
             page.locator(target).first.check(timeout=timeout, force=True)
-        elif kind == "combobox" and getattr(page, "no_enter", False) is True:
-            # Unknown sites: Enter inside a <form> can submit it, so pick a visible option by click.
-            box = page.locator(field["selector"]).first
-            box.click(timeout=timeout)
-            box.fill(str(value), timeout=timeout)
-            options = page.locator("[role='option']").filter(visible=True)
-            try:
-                options.first.wait_for(state="visible", timeout=timeout)
-            except Exception:
-                return False
-            labels = [t.strip() for t in options.all_inner_texts()]
-            choice = _pick_option(labels, value)
-            if choice is None:
-                return False
-            options.nth(labels.index(choice)).click(timeout=timeout)
         elif kind == "combobox":
-            box = page.locator(field["selector"]).first
-            box.click(timeout=timeout)
-            box.fill(str(value), timeout=timeout)
-            page.keyboard.press("Enter")
+            return _pick_combobox_option(page, field, value, timeout)
         elif kind == "listbox":
             return _pick_listbox_option(page, field, value, timeout)
         else:
@@ -363,6 +525,11 @@ def _fill_field(page, field, value, is_salary=False):
 
 
 def _eligibility_match(label, answers):
+    # Known keys (with a question pattern) first, in order. Otherwise a key the user added to
+    # applicant_eligibility themselves (e.g. "desired salary") matches any question label containing
+    # it, and the longest such key wins: nCino's "I would like to receive promotional texts ...
+    # subject to our privacy policy" must get the "promotional text" answer, not "privacy policy".
+    best = None
     for key, value in (answers or {}).items():
         if not value:
             continue
@@ -371,10 +538,9 @@ def _eligibility_match(label, answers):
             if pattern.search(label):
                 return key, value
         elif _norm_label(key) and _norm_label(key) in _norm_label(label):
-            # A key the user added to applicant_eligibility themselves (e.g. "desired salary")
-            # matches any question label containing it.
-            return key, value
-    return None, None
+            if best is None or len(_norm_label(key)) > len(_norm_label(best[0])):
+                best = (key, value)
+    return best if best is not None else (None, None)
 
 
 def _eligibility_value_for(label, answers):
@@ -440,11 +606,31 @@ def _generate_screening_answers(page, job):
     # experience/projects text job_pick.py's fit judge is grounded in.
     profile_summary = candidate_profile.profile_text()
     eligibility = _eligibility_answers()
+    facts = candidate_profile.form_answers()
+    ranking = None
 
     for field in inventory:
         label = field.get("label") or ""
         if (field.get("filled") or not field.get("required") or field.get("kind") == "file"
                 or _eligibility_value_for(label, eligibility) is not None):
+            continue
+        rank = _location_rank(label)
+        if rank is not None:
+            # The operator's ranked cities, never the model: a free-text answer can't be one of the
+            # form's choices anyway, and a guess here would be a preference they didn't state.
+            if ranking is None:
+                ranking = _preferred_locations()
+            answer = _location_preference_answer(page, field, rank, ranking)
+            if answer:
+                answers[label] = answer
+            continue
+        fact_key = _profile_key_for(label)
+        if fact_key is not None:
+            # Country, city, school, degree... come from master.json only, never the answer bank or
+            # the model; a fact with no matching option (or not on file) stays blank for a human.
+            answer = _profile_answer(page, field, facts.get(fact_key) or [])
+            if answer:
+                answers[label] = answer
             continue
         if not profile_summary.strip():
             answers[label] = _NO_PROFILE_ANSWER
@@ -452,6 +638,8 @@ def _generate_screening_answers(page, job):
         options = field.get("options") or []
         if field.get("kind") == "listbox" and not options:
             options = _listbox_options(page, field)
+        elif field.get("kind") == "combobox" and not options:
+            options = _combobox_options(page, field)
         # An answer the operator already approved for this exact question comes first.
         if bank is None:
             bank = _answer_bank()
@@ -588,7 +776,9 @@ def _fill_screening_questions(page, answers, only_present=False):
 # "work_authorized_us", so filling must go through this translation. A key with no entry here
 # (one the user added, e.g. "desired salary") matches any label containing the key's text.
 _ELIGIBILITY_QUESTION_PATTERNS = {
-    "work_authorized_us": re.compile(r"(legally )?authorized to work", re.IGNORECASE),
+    # Yes/no wording only: "What is your work authorization status?" lists statuses, and a "Yes"
+    # must never be snapped onto one of them, so that question is left to a human.
+    "work_authorized_us": re.compile(r"(legally )?(authorized|eligible) to work", re.IGNORECASE),
     "requires_visa_sponsorship": re.compile(r"require.{0,40}sponsor", re.IGNORECASE),
     "gender": re.compile(r"\bgender\b", re.IGNORECASE),
     "race_ethnicity": re.compile(r"\brace\b|ethnicity", re.IGNORECASE),
@@ -603,6 +793,152 @@ _ELIGIBILITY_QUESTION_PATTERNS = {
         r"(?=.*\b(desired|expected|expecting|expectations?|target|requirements?|requested|looking for)\b)",
         re.IGNORECASE),
 }
+
+
+# Standard form questions answered from master.json (candidate_profile.form_answers), matched
+# against the whole label so a long question that merely mentions a school or a city ("If you do
+# not see your University listed ... let us know your school name here") is never answered with it.
+_PROFILE_QUESTION_PATTERNS = (
+    ("country", re.compile(r"^(country|country of residence|current country"
+                           r"|(please )?select the country (where|in which) you (currently )?(reside|live)\.?"
+                           r"|what country do you (currently )?(reside|live) in\??)$", re.IGNORECASE)),
+    ("city", re.compile(r"^(location|location \(city\)|city|current city|current location|city of residence"
+                        r"|(if located in the us, )?in what city and state do you (currently )?(reside|live)\??)$",
+                        re.IGNORECASE)),
+    ("school_undergraduate", re.compile(r"^(school|university|college|institution)( name)?"
+                                        r" \((undergraduate|undergrad|bachelor'?s)\)$", re.IGNORECASE)),
+    ("school_graduate", re.compile(r"^(school|university|college|institution)( name)?"
+                                   r" \((graduate|grad|master'?s)\)$", re.IGNORECASE)),
+    ("school", re.compile(r"^(school|school name|university|university name|college|institution"
+                          r"|school/university)$", re.IGNORECASE)),
+    ("degree", re.compile(r"^(degree|degree type|degree level|highest degree( obtained| earned)?)$", re.IGNORECASE)),
+    ("discipline", re.compile(r"^(discipline|major|field of study|area of study)$", re.IGNORECASE)),
+    ("end_year", re.compile(r"^(end date year|end year|graduation year|year of graduation"
+                            r"|expected graduation year)$", re.IGNORECASE)),
+    ("start_year", re.compile(r"^(start date year|start year)$", re.IGNORECASE)),
+    ("gpa_undergraduate", re.compile(r"^((undergraduate|undergrad|bachelor'?s) gpa"
+                                     r"|gpa \((undergraduate|undergrad|bachelor'?s)\))$", re.IGNORECASE)),
+    ("gpa_graduate", re.compile(r"^((graduate|grad|master'?s) gpa|gpa \((graduate|grad|master'?s)\))$",
+                                re.IGNORECASE)),
+    ("gpa", re.compile(r"^(gpa|cumulative gpa|overall gpa|grade point average)$", re.IGNORECASE)),
+)
+
+
+def _profile_key_for(label):
+    text = re.sub(r"\s+", " ", str(label or "")).strip()
+    return next((key for key, pattern in _PROFILE_QUESTION_PATTERNS if pattern.search(text)), None)
+
+
+def _profile_answer(page, field, candidates):
+    # The exact text to put in this field: a real option for a choice field (read from the page),
+    # the best candidate for a free-text box. None when nothing on the form matches.
+    if not candidates:
+        return None
+    kind = field.get("kind")
+    number = next((c for c in candidates if re.fullmatch(r"\d+(\.\d+)?", str(c))), None)
+    if kind == "input" and field.get("input_type") == "number":
+        # "3.73/4.0 (8.75/10)" can't go in a number box; "3.73" can, and "N/A" never.
+        return number
+    if kind in ("input", "textarea"):
+        return candidates[0]
+    if kind == "combobox":
+        try:
+            choice = _combobox_choose(page, field, candidates, config.APPLY_AGENT_FIELD_TIMEOUT_MS,
+                                      click=False, strict=True)
+        except Exception as exc:
+            log.info(f"[APPLY-AGENT] | options not readable: {field.get('label', '')[:60]!r} | {exc}")
+            return None
+        if choice is None and number is not None and "gpa" in _norm_option(field.get("label")):
+            choice = _gpa_option(_combobox_options(page, field), number)
+        return choice
+    options = field.get("options") or []
+    if kind == "listbox" and not options:
+        options = _listbox_options(page, field)
+    choice = _pick_candidates(options, candidates)
+    if choice is None and number is not None and "gpa" in _norm_option(field.get("label")):
+        choice = _gpa_option(options, number)
+    return choice
+
+
+# "What is your first location preference?" / "Second location preference": the Nth distinct
+# option, in the order of job_search_preferences.preferred_locations (job_filters).
+_LOCATION_PREFERENCE_PATTERN = re.compile(
+    r"\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th)\b.*\blocation preference"
+    r"|\blocation preference\s*#?\s*([1-5])\b", re.IGNORECASE)
+_ORDINALS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4,
+             "fifth": 5, "5th": 5}
+
+
+def _location_rank(label):
+    match = _LOCATION_PREFERENCE_PATTERN.search(str(label or ""))
+    if not match:
+        return None
+    return _ORDINALS[match.group(1).lower()] if match.group(1) else int(match.group(2))
+
+
+def _preferred_locations():
+    try:
+        return job_filters.load_preferences(db.load_prompts()).get("preferred_locations") or []
+    except Exception as exc:
+        log.info(f"[APPLY-AGENT] | location preferences unavailable: {exc}")
+        return []
+
+
+def _city_of(option):
+    # "Seattle, WA" / "New York - NY" / "Chicago (Hybrid)" -> the city part.
+    return re.split(r",| - |\(", str(option or ""), maxsplit=1)[0]
+
+
+def _ranked_locations(options, ranking):
+    # One option per rank, best rank first; an option matches a rank when its city part (or the
+    # whole option) equals one of that rank's aliases.
+    picked = []
+    for entry in ranking:
+        aliases = {_norm_option(a) for a in str(entry).split("|") if _norm_option(a)}
+        for option in options or []:
+            if option not in picked and (_norm_option(_city_of(option)) in aliases or _norm_option(option) in aliases):
+                picked.append(option)
+                break
+    return picked
+
+
+def _location_preference_answer(page, field, rank, ranking):
+    options = field.get("options") or []
+    if not options and field.get("kind") == "listbox":
+        options = _listbox_options(page, field)
+    elif not options and field.get("kind") == "combobox":
+        options = _combobox_options(page, field)
+    picked = _ranked_locations(options, ranking)
+    return picked[rank - 1] if len(picked) >= rank else None
+
+
+def _profile_answers(page):
+    """{label: answer} for the form's required, still-empty standard questions (country, city,
+    school, ...) that master.json answers -- the deterministic part of _generate_screening_answers,
+    for scripts/apply_dryrun.py. Never calls a model."""
+    facts = candidate_profile.form_answers()
+    eligibility = _eligibility_answers()
+    ranking = None
+    answers = {}
+    for field in _form_inventory(page) or []:
+        label = field.get("label") or ""
+        if (field.get("filled") or not field.get("required") or field.get("kind") == "file"
+                or _eligibility_value_for(label, eligibility) is not None):
+            continue
+        rank = _location_rank(label)
+        if rank is not None:
+            ranking = _preferred_locations() if ranking is None else ranking
+            answer = _location_preference_answer(page, field, rank, ranking)
+            if answer:
+                answers[label] = answer
+            continue
+        key = _profile_key_for(label)
+        if key is None:
+            continue
+        answer = _profile_answer(page, field, facts.get(key) or [])
+        if answer:
+            answers[label] = answer
+    return answers
 
 
 def _fill_eligibility_answers(page, answers):

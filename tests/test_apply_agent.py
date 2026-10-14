@@ -2,7 +2,7 @@
 Playwright browser, no real browser-use call, no real network. Covers: platform routing,
 Workday/aggregator exclusion, the eligibility-answer lookup, and per-row failure isolation."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -539,13 +539,13 @@ def test_fill_field_single_checkbox_only_checks_on_agreement():
     assert apply_agent._fill_field(MagicMock(), field, "No") is False
 
 
-def test_fill_field_combobox_types_and_presses_enter():
+def test_fill_field_combobox_never_presses_enter_and_fails_without_options():
+    # Typing + Enter left every live Greenhouse dropdown empty on 2026-10-07 while reporting
+    # success; options are now clicked (real-browser coverage: test_apply_agent_combobox.py).
     page = MagicMock()
-    assert apply_agent._fill_field(page, _field("Country", "combobox", selector="#c"), "United States") is True
-    box = page.locator.return_value.first
-    box.click.assert_called_once()
-    box.fill.assert_called_once_with("United States", timeout=apply_agent.config.APPLY_AGENT_FIELD_TIMEOUT_MS)
-    page.keyboard.press.assert_called_once_with("Enter")
+    page.locator.return_value.filter.return_value.first.wait_for.side_effect = TimeoutError("no options")
+    assert apply_agent._fill_field(page, _field("Country", "combobox", selector="#c"), "United States") is False
+    assert call("Enter") not in page.keyboard.press.call_args_list
 
 
 @pytest.mark.parametrize("value,expected", [

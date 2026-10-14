@@ -48,7 +48,7 @@ def probe(job_id, dump_html=False):
     """Opens one job's application form and reports what deterministic filling achieves.
     Never raises; failures land in report['error']."""
     report = {"id": job_id, "company": None, "role": None, "platform": None, "skipped": None,
-              "signature": None, "fields": None, "attachments": None, "eligibility": None,
+              "signature": None, "fields": None, "attachments": None, "eligibility": None, "profile": None,
               "inventory": None, "required_unfilled": None, "missing": None, "html": None,
               "error": None}
     try:
@@ -80,6 +80,8 @@ def probe(job_id, dump_html=False):
             report["attachments"] = apply_agent._attach_resume_and_cover_letter(page, job)
         report["eligibility"] = apply_agent._fill_eligibility_answers(
             page, apply_agent._eligibility_answers())
+        # Country, city, school... from master.json: deterministic, no model, labels-only report.
+        report["profile"] = apply_agent._fill_screening_questions(page, apply_agent._profile_answers(page))
         inventory = apply_agent._form_inventory(page)
         report["inventory"] = [{k: f.get(k) for k in ("label", "kind", "required", "filled", "options")}
                                for f in (inventory or [])]
@@ -122,6 +124,7 @@ def render(report, detail):
     lines.append(f"standard fields: {json.dumps(report.get('fields'))}")
     lines.append(f"attachments: {json.dumps(report.get('attachments'))}")
     lines.append(f"eligibility filled: {json.dumps(report.get('eligibility'))[:1500]}")
+    lines.append(f"profile facts filled: {json.dumps(report.get('profile'))[:1500]}")
     lines.append(f"required still empty: {json.dumps(report.get('required_unfilled'))[:1500]}")
     lines.append(f"would block preview on: {json.dumps(report.get('missing'))[:1500]}")
     for field in report.get("inventory") or []:

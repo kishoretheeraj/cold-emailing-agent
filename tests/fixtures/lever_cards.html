@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Lever custom questions</title></head>
+<body>
+<!--
+  Lever's custom-question cards as the 2026-10-07 unitQ preview saw them: the question text sits in
+  .application-label (with a U+2731 required star), not in a <label for>, and the inputs are named
+  cards[<uuid>][fieldN]. Written for tests, not copied from any site.
+-->
+<form id="application-form">
+  <ul>
+    <li class="application-question">
+      <label><div class="application-label">Full name<span class="required">&#10033;</span></div>
+        <div class="application-field"><input type="text" name="name" required></div></label>
+    </li>
+  </ul>
+  <div class="custom-questions">
+    <ul>
+      <li class="application-question custom-question">
+        <div class="application-label full-width"><div class="text">Why do you want to work at unitQ?<span class="required">&#10033;</span></div></div>
+        <div class="application-field full-width"><textarea name="cards[86c9d984][field0]" required></textarea></div>
+      </li>
+      <li class="application-question custom-question">
+        <div class="application-label full-width"><div class="text">Are you legally authorized to work in the United States?<span class="required">&#10033;</span></div></div>
+        <div class="application-field full-width">
+          <ul data-qa="multiple-choice">
+            <li><label><input type="radio" name="cards[86c9d984][field1]" value="Yes" required><span class="application-answer-alternative">Yes</span></label></li>
+            <li><label><input type="radio" name="cards[86c9d984][field1]" value="No"><span class="application-answer-alternative">No</span></label></li>
+          </ul>
+        </div>
+      </li>
+      <li class="application-question custom-question">
+        <div class="application-label full-width"><div class="text">Which city are you based in?</div></div>
+        <div class="application-field full-width"><input type="text" name="cards[a419d865][field0]"></div>
+      </li>
+    </ul>
+  </div>
+</form>
+</body>
+</html>
