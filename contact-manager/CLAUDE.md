@@ -394,7 +394,12 @@ expected, not a bug.
   (never writes `contacts.message_id` — that column is agent-managed, first-touch only).
 - Updates `draft_history` with sent content. Inserts `email_messages` + `agent_events`.
 - Applies the stage-appropriate Gmail label to the sent message (best-effort, via `STAGE_TO_LABEL`
-  map that mirrors `agent.py::ACTION_LABEL`). Label application never blocks the response.
+  in `lib/cadence.ts`, which mirrors `agent.py::ACTION_LABEL`). Label application never blocks the response.
+- **Mirrors are tested against the Python source.** `src/lib/pythonMirrors.test.ts` parses
+  `config.py::FOLLOWUP_DAYS`, `agent.py::NEXT_STAGE`/`ACTION_LABEL`/`DRAFTED_TO_SENT` and the
+  `constants.py` stage lists as text and compares them to `CADENCE`, `STAGE_TRANSITIONS`,
+  `STAGE_TO_LABEL`, `QUEUE_STAGES` and the `constants.ts`/`types.ts` stage lists. Change both sides
+  together; a one-sided edit fails this test.
 - Idempotent: returns `{ already_sent: true }` if stage is already `*_sent`.
 - Status codes: 400 (missing id), 404 (contact not found), 409 (wrong stage),
   410 (no draft ID or draft deleted from Gmail), 401 (auth failure), 502 (Gmail error).

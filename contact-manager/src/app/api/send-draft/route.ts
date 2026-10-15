@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
 import { getGmailClient } from "@/lib/gmail-server";
-import { CADENCE, STAGE_TRANSITIONS } from "@/lib/cadence";
+import { CADENCE, STAGE_TO_LABEL, STAGE_TRANSITIONS } from "@/lib/cadence";
 import type { gmail_v1 } from "googleapis";
 import { isOperatorRequest } from "@/lib/operatorAuth";
 
@@ -10,18 +10,6 @@ import { isOperatorRequest } from "@/lib/operatorAuth";
 const SENT_STAGES = new Set(
   Object.values(STAGE_TRANSITIONS).map((t) => t.next)
 );
-
-// Mirror of agent.py::ACTION_LABEL, keyed by drafted stage.
-const STAGE_TO_LABEL: Record<string, string> = {
-  first_touch_drafted:      "Cold Outreach/First Touch",
-  followup1_drafted:        "Cold Outreach/Follow-up #1",
-  followup2_drafted:        "Cold Outreach/Follow-up #2",
-  breakup_drafted:          "Cold Outreach/Break-up",
-  applied_intro_drafted:    "Cold Outreach/Applied Intro",
-  applied_followup_drafted: "Cold Outreach/Applied Follow-up",
-  networking_drafted:          "Networking/Intro",
-  networking_followup_drafted: "Networking/Follow-up",
-};
 
 function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);

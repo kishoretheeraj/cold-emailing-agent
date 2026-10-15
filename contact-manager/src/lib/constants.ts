@@ -22,6 +22,17 @@ export const APPLIED_STAGES = [
   "closed",
 ] as const;
 
+export const NETWORKING_STAGES = [
+  "new",
+  "networking_drafted",
+  "networking_sent",
+  "networking_followup_drafted",
+  "networking_followup_sent",
+  "closed",
+] as const;
+
+export const REPLY_STAGES = ["reply_drafted", "reply_sent"] as const;
+
 // ── Reply status values ───────────────────────────────────────────────────────
 
 export const REPLY_STATUSES = [
@@ -41,7 +52,10 @@ export const TERMINAL_REPLY_STATUSES = [
 
 // ── Derived sets ──────────────────────────────────────────────────────────────
 
+// Mirrors constants.py::DRAFTED_STAGES (pythonMirrors.test.ts).
 export const DRAFTED_STAGES = [
   ...OUTREACH_STAGES,
   ...APPLIED_STAGES,
+  ...NETWORKING_STAGES,
+  ...REPLY_STAGES,
 ].filter((s) => s.includes("drafted"));

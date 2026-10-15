@@ -63,6 +63,6 @@ networking drafts appear in `/queue` alongside outreach/applied drafts — no se
 page. `CADENCE.NETWORKING_TO_FOLLOWUP_DAYS = 6` is the only cadence value (the
 follow-up is terminal — `networking_followup_drafted`'s `cadenceKey` is `null`, same
 shape as `applied_followup_drafted`, so no further follow-up is ever scheduled).
-`STAGE_TO_LABEL` in `src/app/api/send-draft/route.ts` applies `Networking/Intro` and
+`STAGE_TO_LABEL` in `src/lib/cadence.ts` (used by send-draft) applies `Networking/Intro` and
 `Networking/Follow-up` Gmail labels for these stages (a separate top-level Gmail label
 from `Cold Outreach/...`).
