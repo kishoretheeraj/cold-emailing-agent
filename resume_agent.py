@@ -256,12 +256,12 @@ generic statement. Around 250-290 words. No em dashes. End with one concrete,
 scoped 90-day item."""
 
 
-def _resolve_bullets(bullet_ids, metrics_by_id):
+def _resolve_bullets(bullet_ids, metrics_by_id, max_bullets=None):
     resolved = [metrics_by_id[bid] for bid in bullet_ids if bid in metrics_by_id]
-    return resolved[:config.RESUME_MAX_BULLETS_PER_ENTRY]
+    return resolved[:max_bullets or config.RESUME_MAX_BULLETS_PER_ENTRY]
 
 
-def _resolve_master(master, metrics, strategy):
+def _resolve_master(master, metrics, strategy, max_bullets=None):
     """Resolve master.json's bullet_ids (referencing metrics.json entries) into literal bullet
     text, which is the shape resume_build.build_docx expects. All roles and leadership bullets
     are included, capped at config.RESUME_MAX_BULLETS_PER_ENTRY each (real historical resumes show
@@ -270,7 +270,8 @@ def _resolve_master(master, metrics, strategy):
     raise ValueError if a name isn't a real master.json project key (the LLM strategy step is
     prompted with the real project list, but this is the enforcement backstop -- a live run
     showed it can still invent fictional project names/descriptions otherwise).
-    Education is already a list of literal entries in master.json -- no bullet_ids to resolve."""
+    Education is already a list of literal entries in master.json -- no bullet_ids to resolve.
+    max_bullets lowers the per-entry cap (build's overflow retry drops the last curated bullet)."""
     metrics_by_id = {m["id"]: m["text"] for m in metrics}
     resolved = {
         "name": master.get("name", ""),
@@ -284,7 +285,7 @@ def _resolve_master(master, metrics, strategy):
         resolved["roles"].append({
             "title": role["title"], "company": role["company"], "period": role["period"],
             "descriptor": role.get("descriptor"), "location": role.get("location"),
-            "bullets": _resolve_bullets(role.get("bullet_ids", []), metrics_by_id),
+            "bullets": _resolve_bullets(role.get("bullet_ids", []), metrics_by_id, max_bullets),
         })
     for name in strategy.get("projects_included", []):
         project = master.get("projects", {}).get(name)
@@ -296,10 +297,10 @@ def _resolve_master(master, metrics, strategy):
             )
         resolved["projects"][name] = {
             "descriptor": project.get("descriptor"), "period": project.get("period"),
-            "bullets": _resolve_bullets(project.get("bullet_ids", []), metrics_by_id),
+            "bullets": _resolve_bullets(project.get("bullet_ids", []), metrics_by_id, max_bullets),
         }
     leadership = master.get("leadership") or {}
-    resolved["leadership_bullets"] = _resolve_bullets(leadership.get("bullet_ids", []), metrics_by_id)
+    resolved["leadership_bullets"] = _resolve_bullets(leadership.get("bullet_ids", []), metrics_by_id, max_bullets)
     return resolved
 
 
@@ -388,6 +389,12 @@ def build(application_id):
     try:
         pdf_path = None
         for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
+            if attempt:
+                # The formatting ladder is deterministic, so a retry must change content: drop the last
+                # curated bullet of every entry (a subset, so the content lint above still holds).
+                master = _resolve_master(master_raw, metrics, strategy,
+                                         max_bullets=max(1, config.RESUME_MAX_BULLETS_PER_ENTRY - attempt))
+                resume_text = _resume_content_text(master)
             try:
                 pdf_path, preset_used = resume_build.fit_to_one_page(
                     strategy, master, os.path.join(workdir, "resume.docx"), workdir,
@@ -396,7 +403,7 @@ def build(application_id):
             except resume_build.StillOverflowError:
                 if attempt >= config.RESUME_MAX_BUILD_RETRIES:
                     raise
-                log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying once")
+                log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying with fewer bullets")
 
         resume_scrub.scrub_pdf_metadata(
             pdf_path, title=f"{job.get('company')} - Resume", keywords=job.get("role", ""),

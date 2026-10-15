@@ -380,6 +380,42 @@ def test_build_removes_its_workdir_when_it_raises(mocker):
     assert not os.path.exists(seen["dir"])
 
 
+def test_build_overflow_retry_drops_a_bullet_per_entry_instead_of_rebuilding_the_same_content(mocker):
+    # The fitting ladder is deterministic: retrying it with the same content can only overflow again.
+    master = dict(_CLEAN_MASTER, roles=[dict(_CLEAN_MASTER["roles"][0], bullet_ids=["m1", "m2", "m3"])])
+    mocker.patch.object(resume_agent, "_load_data", side_effect=lambda name: {
+        "master.json": master, "metrics.json": _CLEAN_METRICS, "jargon.json": {},
+        "skills.json": _CLEAN_SKILLS,
+    }[name])
+    seen = []
+
+    def fit(strategy, resolved, docx_path, out_dir):
+        seen.append([role["bullets"] for role in resolved["roles"]])
+        if len(seen) == 1:
+            raise resume_agent.resume_build.StillOverflowError("too long")
+        return ("/tmp/r.pdf", "standard")
+
+    mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
+    mocker.patch.object(resume_agent, "_call_claude", return_value=("A clean cover letter body.", _USAGE))
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
+    mocker.patch("resume_agent.resume_build.fit_to_one_page", side_effect=fit)
+    mocker.patch("resume_agent.resume_build.convert_to_pdf", return_value="/tmp/cl.pdf")
+    mocker.patch("resume_agent.resume_scrub.scrub_pdf_metadata")
+    mocker.patch("resume_agent.resume_scrub.read_pdf_metadata_text", return_value="Microsoft Word")
+    mocker.patch("resume_agent.resume_scrub.verify_no_fingerprints", return_value=[])
+    _mock_pdf_checks(mocker)
+    mocker.patch("resume_agent.resume_build.new_document")
+    mocker.patch("builtins.open", mocker.mock_open(read_data=b"pdfbytes"))
+    mocker.patch.object(db, "upload_resume_file", side_effect=[("a", "d1"), ("b", "d2")])
+    mocker.patch.object(db, "set_resume_files", return_value={"id": 1})
+
+    resume_agent.build(1)
+
+    assert seen[0] == [["Shipped a roadmap.", "Protected 500M+ users.", "Narrowed 7 vendors to 2."]]
+    assert seen[1] == [["Shipped a roadmap.", "Protected 500M+ users."]]
+
+
 def test_build_raises_on_cover_letter_lint_violation_after_one_retry(mocker):
     mocker.patch.object(db, "get_job_application", return_value=_JOB_WITH_STRATEGY)
     _mock_clean_data(mocker)

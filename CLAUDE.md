@@ -1056,10 +1056,11 @@ posture (built for unattended background runs), this pipeline is manual and inte
 failure should surface immediately.
 
 `resume_build.py`'s fitting ladder (`_FIT_RUNGS`) cumulatively tightens header/bullet/entry-line
-spacing, margins, and body font size (10pt down to 9pt) across 5 rungs; the content-editing rungs
-(orphan-word trims, section folding, bullet drops) are handled by `resume_agent.py --build`'s
-one-retry regeneration loop instead (same pattern as `preflight.py`'s regenerate-with-error-list
-retry), since those are content decisions, not formatting. The fitting ladder starts at
+spacing, margins, and body font size (10pt down to 9pt) across 5 rungs; content edits are
+`resume_agent.py --build`'s one overflow retry, which re-resolves the master with one fewer bullet
+per entry (the last curated one) before walking the ladder again -- the ladder is deterministic, so
+a retry with unchanged content can only overflow again (it did until 2026-10-15). Orphan-word trims
+and section folding are not implemented. The fitting ladder starts at
 `build_docx`'s own `"standard"` margin preset, not the looser `"comfortable"` preset at index 0 of
 `_MARGIN_LADDER` -- it only ever tightens from the normal baseline. Every paragraph is built via
 `_new_paragraph()`, which zeroes python-docx's default template spacing (1.15x line height + 10pt
