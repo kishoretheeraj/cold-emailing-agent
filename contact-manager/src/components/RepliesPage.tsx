@@ -92,6 +92,67 @@ function hasDraft(
   );
 }
 
+// ── Data loading ───────────────────────────────────────────────────────────────
+
+async function loadReplyContacts(): Promise<Contact[]> {
+  const { data: contactData } = await supabase
+    .from("contacts")
+    .select("*")
+    .not("classifier_status", "is", null)
+    .not("reply_status", "in", "(interested,call_scheduled,dead)")
+    .is("deleted_at", null);
+
+  const fetched = (contactData as Contact[]) ?? [];
+
+  // Sort client-side: positive_reply first, soft_yes second, then created_at DESC
+  fetched.sort((a, b) => {
+    const pa = SORT_PRIORITY[a.classifier_status ?? ""] ?? 2;
+    const pb = SORT_PRIORITY[b.classifier_status ?? ""] ?? 2;
+    if (pa !== pb) return pa - pb;
+    return (b.created_at ?? "") > (a.created_at ?? "") ? 1 : -1;
+  });
+  return fetched;
+}
+
+async function loadReplyDetails(ids: string[]): Promise<{
+  drafts: Record<string, DraftHistory>;
+  lastIncoming: Record<string, EmailMessage>;
+}> {
+  const [{ data: draftData }, { data: msgData }] = await Promise.all([
+    supabase
+      .from("draft_history")
+      .select("*")
+      .in("contact_id", ids)
+      .eq("stage", "reply_drafted")
+      .is("sent_body", null)
+      .order("drafted_at", { ascending: false }),
+    supabase
+      .from("email_messages")
+      .select("*")
+      .in("contact_id", ids)
+      .eq("direction", "incoming")
+      .order("sent_at", { ascending: false }),
+  ]);
+
+  // Keep latest reply draft per contact
+  const drafts: Record<string, DraftHistory> = {};
+  for (const d of (draftData as DraftHistory[]) ?? []) {
+    if (!drafts[String(d.contact_id)]) {
+      drafts[String(d.contact_id)] = d;
+    }
+  }
+
+  // Keep latest incoming message per contact for left-list snippet
+  const lastIncoming: Record<string, EmailMessage> = {};
+  for (const m of (msgData as EmailMessage[]) ?? []) {
+    const cid = String(m.contact_id);
+    if (!lastIncoming[cid]) {
+      lastIncoming[cid] = m;
+    }
+  }
+  return { drafts, lastIncoming };
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function RepliesPage() {
@@ -119,75 +180,46 @@ export function RepliesPage() {
     }
   });
 
-  // navigating away cancels pending actions (deliberate trade-off)
+  // pendingActions holds the timers (navigating away cancels pending actions, a deliberate
+  // trade-off); pendingIds hides those rows, even if a refresh brings them back, until the
+  // outcome is known.
   const pendingActions = useRef<Map<string, PendingEntry>>(new Map());
+  const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
+  const hideRow = (id: string) => setPendingIds((prev) => new Set(prev).add(id));
+  const showRow = (id: string) =>
+    setPendingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  // Puts a row back where it was, unless a refresh already brought it back.
+  const restoreRow = (contact: Contact, index: number) =>
+    setContacts((prev) => {
+      if (prev.some((c) => c.id === contact.id)) return prev;
+      const next = [...prev];
+      next.splice(index, 0, contact);
+      return next;
+    });
   const focusedContactId = useRef<string | null>(null);
 
   // ── Data fetch ───────────────────────────────────────────────────────────────
 
-  const fetchData = useCallback(async () => {
-    const { data: contactData } = await supabase
-      .from("contacts")
-      .select("*")
-      .not("classifier_status", "is", null)
-      .not("reply_status", "in", "(interested,call_scheduled,dead)")
-      .is("deleted_at", null);
-
-    const fetched = (contactData as Contact[]) ?? [];
-
-    // Sort client-side: positive_reply first, soft_yes second, then created_at DESC
-    fetched.sort((a, b) => {
-      const pa = SORT_PRIORITY[a.classifier_status ?? ""] ?? 2;
-      const pb = SORT_PRIORITY[b.classifier_status ?? ""] ?? 2;
-      if (pa !== pb) return pa - pb;
-      return (b.created_at ?? "") > (a.created_at ?? "") ? 1 : -1;
-    });
-
-    setContacts(fetched);
-
-    if (fetched.length === 0) {
-      setDraftsByContactId({});
-      setLastIncomingByContactId({});
-      return;
-    }
-
-    const ids = fetched.map((c) => c.id);
-
-    const [{ data: draftData }, { data: msgData }] = await Promise.all([
-      supabase
-        .from("draft_history")
-        .select("*")
-        .in("contact_id", ids)
-        .eq("stage", "reply_drafted")
-        .is("sent_body", null)
-        .order("drafted_at", { ascending: false }),
-      supabase
-        .from("email_messages")
-        .select("*")
-        .in("contact_id", ids)
-        .eq("direction", "incoming")
-        .order("sent_at", { ascending: false }),
-    ]);
-
-    // Keep latest reply draft per contact
-    const drafts: Record<string, DraftHistory> = {};
-    for (const d of (draftData as DraftHistory[]) ?? []) {
-      if (!drafts[String(d.contact_id)]) {
-        drafts[String(d.contact_id)] = d;
-      }
-    }
-    setDraftsByContactId(drafts);
-
-    // Keep latest incoming message per contact for left-list snippet
-    const lastIncoming: Record<string, EmailMessage> = {};
-    for (const m of (msgData as EmailMessage[]) ?? []) {
-      const cid = String(m.contact_id);
-      if (!lastIncoming[cid]) {
-        lastIncoming[cid] = m;
-      }
-    }
-    setLastIncomingByContactId(lastIncoming);
-  }, []);
+  const fetchData = useCallback(
+    () =>
+      loadReplyContacts().then((fetched) => {
+        setContacts(fetched);
+        if (fetched.length === 0) {
+          setDraftsByContactId({});
+          setLastIncomingByContactId({});
+          return;
+        }
+        return loadReplyDetails(fetched.map((c) => c.id)).then(({ drafts, lastIncoming }) => {
+          setDraftsByContactId(drafts);
+          setLastIncomingByContactId(lastIncoming);
+        });
+      }),
+    []
+  );
 
   useEffect(() => {
     fetchData();
@@ -211,6 +243,8 @@ export function RepliesPage() {
     }
   }, [sentUnrecordedIds]);
 
+  const visible = contacts.filter((c) => !pendingIds.has(c.id));
+
   // Restore focus by contact_id after refresh
   useEffect(() => {
     if (contacts.length === 0) return;
@@ -226,8 +260,6 @@ export function RepliesPage() {
   }, [contacts.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track focused contact_id
-  const visible = contacts.filter((c) => !pendingActions.current.has(c.id));
-
   useEffect(() => {
     focusedContactId.current = visible[focusedIndex]?.id ?? null;
   }, [focusedIndex, visible]);
@@ -249,11 +281,8 @@ export function RepliesPage() {
     toast.dismiss(entry.toastId);
     pendingActions.current.delete(contactId);
     toast.info("Canceled");
-    setContacts((prev) => {
-      const next = [...prev];
-      next.splice(originalIndex, 0, entry.contact);
-      return next;
-    });
+    restoreRow(entry.contact, originalIndex);
+    showRow(contactId);
     setFocusedIndex(originalIndex);
   }, []);
 
@@ -294,16 +323,13 @@ export function RepliesPage() {
           } else {
             toast.success(`Sent to ${contact.name ?? "contact"}`);
           }
-          fetchData();
+          fetchData().finally(() => showRow(contact.id));
         } catch (err) {
           toast.error(
             `Send failed: ${err instanceof Error ? err.message : "Unknown error"}`
           );
-          setContacts((prev) => {
-            const next = [...prev];
-            next.splice(idx, 0, contact);
-            return next;
-          });
+          restoreRow(contact, idx);
+          showRow(contact.id);
         }
       }, 5000);
 
@@ -316,6 +342,7 @@ export function RepliesPage() {
       });
 
       setContacts((prev) => prev.filter((c) => c.id !== contact.id));
+      hideRow(contact.id);
     },
     [visible.length, fetchData, onUndo] // eslint-disable-line react-hooks/exhaustive-deps
   );
@@ -353,14 +380,11 @@ export function RepliesPage() {
             .from("contacts")
             .update({ reply_status: value })
             .eq("id", contact.id);
-          fetchData();
+          fetchData().finally(() => showRow(contact.id));
         } catch {
           toast.error(`Failed to mark ${label}`);
-          setContacts((prev) => {
-            const next = [...prev];
-            next.splice(idx, 0, contact);
-            return next;
-          });
+          restoreRow(contact, idx);
+          showRow(contact.id);
         }
       }, 5000);
 
@@ -373,6 +397,7 @@ export function RepliesPage() {
       });
 
       setContacts((prev) => prev.filter((c) => c.id !== contact.id));
+      hideRow(contact.id);
     },
     [visible.length, fetchData, onUndo] // eslint-disable-line react-hooks/exhaustive-deps
   );

@@ -456,6 +456,47 @@ describe("RepliesPage — 5-second undo (Approve and Send)", () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("a refresh during an in-flight send neither shows nor duplicates the row", async () => {
+    vi.useFakeTimers();
+    let failSend: (r: Response) => void = () => {};
+    vi.spyOn(global, "fetch").mockReturnValue(
+      new Promise<Response>((resolve) => {
+        failSend = resolve;
+      })
+    );
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    // Send fires at 5s; the 30s refresh returns Grace again while the request is in flight.
+    await act(async () => {
+      vi.advanceTimersByTime(30_001);
+    });
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(screen.queryAllByText("Grace Lee")).toHaveLength(0);
+
+    await act(async () => {
+      failSend(new Response(JSON.stringify({ error: "Gmail API error" }), { status: 502 }));
+    });
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(toastMock.error).toHaveBeenCalledWith("Send failed: Gmail API error");
+    const graceRows = screen
+      .getAllByRole("listitem")
+      .filter((li) => li.textContent?.includes("Grace Lee"));
+    expect(graceRows).toHaveLength(1);
+  });
+
   it("e key does nothing for hard_no contact without draft", async () => {
     render(<RepliesPage />);
     await waitFor(() => screen.getByRole("heading", { name: "Grace Lee" }));
