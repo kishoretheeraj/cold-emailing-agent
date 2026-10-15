@@ -478,7 +478,8 @@ def run(fiscal_years_back=DEFAULT_FISCAL_YEARS):
     rows = build_rows_for_upsert(accumulator, ingested_fys)
     batch_size = 500
     for i in range(0, len(rows), batch_size):
-        db.upsert_employer_h1b_stats(rows[i:i + batch_size])
+        if not db.upsert_employer_h1b_stats(rows[i:i + batch_size]):
+            errors += 1
 
     wage_rows = build_wage_rows(wage_accumulator, ingested_fys)
     if not wage_rows:
