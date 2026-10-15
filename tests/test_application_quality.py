@@ -116,6 +116,24 @@ def test_cover_letter_problems(lines, company, role, problem):
     assert any(problem in p for p in aq.check_cover_letter(text, company, role)), problem
 
 
+def test_naming_language_model_work_is_not_ai_assistant_wording():
+    # An AI product manager's letter legitimately talks about language models.
+    lines = cover_lines() + ["I shipped large language model features for underwriting teams."]
+    text, _ = aq.pdf_text(make_pdf(lines))
+    assert aq.check_cover_letter(text, "Northwind", "Product Manager") == []
+
+
+@pytest.mark.parametrize("tell", [
+    "As a language model, I cannot share opinions.",
+    "As a large language model I do not have a resume.",
+    "I am a language model trained by a lab.",
+])
+def test_language_model_self_reference_is_still_ai_assistant_wording(tell):
+    lines = cover_lines() + [tell]
+    text, _ = aq.pdf_text(make_pdf(lines))
+    assert any("AI assistant wording" in p for p in aq.check_cover_letter(text, "Northwind", "Product Manager"))
+
+
 @pytest.mark.parametrize("company,expected", [
     ("Northwind, Inc.", "northwind"), ("Acme Corporation", "acme"), ("The Home Depot", "home depot"),
     ("JPMorgan Chase & Co.", "jpmorgan chase"),
