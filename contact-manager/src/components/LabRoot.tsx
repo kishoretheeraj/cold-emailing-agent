@@ -80,16 +80,19 @@ export function LabRoot() {
 
   // ── Auto-select tab when contact or mode changes ──────────────────────────
 
-  useEffect(() => {
-    if (!selectedContact) return;
-    if (mode === "critic") {
-      setActiveTab("critic_prompt");
-      return;
+  // Adjusted during render (not in an effect) whenever the contact id or the mode changes.
+  const tabKey = selectedContact ? `${selectedContact.id}|${mode}` : null;
+  const [seenTabKey, setSeenTabKey] = useState(tabKey);
+  if (tabKey !== seenTabKey) {
+    setSeenTabKey(tabKey);
+    if (selectedContact) {
+      setActiveTab(
+        mode === "critic"
+          ? "critic_prompt"
+          : getActiveTabForContact(selectedContact, deriveAction(selectedContact))
+      );
     }
-    const action = deriveAction(selectedContact);
-    const recommended = getActiveTabForContact(selectedContact, action);
-    setActiveTab(recommended);
-  }, [selectedContact?.id, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
   // ── Contact selection ─────────────────────────────────────────────────────
 
