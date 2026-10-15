@@ -425,6 +425,29 @@ expected, not a bug.
 - Reserved for future undo feature. Calls `messages.trash`. Not called from UI in v1.
 - Status codes: 400 (missing id), 401 (auth), 502 (Gmail error).
 
+## Threat model
+
+Built for **one operator** (Kishore) on a personal deployment. What protects what:
+
+- **The anon key is public.** `NEXT_PUBLIC_SUPABASE_ANON_KEY` ships in the browser bundle, so treat
+  it as known to anyone who has loaded the app.
+- **`contacts` has RLS off and several anon writers** (this app, the warm-paths routes, the Python
+  agent). Anyone holding the anon key can read and write contact PII and stages directly through
+  PostgREST. The same holds for most other tables the browser reads.
+- **The operator login gates this app, not the database.** `proxy.ts` plus `isOperatorRequest`
+  in every mutating route stop requests to this app's pages and `/api/*` without a session. They
+  do nothing against a direct PostgREST call made with the anon key.
+- **What is protected beyond the anon key:** `job_applications` lifecycle columns
+  (`automation_status`, leases, `approved_at`, the revision hashes) have no anon/authenticated
+  UPDATE or INSERT grant and change only through `SECURITY DEFINER` RPCs, and an approval only counts when
+  it carries an HMAC from `APPROVAL_SIGNING_KEY` (server-only), which the submit worker verifies.
+  Gmail, Anthropic and GitHub credentials are server-only, so sending, spending and dispatching
+  need the operator session.
+- **To close the contacts gap**, RLS on `contacts` would need every read and write moved off the
+  browser client into server routes using the service role (and the Python agent's anon writes
+  moved too). That is a deliberate redesign, not a policy toggle: this file's "no service-role key
+  path" rule would change with it.
+
 ## Supabase patterns
 
 - All client-side reads/writes go through the singleton exported from `src/lib/supabase.ts`.
