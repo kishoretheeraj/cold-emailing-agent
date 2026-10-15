@@ -62,12 +62,13 @@ describe("UndoManager", () => {
     const commit = vi.fn();
     const onTick = vi.fn();
     const action = manager.schedule(base, commit, onTick);
+    // Ticks fire once a second (4, 3, 2, 1), so two seconds in there have been two.
     vi.advanceTimersByTime(2000);
-    expect(onTick).toHaveBeenCalledTimes(1);
+    expect(onTick.mock.calls.map((c) => c[0])).toEqual([4, 3]);
     manager.cancel(action);
     vi.advanceTimersByTime(10_000);
     expect(commit).not.toHaveBeenCalled();
-    expect(onTick).toHaveBeenCalledTimes(1);
+    expect(onTick).toHaveBeenCalledTimes(2);
   });
 
   it("cancel on an already committed action is a no-op", () => {
