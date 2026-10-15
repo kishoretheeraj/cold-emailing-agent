@@ -147,7 +147,10 @@ _FORM_INVENTORY_JS = r"""() => {
   const comboboxFilled = (el) => {
     // The react-select control holds the chosen value. On Greenhouse the nearest "container" is the
     // input's own select__input-container, which never does (live dry run 2026-10-14).
-    const control = el.closest('[class*="control"]');
+    const parent = el.closest('[class*="control"]');
+    // A generic form-control input/wrapper is not a react-select control.
+    const control = parent && (el.id.startsWith('react-select-') || parent.querySelector(
+      '[class*="value-container"], [class*="ValueContainer"]')) ? parent : null;
     const box = control || el.closest('[class*="container"]');
     const chosen = !!(box && box.querySelector(
       '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
@@ -369,7 +372,10 @@ _COMBOBOX_OPTIONS = "[role='option'], [id*='-option-']"
 _COMBOBOX_FILLED_JS = """(el) => {
   // The react-select control holds the chosen value. On Greenhouse the nearest "container" is the
   // input's own select__input-container, which never does (live dry run 2026-10-14).
-  const control = el.closest('[class*="control"]');
+  const parent = el.closest('[class*="control"]');
+  // A generic form-control input/wrapper is not a react-select control.
+  const control = parent && (el.id.startsWith('react-select-') || parent.querySelector(
+    '[class*="value-container"], [class*="ValueContainer"]')) ? parent : null;
   const box = control || el.closest('[class*="container"]');
   const chosen = !!(box && box.querySelector(
     '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
