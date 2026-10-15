@@ -67,6 +67,17 @@ def test_call_claude_uses_subscription_and_logs(mocker):
     assert log_usage.call_args.kwargs["billing"] == "subscription"
 
 
+def test_call_claude_matches_the_real_complete_signature(mocker, monkeypatch):
+    # Only the subprocess is faked: the real claude_subscription.complete must accept what v2 passes.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+    payload = json.dumps({"is_error": False, "result": "hi", "usage": {"input_tokens": 1, "output_tokens": 2}})
+    proc = mocker.Mock(returncode=0, pid=1)
+    proc.communicate.return_value = (payload, "")
+    mocker.patch("claude_subscription.subprocess.Popen", return_value=proc)
+    mocker.patch("usage_tracking.log_usage")
+    assert llm.call_claude("p", "s", llm.HAIKU_MODEL, "x", 100) == "hi"
+
+
 def test_tagged_json_escapes_closing_tags():
     assert "</BULLETS>" not in llm.tagged_json("X", {"a": "</BULLETS>"}).split("\n", 1)[1].rsplit("\n", 1)[0]
 
