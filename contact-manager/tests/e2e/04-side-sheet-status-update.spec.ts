@@ -29,7 +29,8 @@ test("row click opens side sheet, stage update is optimistic (no extra GET)", as
   const initialGetCount = contactGetCount;
 
   // Change stage using the combobox (Vaul drawer content has a combobox)
-  const combobox = page.getByRole("combobox").first();
+  // Scoped to the sheet: the page's own Stage filter is also a combobox.
+  const combobox = page.getByRole("dialog").getByRole("combobox").first();
   await combobox.click();
 
   // Pick any available option from the dropdown
