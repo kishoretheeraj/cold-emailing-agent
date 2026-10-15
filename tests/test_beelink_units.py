@@ -393,8 +393,12 @@ def test_only_the_lifecycle_units_load_the_service_role_key():
     # service_role-only lifecycle RPCs (migration 20261015000000), never into base.env.
     for path in _unit_paths():
         name = os.path.basename(path)
-        loads = "EnvironmentFile=/etc/job-agent/worker.env" in _directives(path)
+        # Optional ("-"): a box provisioned before worker.env existed must still start these
+        # units after a plain git pull; without the key they use anon and warn once.
+        loads = "EnvironmentFile=-/etc/job-agent/worker.env" in _directives(path)
         assert loads == (name in _WORKER_ENV_UNITS), name
+        if name not in _WORKER_ENV_UNITS:
+            assert "worker.env" not in _read(path), name
     assert "SUPABASE_SERVICE_ROLE_KEY" not in _read(_ENV_EXAMPLE)
 
 

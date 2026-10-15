@@ -168,7 +168,7 @@ From the Mac, confirm passwords are refused: `ssh -o PubkeyAuthentication=no kis
 
 ### Phase 2c-bis: worker RPCs to service_role (PR fix/worker-rpcs-service-role)
 
-- [ ] Paste the service_role key into `/etc/job-agent/worker.env` (provisioning creates it empty), deploy, then dryrun + push migration `20261015000000`.
+- [ ] Paste the service_role key into `/etc/job-agent/worker.env` (re-running provisioning creates it empty; a box provisioned earlier needs `sudo install -m 0600 /dev/null /etc/job-agent/worker.env` first), deploy, then dryrun + push migration `20261015000000`.
 
 ### Phase 2d: fifty a day (sourcing and scoring)
 

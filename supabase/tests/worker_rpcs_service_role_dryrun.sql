@@ -49,6 +49,31 @@ BEGIN
   END LOOP;
 END $$;
 
+-- Every overload in the live database, not only the signatures the repo defines: an overload
+-- created elsewhere (Supabase grants new functions to anon directly) would stay callable.
+DO $$
+DECLARE
+  r RECORD;
+  bad TEXT := '';
+BEGIN
+  FOR r IN
+    SELECT p.oid::regprocedure AS sig
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = ANY (ARRAY['claim_application', 'heartbeat_application', 'renew_submission_lease',
+        'complete_preview', 'release_application', 'record_submission', 'mark_application_unsupported',
+        'recover_stale_leases', 'record_receipt_evidence', 'request_takeover', 'clear_takeover',
+        'log_application_run'])
+  LOOP
+    IF has_function_privilege('anon', r.sig, 'EXECUTE') OR has_function_privilege('authenticated', r.sig, 'EXECUTE') THEN
+      bad := bad || ' ' || r.sig::text;
+    END IF;
+  END LOOP;
+  IF bad <> '' THEN
+    RAISE EXCEPTION 'DRYRUN FAIL: overloads still executable by anon/authenticated:%', bad;
+  END IF;
+END $$;
+
 -- ── Behaviour: the forgeries from the audit are refused for anon ───────────────
 
 DO $$

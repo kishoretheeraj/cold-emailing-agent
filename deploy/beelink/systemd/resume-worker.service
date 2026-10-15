@@ -13,7 +13,7 @@ User=jobagent
 Group=jobagent
 WorkingDirectory=/opt/job-agent
 EnvironmentFile=/etc/job-agent/base.env
-EnvironmentFile=/etc/job-agent/worker.env
+EnvironmentFile=-/etc/job-agent/worker.env
 EnvironmentFile=/etc/job-agent/claude.env
 Environment=HOME=/var/lib/job-agent
 Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
