@@ -90,7 +90,7 @@ as_agent git -C "$APP" -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$ETC/all
 as_agent git -C "$APP" -c advice.detachedHead=false checkout -q "refs/tags/$TAG"
 
 # ── Own venv ───────────────────────────────────────────────────────────────────
-# requirements-beelink.txt is requirements.txt (fastapi, httpx, pydantic, reportlab, ...) plus Playwright
+# requirements-beelink.txt is requirements.txt + requirements-247.txt (fastapi, httpx, pydantic, pyotp) plus Playwright
 # and CPU torch for job_pick; uvicorn is the one 24/7 extra it does not carry.
 log "venv"
 [ -x "$APP/.venv/bin/python" ] || as_agent python3 -m venv "$APP/.venv"

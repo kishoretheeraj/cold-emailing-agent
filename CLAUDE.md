@@ -1039,13 +1039,24 @@ Coexists with the old Beelink stack; see deploy/beelink/RUNBOOK-24-7.md. Code `/
 on `apply-submit.service`). `config` secrets resolve on first access (`config.require_secrets()` is the
 ExecStartPre check; `from config import SECRET` still reads at the importing module's import).
 `job_contract.canonical_job` normalizes `{absolute_url, content}` and `{url, description}` job shapes at
-consumer boundaries (`job_sourcing.save`, `ats_api.resolve`). `apply_worker._prepare_documents`
-(`APPLY_RESUME_V2=1`) tailors via `resume/v2` from the Greenhouse/Lever API posting and uploads through
-`resume/v2/delivery.py`; `emit_run_digest` is a deliberate `NotImplementedError`. Dashboard approve/reject
+consumer boundaries (`job_sourcing.save`, `ats_api.resolve`). `resume/v2` and `cover_letter/` are
+not on main (they stay on `overnight-247-restart`); `APPLY_RESUME_V2` is unset in every unit
+(`test_no_unit_turns_on_resume_v2`), so `apply_worker` uses `resume_agent` documents and a live
+`apply_pipeline` run refuses its static resume unless `APPLY_ALLOW_STATIC_RESUME=1`; `emit_run_digest` is a deliberate `NotImplementedError`. Dashboard approve/reject
 write `application_runs` rows (adapter `dashboard`) first and answer 503 on failure; an approval is intent
 only, the signed `approve_application` RPC is still the gate. `resume_agent.drain()` takes the same `preparing`
 lease as `apply_worker`'s v2 document pass (skips held rows); the dashboard queue is keyset-paginated and
 reconciled on every refresh; `provision-jobagent24.sh` verifies each stop and restarts timers only after the api is healthy.
+
+**Pipeline mirror and replies (integration, 2026-10-15).** `pipeline_*` tables (migration `20261014000000`, the only
+pipeline schema; `test_every_migration_version_is_unique`) are a read mirror the Beelink fills through
+`pipeline_upsert` (applies a row only when its `version` is higher). `reply_repo.record_reply` queues the reply and
+every status event it writes inside its own transaction (a failed enqueue rolls the reply back and raises);
+`backfill_results.py` queues older ones. `application_id` on replies and status events is `job_applications.id`,
+not `pipeline_jobs.id` (the 24/7 queue's own ids). The dashboard links an unmatched reply only through
+`pipeline_link_reply(reply id, application id)` (service_role, one transaction, version + 1 so a re-send cannot undo
+it, event id derived from the pair); the Beelink's SQLite never learns of a dashboard link. Functional check:
+`supabase/tests/pipeline_sync_dryrun.sql`. `?view=queue` also returns `preparing`/`failed_*` for the review inbox.
 
 **apply_pipeline.py: one browser context per job (2026-10-13).** It launches its own Chrome (no CDP attach,
 no debugging port, no stealth flags) and `JobScope.attach` gives each job `new_context(service_workers="block")`
