@@ -1127,6 +1127,16 @@ retry) -- read-then-write, not atomic, which is fine for this manual single-user
 `docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md`.
 The humanizer lint pass and PDF metadata scrub are existing document-cleanup components.
 
+**Resume v2 restoration (2026-10-15).** `resume/v2/` and `cover_letter/`, including their
+watermark shims, are restored unchanged from `overnight-247-restart` (`c8ea3d3`). The full
+asset entry point is `resume.v2.build.build_assets`; it validates again after text rewriting,
+enforces a build deadline, and publishes a hash manifest. Its watermark commands must be
+configured through `RESUME_DEWATERMARK_CMD` and `RESUME_PARAPHRASE_CMD`. The standalone
+`tailor_v2.tailor_resume` entry point is the older content-to-PDF path without that stage.
+`APPLY_COVER_LETTER=0` disables letter generation; `RESUME_V2_TOTAL_TIMEOUT_S` bounds asset
+builds (60–360 seconds). Importing these modules does not enable a worker or change deployed
+services; the 24/7 callers and service integration are maintained separately on `integrate/247`.
+
 **Subscription transport (2026-10-04).** `resume_agent._call_claude` can run on the operator's
 Claude subscription via `claude_subscription.complete()` (`claude -p`), selected by
 `config.RESUME_CLAUDE_BACKEND` (read from the `RESUME_CLAUDE_BACKEND` env var, default `"api"`;
