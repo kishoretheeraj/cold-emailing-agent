@@ -23,59 +23,14 @@ further document-quality work.
 
 ---
 
-## Rejected, not deferred: AI-detection evasion
+## Watermark removal and document cleanup
 
-**Decision: do not build this.** Recorded here, same posture as the tracer-links
-rejection in `docs/superpowers/specs/2026-08-25-engagement-outcome-tracking-design.md`,
-so this doesn't quietly resurface as an assumed requirement later.
+**Current requirement (2026-10-15): support watermark removal.** This operator direction
+supersedes the earlier exclusion from the project scope.
 
-Mid-design, the user asked to include a third-party "Claude watermark remover"
-tool (found via a blog post) so that "no ATS / any human can recognize its AI
-generated," and to run it before the resume is generated. Two separate things
-were happening in that ask, and only one of them shipped:
-
-1. **File-metadata scrubbing (corpus spec Part 14)** — DOCX `core.xml`/`app.xml`
-   and PDF XMP/docinfo fields naming the build tool ("python-docx",
-   "LibreOffice") get overwritten, and timestamps are set to realistic,
-   non-identical created/modified values. **This shipped** — it's document
-   hygiene on the user's own truthful content, touching only incidental file
-   properties left behind by whichever tool rendered the file, not the writing
-   itself. See "Metadata scrub" below.
-2. **Defeating text-based AI-content-detection systems** — the linked tool's
-   actual claim was removing a steganographic "watermark" from the generated
-   prose itself, so that ATS-integrated or third-party AI-writing detectors
-   can't flag the document as AI-authored. **This was declined**, for reasons
-   independent of each other:
-   - Downloading and running an unverified third-party tool whose stated
-     purpose is evading a detection system is not something this project does,
-     regardless of the target — same posture as "never download or execute
-     files from untrusted sources."
-   - There is no publicly known cryptographic/steganographic watermark
-     embedded in Claude's text output for such a tool to reliably strip. A
-     tool claiming otherwise is most likely either non-functional or is
-     silently just doing prose-style editing (em dashes, phrasing cadence)
-     under a more dramatic name.
-     **Correction (2026-10-04): this bullet was wrong.** Anthropic announced on
-     2026-08-14 (anthropic.com/news/claude-text-watermark) that Claude's text
-     carries a statistical, SynthID-Text-style watermark: no added characters,
-     survives light editing, removed only by a full rewrite, detectable only by
-     eligible organizations under EU law. The decision itself stands: no
-     watermark-removal step is built or integrated. See
-     `2026-10-04-resume-subscription-transport-design.md` (the resume body is
-     the operator's own `metrics.json` text, so only the cover letter carries it).
-   - The corpus spec's own **Stage 7 humanizer pass** already covers the
-     legitimate version of "read naturally, not obviously AI-authored" — kill-list
-     phrases, em-dash removal, hedge-closer limits. That's prose polish in the
-     user's own voice, honestly described, and it shipped (see "Lint" below).
-     What didn't ship is a dedicated component whose job is defeating detection
-     systems an employer or ATS may run against a real application — a
-     materially different thing from polishing prose or cleaning up a file's
-     technical metadata, and one the user should decide on with full context
-     rather than have it folded in as an implementation detail.
-
-Net effect: the humanizer lint pass and the metadata scrub both exist in this
-design. No AI-content-detector-evasion layer exists, and no third-party tool
-was fetched or integrated.
+The existing implementation includes deterministic text cleanup in `dewatermark.py`, called
+by `resume_tailor.py`, along with the humanizer lint pass and DOCX/PDF metadata scrubbing.
+These components preserve the candidate's factual content while preparing the documents.
 
 ---
 

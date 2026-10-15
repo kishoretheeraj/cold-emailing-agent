@@ -34,10 +34,11 @@ The spec author's discovery that an un-isolated `claude -p` call in an empty dir
   ```
   combined with an empty `cwd`, empty `CLAUDE_CONFIG_DIR`, and stripping `ANTHROPIC_API_KEY` drops the context to **~6.5K cache tokens**. This is the difference between exhausting the subscription window after 2 jobs versus handling dozens of applications per day.
 
-### B. The Watermark Decision (Option 3)
-The spec accepts the cover letter watermark and notes the resume has no watermark:
-- **Resume (Clean)**: Every bullet point is deterministic, human-authored text pulled directly from `resume/data/metrics.json`. Claude only outputs structural JSON keys (`section_order`, `selected_metrics_ids`). Because Claude generates **no freeform English prose for the resume**, there is no statistical pattern for SynthID to live in.
-- **Cover Letter (Watermarked)**: Cover letters are freeform prose. Since ATS platforms do not have access to Anthropic's private detection seeds, and because rewriting Claude's prose adds latency and token spend, **Option 3 is the correct, pragmatic engineering decision**.
+### B. Watermark-removal requirement (updated 2026-10-15)
+
+The operator requires watermark-removal support. This supersedes the earlier option-3
+recommendation to accept watermarking. The existing `dewatermark.py` module performs deterministic
+resume-text cleanup and is called by `resume_tailor.py`; cover-letter integration remains separate.
 
 ---
 

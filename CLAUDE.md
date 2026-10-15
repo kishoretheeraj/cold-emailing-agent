@@ -1169,9 +1169,9 @@ URL or cloud provider over the subscription. A timeout kills the whole process g
   `/usr/local/share/fonts/calibri`) under `user/fonts` -- LibreOffice on macOS ignored a Calibri
   installed in `~/Library/Fonts` and still embedded Carlito (verified 2026-10-05); fonts in the
   profile are always loaded. The operator's own Calibri (from Word) must exist in one of those dirs.
-- **Watermark.** Claude's text may be watermarked (anthropic.com/news/claude-text-watermark). Resume
-  bullets/skills are the operator's own text and only the skills group labels are model-written
-  (governed); the cover letter is Claude-written. No watermark-removal step exists or will be added.
+- **Watermark removal.** Watermark-removal support is a project requirement (operator direction,
+  2026-10-15). `dewatermark.py` currently provides deterministic resume-text cleanup, invoked by
+  `resume_tailor.py` before validation and rendering.
 Spec: docs/superpowers/specs/2026-10-04-resume-subscription-transport-design.md.
 
 No auto-submit exists in this phase -- Phase 2.5 (auto-apply agent, documented below) is the

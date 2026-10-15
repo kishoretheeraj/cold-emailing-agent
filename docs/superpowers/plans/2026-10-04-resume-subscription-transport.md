@@ -19,7 +19,7 @@
 - `config.RESUME_CLAUDE_BACKEND` is read from the `RESUME_CLAUDE_BACKEND` env var and **defaults to `"api"`**. Only `resume-worker.service` sets `subscription`; GitHub Actions switches by a deliberate workflow edit in Task 10, after the worker is proven.
 - `billing='subscription'` records the auth route, not a guarantee of no charge. Task 10 requires the operator to verify paid usage credits are off before the worker runs unattended.
 - `CLAUDE_CODE_OAUTH_TOKEN` is never written by code or by an agent; the operator puts it in `/etc/job-agent/claude.env` (root:root 0600) or their own shell. Only `resume-worker.service` loads that file.
-- No watermark-removal step, tool, or prompt is added anywhere (spec, "Verified facts"). The cover letter stays Claude-written (option 3).
+- Watermark-removal support is in scope per operator direction (2026-10-15). Preserve factual resume and cover-letter content when implementing it.
 - Allowed attribution words: "Claude", "Claude Code", "Anthropic" (operator's own skills, and a possible target company).
 - `config.RESUME_FONT_NAME` (`"Calibri"`) is the only font family allowed in a built PDF.
 - `job_pick.py`'s judge and every non-resume Claude call stay on the API key.
@@ -1880,8 +1880,7 @@ Producer on every PDF), and `check_fonts` refuses any embedded font other than
 Calibri must be installed where `soffice` sees it. Claude's text may be watermarked
 (anthropic.com/news/claude-text-watermark); resume bullets/skills are the operator's own text and
 only the 1-4-word skills group labels are model-written (governed); the cover letter is
-Claude-written. No
-watermark-removal step exists or will be added. Spec:
+Claude-written. Watermark-removal support is a project requirement (2026-10-15). Spec:
 docs/superpowers/specs/2026-10-04-resume-subscription-transport-design.md.
 ```
 
@@ -1913,7 +1912,7 @@ sudo nano /etc/job-agent/claude.env
 
 - [ ] **Step 3: Memory**
 
-Write `project-resume-subscription.md` (frontmatter: name `project-resume-subscription`, type `project`) with: what shipped, the measured 224K→6.5K isolation finding, the `--bare`-ignores-OAuth finding, the pikepdf/LibreOffice-font leak found in every earlier resume, the watermark facts and the option-3 decision (no removal step, declined twice), and what's left (Task 10 live steps). Add to `MEMORY.md`: `- [Project: Resume on Subscription](project-resume-subscription.md) — 2026-10-04; claude -p transport, Beelink resume-worker, pikepdf/Carlito metadata leaks fixed; no watermark removal (declined)`.
+Write `project-resume-subscription.md` (frontmatter: name `project-resume-subscription`, type `project`) with: what shipped, the measured 224K→6.5K isolation finding, the `--bare`-ignores-OAuth finding, the pikepdf/LibreOffice-font leak found in every earlier resume, the watermark-removal requirement (operator direction, 2026-10-15) and current implementation status, and what's left (Task 10 live steps). Add to `MEMORY.md`: `- [Project: Resume on Subscription](project-resume-subscription.md) — 2026-10-04; claude -p transport, Beelink resume-worker, pikepdf/Carlito metadata leaks fixed; watermark-removal support required (2026-10-15)`.
 
 - [ ] **Step 4: Full suite, then commit**
 

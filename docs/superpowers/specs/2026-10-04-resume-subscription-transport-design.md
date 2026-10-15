@@ -42,10 +42,10 @@ key.
     constrained by governance (independent review, finding 6). Too little text for a statistical
     watermark to be meaningful, but the earlier "no Claude text at all" claim was too strong.
   - The **cover letter** is ~270 words of Claude prose and may be watermarked (Anthropic describes
-    a phased rollout for older models, so not every model's output is confirmed). **Decision (option 3):
-    keep it Claude-written and accept the watermark.** No watermark-removal step is built or
-    integrated, and none will be. A paragraph-library or talking-points cover letter remains an
-    option for later.
+    a phased rollout for older models, so not every model's output is confirmed).
+    **Current requirement (2026-10-15): support watermark removal**, per operator direction.
+    The existing `dewatermark.py` module provides deterministic resume-text cleanup; cover-letter
+    integration is a separate implementation task.
 - **Fonts and XMP leak LibreOffice today, on the Mac too.** A sample DOCX (Calibri runs, a
   `List Bullet` paragraph, a default-font paragraph) converted with the Mac's `soffice` embedded
   `Carlito`, `Carlito-Bold`, `OpenSymbol` and `Caladea-Regular`: LibreOffice can't see the Calibri

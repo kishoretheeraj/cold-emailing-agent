@@ -115,8 +115,8 @@ allowance. Local CLI help confirms that `--bare` excludes OAuth/keychain authent
 Anthropic's [watermark article](https://www.anthropic.com/news/claude-text-watermark) supports the
 word-choice mechanism and absence of hidden characters, but describes a phased rollout for older
 models. It does not establish that every response from this project's configured model is already
-watermarked. Accepting possible watermarking in generated cover letters is a reasonable explicit
-product decision; metadata/font checks do not prove human authorship or predict ATS treatment.
+watermarked. **Updated operator requirement (2026-10-15): support watermark removal.**
+Metadata/font checks do not prove human authorship or predict ATS treatment.
 
 The reported context-token and font experiments were not reproduced in this review. They should
 remain attributed measurements with command/version/output artifacts, rather than broad claims
