@@ -432,6 +432,60 @@ describe("QueuePage — send outcomes", () => {
     expect(screen.getAllByText("Dave Johnson").length).toBeGreaterThan(0);
   });
 
+  it("stays hidden when the draft row was marked sent but the stage write failed", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "contacts: write refused" }),
+        { status: 200 }
+      )
+    );
+    vi.useFakeTimers();
+    render(<QueuePage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // After the send, Bob is still first_touch_drafted but has no unsent draft row.
+    mockSupabaseData([bob, dave], [daveDraft]);
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(toastMock.warning).toHaveBeenCalled();
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+  });
+
+  it("a later draft for a sent-but-unsaved contact shows again", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "contacts: write refused" }),
+        { status: 200 }
+      )
+    );
+    await approveBobAndRunTimer();
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+
+    // The monitor flips Bob to first_touch_sent; days later the agent drafts follow-up 1.
+    const bobFollowup = { ...bob, stage: "followup1_drafted" };
+    const followupDraft = makeDraft({ id: 99, stage: "followup1_drafted", subject: "Re: Quick intro" });
+    mockSupabaseData([bobFollowup, dave], [followupDraft, daveDraft]);
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+  });
+
   it("keeps a sent-but-unsaved contact hidden after a remount in the same session", async () => {
     vi.spyOn(global, "fetch").mockResolvedValue(
       new Response(

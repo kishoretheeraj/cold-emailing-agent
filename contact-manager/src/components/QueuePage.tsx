@@ -72,6 +72,20 @@ function relativeTime(ts: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+type UnrecordedSend = { stage: string | null; draftId: string | null };
+
+// The contact is still at the stage it was sent from, showing the sent draft row (or none, when
+// that row was marked sent but the contact's stage write failed).
+function isUnrecordedSend(
+  contact: Contact,
+  draft: DraftHistory | undefined,
+  sent: Record<string, UnrecordedSend>
+): boolean {
+  const entry = sent[contact.id];
+  if (!entry || entry.stage !== (contact.stage ?? null)) return false;
+  return !draft || String(draft.id) === entry.draftId;
+}
+
 // ── Data loading ───────────────────────────────────────────────────────────────
 
 async function loadQueueContacts(): Promise<Contact[]> {
@@ -150,14 +164,15 @@ export function QueuePage() {
       return new Set();
     }
   });
-  // Contacts whose email went out but whose send was not recorded (stage still *_drafted until
-  // the monitor's sent-draft detection catches up). Never offered for Send again this session.
-  const [sentUnrecordedIds, setSentUnrecordedIds] = useState<Set<string>>(() => {
+  // Sends that went out but were not recorded, by contact: the stage and draft row that were
+  // sent. That row stays hidden until the monitor's sent-draft detection moves the contact on;
+  // a later draft for the same contact (a new stage or a new row) shows as usual.
+  const [sentUnrecorded, setSentUnrecorded] = useState<Record<string, UnrecordedSend>>(() => {
     try {
-      const raw = sessionStorage.getItem("queue_sent_unrecorded_ids");
-      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+      const raw = sessionStorage.getItem("queue_sent_unrecorded");
+      return raw ? (JSON.parse(raw) as Record<string, UnrecordedSend>) : {};
     } catch {
-      return new Set();
+      return {};
     }
   });
   const [filters, setFilters] = useState<Filters>({
@@ -219,14 +234,11 @@ export function QueuePage() {
 
   useEffect(() => {
     try {
-      sessionStorage.setItem(
-        "queue_sent_unrecorded_ids",
-        JSON.stringify([...sentUnrecordedIds])
-      );
+      sessionStorage.setItem("queue_sent_unrecorded", JSON.stringify(sentUnrecorded));
     } catch {
       // sessionStorage unavailable
     }
-  }, [sentUnrecordedIds]);
+  }, [sentUnrecorded]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60_000);
@@ -237,7 +249,7 @@ export function QueuePage() {
 
   const visible = contacts.filter((c) => {
     if (skippedIds.has(c.id)) return false;
-    if (sentUnrecordedIds.has(c.id)) return false;
+    if (isUnrecordedSend(c, draftsByContactId[c.id], sentUnrecorded)) return false;
     if (pendingIds.has(c.id)) return false;
     if (filters.tiers.length > 0 && !filters.tiers.includes(c.tier ?? -1))
       return false;
@@ -274,7 +286,10 @@ export function QueuePage() {
 
   const tierCounts: Record<number, number> = {};
   const stageCounts: Record<string, number> = {};
-  for (const c of contacts.filter((c) => !skippedIds.has(c.id) && !sentUnrecordedIds.has(c.id))) {
+  const counted = contacts.filter(
+    (c) => !skippedIds.has(c.id) && !isUnrecordedSend(c, draftsByContactId[c.id], sentUnrecorded)
+  );
+  for (const c of counted) {
     if (c.tier != null) tierCounts[c.tier] = (tierCounts[c.tier] ?? 0) + 1;
     if (c.stage) stageCounts[c.stage] = (stageCounts[c.stage] ?? 0) + 1;
   }
@@ -324,7 +339,14 @@ export function QueuePage() {
             throw new Error(result.error ?? `HTTP ${res.status}`);
           }
           if (result.recorded === false) {
-            setSentUnrecordedIds((prev) => new Set([...prev, contact.id]));
+            const sentDraft = draftsByContactId[contact.id];
+            setSentUnrecorded((prev) => ({
+              ...prev,
+              [contact.id]: {
+                stage: contact.stage ?? null,
+                draftId: sentDraft ? String(sentDraft.id) : null,
+              },
+            }));
             toast.warning(
               `Sent, but not saved: ${result.error ?? "unknown error"}. The monitor will catch up.`
             );
@@ -348,7 +370,7 @@ export function QueuePage() {
       });
       hideRow(contact.id);
     },
-    [visible.length, fetchData, onUndo]
+    [visible.length, fetchData, onUndo, draftsByContactId]
   );
 
   // ── Mark dead ────────────────────────────────────────────────────────────────

@@ -169,11 +169,12 @@ export function RepliesPage() {
   const [editBody, setEditBody] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [now, setNow] = useState(() => new Date());
-  // Replies that went out but were not recorded: their draft row still reads unsent until the
-  // monitor catches up, so it is never offered for Send again this session.
-  const [sentUnrecordedIds, setSentUnrecordedIds] = useState<Set<string>>(() => {
+  // Reply draft rows that went out but were not recorded: the row still reads unsent until the
+  // monitor catches up, so that row is never offered for Send again this session. A later reply
+  // draft for the same contact is a new row and shows as usual.
+  const [sentDraftIds, setSentDraftIds] = useState<Set<string>>(() => {
     try {
-      const raw = sessionStorage.getItem("replies_sent_unrecorded_ids");
+      const raw = sessionStorage.getItem("replies_sent_unrecorded_draft_ids");
       return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
     } catch {
       return new Set();
@@ -235,13 +236,13 @@ export function RepliesPage() {
   useEffect(() => {
     try {
       sessionStorage.setItem(
-        "replies_sent_unrecorded_ids",
-        JSON.stringify([...sentUnrecordedIds])
+        "replies_sent_unrecorded_draft_ids",
+        JSON.stringify([...sentDraftIds])
       );
     } catch {
       // sessionStorage unavailable
     }
-  }, [sentUnrecordedIds]);
+  }, [sentDraftIds]);
 
   const visible = contacts.filter((c) => !pendingIds.has(c.id));
 
@@ -267,7 +268,7 @@ export function RepliesPage() {
   const focused = visible[focusedIndex] ?? null;
   const sendableDrafts: Record<string, DraftHistory> = {};
   for (const [id, draft] of Object.entries(draftsByContactId)) {
-    if (!sentUnrecordedIds.has(id)) sendableDrafts[id] = draft;
+    if (!sentDraftIds.has(String(draft.id))) sendableDrafts[id] = draft;
   }
   const focusedDraft = focused ? sendableDrafts[focused.id] ?? null : null;
   const focusedHasDraft = focused ? hasDraft(focused, sendableDrafts) : false;
@@ -316,7 +317,8 @@ export function RepliesPage() {
             throw new Error(result.error ?? `HTTP ${res.status}`);
           }
           if (result.recorded === false) {
-            setSentUnrecordedIds((prev) => new Set([...prev, contact.id]));
+            const sentDraft = draftsByContactId[contact.id];
+            if (sentDraft) setSentDraftIds((prev) => new Set([...prev, String(sentDraft.id)]));
             toast.warning(
               `Sent, but not saved: ${result.error ?? "unknown error"}. The monitor will catch up.`
             );
@@ -344,7 +346,7 @@ export function RepliesPage() {
       setContacts((prev) => prev.filter((c) => c.id !== contact.id));
       hideRow(contact.id);
     },
-    [visible.length, fetchData, onUndo] // eslint-disable-line react-hooks/exhaustive-deps
+    [visible.length, fetchData, onUndo, draftsByContactId] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // ── Mark reply_status ────────────────────────────────────────────────────────

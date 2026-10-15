@@ -12,7 +12,7 @@ Three-column layout: left rail (filters), center (scrollable draft list), right 
 - API fires AFTER the 5-second delay. Optimistically remove from list → show toast with Undo button → start `setTimeout(5000)`.
 - Undo: `clearTimeout`, re-insert at `originalIndex`, toast.info("Send canceled"). API never called.
 - Timer fires: POST `/api/send-draft` (or Supabase PATCH for dead). On error: the row shows again (it was only hidden) + error toast.
-- `recorded: false` (sent, but a database write failed): warning toast "Sent, but not saved: ... The monitor will catch up." and the id goes into `sentUnrecordedIds` (sessionStorage `queue_sent_unrecorded_ids`), so the still-`*_drafted` row is never offered for Send again this session.
+- `recorded: false` (sent, but a database write failed): warning toast "Sent, but not saved: ... The monitor will catch up." and the contact's stage and sent draft row go into `sentUnrecorded` (sessionStorage `queue_sent_unrecorded`). That row stays hidden while the contact is still at that stage with that draft (or no draft), so it is never offered for Send again; a later draft (new stage or new row) shows as usual.
 - Unmount: all pending timers are cleared — navigating away cancels pending sends (deliberate trade-off, documented in comment).
 - Concurrent: multiple contacts can have pending timers simultaneously; each is tracked separately in `pendingSends` Map.
 

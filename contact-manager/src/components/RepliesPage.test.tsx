@@ -211,6 +211,12 @@ function mockSupabaseData(
   );
 }
 
+function focusRow(name: string) {
+  const row = screen.getAllByRole("listitem").find((li) => li.textContent?.includes(name));
+  if (!row) throw new Error(`no row for ${name}`);
+  fireEvent.click(row);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -448,12 +454,64 @@ describe("RepliesPage — 5-second undo (Approve and Send)", () => {
     // The refetch still returns Grace's unsent reply draft; it must not be sendable again.
     expect(screen.getAllByText("Grace Lee").length).toBeGreaterThan(0);
     await act(async () => {
+      focusRow("Grace Lee");
+    });
+    expect(screen.getByRole("heading", { name: "Grace Lee" })).toBeInTheDocument();
+    await act(async () => {
       fireEvent.keyDown(document, { key: "e" });
     });
     await act(async () => {
       vi.advanceTimersByTime(5001);
     });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a new reply draft for the same contact is offered again after an unsaved send", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "draft_history: down" }),
+        { status: 200 }
+      )
+    );
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    // Grace replies again and the agent drafts a new reply row.
+    mockSupabaseData([grace, iris, quinn], [makeDraft({ id: 77 })], [graceMsg]);
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    await act(async () => {
+      focusRow("Grace Lee");
+    });
+    expect(screen.getByRole("heading", { name: "Grace Lee" })).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
   it("a refresh during an in-flight send neither shows nor duplicates the row", async () => {
