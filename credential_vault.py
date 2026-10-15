@@ -11,6 +11,8 @@ existing entry is never replaced: a failed login goes to a human, never to a sec
 reset. Passwords never appear in logs, reprs or exceptions.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import secrets
@@ -77,6 +79,19 @@ class Vault:
             if os.path.exists(tmp):
                 os.remove(tmp)
 
+    @contextlib.contextmanager
+    def _locked(self):
+        # reserve/mark are load-modify-save; an exclusive flock keeps a second process (a manual
+        # script, the other apply unit) from saving over an entry it never loaded.
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        fd = os.open(f"{self.path}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
     def get(self, tenant):
         """The tenant's entry (a copy), or None."""
         entry = self._load().get(tenant)
@@ -84,23 +99,25 @@ class Vault:
 
     def reserve(self, tenant, email, login_url):
         """Generate and persist a password for a new account on this tenant, then return it."""
-        entries = self._load()
-        if tenant in entries:
-            raise VaultError(f"vault already has an account for {tenant}; never creating a second one")
-        entries[tenant] = {
-            "email": email, "password": generate_password(), "login_url": login_url,
-            "status": "reserved", "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._save(entries)
-        return dict(entries[tenant])
+        with self._locked():
+            entries = self._load()
+            if tenant in entries:
+                raise VaultError(f"vault already has an account for {tenant}; never creating a second one")
+            entries[tenant] = {
+                "email": email, "password": generate_password(), "login_url": login_url,
+                "status": "reserved", "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._save(entries)
+            return dict(entries[tenant])
 
     def mark(self, tenant, status):
         """Record what happened to the account: active (works), rejected (a human must look)."""
         if status not in _STATUSES:
             raise VaultError(f"unknown vault status: {status}")
-        entries = self._load()
-        if tenant not in entries:
-            raise VaultError(f"no vault entry for {tenant}")
-        entries[tenant]["status"] = status
-        entries[tenant]["updated_at"] = datetime.now(timezone.utc).isoformat()
-        self._save(entries)
+        with self._locked():
+            entries = self._load()
+            if tenant not in entries:
+                raise VaultError(f"no vault entry for {tenant}")
+            entries[tenant]["status"] = status
+            entries[tenant]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save(entries)

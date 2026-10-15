@@ -45,13 +45,15 @@ def browser():
 @pytest.fixture
 def tenant(browser, mocker, tmp_path):
     """Opens the fixture for each _launch_page call with the scenario in `tenant.scenario`."""
-    state = {"scenario": {}, "pages": [], "storage_states": [], "logs": [], "positions": []}
+    state = {"scenario": {}, "pages": [], "storage_states": [], "logs": [], "positions": [], "cookies": []}
 
     def launch(url, storage_state=None, init_script=None):
         state["storage_states"].append(storage_state)
         context = browser.new_context(storage_state=storage_state) if storage_state else browser.new_context()
         if init_script:
             context.add_init_script(init_script)
+        if state["cookies"]:
+            context.add_cookies(state["cookies"])
         page = context.new_page()
         page.add_init_script(f"window.SCENARIO = {json.dumps(state['scenario'])};")
         page.goto(FIXTURE)
@@ -218,3 +220,37 @@ def test_submit_never_clicks_when_a_step_cannot_be_completed(tenant, mocker):
     assert "SUBMIT" not in tenant["logs"][-1]
     assert apply_agent.db.release_application.call_args[0][2] in ("failed_retryable", "needs_input")
     apply_agent.db.renew_submission_lease.assert_not_called()
+
+
+
+_SSO_COOKIES = [
+    {"name": "SID", "value": "operator-google-session", "domain": ".google.com", "path": "/"},
+    {"name": "ESTSAUTH", "value": "operator-ms-session", "domain": "login.microsoftonline.com", "path": "/"},
+    {"name": "wd-browser-id", "value": "tenant", "domain": ".myworkdayjobs.com", "path": "/"},
+]
+
+
+def _saved_cookie_names():
+    with open(apply_agent.ats_sessions.state_path(TENANT)) as fh:
+        return {c["name"] for c in json.load(fh)["cookies"]}
+
+
+def test_prepare_never_saves_an_identity_provider_session(tenant):
+    # Audit 2026-10-14 F13: a human who signed in with Google/Microsoft during a takeover leaves
+    # those cookies in the browser; the tenant's saved state must keep only Workday's.
+    tenant["cookies"] = _SSO_COOKIES
+    apply_agent._process_one_preview(_job())
+    assert _saved_cookie_names() == {"wd-browser-id"}
+
+
+def test_submit_never_saves_an_identity_provider_session(tenant, mocker):
+    apply_agent._process_one_preview(_job())
+    preview = apply_agent.db.complete_preview.call_args[0][2]
+    tenant["cookies"] = _SSO_COOKIES
+    mocker.patch.dict("os.environ", {"APPLY_AGENT_ARMED": "1"})
+    mocker.patch.object(apply_agent.approval_signature, "key_configured", return_value=True)
+    mocker.patch.object(apply_agent.approval_signature, "verify", return_value=None)
+    mocker.patch.object(apply_agent.db, "get_job_application", return_value=_approved_from(preview))
+    apply_agent.submit(31)
+    assert tenant["logs"][-1][-1] == "SUBMIT"
+    assert _saved_cookie_names() == {"wd-browser-id"}

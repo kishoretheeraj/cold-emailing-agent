@@ -104,3 +104,13 @@ def test_run_hardcoded_fallback_returns_results(mocker):
     result = research._run_hardcoded_fallback(_CONTACT)
     assert len(result) == 1
     assert "Acme Corp" in result[0]["query"]
+
+
+def test_run_hardcoded_fallback_uses_the_current_year(mocker):
+    # Audit 2026-10-14 F10: a literal year in the query goes stale every January.
+    client = _make_client()
+    mocker.patch.object(research, "_get_client", return_value=client)
+    fixed = research.datetime(2031, 1, 2, tzinfo=research.timezone.utc)
+    mocker.patch.object(research, "datetime", MagicMock(now=MagicMock(return_value=fixed)))
+    result = research._run_hardcoded_fallback(_CONTACT)
+    assert result[0]["query"] == "Acme Corp news 2031"

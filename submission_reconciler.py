@@ -128,6 +128,9 @@ def run(now=None):
     if not (address and password):
         log.info("[RECONCILE] | SKIP | receipt mailbox not configured")
         return counts
+    if address.strip().lower() != config.APPLY_FORM_EMAIL.lower():
+        log.warning("[RECONCILE] | WARN | RECEIPT_IMAP_ADDRESS is not APPLY_FORM_EMAIL, the address "
+                    "forms are filled with; receipts land there, not in this inbox")
     try:
         rows = db.get_applications_needing_confirmation()
         counts["checked"] = len(rows)
