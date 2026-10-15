@@ -143,6 +143,12 @@ script, above all project imports.
 successor. `monitor.detect_sent_drafts()` uses this map exclusively —
 do not duplicate the mapping elsewhere.
 
+The contact-manager mirrors `config.FOLLOWUP_DAYS`, `agent.NEXT_STAGE`, `agent.ACTION_LABEL`,
+`agent.DRAFTED_TO_SENT` and the `constants.py` stage lists (`src/lib/cadence.ts`,
+`src/lib/constants.ts`, `src/lib/types.ts`) for its Send button. `contact-manager/src/lib/pythonMirrors.test.ts`
+reads these Python files as text and fails on any drift, so change both sides together. It
+parses one `"key": value,` entry per line; keep that literal shape.
+
 When you add a new action:
 1. Add it to all four action maps (`NEXT_STAGE`, `NEXT_TEMPLATE`, `ACTION_LABEL`, `emailer.ACTION_TO_TEMPLATE`).
 2. Add the `*_drafted → *_sent` entry to `agent.DRAFTED_TO_SENT`.
