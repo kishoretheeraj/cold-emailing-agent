@@ -18,7 +18,7 @@ def fake_client(mocker):
 # ── get_employer_h1b_stats_corpus ────────────────────────────────────────────────
 
 def test_get_employer_h1b_stats_corpus_returns_rows(fake_client):
-    fake_client.table.return_value.select.return_value.range.return_value.execute.return_value.data = [
+    fake_client.table.return_value.select.return_value.order.return_value.range.return_value.execute.return_value.data = [
         {"id": 1, "normalized_name": "acme", "lca_recent_2fy": 5, "latest_filing_fy": 2025, "approval_rate": 0.9},
     ]
     result = db.get_employer_h1b_stats_corpus()
@@ -28,7 +28,7 @@ def test_get_employer_h1b_stats_corpus_returns_rows(fake_client):
 
 
 def test_get_employer_h1b_stats_corpus_empty_on_no_data(fake_client):
-    fake_client.table.return_value.select.return_value.range.return_value.execute.return_value.data = None
+    fake_client.table.return_value.select.return_value.order.return_value.range.return_value.execute.return_value.data = None
     assert db.get_employer_h1b_stats_corpus() == []
 
 
@@ -48,7 +48,7 @@ def test_get_employer_h1b_stats_corpus_paginates_past_postgrest_row_cap(mocker):
 
     client = mocker.MagicMock()
     mocker.patch.object(db, "get_client", return_value=client)
-    range_mock = client.table.return_value.select.return_value.range
+    range_mock = client.table.return_value.select.return_value.order.return_value.range
     range_mock.return_value.execute.side_effect = [
         mocker.MagicMock(data=full_page),
         mocker.MagicMock(data=partial_page),
@@ -59,6 +59,9 @@ def test_get_employer_h1b_stats_corpus_paginates_past_postgrest_row_cap(mocker):
     assert len(result) == page_size + 1
     range_mock.assert_any_call(0, page_size - 1)
     range_mock.assert_any_call(page_size, 2 * page_size - 1)
+    # Offset paging needs a total order: without ORDER BY, Postgres may return the pages from
+    # different scan orders, silently skipping or repeating employers across page boundaries.
+    client.table.return_value.select.return_value.order.assert_called_with("id")
 
 
 # ── upsert_employer_h1b_stats ────────────────────────────────────────────────────

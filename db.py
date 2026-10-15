@@ -497,6 +497,8 @@ def get_employer_h1b_stats_corpus():
             get_client()
             .table("employer_h1b_stats")
             .select("id, normalized_name, lca_recent_2fy, latest_filing_fy, approval_rate")
+            # Offset paging needs a total order, or pages can skip or repeat rows.
+            .order("id")
             .range(offset, offset + page_size - 1)
             .execute()
         ))
