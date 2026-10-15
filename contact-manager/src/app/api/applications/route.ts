@@ -8,6 +8,7 @@ import {
 } from "@/lib/warmPathsData";
 import { visaKey, visaSignal } from "@/lib/visaSignal";
 import type { JobApplication } from "@/lib/types";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 function getClient() {
   return createClient(
@@ -87,6 +88,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   let body: unknown;
   try {
     body = await req.json();

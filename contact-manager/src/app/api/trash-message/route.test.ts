@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const { mockTrash, mockGetGmail } = vi.hoisted(() => ({
   mockTrash: vi.fn(),
@@ -11,7 +14,7 @@ vi.mock("@/lib/gmail-server", () => ({ getGmailClient: mockGetGmail }));
 import { POST } from "./route";
 
 function req(body: unknown) {
-  return new Request("http://localhost/api/trash-message", {
+  return operatorRequest("http://localhost/api/trash-message", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 // vi.mock is hoisted to the top of the file, so any external state it depends
 // on must be hoisted alongside it via vi.hoisted.
@@ -14,7 +17,7 @@ vi.mock("@anthropic-ai/sdk", () => ({
 import { POST } from "./route";
 
 function makeRequest(body: unknown): Request {
-  return new Request("http://localhost/api/extract", {
+  return operatorRequest("http://localhost/api/extract", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

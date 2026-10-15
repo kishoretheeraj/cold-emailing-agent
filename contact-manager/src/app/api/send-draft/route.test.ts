@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 // Hoist mocks so they are available before module-level imports.
 const { mockDraftsSend, mockMessagesGet, mockMessagesModify, mockLabelsList, mockGetGmail } =
@@ -66,7 +69,7 @@ vi.mock("@supabase/supabase-js", () => {
 import { POST } from "./route";
 
 function req(body: unknown) {
-  return new Request("http://localhost/api/send-draft", {
+  return operatorRequest("http://localhost/api/send-draft", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

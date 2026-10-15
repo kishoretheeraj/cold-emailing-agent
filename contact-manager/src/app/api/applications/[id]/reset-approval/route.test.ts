@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockRpc = vi.fn();
 vi.mock("@supabase/supabase-js", () => ({
@@ -17,7 +20,7 @@ function makeRequest(id = "5") {
 
 describe("POST /api/applications/[id]/reset-approval", () => {
   it("calls the reset_approval RPC and returns 200", async () => {
-    const res = await POST(new Request("http://test", { method: "POST" }), makeRequest());
+    const res = await POST(operatorRequest("http://test", { method: "POST" }), makeRequest());
     expect(res.status).toBe(200);
     expect(mockRpc).toHaveBeenCalledWith("reset_approval", { p_id: 5 });
   });
@@ -31,13 +34,13 @@ describe("POST /api/applications/[id]/reset-approval", () => {
   // partial-failure window entirely: one RPC call now either clears both fields or clears
   // neither. This route no longer performs any Supabase call beyond the RPC itself.
   it("does not perform any write beyond the single reset_approval RPC call", async () => {
-    await POST(new Request("http://test", { method: "POST" }), makeRequest());
+    await POST(operatorRequest("http://test", { method: "POST" }), makeRequest());
     expect(mockRpc).toHaveBeenCalledTimes(1);
   });
 
   it("returns 409 when the RPC rejects the row (not resettable, or already reset)", async () => {
     mockRpc.mockResolvedValue({ data: null, error: { message: "reset_approval: row 5 is not in a resettable state" } });
-    const res = await POST(new Request("http://test", { method: "POST" }), makeRequest());
+    const res = await POST(operatorRequest("http://test", { method: "POST" }), makeRequest());
     expect(res.status).toBe(409);
   });
 
@@ -47,16 +50,16 @@ describe("POST /api/applications/[id]/reset-approval", () => {
   // 409 (nothing left to clean up) rather than a permanent dead end masking an unclean prior
   // partial write.
   it("a repeat call after a successful reset 409s cleanly instead of silently no-oping", async () => {
-    const res1 = await POST(new Request("http://test", { method: "POST" }), makeRequest());
+    const res1 = await POST(operatorRequest("http://test", { method: "POST" }), makeRequest());
     expect(res1.status).toBe(200);
 
     mockRpc.mockResolvedValue({ data: null, error: { message: "reset_approval: row 5 is not in a resettable state" } });
-    const res2 = await POST(new Request("http://test", { method: "POST" }), makeRequest());
+    const res2 = await POST(operatorRequest("http://test", { method: "POST" }), makeRequest());
     expect(res2.status).toBe(409);
   });
 
   it("rejects a non-numeric id without calling the RPC", async () => {
-    const res = await POST(new Request("http://test", { method: "POST" }), makeRequest("abc"));
+    const res = await POST(operatorRequest("http://test", { method: "POST" }), makeRequest("abc"));
     expect(res.status).toBe(400);
     expect(mockRpc).not.toHaveBeenCalled();
   });

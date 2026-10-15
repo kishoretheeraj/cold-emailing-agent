@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ExtractedContact } from "@/lib/types";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -88,6 +89,9 @@ function normalizeContact(c: Record<string, unknown>): ExtractedContact {
 }
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   let text: string;
   try {
     const body = (await req.json()) as { text?: string };

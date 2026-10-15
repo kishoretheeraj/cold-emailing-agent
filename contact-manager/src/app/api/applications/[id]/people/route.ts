@@ -19,6 +19,7 @@ import {
   loadLinked,
   loadPreferences,
 } from "@/lib/warmPathsData";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 function getClient() {
   return createClient(
@@ -73,6 +74,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // Add a person the user picked. The contacts_link_guard trigger is the backstop for every rule
 // checked here; these checks only make the refusal readable.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   const { id } = await params;
   if (!/^\d+$/.test(id)) {
     return Response.json({ error: "Invalid application id" }, { status: 400 });

@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DELETE, POST } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockRpc = vi.fn();
 const mockMaybeSingle = vi.fn();
@@ -21,24 +24,24 @@ beforeEach(() => {
 
 describe("POST /api/applications/[id]/hold", () => {
   it("holds for the default ten days", async () => {
-    const res = await POST(new Request("http://x", { method: "POST" }), params());
+    const res = await POST(operatorRequest("http://x", { method: "POST" }), params());
     expect(await res.json()).toEqual({ referral_hold_until: "2026-10-19T12:00:00Z", days: 10 });
     expect(mockRpc).toHaveBeenCalledWith("hold_for_referral", { p_id: 7, p_days: 10 });
   });
 
   it("reads the hold length from the preferences, clamped to 14", async () => {
     mockMaybeSingle.mockResolvedValue({ data: { value: JSON.stringify({ referral_hold_days: 60 }) }, error: null });
-    await POST(new Request("http://x", { method: "POST" }), params());
+    await POST(operatorRequest("http://x", { method: "POST" }), params());
     expect(mockRpc).toHaveBeenCalledWith("hold_for_referral", { p_id: 7, p_days: 14 });
   });
 
   it("409s when the row is not an unapproved preview", async () => {
     mockRpc.mockResolvedValue({ data: null, error: { message: "hold_for_referral: row 7 is not an unapproved preview" } });
-    expect((await POST(new Request("http://x", { method: "POST" }), params())).status).toBe(409);
+    expect((await POST(operatorRequest("http://x", { method: "POST" }), params())).status).toBe(409);
   });
 
   it("400s a bad id without touching the database", async () => {
-    expect((await POST(new Request("http://x", { method: "POST" }), params("x"))).status).toBe(400);
+    expect((await POST(operatorRequest("http://x", { method: "POST" }), params("x"))).status).toBe(400);
     expect(mockRpc).not.toHaveBeenCalled();
   });
 });
@@ -46,12 +49,12 @@ describe("POST /api/applications/[id]/hold", () => {
 describe("DELETE /api/applications/[id]/hold", () => {
   it("releases the hold", async () => {
     mockRpc.mockResolvedValue({ data: null, error: null });
-    expect((await DELETE(new Request("http://x", { method: "DELETE" }), params())).status).toBe(200);
+    expect((await DELETE(operatorRequest("http://x", { method: "DELETE" }), params())).status).toBe(200);
     expect(mockRpc).toHaveBeenCalledWith("release_referral_hold", { p_id: 7 });
   });
 
   it("409s an unknown row", async () => {
     mockRpc.mockResolvedValue({ data: null, error: { message: "release_referral_hold: no row 7" } });
-    expect((await DELETE(new Request("http://x", { method: "DELETE" }), params())).status).toBe(409);
+    expect((await DELETE(operatorRequest("http://x", { method: "DELETE" }), params())).status).toBe(409);
   });
 });

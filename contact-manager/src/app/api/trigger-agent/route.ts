@@ -3,10 +3,15 @@
 export const runtime = "nodejs";
 export const maxDuration = 15;
 
+import { isOperatorRequest } from "@/lib/operatorAuth";
+
 const REPO = "kishoretheeraj/cold-emailing-agent";
 const WORKFLOW = "daily_agent.yml";
 
-export async function POST(_req: Request) {
+export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   if (!token) {
     return Response.json({ error: "GITHUB_DISPATCH_TOKEN not configured" }, { status: 500 });

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockRpc = vi.fn();
 vi.mock("@supabase/supabase-js", () => ({ createClient: vi.fn(() => ({ rpc: mockRpc })) }));
@@ -7,7 +10,7 @@ vi.mock("@supabase/supabase-js", () => ({ createClient: vi.fn(() => ({ rpc: mock
 beforeEach(() => mockRpc.mockReset());
 
 const call = (id: string) =>
-  POST(new Request(`http://localhost/api/applications/${id}/takeover-continue`, { method: "POST" }), {
+  POST(operatorRequest(`http://localhost/api/applications/${id}/takeover-continue`, { method: "POST" }), {
     params: Promise.resolve({ id }),
   });
 

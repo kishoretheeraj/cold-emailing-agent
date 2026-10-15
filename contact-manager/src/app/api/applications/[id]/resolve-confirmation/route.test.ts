@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockRpc = vi.fn();
 vi.mock("@supabase/supabase-js", () => ({
@@ -12,7 +15,7 @@ beforeEach(() => {
 });
 
 function makeRequest(body: unknown = { submitted: true }) {
-  return new Request("http://test", {
+  return operatorRequest("http://test", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body === null ? undefined : typeof body === "string" ? body : JSON.stringify(body),

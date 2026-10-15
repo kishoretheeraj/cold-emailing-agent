@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getGmailClient } from "@/lib/gmail-server";
 import { CADENCE, STAGE_TRANSITIONS } from "@/lib/cadence";
 import type { gmail_v1 } from "googleapis";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 // All *_sent stage values — used for idempotency check.
 const SENT_STAGES = new Set(
@@ -41,6 +42,9 @@ function getSupabase() {
 }
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   const startedAt = new Date().toISOString();
   let contactId: string | undefined;
 

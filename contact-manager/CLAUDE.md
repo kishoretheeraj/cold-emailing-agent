@@ -179,6 +179,15 @@ are set: pages redirect to `/login?next=...`, API calls get `401`. Unset, everyt
 returns `401`; unconfigured returns `503`. `POST /api/logout` clears it. `Nav` renders nothing on
 `/login`. `safeNextPath` (`lib/loginNext.ts`, client-safe) only allows same-origin paths.
 
+Every mutating route handler (POST/PATCH/PUT/DELETE: send-draft, update-draft, trash-message,
+trigger-agent, agent-config, extract, preview-draft, and every `/api/applications` write) also
+checks `isOperatorRequest(req)` as its first line and answers `401 { error: "Sign in required" }`,
+so a request that slips past the proxy still cannot send, spend tokens, dispatch or write.
+`src/app/api/operatorGuard.test.ts` is the table test (no session, forged session, login
+unconfigured: 401 with nothing downstream touched). Route tests build signed-in requests with
+`operatorRequest()` + `stubOperatorLogin()` from `src/lib/testing/operatorSession.ts`. GETs rely on
+the proxy alone.
+
 The anon key ships in the browser bundle, so anyone holding it can call `approve_application`.
 That is why `POST /api/applications/[id]/submit` checks the session itself (`isOperatorRequest`,
 not just the proxy) and signs `approval:v1:<id>:<hash>:<signed_at_ms>` with
@@ -505,6 +514,11 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Write e2e tests for every UI change.** For any change that affects what the user sees or interacts with, add a Playwright test that exercises the changed flow. Assertions alone are not enough — take a screenshot with `page.screenshot()` and visually verify the result before committing.
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
+- **Signed in by the harness.** `playwright.config.ts` starts the dev server with test-only
+  `OPERATOR_PASSWORD`/`SESSION_SECRET` and gives every context a `cm_session` cookie minted from
+  them (proxy.ts fails closed otherwise and every spec lands on Sign in). A dev server you started
+  yourself is reused and must have that same `SESSION_SECRET`. `E2E_PORT=3100` runs a second
+  checkout (a git worktree) on its own port instead of reusing whatever listens on 3000.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
 - **Current test count: 88** (vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
