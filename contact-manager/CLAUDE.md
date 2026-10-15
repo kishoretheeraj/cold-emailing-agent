@@ -117,6 +117,7 @@ src/
     ├── warmPathsData.ts
     ├── visaSignal.ts
     ├── gmail-server.ts
+    ├── github.ts
     ├── cadence.ts
     ├── personalization.ts
     ├── promptCategories.ts
@@ -581,7 +582,9 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - Env vars (server-only): `APPLY_SUBMIT_HOST` (`beelink` once the Beelink submits), `OPERATOR_PASSWORD`, `SESSION_SECRET`, `APPROVAL_SIGNING_KEY` (same value as the
   GitHub secret and the Beelink's), `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
-- `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.
+- `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo. The repo name and the
+  dispatch URL live in `src/lib/github.ts` (`GITHUB_REPO`, `workflowDispatchUrl`), shared by
+  trigger-agent and submit.
 - Gmail OAuth vars: run `cd contact-manager && npx tsx scripts/capture-gmail-token.mts` once
   to obtain `GOOGLE_OAUTH_REFRESH_TOKEN`. Must run from `contact-manager/` (dotenv and googleapis
   are in that directory's node_modules, not the repo root). Script uses `http://localhost:8080`

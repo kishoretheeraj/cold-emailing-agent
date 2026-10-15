@@ -1,12 +1,9 @@
 // Thin proxy to GitHub Actions workflow_dispatch.
-// No unit tests: logic is trivial and GITHUB_DISPATCH_TOKEN is a secret unavailable in CI.
 export const runtime = "nodejs";
 export const maxDuration = 15;
 
 import { isOperatorRequest } from "@/lib/operatorAuth";
-
-const REPO = "kishoretheeraj/cold-emailing-agent";
-const WORKFLOW = "daily_agent.yml";
+import { workflowDispatchUrl } from "@/lib/github";
 
 export async function POST(req: Request) {
   if (!isOperatorRequest(req)) {
@@ -18,7 +15,7 @@ export async function POST(req: Request) {
   }
 
   const res = await fetch(
-    `https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`,
+    workflowDispatchUrl("daily_agent.yml"),
     {
       method: "POST",
       headers: {
