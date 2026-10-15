@@ -1122,11 +1122,10 @@ pricing, checked 2026-08-29 -- update if `RESUME_MODEL` or Anthropic's pricing c
 row (the strategy call in `--propose`, the cover-letter call in `--build`, and any lint-failure
 retry) -- read-then-write, not atomic, which is fine for this manual single-user CLI.
 
-**AI-content-detection evasion was explicitly declined** -- see
-docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md's "Rejected, not deferred"
-section. The humanizer lint pass (em dashes, jargon) and the PDF metadata scrub (tool-fingerprint
-removal, realistic timestamps) both shipped; a dedicated AI-detector-evasion layer did not, and no
-third-party tool was fetched or integrated for that purpose.
+**Watermark-removal support is required** per operator direction (2026-10-15). See the
+"Watermark removal and document cleanup" section of
+`docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md`.
+The humanizer lint pass and PDF metadata scrub are existing document-cleanup components.
 
 **Subscription transport (2026-10-04).** `resume_agent._call_claude` can run on the operator's
 Claude subscription via `claude_subscription.complete()` (`claude -p`), selected by

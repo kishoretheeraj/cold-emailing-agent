@@ -28,7 +28,7 @@ headless (`soffice`, external system binary) for PDF conversion, `pikepdf` for P
 plan touches a real Supabase project, a real `soffice` binary, or the Anthropic API.
 
 **Spec:** `docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md` (this plan's
-design doc — read it first, especially the "Rejected, not deferred: AI-detection evasion" section).
+design doc — read it first, especially the "Watermark removal and document cleanup" section).
 Source data: `/Users/kishoretheeraj/Downloads/RESUME_AGENT_SPEC.md` (the user's 620-line corpus
 spec — referenced throughout as "the corpus spec").
 
@@ -2212,11 +2212,10 @@ section folding, bullet drops) are handled by `resume_agent.py --build`'s one-re
 loop instead (same pattern as `preflight.py`'s regenerate-with-error-list retry), since those are
 content decisions, not formatting.
 
-**AI-content-detection evasion was explicitly declined** -- see
-docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md's "Rejected, not deferred"
-section. The humanizer lint pass (em dashes, jargon) and the PDF metadata scrub (tool-fingerprint
-removal, realistic timestamps) both shipped; a dedicated AI-detector-evasion layer did not, and no
-third-party tool was fetched or integrated for that purpose.
+**Watermark-removal support is required** per operator direction (2026-10-15). See the
+"Watermark removal and document cleanup" section of
+`docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md`.
+The humanizer lint pass and PDF metadata scrub are existing document-cleanup components.
 
 No auto-submit exists in this phase -- that is Phase 2.5 (auto-apply agent), a separate future
 design gated behind its own explicit opt-in.
@@ -2258,8 +2257,8 @@ Write `~/.claude/projects/-Users-kishoretheeraj-Documents-cold-email-agent/memor
 following the existing memory file format (frontmatter with `name`, `description`,
 `metadata.type: project`), summarizing: shipped date, the two-command propose/build CLI with the
 strategy-approval gate, data transcribed from the user's own corpus spec (not fabricated), the
-three unresolved metric conflicts requiring the user's one-time decision, the AI-detection-evasion
-request that was declined (with the reasoning), and that Phase 2.5 (auto-apply) now only needs the
+three unresolved metric conflicts requiring the user's one-time decision, the watermark-removal
+requirement confirmed by the operator on 2026-10-15, and that Phase 2.5 (auto-apply) now only needs the
 submit action. Add one line to `MEMORY.md`'s index.
 
 (Skip this step entirely if running under `build-continue.yml` — the memory path doesn't exist in

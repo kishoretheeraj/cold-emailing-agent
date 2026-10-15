@@ -239,4 +239,3 @@ expected and must not trip this check; only metadata-field occurrences count.
 - **A contact-manager UI for editing `data/*.json`** — these are git-versioned
   files edited in a Claude Code session, same as the user already does today;
   a live editor is future work if ever needed, not part of this phase.
-- **AI-content-detection evasion** — see the rejected-decision section above.
