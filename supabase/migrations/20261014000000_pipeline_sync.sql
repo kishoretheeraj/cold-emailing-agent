@@ -380,3 +380,79 @@ $$;
 
 revoke execute on function public.pipeline_upsert(text, jsonb) from public, anon, authenticated;
 grant  execute on function public.pipeline_upsert(text, jsonb) to service_role;
+
+-- ---------------------------------------------------------------------------
+-- pipeline_link_reply: the dashboard's "link this reply to an application".
+--
+-- Id spaces: pipeline_replies.application_id and pipeline_status_events.application_id hold
+-- job_applications.id (the reply poller correlates against job_applications rows), so the target is
+-- checked there, never against pipeline_jobs (whose ids are the 24/7 queue's own).
+--
+-- Link and event commit together. Version policy: the pipeline sends every reply at version 1, so the
+-- link raises the mirror row's version by one and a later re-send of the original row (same version
+-- 1) cannot undo it. The event id is derived from (reply id, application id), so a retried link
+-- converges on one event. The pipeline's own SQLite store is not told about the link; its local
+-- status history and revival guard do not see dashboard links (documented limitation).
+-- ---------------------------------------------------------------------------
+
+create or replace function public.pipeline_link_reply(p_reply_id text, p_application_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+    v_kind     text;
+    v_received timestamptz;
+    v_current  text;
+    v_status   text;
+    v_event    text;
+    v_written  integer := 0;
+begin
+    if p_reply_id is null or btrim(p_reply_id) = '' or p_application_id is null then
+        raise exception 'pipeline_link_reply: reply id and application id are required'
+            using errcode = '22023';
+    end if;
+
+    select kind, received_at, application_id into v_kind, v_received, v_current
+    from public.pipeline_replies where id = p_reply_id for update;
+    if not found then
+        raise exception 'pipeline_link_reply: reply not found' using errcode = 'P0002';
+    end if;
+    if not exists (select 1 from public.job_applications where id = p_application_id) then
+        raise exception 'pipeline_link_reply: application not found' using errcode = 'P0002';
+    end if;
+    if v_current is not null and v_current <> p_application_id::text then
+        raise exception 'pipeline_link_reply: reply is already linked to another application'
+            using errcode = 'P0001';
+    end if;
+
+    update public.pipeline_replies
+    set application_id = p_application_id::text,
+        needs_review   = false,
+        version        = version + 1,
+        synced_at      = now()
+    where id = p_reply_id and (application_id is distinct from p_application_id::text or needs_review);
+
+    -- Mirrors reply_repo.KIND_TO_STATUS.
+    v_status := case v_kind
+        when 'confirmation' then 'confirmed'
+        when 'assessment'   then 'assessment'
+        when 'interview'    then 'interview'
+        when 'offer'        then 'offer'
+        when 'rejection'    then 'rejected'
+    end;
+    if v_status is not null then
+        v_event := 'link:' || md5(p_reply_id || ':' || p_application_id::text);
+        insert into public.pipeline_status_events (id, application_id, status, reply_id, "at", actor, version)
+        values (v_event, p_application_id::text, v_status, p_reply_id, coalesce(v_received, now()), 'user', 1)
+        on conflict (id) do nothing;
+        get diagnostics v_written = row_count;
+    end if;
+
+    return jsonb_build_object('linked', true, 'event', v_event, 'event_written', v_written = 1);
+end;
+$$;
+
+revoke execute on function public.pipeline_link_reply(text, bigint) from public, anon, authenticated;
+grant  execute on function public.pipeline_link_reply(text, bigint) to service_role;

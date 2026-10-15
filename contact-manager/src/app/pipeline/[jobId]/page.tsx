@@ -32,7 +32,7 @@ function formatTime(value: string | null | undefined): string {
 
 const cell = { padding: '6px 10px', textAlign: 'left' as const, borderBottom: '1px solid #e5e7eb', fontSize: 14 }
 const REPLY_COLUMNS =
-  'message_id, application_id, job_id, from_domain, subject, received_at, kind, match_method, needs_review, confidence'
+  'id, message_id, application_id, job_id, from_domain, subject, received_at, kind, match_method, needs_review, confidence'
 
 export default async function PipelineJobPage({
   params,
@@ -84,7 +84,7 @@ export default async function PipelineJobPage({
   const events = (eventsRes.data || []) as EventRow[]
   const merged = new Map<string, PipelineReply>()
   for (const row of [...((byJobRes.data || []) as PipelineReply[]), ...((byAppRes.data || []) as PipelineReply[])]) {
-    merged.set(row.message_id, row)
+    merged.set(row.id, row)
   }
   const replies = Array.from(merged.values()).sort((a, b) =>
     (b.received_at || '').localeCompare(a.received_at || ''),

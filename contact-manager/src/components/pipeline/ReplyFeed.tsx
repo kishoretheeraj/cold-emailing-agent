@@ -1,7 +1,8 @@
 import StatusChip from '@/components/pipeline/StatusChip'
 
 export interface PipelineReply {
-  message_id: string
+  id: string
+  message_id: string | null
   application_id: string | null
   job_id: string | null
   from_domain: string | null
@@ -28,7 +29,7 @@ export default function ReplyFeed({ replies }: { replies: PipelineReply[] }) {
     <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
       {replies.map((reply) => (
         <li
-          key={reply.message_id}
+          key={reply.id}
           style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '10px 12px' }}
         >
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

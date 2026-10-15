@@ -60,7 +60,7 @@ export default async function PipelinePage() {
       .limit(2000),
     supabase
       .from('pipeline_replies')
-      .select('message_id, application_id, job_id, from_domain, subject, received_at, kind, match_method, needs_review, confidence')
+      .select('id, message_id, application_id, job_id, from_domain, subject, received_at, kind, match_method, needs_review, confidence')
       .eq('needs_review', true)
       .order('received_at', { ascending: false })
       .limit(100),
@@ -164,18 +164,20 @@ export default async function PipelinePage() {
         ) : (
           <div style={{ display: 'grid', gap: 12 }}>
             {review.map((reply) => (
-              <div key={reply.message_id}>
+              <div key={reply.id}>
                 <ReplyFeed replies={[reply]} />
                 <form
                   action="/api/pipeline/link-reply"
                   method="post"
                   style={{ display: 'flex', gap: 8, marginTop: 6 }}
                 >
-                  <input type="hidden" name="reply_message_id" value={reply.message_id} />
+                  <input type="hidden" name="reply_id" value={reply.id} />
                   <input
                     type="text"
                     name="application_id"
-                    placeholder="application id"
+                    placeholder="application # (from /applications)"
+                    inputMode="numeric"
+                    pattern="[0-9]+"
                     required
                     style={{ border: '1px solid #d1d5db', borderRadius: 6, padding: '4px 8px', fontSize: 14 }}
                   />
