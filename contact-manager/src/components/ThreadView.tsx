@@ -138,19 +138,22 @@ function MessageBubble({ msg }: { msg: EmailMessage }) {
 type Props = { contactId: string | number };
 
 export function ThreadView({ contactId }: Props) {
-  const [messages, setMessages] = useState<EmailMessage[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Loading is derived: the thread on screen belongs to the contact it was fetched for.
+  const [thread, setThread] = useState<{
+    contactId: string | number;
+    messages: EmailMessage[];
+  } | null>(null);
+  const loading = thread?.contactId !== contactId;
+  const messages = loading ? [] : thread.messages;
 
   useEffect(() => {
-    setLoading(true);
     supabase
       .from("email_messages")
       .select("*")
       .eq("contact_id", contactId)
       .order("sent_at", { ascending: true })
       .then(({ data }) => {
-        setMessages((data as EmailMessage[]) ?? []);
-        setLoading(false);
+        setThread({ contactId, messages: (data as EmailMessage[]) ?? [] });
       });
   }, [contactId]);
 

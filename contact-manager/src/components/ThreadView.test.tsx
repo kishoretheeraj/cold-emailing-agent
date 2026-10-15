@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { EmailMessage } from "@/lib/types";
 
@@ -55,6 +55,24 @@ describe("ThreadView", () => {
     await waitFor(() => {
       expect(screen.queryByText(/loading thread/i)).toBeNull();
     });
+  });
+
+  it("switching contacts shows loading, then only the new contact's thread", async () => {
+    const pending: ((r: { data: EmailMessage[] }) => void)[] = [];
+    selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+      pending.push(cb);
+      return Promise.resolve();
+    });
+    const { rerender } = render(<ThreadView contactId={42} />);
+    act(() => pending[0]({ data: [makeMsg({ subject: "first thread" })] }));
+    expect(await screen.findByText(/first thread/i)).toBeTruthy();
+
+    rerender(<ThreadView contactId={43} />);
+    expect(screen.getByText(/loading thread/i)).toBeTruthy();
+    expect(screen.queryByText(/first thread/i)).toBeNull();
+    await waitFor(() => expect(pending).toHaveLength(2));
+    act(() => pending[1]({ data: [makeMsg({ contact_id: 43, subject: "second thread" })] }));
+    expect(await screen.findByText(/second thread/i)).toBeTruthy();
   });
 
   it("shows empty state when no messages", async () => {
