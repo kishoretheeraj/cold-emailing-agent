@@ -20,6 +20,8 @@ def _msg(sender, body, minutes_after=1, subject="Verify your account", is_reply=
 def _inbox(mocker):
     mocker.patch.object(config, "RECEIPT_IMAP_ADDRESS", "me@example.com")
     mocker.patch.object(config, "RECEIPT_IMAP_APP_PASSWORD", "app-password")
+    mocker.patch.object(email_verification.otp_client, "_post",
+                        side_effect=email_verification.otp_client.BrokerUnreachable("down"))
     now = {"t": 0.0}
     mocker.patch.object(email_verification.time, "monotonic", side_effect=lambda: now["t"])
     mocker.patch.object(email_verification.time, "sleep",

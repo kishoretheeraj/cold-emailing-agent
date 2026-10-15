@@ -1,0 +1,48 @@
+# For review — not installed.  Install to /etc/systemd/system/otp-broker.service.
+#
+# Prereqs (as root):
+#   install -d -o jobagent -g jobagent -m 750 /opt/otp-broker
+#   copy this directory to /opt/otp-broker and create /opt/otp-broker/.venv
+#   (pip install -r requirements.txt)
+#   chown jobagent:jobagent /etc/jobagent24/gmail_app_password && chmod 600 /etc/jobagent24/gmail_app_password
+#   The SQLite file (otp-broker.db) is created with mode 600 by the service.
+[Unit]
+Description=OTP broker (IMAP verification-code service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobagent
+WorkingDirectory=/opt/otp-broker
+Environment=OTP_BROKER_USER=kishoretheerajvj@gmail.com
+Environment=OTP_BROKER_PASSWORD_FILE=/etc/jobagent24/gmail_app_password
+Environment=OTP_BROKER_MARK_SEEN=false
+# Bearer token for /v1/wait.  Pre-create as root (ProtectSystem=strict keeps /etc read-only):
+#   install -m 600 -o jobagent -g jobagent <(openssl rand -base64 32) /etc/jobagent24/otp_broker_token
+Environment=OTP_BROKER_TOKEN_FILE=/etc/jobagent24/otp_broker_token
+# One worker only: a second process would open a second IMAP connection.
+ExecStart=/opt/otp-broker/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8765 --workers 1 --timeout-graceful-shutdown 5
+Restart=always
+RestartSec=5
+UMask=0077
+TimeoutStopSec=15
+MemoryMax=256M
+TasksMax=64
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/otp-broker
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

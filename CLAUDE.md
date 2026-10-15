@@ -1032,6 +1032,39 @@ on the box changes.
 
 @docs/beelink-server.md
 
+## 24/7 namespace (`jobagent24-*`)
+
+Coexists with the old Beelink stack; see deploy/beelink/RUNBOOK-24-7.md. Code `/opt/jobagent24`, state
+`/var/lib/jobagent24`, secrets `/etc/jobagent24`, display :2, API 127.0.0.1:8024. Never armed (submit stays
+on `apply-submit.service`). `config` secrets resolve on first access (`config.require_secrets()` is the
+ExecStartPre check; `from config import SECRET` still reads at the importing module's import).
+`job_contract.canonical_job` normalizes `{absolute_url, content}` and `{url, description}` job shapes at
+consumer boundaries (`job_sourcing.save`, `ats_api.resolve`). `apply_worker._prepare_documents`
+(`APPLY_RESUME_V2=1`) tailors via `resume/v2` from the Greenhouse/Lever API posting and uploads through
+`resume/v2/delivery.py`; `emit_run_digest` is a deliberate `NotImplementedError`. Dashboard approve/reject
+write `application_runs` rows (adapter `dashboard`) first and answer 503 on failure; an approval is intent
+only, the signed `approve_application` RPC is still the gate. `resume_agent.drain()` takes the same `preparing`
+lease as `apply_worker`'s v2 document pass (skips held rows); the dashboard queue is keyset-paginated and
+reconciled on every refresh; `provision-jobagent24.sh` verifies each stop and restarts timers only after the api is healthy.
+
+**apply_pipeline.py: one browser context per job (2026-10-13).** It launches its own Chrome (no CDP attach,
+no debugging port, no stealth flags) and `JobScope.attach` gives each job `new_context(service_workers="block")`
+with, before any page: `route_web_socket` to `_swallow_websocket` (**never `ws.close()`**: with the sync API it
+deadlocks the event loop), `NO_WORKERS_JS` (Worker/SharedWorker throw: the browser routes do not reach workers,
+measured), the submit/network guards, the request route. `serviceworker` and `worker` events are fail-closed
+tripwires. `_loop` owns the browser: display lock, self-test after every launch (both modes, `page_guards=False`
+so the browser-level layers are probed), recycle on `BROWSER_UNUSABLE` or `APPLY_BROWSER_MAX_JOBS`, stop when
+it can't be closed. Unit `jobagent24-pipeline.service` (dry run, not enabled by provisioning). Record:
+docs/codex-architectural-findings.md ("What was built"), spike docs/reviews/2026-10-13-context-isolation-spike.md.
+Sessions: no global state file; `ats_sessions.load_state_for` restores one tenant's state filtered to the
+job's host (cookies on the host or below it, origins only from an explicit (scheme, host, port) set, cookies
+only on shared multi-company hosts; a non-0600, >1 MiB or malformed file blocks the job). Saved back
+(IndexedDB included) only after a clean finish (`scope.persist`), never after a violation; enters only via the
+`jobagent24-warm-login` unit (`--warm-login`; a unit because :2's X11 socket is in xvfb@2's private /tmp; human signs in, fresh sentinel, saved only when the final tenant key still matches after the sign-in-wall check, including employer slugs on shared hosts);
+a sign-in wall on two polls expires it (`.expired`, seven days) -> `needs_review/session_expired`.
+Tests: `tests/test_job_context.py`, `tests/test_job_context_browser.py` (`PIPELINE_BROWSER_TESTS_REQUIRED=1`
+makes them fail instead of skip), `tests/test_ws_route_no_deadlock.py`, `tests/test_job_sessions.py`.
+
 ## Resume intelligence (full-fledged buildout, Phase 3)
 
 `resume_agent.py` (manual CLI: `--propose` then `--build`, plus `--drain` for the Beelink worker) generates a tailored
@@ -1471,8 +1504,10 @@ records `active`/`rejected`. Passwords never appear in logs or reprs.
 (`gmail.fetch_inbox_since`), only matching senders after `since`, and returns a code (URLs stripped
 first; letter codes uppercase-only) or a link on an allowed host; never raises.
 `workday_adapter`: `enter_apply_flow` (Apply -> Apply Manually only), `authenticate` (vault sign-in,
-or signup with verification; "already in use", a refused login or a previously `rejected` entry
-raise `WorkdayStop("login")`, never a blind sign-in, reset or second account), `advance` (Next only
+or FULLY AUTOMATED signup with verification — Oct 12 2026 rule change: the "never create a Workday
+account" restriction is LIFTED per the user's full-automation directive; "already in use" triggers
+the forgot-password recovery flow via the OTP broker rather than stopping; a previously `rejected`
+entry raises `WorkdayStop("login")`), `advance` (Next only
 while the step bar shows a later step and the label is Next/Continue/Save and Continue; returns
 False on Review; refuses anything reading like Submit). Tested against a real browser and
 `tests/fixtures/workday_tenant.html` (both UI generations; the Review step's footer button turns

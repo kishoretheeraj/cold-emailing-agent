@@ -1,0 +1,11 @@
+[Unit]
+Description=jobagent24: run the resume worker every 30 minutes (offset from resume-worker.timer)
+
+[Timer]
+OnCalendar=*:15/30
+RandomizedDelaySec=300
+Persistent=false
+Unit=jobagent24-resume.service
+
+[Install]
+WantedBy=timers.target

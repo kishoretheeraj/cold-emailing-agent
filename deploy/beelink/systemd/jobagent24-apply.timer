@@ -1,0 +1,10 @@
+[Unit]
+Description=jobagent24: prepare job applications every 20 minutes (offset from apply-prepare.timer)
+
+[Timer]
+OnCalendar=*:10/20
+RandomizedDelaySec=120
+Unit=jobagent24-apply.service
+
+[Install]
+WantedBy=timers.target

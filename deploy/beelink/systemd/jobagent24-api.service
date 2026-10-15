@@ -1,0 +1,31 @@
+# Dashboard API (api/dashboard.py) on loopback only; reach it over `ssh -L 8024:localhost:8024` or
+# `tailscale serve`. DASHBOARD_API_TOKEN lives in /etc/jobagent24/dashboard.env; unset = every route but
+# /api/health answers 403.
+[Unit]
+Description=jobagent24 api: dashboard (uvicorn api.dashboard:app) on 127.0.0.1:8024
+After=network-online.target
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/jobagent24
+EnvironmentFile=/etc/jobagent24/base.env
+EnvironmentFile=/etc/jobagent24/dashboard.env
+Environment=HOME=/var/lib/jobagent24
+Environment=APPLY_AGENT_ARMED=
+ExecStartPre=/opt/jobagent24/.venv/bin/python -c "import config; config.require_secrets()"
+ExecStart=/opt/jobagent24/.venv/bin/uvicorn api.dashboard:app --host 127.0.0.1 --port 8024
+Restart=on-failure
+RestartSec=5
+MemoryMax=512M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/jobagent24 /var/lib/jobagent24
+
+[Install]
+WantedBy=multi-user.target

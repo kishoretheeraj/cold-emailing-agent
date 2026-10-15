@@ -1,0 +1,10 @@
+[Unit]
+Description=jobagent24: source job postings every 2 hours (offset from job-sourcing.timer)
+
+[Timer]
+OnCalendar=*-*-* 01/2:13:00
+RandomizedDelaySec=300
+Unit=jobagent24-discovery.service
+
+[Install]
+WantedBy=timers.target

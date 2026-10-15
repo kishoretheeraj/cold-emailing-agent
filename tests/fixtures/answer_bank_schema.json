@@ -1,0 +1,37 @@
+{
+  "application_email": {
+    "answer": "str"
+  },
+  "free_text": {
+    "accomplishment_1_2_sentences": "str"
+  },
+  "identity": {
+    "dob": "str",
+    "email": "str",
+    "first_name": "str",
+    "full_name": "str",
+    "github": "str",
+    "last_name": "str",
+    "linkedin": "str",
+    "location": "str",
+    "phone": "str"
+  },
+  "linkedin_email": {
+    "answer": "str"
+  },
+  "location_preferences": {
+    "nyc_answered_date": "str",
+    "nyc_in_person_5days": "str",
+    "other_relocation": "str"
+  },
+  "unknown_do_not_invent": "list[str]",
+  "us_relocation": {
+    "answer": "str"
+  },
+  "work_authorization": {
+    "authorization_basis": "str",
+    "legally_authorized_us": "str",
+    "requires_sponsorship": "str",
+    "sponsorship_details": "str"
+  }
+}

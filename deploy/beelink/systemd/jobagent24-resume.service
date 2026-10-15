@@ -1,0 +1,29 @@
+# Legacy resume_agent --drain on the subscription, in the new namespace. The v2 tailor runs inside
+# jobagent24-apply (APPLY_RESUME_V2=1); this unit drains whatever that path leaves behind.
+[Unit]
+Description=jobagent24 resume: build resumes for strong-verdict jobs on the Claude subscription
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/jobagent24
+EnvironmentFile=/etc/jobagent24/base.env
+EnvironmentFile=/etc/jobagent24/claude.env
+Environment=HOME=/var/lib/jobagent24
+Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
+Environment=RESUME_CLAUDE_BACKEND=subscription
+Environment=APPLY_GENERIC_ADAPTER=none
+Environment=APPLY_UNIVERSAL_ENABLED=1
+Environment=APPLY_UNIVERSAL_PLATFORMS=generic,workable,smartrecruiters
+Environment=APPLY_AGENT_ARMED=
+ExecStartPre=/opt/jobagent24/.venv/bin/python -c "import config; config.require_secrets()"
+ExecStart=/opt/jobagent24/.venv/bin/python resume_agent.py --drain
+TimeoutStartSec=7200
+MemoryMax=1536M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/jobagent24 /var/lib/jobagent24

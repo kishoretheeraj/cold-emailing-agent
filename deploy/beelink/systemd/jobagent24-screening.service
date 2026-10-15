@@ -1,0 +1,32 @@
+# Scores sourced postings (job_pick.py) on the Claude subscription. Same code as job-pick.service; short-lived
+# oneshot because torch must never sit next to a long-lived browser.
+[Unit]
+Description=jobagent24 screening: score sourced postings on the Claude subscription
+After=network-online.target
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/jobagent24
+EnvironmentFile=/etc/jobagent24/base.env
+EnvironmentFile=/etc/jobagent24/claude.env
+Environment=HOME=/var/lib/jobagent24
+Environment=CLAUDE_CLI_PATH=/var/lib/job-agent/.local/bin/claude
+Environment=JOB_PICK_BACKEND=subscription
+Environment=RESUME_CLAUDE_BACKEND=subscription
+Environment=APPLY_GENERIC_ADAPTER=none
+Environment=APPLY_UNIVERSAL_ENABLED=1
+Environment=APPLY_UNIVERSAL_PLATFORMS=generic,workable,smartrecruiters
+Environment=APPLY_AGENT_ARMED=
+ExecStartPre=/opt/jobagent24/.venv/bin/python -c "import config; config.require_secrets()"
+ExecStart=/opt/jobagent24/.venv/bin/python job_pick.py
+TimeoutStartSec=3600
+MemoryMax=2048M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/jobagent24 /var/lib/jobagent24

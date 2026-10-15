@@ -26,6 +26,7 @@ import config
 import db
 import job_filters
 import job_identity
+import job_contract
 import job_sources
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ def _snapshot(job):
 def save(job, prefs, eligibility, stats, now=None):
     """Triage one normalized posting and save it if it passes. Returns the outcome it counted:
     'saved', 'skipped_<filter reason>', 'duplicate_<dedup reason>' or 'error'."""
+    job = job_contract.canonical_job(job) or job
     try:
         reason = job_filters.reject_reason(job, prefs, eligibility, now=now)
         if not reason and job_sources.needs_detail(job):

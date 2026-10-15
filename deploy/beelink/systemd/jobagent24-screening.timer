@@ -1,0 +1,10 @@
+[Unit]
+Description=jobagent24: score sourced postings every 2 hours, after discovery
+
+[Timer]
+OnCalendar=*-*-* 01/2:43:00
+RandomizedDelaySec=300
+Unit=jobagent24-screening.service
+
+[Install]
+WantedBy=timers.target

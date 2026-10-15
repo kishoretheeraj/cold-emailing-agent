@@ -1,0 +1,421 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "identity.full_name",
+      "class": "identity",
+      "match": {
+        "any": [
+          "\\b(?:full|legal|complete)\\s+name\\b",
+          "\\byour\\s+name\\b",
+          "^\\s*name\\s*\\*?\\s*$",
+          "first\\s+and\\s+last\\s+name"
+        ],
+        "none": [
+          "\\b(?:company|employer|school|university|manager|reference|emergency|pronounc\\w*)\\b",
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.full_name",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Whole-name fields only; first/last have their own rules."
+    },
+    {
+      "id": "identity.first_name",
+      "class": "identity",
+      "match": {
+        "any": ["\\b(?:first|given)\\s+name\\b", "\\bforename\\b"],
+        "none": [
+          "\\b(?:last|family|sur|full)\\s*name\\b",
+          "\\band\\s+last\\b",
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.first_name",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Third-party fields (references, emergency contacts, supervisors) never read the candidate's own name."
+    },
+    {
+      "id": "identity.last_name",
+      "class": "identity",
+      "match": {
+        "any": ["\\b(?:last|family)\\s+name\\b", "\\bsurname\\b"],
+        "none": [
+          "\\b(?:first|given|full)\\s+name\\b",
+          "\\bfirst\\s+and\\b",
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.last_name",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "identity.application_email",
+      "class": "identity",
+      "match": {
+        "any": [
+          "e-?mail.*\\b(?:you\\s+used|used\\s+to\\s+appl\\w*|used\\s+(?:for|on)\\s+(?:this\\s+)?application|applied\\s+with)\\b",
+          "\\bwhich\\s+e-?mail\\b.*\\bappl\\w*"
+        ],
+        "none": [
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "application_email.answer",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Which mailbox the application was filed with."
+    },
+    {
+      "id": "identity.linkedin_email",
+      "class": "identity",
+      "match": {
+        "any": ["linked\\s*in.*e-?mail", "e-?mail.*linked\\s*in"],
+        "none": [
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "linkedin_email.answer",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Must precede identity.email and identity.linkedin."
+    },
+    {
+      "id": "identity.email",
+      "class": "identity",
+      "match": {
+        "any": ["e-?mail"],
+        "none": [
+          "linked\\s*in",
+          "e-?mail.*\\b(?:you\\s+used|used\\s+to\\s+appl\\w*|used\\s+(?:for|on)\\s+(?:this\\s+)?application|applied\\s+with)\\b",
+          "\\bwhich\\s+e-?mail\\b.*\\bappl\\w*",
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.email",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "identity.phone",
+      "class": "identity",
+      "match": {
+        "any": ["\\b(?:phone|mobile|telephone|cell)\\b"],
+        "none": [
+          "\\b(?:type|device|country\\s+code|extension|carrier)\\b",
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.phone",
+      "transform": "phone_e164",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "identity.linkedin",
+      "class": "identity",
+      "match": {
+        "any": ["linked\\s*in"],
+        "none": [
+          "e-?mail",
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.linkedin",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "identity.github",
+      "class": "identity",
+      "match": {
+        "any": ["git\\s*hub"],
+        "none": [
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.github",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "identity.location",
+      "class": "identity",
+      "match": {
+        "any": [
+          "\\b(?:current\\s+)?(?:location|city)\\b",
+          "where\\s+are\\s+you\\s+(?:located|based)",
+          "where\\s+do\\s+you\\s+(?:live|reside)",
+          "city\\s+and\\s+state"
+        ],
+        "none": [
+          "relocat\\w*",
+          "commut\\w*",
+          "\\boffice\\b",
+          "\\bnyc\\b",
+          "new\\s+york",
+          "\\bhybrid\\b",
+          "in[- ]?person",
+          "on[- ]?site",
+          "\\b(?:describe|why|explain|experience)\\b",
+          "tell\\s+us",
+          "\\b(?:reference|emergency\\s+contact|supervisor|manager|recommender|previous\\s+employer)\\w*"
+        ]
+      },
+      "field_kinds": ["input", "combobox"],
+      "bank_path": "identity.location",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Where the candidate lives; work-location preferences have their own rules."
+    },
+    {
+      "id": "location.nyc_hybrid",
+      "class": "identity",
+      "match": {
+        "any": [
+          "(?s)(?=.*\\b(?:nyc|new\\s+york)\\b)\\b(?:willing|able)\\s+to\\s+(?:work|be)\\b.*\\b(?:in\\s+person|onsite|on-site|on\\s+site)\\b",
+          "(?s)(?=.*\\b(?:nyc|new\\s+york)\\b)\\bopen\\s+to\\s+(?:working\\s+)?(?:in\\s+person|onsite|on-site|on\\s+site)\\b",
+          "(?s)(?=.*\\b(?:nyc|new\\s+york)\\b)\\bcomfortable\\s+with\\s+(?:an?\\s+|the\\s+)?(?:working\\s+)?(?:in\\s+person|onsite|on-site|on\\s+site)\\b",
+          "(?s)(?=.*\\b(?:nyc|new\\s+york)\\b)(?=.*\\b(?:willing|able|open\\s+to|comfortable|can\\s+you)\\b).*\\b(?:5\\s*days|five\\s+days)\\b.*\\bin\\s+person\\b"
+        ],
+        "none": [
+          "describe.{0,40}experience",
+          "tell.{0,40}about.{0,40}experience",
+          "\\bexperience\\s+(?:working|with)\\b",
+          "\\b(?:have\\s+you\\s+worked|did\\s+you\\s+work|worked\\s+in|previously)\\b",
+          "\\bever\\b",
+          "\\bhave\\s+you\\s+(?:worked|been)\\b",
+          "\\bdid\\s+you\\s+work\\b",
+          "\\bpast\\b",
+          "\\bprevious\\b",
+          "\\bhistory\\b"
+        ]
+      },
+      "field_kinds": ["input", "select", "radio", "combobox"],
+      "bank_path": "location_preferences.nyc_in_person_5days",
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "NYC in-person ask. Matches only a willingness question bound to the work/attendance action (willing/able to work, open to, comfortable with, or NYC + 5 days + in person with a willingness word); experience, historical and bare asks (ever, have you worked, describe your experience, past, previous, history) fall through to unknown. Must precede location.us_relocation."
+    },
+    {
+      "id": "location.us_relocation",
+      "class": "identity",
+      "match": {
+        "any": ["\\byou\\b.*\\brelocat\\w*|\\brelocat\\w*.*\\byou\\b"],
+        "none": [
+          "\\b(?:canada|canadian|united kingdom|u\\.k\\.|uk|england|ireland|india|europe|european|emea|apac|germany|france|spain|netherlands|poland|australia|singapore|japan|china|hong kong|israel|mexico|brazil|london|toronto|vancouver|berlin|dublin|paris|amsterdam|bangalore|bengaluru|sydney)\\b",
+          "(?s)(?=.*\\b(?:nyc|new\\s+york)\\b)(?=.*(?:\\b(?:5|five)\\b[\\s-]*(?:days?|d)\\b|in[- ]?person|on[- ]?site))"
+        ]
+      },
+      "field_kinds": ["input", "select", "radio", "combobox"],
+      "bank_path": "us_relocation.answer",
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Relocation of the candidate within the US only (the question must address 'you'). Any named non-US place falls through to review; answers.mapper extends this rule's none-list at load with the workauth country list and a wider relocation country list, and refuses any named destination that is not clearly a US place (relocation_destination_unclear)."
+    },
+    {
+      "id": "work_auth.authorization",
+      "class": "work_auth",
+      "match": {
+        "any": [
+          "authori[sz]ed\\s+to\\s+work",
+          "legally\\s+authori[sz]ed",
+          "work\\s+authori[sz]ation",
+          "eligible\\s+to\\s+work",
+          "right\\s+to\\s+work",
+          "legally\\s+(?:permitted|entitled)\\s+to\\s+work"
+        ],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Decided by answers.workauth from fixed facts, never from the bank."
+    },
+    {
+      "id": "work_auth.sponsorship",
+      "class": "work_auth",
+      "match": {
+        "any": ["sponsor"],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Decided by answers.workauth from fixed facts, never from the bank."
+    },
+    {
+      "id": "free_text.accomplishment",
+      "class": "free_text",
+      "match": {
+        "any": ["accomplish\\w*", "\\bproud\\b", "achievement"],
+        "none": []
+      },
+      "field_kinds": ["textarea", "input"],
+      "bank_path": "free_text.accomplishment_1_2_sentences",
+      "transform": "none",
+      "on_missing": "blank",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Operator-written one or two sentences, used verbatim."
+    },
+    {
+      "id": "unknown.salary",
+      "class": "unknown",
+      "match": {
+        "any": [
+          "\\bsalary\\b",
+          "\\bcompensation\\b",
+          "pay\\s+(?:expectation|range|requirement)s?",
+          "\\b(?:desired|expected|target)\\s+(?:pay|base|rate|comp)\\b",
+          "\\bhourly\\s+rate\\b"
+        ],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Never answered from data here."
+    },
+    {
+      "id": "unknown.start_date",
+      "class": "unknown",
+      "match": {
+        "any": [
+          "start\\s+date",
+          "available\\s+to\\s+start",
+          "earliest\\s+(?:start|date)",
+          "when\\s+can\\s+you\\s+start",
+          "notice\\s+period",
+          "availab\\w*\\s+date"
+        ],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "unknown.citizenship",
+      "class": "unknown",
+      "match": {
+        "any": ["\\bcitizen\\w*", "\\bnationality\\b", "national\\s+origin"],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Citizenship is not one of the three fixed work-authorization facts."
+    },
+    {
+      "id": "unknown.clearance",
+      "class": "unknown",
+      "match": {
+        "any": ["\\bclearance\\b", "\\bts/?sci\\b", "\\bpolygraph\\b"],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "unknown.criminal",
+      "class": "unknown",
+      "match": {
+        "any": ["\\bcriminal\\b", "\\bconvict\\w*", "\\bfelon\\w*", "\\bmisdemeanor\\b", "\\barrest\\w*"],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": ""
+    },
+    {
+      "id": "unknown.visa_status",
+      "class": "unknown",
+      "match": {
+        "any": [
+          "\\bvisa\\b",
+          "immigration",
+          "\\bwork\\s+permit\\b",
+          "\\bh-?1b\\b",
+          "\\bstem\\s+opt\\b",
+          "\\bopt\\s+(?:status|extension|student)\\b",
+          "\\bcpt\\b",
+          "\\bgreen\\s*card\\b"
+        ],
+        "none": []
+      },
+      "field_kinds": [],
+      "bank_path": null,
+      "transform": "none",
+      "on_missing": "review",
+      "if_required_and_missing": "review",
+      "allow_llm": false,
+      "notes": "Visa status is never volunteered beyond the fixed work-authorization answers."
+    }
+  ]
+}

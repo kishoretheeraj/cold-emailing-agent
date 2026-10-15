@@ -22,7 +22,8 @@ from email.utils import parseaddr
 import config
 import db
 import gmail
-from submission_reconciler import _company_matches, _normalize_company, _parse_ts, _phrase_in, _words
+import reply_repo
+from submission_reconciler import _company_matches, _normalize_company, _parse_ts
 
 log = logging.getLogger(__name__)
 
@@ -113,19 +114,23 @@ def _evidence(msg, kind, app):
 def _target(msg, apps):
     if msg.get("is_reply") or not msg.get("message_id") or _from_job_board(msg):
         return None
-    candidates = []
+    name, addr = parseaddr(msg.get("from", ""))
+    view = {
+        "message_id": msg["message_id"], "in_reply_to": None, "references": [],
+        "from_domain": addr.rsplit("@", 1)[-1].lower() if "@" in addr else "",
+        "from_name": name, "subject": msg.get("subject", ""), "body": msg.get("body", ""),
+        "date": msg["date"],
+    }
+    cands = []
     for app in apps:
         start = _window_start(app)
         if start is None or msg["date"] < start:
             continue
-        if not _company_matches(_normalize_company(app.get("company")), msg):
-            continue
-        candidates.append(app)
-    if len(candidates) <= 1:
-        return candidates[0] if candidates else None
-    text = f"{msg.get('subject', '')}\n{msg.get('body', '')}"
-    named = [a for a in candidates if _phrase_in(" ".join(_words(a.get("role"))), text)]
-    return named[0] if len(named) == 1 else None
+        cands.append({"id": app["id"], "job_id": None, "company": app.get("company"),
+                      "role": app.get("role"), "submitted_at": start, "thread_keys": [],
+                      "tenant_domains": [], "_row": app})
+    found, _, _ = reply_repo.correlate(view, cands)
+    return found["_row"] if found else None
 
 
 def decide(apps, messages, now=None):

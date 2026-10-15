@@ -15,6 +15,7 @@ from workday_adapter import WorkdayStop
 FIXTURE = (Path(__file__).resolve().parent / "fixtures" / "workday_tenant.html").as_uri()
 TENANT = "fixture.wd5.myworkdayjobs.com"
 EMAIL = "me+jobs@example.com"
+ORIGIN = "https://fixture.wd5.myworkdayjobs.com"
 
 
 @pytest.fixture(scope="module")
@@ -31,7 +32,21 @@ def browser():
 
 
 @pytest.fixture
-def open_tenant(browser):
+def fixture_origin(monkeypatch):
+    # The fixture page is file://, which the real _origin rejects (https only). Report the
+    # tenant's normal origin for that one URL and delegate everything else to the real function.
+    real_origin = workday_adapter._origin
+
+    def _origin(url):
+        if url == FIXTURE:
+            return "https://fixture.wd5.myworkdayjobs.com:443"
+        return real_origin(url)
+
+    monkeypatch.setattr(workday_adapter, "_origin", _origin)
+
+
+@pytest.fixture
+def open_tenant(browser, fixture_origin):
     contexts = []
 
     def _open(**scenario):
@@ -106,7 +121,7 @@ def test_creates_an_account_with_a_password_saved_first(open_tenant, vault):
         seen["entry"] = credential_vault.Vault(vault.path, vault.key).get(TENANT)
         return {"code": "482913"}
 
-    assert workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", verify) == "created"
+    assert workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", verify, expected_origin=ORIGIN) == "created"
     assert seen["entry"]["status"] == "reserved"
     assert _log(page) == [f"createAccount:{EMAIL}", "verify:482913"]
     assert vault.get(TENANT)["status"] == "active"
@@ -115,13 +130,13 @@ def test_creates_an_account_with_a_password_saved_first(open_tenant, vault):
 
 def test_create_without_email_verification(open_tenant, vault):
     page = open_tenant(start="auth", verify="none")
-    assert workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code()) == "created"
+    assert workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code(), expected_origin=ORIGIN) == "created"
 
 
 def test_existing_account_without_a_saved_password_stops_and_never_signs_in_blind(open_tenant, vault):
     page = open_tenant(start="auth", existingAccount=True)
     with pytest.raises(WorkdayStop) as stop:
-        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code())
+        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code(), expected_origin=ORIGIN)
     assert stop.value.kind == "login"
     assert "already exists" in str(stop.value)
     assert "signIn" not in _log(page)
@@ -132,7 +147,7 @@ def test_signs_in_with_the_saved_account(open_tenant, vault):
     entry = vault.reserve(TENANT, EMAIL, "https://x")
     vault.mark(TENANT, "active")
     page = open_tenant(start="auth", password=entry["password"])
-    assert workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code()) == "signed_in"
+    assert workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code(), expected_origin=ORIGIN) == "signed_in"
     assert _log(page) == ["signIn"]
 
 
@@ -140,7 +155,7 @@ def test_a_refused_sign_in_stops_and_never_creates_another_account(open_tenant, 
     vault.reserve(TENANT, EMAIL, "https://x")
     page = open_tenant(start="auth", password="something-else")
     with pytest.raises(WorkdayStop) as stop:
-        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code())
+        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code(), expected_origin=ORIGIN)
     assert stop.value.kind == "login"
     assert not any(e.startswith("createAccount") for e in _log(page))
     assert vault.get(TENANT)["status"] == "rejected"
@@ -151,7 +166,7 @@ def test_a_previously_refused_account_is_not_retried(open_tenant, vault):
     vault.mark(TENANT, "rejected")
     page = open_tenant(start="auth")
     with pytest.raises(WorkdayStop) as stop:
-        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code())
+        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code(), expected_origin=ORIGIN)
     assert stop.value.kind == "login"
     assert _log(page) == []
 
@@ -160,7 +175,7 @@ def test_a_previously_refused_account_is_not_retried(open_tenant, vault):
 def test_verification_that_does_not_complete_stops(open_tenant, vault, verify):
     page = open_tenant(start="auth")
     with pytest.raises(WorkdayStop) as stop:
-        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", verify)
+        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", verify, expected_origin=ORIGIN)
     assert stop.value.kind == "email_verification"
 
 
@@ -168,8 +183,18 @@ def test_password_never_reaches_the_logs(open_tenant, vault, caplog):
     import logging
     caplog.set_level(logging.DEBUG)
     page = open_tenant(start="auth")
-    workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code())
+    workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code(), expected_origin=ORIGIN)
     assert vault.get(TENANT)["password"] not in caplog.text
+
+
+def test_no_expected_origin_stops_before_any_credential_is_entered(open_tenant, vault):
+    page = open_tenant(start="auth")
+    with pytest.raises(WorkdayStop) as stop:
+        workday_adapter.authenticate(page, vault, TENANT, EMAIL, "https://x", _code(), expected_origin=None)
+    assert stop.value.kind == "unrecognized_page"
+    log = _log(page)
+    assert "signIn" not in log
+    assert not any(e.startswith("createAccount") for e in log)
 
 
 # ── wizard ─────────────────────────────────────────────────────────────────────
