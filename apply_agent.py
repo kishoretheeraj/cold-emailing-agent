@@ -145,10 +145,16 @@ _FORM_INVENTORY_JS = r"""() => {
   // Same rule as _COMBOBOX_FILLED_JS: in a react-select style box only a chosen value counts (text
   // typed into its search input is not an answer); a plain autocomplete input counts its text.
   const comboboxFilled = (el) => {
-    const box = el.closest('[class*="container"]');
+    // The react-select control holds the chosen value. On Greenhouse the nearest "container" is the
+    // input's own select__input-container, which never does (live dry run 2026-10-14).
+    const parent = el.closest('[class*="control"]');
+    // A generic form-control input/wrapper is not a react-select control.
+    const control = parent && (el.id.startsWith('react-select-') || parent.querySelector(
+      '[class*="value-container"], [class*="ValueContainer"]')) ? parent : null;
+    const box = control || el.closest('[class*="container"]');
     const chosen = !!(box && box.querySelector(
       '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
-    const searchOnly = !!(box && box.querySelector('[class*="control"]'));
+    const searchOnly = !!control || !!(box && box.querySelector('[class*="control"]'));
     return chosen || (!searchOnly && el.value.trim() !== '');
   };
   const rawLabel = (el) => {
@@ -364,10 +370,16 @@ def _pick_listbox_option(page, field, value, timeout):
 _COMBOBOX_OPTIONS = "[role='option'], [id*='-option-']"
 # Mirrors comboboxFilled in _FORM_INVENTORY_JS.
 _COMBOBOX_FILLED_JS = """(el) => {
-  const box = el.closest('[class*="container"]');
+  // The react-select control holds the chosen value. On Greenhouse the nearest "container" is the
+  // input's own select__input-container, which never does (live dry run 2026-10-14).
+  const parent = el.closest('[class*="control"]');
+  // A generic form-control input/wrapper is not a react-select control.
+  const control = parent && (el.id.startsWith('react-select-') || parent.querySelector(
+    '[class*="value-container"], [class*="ValueContainer"]')) ? parent : null;
+  const box = control || el.closest('[class*="container"]');
   const chosen = !!(box && box.querySelector(
     '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'));
-  const searchOnly = !!(box && box.querySelector('[class*="control"]'));
+  const searchOnly = !!control || !!(box && box.querySelector('[class*="control"]'));
   return chosen || (!searchOnly && el.value.trim() !== '');
 }"""
 # Long lists (countries, schools) are not worth putting in a screening prompt.
@@ -378,7 +390,10 @@ def _combobox_menu(page, box, query, timeout):
     # Opens the menu (typing `query` first when given) and returns (options locator, their texts).
     box.focus(timeout=timeout)
     if query:
-        box.fill(query, timeout=timeout)
+        # Real keystrokes, not fill(): Greenhouse's server-backed lists (Location (City), School) only
+        # search on key events -- fill() set the text and no request ever went out (live, 2026-10-14).
+        box.fill("", timeout=timeout)
+        box.press_sequentially(str(query), delay=40, timeout=timeout + 100 * len(str(query)))
     else:
         page.keyboard.press("ArrowDown")
     options = page.locator(_COMBOBOX_OPTIONS).filter(visible=True)
@@ -387,6 +402,8 @@ def _combobox_menu(page, box, query, timeout):
         options.first.wait_for(state="visible", timeout=timeout * (2 if query else 1))
     except Exception:
         return options, []
+    if query:
+        page.wait_for_timeout(600)  # a debounced search can still swap in the final results
     return options, [t.strip() for t in options.all_inner_texts()]
 
 

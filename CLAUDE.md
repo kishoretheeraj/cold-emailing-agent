@@ -1686,8 +1686,14 @@ sponsorship) while `_fill_field` reported success: it typed and pressed Enter be
 Comboboxes are now filled only by `_pick_combobox_option`: focus (the 2px input is never clicked), open
 the menu or type a search, read the visible `[role=option]`/`*-option-*` texts, click the matching one,
 then confirm the box shows a value; no match clears the typed text and returns False. Enter is never
-pressed on any combobox. In a react-select box (`[class*=control]` inside the container) only a chosen
-value counts as filled, never typed search text (inventory and `_COMBOBOX_FILLED_JS` agree). A required
+pressed on any combobox. In a react-select box only a chosen value counts as filled, never typed search
+text (inventory and `_COMBOBOX_FILLED_JS` agree); the chosen value is looked for in the nearest
+`[class*=control]` with a React Select input ID or value-container marker, because on Greenhouse
+the nearest "container" is the input's own
+`select__input-container` (live dry run 2026-10-14: every Greenhouse dropdown read as empty after a
+successful pick). Generic `form-control` inputs and wrappers remain plain autocompletes whose text
+counts as filled. Searches are typed with real keystrokes (`press_sequentially`), not `fill()`:
+Greenhouse's server-backed Location (City) and School lists send no request on `fill()`. A required
 combobox with no options in the inventory gets its open-list options read for the screening prompt
 (`_combobox_options`, at most 60). **Standard questions** -- country, city, school (also the
 `(Undergraduate)`/`(Graduate)` variants), degree, discipline, graduation year -- are answered in

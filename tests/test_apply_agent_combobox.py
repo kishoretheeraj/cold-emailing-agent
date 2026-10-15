@@ -86,6 +86,37 @@ def test_inventory_reads_searchable_dropdowns_as_required_empty_comboboxes(page)
     assert country["filled"] is False
 
 
+@pytest.mark.parametrize("markup", [
+    '<input id="city" class="form-control" role="combobox" required>',
+    '<div class="form-control"><input id="city" role="combobox" required></div>',
+])
+def test_plain_autocomplete_with_generic_control_class_counts_its_text(page, markup):
+    page.set_content('<label for="city">City</label>' + markup)
+    box = page.locator("#city")
+    assert not box.evaluate(apply_agent._COMBOBOX_FILLED_JS)
+    assert not _filled(page, "City")
+    box.fill("Boston")
+    assert box.evaluate(apply_agent._COMBOBOX_FILLED_JS)
+    assert _filled(page, "City")
+    assert apply_agent._required_unfilled(apply_agent._form_inventory(page)) == []
+
+
+def test_default_react_select_control_does_not_count_search_text(page):
+    page.set_content('<label for="react-select-1-input">City</label>'
+                     '<div class="css-default-control">'
+                     '<input id="react-select-1-input" role="combobox" required>'
+                     '</div>')
+    box = page.locator("input")
+    box.fill("Boston")
+    assert not box.evaluate(apply_agent._COMBOBOX_FILLED_JS)
+    assert not _filled(page, "City")
+    page.locator("div").evaluate(
+        "el => el.insertAdjacentHTML('afterbegin', '<div class=css-default-singleValue>Boston</div>')")
+    box.fill("")
+    assert box.evaluate(apply_agent._COMBOBOX_FILLED_JS)
+    assert _filled(page, "City")
+
+
 def test_yes_no_answer_is_chosen_by_clicking_the_option_not_by_enter(page):
     # Regression: typing "Yes" + Enter fired before the menu rendered and chose nothing, while the
     # filler reported success. The menu here renders 150 ms late, like the live one.
