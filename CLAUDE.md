@@ -1039,10 +1039,9 @@ Coexists with the old Beelink stack; see deploy/beelink/RUNBOOK-24-7.md. Code `/
 on `apply-submit.service`). `config` secrets resolve on first access (`config.require_secrets()` is the
 ExecStartPre check; `from config import SECRET` still reads at the importing module's import).
 `job_contract.canonical_job` normalizes `{absolute_url, content}` and `{url, description}` job shapes at
-consumer boundaries (`job_sourcing.save`, `ats_api.resolve`). `resume/v2` and `cover_letter/` are
-not on main (they stay on `overnight-247-restart`); `APPLY_RESUME_V2` is unset in every unit
-(`test_no_unit_turns_on_resume_v2`), so `apply_worker` uses `resume_agent` documents and a live
-`apply_pipeline` run refuses its static resume unless `APPLY_ALLOW_STATIC_RESUME=1`; `emit_run_digest` is a deliberate `NotImplementedError`. Dashboard approve/reject
+consumer boundaries (`job_sourcing.save`, `ats_api.resolve`). `apply_worker._prepare_documents`
+(`APPLY_RESUME_V2=1`, set only in `jobagent24-apply.service`) tailors via `resume/v2` from the Greenhouse/Lever
+API posting and uploads through `resume/v2/delivery.py`; `emit_run_digest` is a deliberate `NotImplementedError`. Dashboard approve/reject
 write `application_runs` rows (adapter `dashboard`) first and answer 503 on failure; an approval is intent
 only, the signed `approve_application` RPC is still the gate. `resume_agent.drain()` takes the same `preparing`
 lease as `apply_worker`'s v2 document pass (skips held rows); the dashboard queue is keyset-paginated and
