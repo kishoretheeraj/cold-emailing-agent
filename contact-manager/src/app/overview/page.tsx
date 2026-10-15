@@ -61,6 +61,62 @@ function formatTime(ts: string): string {
   });
 }
 
+// ── Data loading ───────────────────────────────────────────────────────────────
+
+async function loadOverview(): Promise<{
+  needsReply: ActionContact[];
+  draftsWaiting: number;
+  pipeline: PipelineBuckets | null;
+  lastRun: AgentRun | null;
+}> {
+  const [replyRes, draftsRes, pipelineRes, runRes] = await Promise.all([
+    // Contacts needing a human reply
+    supabase
+      .from("contacts")
+      .select("id,name,company")
+      .in("classifier_status", ["positive_reply", "soft_yes"])
+      .not("reply_status", "in", "(interested,call_scheduled,dead)")
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
+
+    // Drafts sitting in Gmail waiting for the user to review + send
+    supabase
+      .from("contacts")
+      .select("id", { count: "exact", head: true })
+      .like("stage", "%_drafted")
+      .is("deleted_at", null),
+
+    // All active contacts for pipeline bucketing
+    supabase
+      .from("contacts")
+      .select("stage,reply_status")
+      .is("deleted_at", null),
+
+    // Most recent agent run
+    supabase
+      .from("agent_runs")
+      .select("*")
+      .order("ran_at", { ascending: false })
+      .limit(1)
+      .single(),
+  ]);
+
+  let pipeline: PipelineBuckets | null = null;
+  if (pipelineRes.data) {
+    pipeline = { New: 0, Drafted: 0, Sent: 0, Replied: 0, Done: 0 };
+    for (const row of pipelineRes.data) {
+      pipeline[bucketStage(row.stage, row.reply_status)]++;
+    }
+  }
+
+  return {
+    needsReply: (replyRes.data ?? []) as ActionContact[],
+    draftsWaiting: draftsRes.count ?? 0,
+    pipeline,
+    lastRun: runRes.data ? (runRes.data as AgentRun) : null,
+  };
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function OverviewPage() {
@@ -72,53 +128,17 @@ export default function OverviewPage() {
   const [triggerState, setTriggerState] = useState<TriggerState>("idle");
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    const [replyRes, draftsRes, pipelineRes, runRes] = await Promise.all([
-      // Contacts needing a human reply
-      supabase
-        .from("contacts")
-        .select("id,name,company")
-        .in("classifier_status", ["positive_reply", "soft_yes"])
-        .not("reply_status", "in", "(interested,call_scheduled,dead)")
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false }),
-
-      // Drafts sitting in Gmail waiting for the user to review + send
-      supabase
-        .from("contacts")
-        .select("id", { count: "exact", head: true })
-        .like("stage", "%_drafted")
-        .is("deleted_at", null),
-
-      // All active contacts for pipeline bucketing
-      supabase
-        .from("contacts")
-        .select("stage,reply_status")
-        .is("deleted_at", null),
-
-      // Most recent agent run
-      supabase
-        .from("agent_runs")
-        .select("*")
-        .order("ran_at", { ascending: false })
-        .limit(1)
-        .single(),
-    ]);
-
-    setNeedsReply((replyRes.data ?? []) as ActionContact[]);
-    setDraftsWaiting(draftsRes.count ?? 0);
-
-    if (pipelineRes.data) {
-      const buckets: PipelineBuckets = { New: 0, Drafted: 0, Sent: 0, Replied: 0, Done: 0 };
-      for (const row of pipelineRes.data) {
-        buckets[bucketStage(row.stage, row.reply_status)]++;
-      }
-      setPipeline(buckets);
-    }
-
-    if (runRes.data) setLastRun(runRes.data as AgentRun);
-    setLoading(false);
-  }, []);
+  const load = useCallback(
+    () =>
+      loadOverview().then((overview) => {
+        setNeedsReply(overview.needsReply);
+        setDraftsWaiting(overview.draftsWaiting);
+        if (overview.pipeline) setPipeline(overview.pipeline);
+        if (overview.lastRun) setLastRun(overview.lastRun);
+        setLoading(false);
+      }),
+    []
+  );
 
   useEffect(() => {
     load();

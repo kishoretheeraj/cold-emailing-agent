@@ -63,6 +63,25 @@ function formatTs(ts: string): string {
   });
 }
 
+async function loadEvents(): Promise<AgentEvent[]> {
+  const { data } = await supabase
+    .from("agent_events")
+    .select("*")
+    .order("started_at", { ascending: false })
+    .limit(100);
+  return (data as AgentEvent[]) ?? [];
+}
+
+async function loadFailureCount(): Promise<number> {
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const { count } = await supabase
+    .from("agent_events")
+    .select("id", { count: "exact", head: true })
+    .in("status", ["failed", "blocked_preflight"])
+    .gte("started_at", since);
+  return count ?? 0;
+}
+
 export default function RunsPage() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -84,25 +103,16 @@ export default function RunsPage() {
     resetTimer.current = setTimeout(() => setTriggerState("idle"), 3000);
   }, []);
 
-  const fetchEvents = useCallback(async () => {
-    const { data } = await supabase
-      .from("agent_events")
-      .select("*")
-      .order("started_at", { ascending: false })
-      .limit(100);
-    setEvents((data as AgentEvent[]) ?? []);
-    setLoading(false);
-  }, []);
+  const fetchEvents = useCallback(
+    () =>
+      loadEvents().then((rows) => {
+        setEvents(rows);
+        setLoading(false);
+      }),
+    []
+  );
 
-  const fetchBadge = useCallback(async () => {
-    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { count } = await supabase
-      .from("agent_events")
-      .select("id", { count: "exact", head: true })
-      .in("status", ["failed", "blocked_preflight"])
-      .gte("started_at", since);
-    setFailureBadge(count ?? 0);
-  }, []);
+  const fetchBadge = useCallback(() => loadFailureCount().then(setFailureBadge), []);
 
   useEffect(() => {
     fetchEvents();
