@@ -499,6 +499,10 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Write e2e tests for every UI change.** For any change that affects what the user sees or interacts with, add a Playwright test that exercises the changed flow. Assertions alone are not enough — take a screenshot with `page.screenshot()` and visually verify the result before committing.
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
+- **Signed in by config.** `playwright.config.ts` starts its own dev server (never reuses one) with
+  test-only `OPERATOR_PASSWORD`/`SESSION_SECRET` and gives every test a `cm_session` cookie minted by
+  `createSessionToken`; without it `proxy.ts` sends every page to `/login` (that was the state from the
+  2026-10-08 login gate until 2026-10-15). `E2E_PORT` moves the server off 3000.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
 - **Current test count: 88** (vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
