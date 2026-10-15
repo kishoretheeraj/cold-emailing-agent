@@ -960,8 +960,31 @@ def _check_status(status):
         raise ValueError(f"unknown automation_status: {status}")
 
 
+# Service_role-only since migration 20261015000000: the anon key is public and the lease id is
+# anon-readable, so these must not be callable with it. The contact-manager's RPCs stay anon.
+_WORKER_RPCS = frozenset({
+    "claim_application", "heartbeat_application", "renew_submission_lease", "complete_preview",
+    "release_application", "record_submission", "mark_application_unsupported",
+    "recover_stale_leases", "record_receipt_evidence", "request_takeover", "clear_takeover",
+    "log_application_run",
+})
+_warned_no_service_key = False
+
+
+def _worker_client():
+    global _warned_no_service_key
+    if SUPABASE_SERVICE_ROLE_KEY:
+        return get_admin_client()
+    if not _warned_no_service_key:
+        _warned_no_service_key = True
+        log.warning("SUPABASE_SERVICE_ROLE_KEY is not set: worker RPCs use the anon key, which "
+                    "migration 20261015000000 refuses")
+    return get_client()
+
+
 def _rpc(name, params):
-    return get_client().rpc(name, params).execute().data
+    client = _worker_client() if name in _WORKER_RPCS else get_client()
+    return client.rpc(name, params).execute().data
 
 
 def claim_application(application_id, to_status):
