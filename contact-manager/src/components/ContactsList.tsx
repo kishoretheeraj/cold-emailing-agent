@@ -255,47 +255,66 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const openContact = useCallback(async (c: Contact) => {
-    setSelectedContact(c);
-    const { data } = await supabase.from("contacts").select("*").eq("id", c.id).single();
-    if (data) setSelectedContact(data as Contact);
+  // The sheet's text fields hold local edits until blur. They are filled when a contact opens
+  // and again when its full record arrives: the list row comes from LIST_COLUMNS, which leaves
+  // out role, detail, job_title, resume_url and connection_context.
+  const syncSheetFields = useCallback((c: Contact) => {
+    setNotes(c.notes ?? "");
+    setName(c.name ?? "");
+    setEmail(c.email ?? "");
+    setCompany(c.company ?? "");
+    setRole(c.role ?? "");
+    setDetail(c.detail ?? "");
+    setResumeUrl(c.resume_url ?? "");
+    setJobTitle(c.job_title ?? "");
+    setContactState(c.state ?? "");
+    setConnectionContext(c.connection_context ?? "");
   }, []);
 
-  // Sync sheet local state when selected contact changes
-  useEffect(() => {
-    setNotes(selectedContact?.notes ?? "");
-    setName(selectedContact?.name ?? "");
-    setEmail(selectedContact?.email ?? "");
-    setCompany(selectedContact?.company ?? "");
-    setRole(selectedContact?.role ?? "");
-    setDetail(selectedContact?.detail ?? "");
-    setResumeUrl(selectedContact?.resume_url ?? "");
-    setJobTitle(selectedContact?.job_title ?? "");
-    setContactState(selectedContact?.state ?? "");
-    setConnectionContext(selectedContact?.connection_context ?? "");
-  }, [selectedContact?.id]);
+  const openContact = useCallback(
+    async (c: Contact) => {
+      setSelectedContact(c);
+      syncSheetFields(c);
+      const { data } = await supabase.from("contacts").select("*").eq("id", c.id).single();
+      if (data) {
+        setSelectedContact(data as Contact);
+        syncSheetFields(data as Contact);
+      }
+    },
+    [syncSheetFields]
+  );
 
   // ── Fetch functions ──────────────────────────────────────────────────────────
 
-  const fetchInitial = useCallback(
-    async (currentFilters: ContactsQueryFilters) => {
+  // Loads page one. Callers set `loading` first: fetchInitial below for filter changes, the
+  // refreshKey check during render for refreshes (and loading starts true for the mount).
+  const loadFirstPage = useCallback(
+    (currentFilters: ContactsQueryFilters) => {
       const fetchId = ++fetchIdRef.current;
-      setLoading(true);
-      const { data, error } = await buildContactsQuery(currentFilters, null);
-      if (fetchId !== fetchIdRef.current) return;
-      if (error) {
-        onError(`Failed to load contacts: ${error.message}`);
+      return buildContactsQuery(currentFilters, null).then(({ data, error }) => {
+        if (fetchId !== fetchIdRef.current) return;
+        if (error) {
+          onError(`Failed to load contacts: ${error.message}`);
+          setLoading(false);
+          return;
+        }
+        const rows = (data ?? []) as unknown as Contact[];
+        setContacts(rows);
+        setLastFetchedCreatedAt(rows.length ? (rows[rows.length - 1].created_at ?? null) : null);
+        setHasMore(rows.length === PAGE_SIZE);
         setLoading(false);
-        return;
-      }
-      const rows = (data ?? []) as unknown as Contact[];
-      setContacts(rows);
-      setLastFetchedCreatedAt(rows.length ? (rows[rows.length - 1].created_at ?? null) : null);
-      setHasMore(rows.length === PAGE_SIZE);
-      setLoading(false);
-      if (listContainerRef.current) listContainerRef.current.scrollTop = 0;
+        if (listContainerRef.current) listContainerRef.current.scrollTop = 0;
+      });
     },
     [onError]
+  );
+
+  const fetchInitial = useCallback(
+    (currentFilters: ContactsQueryFilters) => {
+      setLoading(true);
+      return loadFirstPage(currentFilters);
+    },
+    [loadFirstPage]
   );
 
   const fetchMore = useCallback(async () => {
@@ -365,8 +384,14 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
 
   // ── refreshKey ───────────────────────────────────────────────────────────────
 
+  const [seenRefreshKey, setSeenRefreshKey] = useState(refreshKey);
+  if (seenRefreshKey !== refreshKey) {
+    setSeenRefreshKey(refreshKey);
+    setLoading(true);
+  }
+
   useEffect(() => {
-    fetchInitial(filters);
+    loadFirstPage(filters);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
