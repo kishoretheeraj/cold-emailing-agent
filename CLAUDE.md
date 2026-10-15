@@ -1730,6 +1730,11 @@ also mention the privacy policy; `promotional text` must beat `privacy policy`);
 pattern still come first. Kishore's live `applicant_eligibility` gained `github`, `how did you hear`,
 `work authorization status` (F-1 OPT), `optional practical training`, `updates from a recruiter` (Yes) and
 `promotional text` (No) (2026-10-13).
+From dry run 38678470304 (2026-10-15): "current or previous / most recent employer|title" take the newest
+`master.json` role (a bare "Current Company" stays with the model); the country aliases include "US"; a bare
+"3.7" in a GPA list is a floor; "I understand ..." counts as agreeing; a school list that names none of the
+candidates in whole words takes its "Other" option (Greenhouse's shared list has no Anna University), while an
+option naming the school under another spelling leaves the field for a human.
 `scripts/apply_dryrun.py` also fills these profile answers (`_profile_answers`, no model) and prints
 `profile facts filled` per label. Tests: `tests/test_apply_agent_combobox.py` (real browser,
 `tests/fixtures/searchable_selects.html` and `lever_cards.html`, written for tests).

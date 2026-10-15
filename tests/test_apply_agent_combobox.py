@@ -354,6 +354,11 @@ def test_profile_combobox_with_one_candidate_does_not_use_fuzzy_answer_matching(
     ("If you do not see your University listed, let us know your school name here.", None),
     ("Are you willing to relocate to our New York office?", None),
     ("What country are you a citizen of?", None),
+    ("Who is your current or previous employer?", "recent_employer"),
+    ("What is your current or previous job title?", "recent_title"),
+    ("Most recent employer", "recent_employer"),
+    ("Current Company", None),                     # a bare "current" would claim a current job
+    ("Current Title", None),
 ])
 def test_profile_key_for(label, key):
     assert apply_agent._profile_key_for(label) == key
@@ -418,6 +423,9 @@ def test_form_answers_start_year_and_gpa(tmp_path, monkeypatch):
     (["3.0 or above", "3.5 or above"], "3.5 or above"),
     (["3.75 - 4.0", "N/A"], None),                    # never rounds up
     (["Yes", "No"], None),
+    # Beyond Finance's GPA (Undergraduate) list, as Greenhouse serves it: bare values are floors.
+    (["3.0", "3.1", "3.2", "3.3", "3.4", "3.5", "3.6", "3.7", "3.8", "3.9", "4.0", "Other"], "3.7"),
+    (["N/A", "3.8", "3.9", "4.0", "Other"], None),
 ])
 def test_gpa_option_picks_the_range_holding_the_number(options, expected):
     assert apply_agent._gpa_option(options, "3.73") == expected
@@ -433,6 +441,9 @@ def test_gpa_option_picks_the_range_holding_the_number(options, expected):
     ("No", ["Yes, text me", "Email only"], None),                   # nothing reads as declining
     ("No", ["I do not consent", "I don't want texts"], None),       # two declining options: ambiguous
     ("Yes", ["I agree", "I accept"], None),          # two agreeing options: ambiguous, left blank
+    # Stripe's only option for "Self-identification is voluntary. Please acknowledge this ..."
+    ("Yes", ["I understand that self-identification is voluntary."],
+     "I understand that self-identification is voluntary."),
 ])
 def test_pick_option_maps_yes_onto_the_single_agreeing_choice(value, options, expected):
     assert apply_agent._pick_option(options, value) == expected
@@ -494,3 +505,36 @@ def test_form_answers_outside_the_us_has_no_country_and_unreadable_file_is_empty
     assert candidate_profile.form_answers() == {"city": ["Chennai, India"]}
     monkeypatch.setattr(candidate_profile, "_MASTER_DATA_PATH", tmp_path / "missing.json")
     assert candidate_profile.form_answers() == {}
+
+
+def test_form_answers_most_recent_role_and_us_country_code(tmp_path, monkeypatch):
+    master = {"contact": {"location": "Hanover, NH"},
+              "roles": [{"title": "Associate Product Manager", "company": "Protium Finance Limited"},
+                        {"title": "Senior Product Analyst", "company": "Protium Finance Limited"}]}
+    path = tmp_path / "master.json"
+    path.write_text(json.dumps(master))
+    monkeypatch.setattr(candidate_profile, "_MASTER_DATA_PATH", path)
+    answers = candidate_profile.form_answers()
+    assert answers["recent_employer"] == ["Protium Finance Limited"]
+    assert answers["recent_title"] == ["Associate Product Manager"]
+    # Stripe's country list spells the United States "US".
+    assert apply_agent._pick_candidates(["Canada", "India", "US"], answers["country"]) == "US"
+
+
+@pytest.mark.parametrize("label,options,expected", [
+    ("School (Undergraduate)", ["Dartmouth College", "Indian Institute of Technology", "Other", "N/A"], "Other"),
+    ("School (Undergraduate)", ["Anna University", "Other"], "Anna University"),
+    ("School (Undergraduate)", ["Dartmouth College", "N/A"], None),     # no Other: left for a human
+    ("School (Undergraduate)", ["Anna University, Chennai", "Other"], None),  # listed, other spelling
+    ("School (Undergraduate)", ["Susquehanna University", "Other"], "Other"),
+    ("Degree", ["Bachelor's Degree", "Other"], None),                  # only school lists fall back
+])
+def test_unlisted_school_takes_other(label, options, expected):
+    field = {"label": label, "kind": "select", "options": options}
+    assert apply_agent._profile_answer(None, field, ["Anna University"]) == expected
+
+
+def test_unlisted_school_takes_other_in_a_searchable_list(page):
+    # The fixture's School list answers searches like Greenhouse's and has an "Other" entry.
+    field = _field(page, "School")
+    assert apply_agent._profile_answer(page, field, ["Madras Christian College"]) == "Other"
