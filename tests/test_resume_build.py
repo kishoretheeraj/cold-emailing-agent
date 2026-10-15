@@ -141,7 +141,7 @@ def _fake_soffice(tmp_path, seen=None):
 
 
 def test_convert_to_pdf_calls_soffice_and_returns_pdf_path(mocker, tmp_path):
-    run = mocker.patch("resume_build.subprocess.run", side_effect=_fake_soffice(tmp_path))
+    run = mocker.patch("resume_build._run_soffice", side_effect=_fake_soffice(tmp_path))
     docx_path = str(tmp_path / "resume.docx")
     result = resume_build.convert_to_pdf(docx_path, str(tmp_path))
     run.assert_called_once()
@@ -154,7 +154,7 @@ def test_convert_to_pdf_calls_soffice_and_returns_pdf_path(mocker, tmp_path):
 
 def test_convert_to_pdf_uses_configured_timeout(mocker, tmp_path):
     seen = {}
-    mocker.patch("resume_build.subprocess.run", side_effect=_fake_soffice(tmp_path, seen))
+    mocker.patch("resume_build._run_soffice", side_effect=_fake_soffice(tmp_path, seen))
     resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
     assert seen["kwargs"]["timeout"] == config.RESUME_SOFFICE_TIMEOUT_SECONDS
 
@@ -175,7 +175,7 @@ def test_convert_to_pdf_seeds_the_profile_with_the_resume_font_files(mocker, tmp
         (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7")
         return MagicMock(returncode=0)
 
-    mocker.patch("resume_build.subprocess.run", side_effect=fake_run)
+    mocker.patch("resume_build._run_soffice", side_effect=fake_run)
     resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
     assert seen["fonts"] == ["Calibri.ttf", "calibrib.ttf"]
 
@@ -187,13 +187,13 @@ def test_convert_to_pdf_runs_without_any_font_dir(mocker, tmp_path):
         (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7")
         return MagicMock(returncode=0)
 
-    mocker.patch("resume_build.subprocess.run", side_effect=fake_run)
+    mocker.patch("resume_build._run_soffice", side_effect=fake_run)
     assert resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path)) == str(tmp_path / "resume.pdf")
 
 
 def test_convert_to_pdf_uses_a_throwaway_profile_and_removes_it(mocker, tmp_path):
     seen = {}
-    mocker.patch("resume_build.subprocess.run", side_effect=_fake_soffice(tmp_path, seen))
+    mocker.patch("resume_build._run_soffice", side_effect=_fake_soffice(tmp_path, seen))
     out = resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
     assert out == str(tmp_path / "resume.pdf")
     assert seen["exists_during"] is True
@@ -203,9 +203,63 @@ def test_convert_to_pdf_uses_a_throwaway_profile_and_removes_it(mocker, tmp_path
 
 
 def test_convert_to_pdf_raises_when_no_pdf_was_written(mocker, tmp_path):
-    mocker.patch("resume_build.subprocess.run", return_value=MagicMock(returncode=0))
+    mocker.patch("resume_build._run_soffice", return_value=MagicMock(returncode=0))
     with pytest.raises(RuntimeError, match="no PDF"):
         resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
+
+
+def test_convert_to_pdf_does_not_accept_a_stale_pdf_from_an_earlier_conversion(mocker, tmp_path):
+    # fit_to_one_page converts to the same path on every rung; a run that writes nothing must not
+    # pass the "wrote a PDF" check on the previous rung's file.
+    (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.7 previous rung")
+    mocker.patch("resume_build._run_soffice", return_value=MagicMock(returncode=0))
+    with pytest.raises(RuntimeError, match="no PDF"):
+        resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
+
+
+def test_run_soffice_raises_on_a_nonzero_exit(tmp_path):
+    script = tmp_path / "fail.sh"
+    script.write_text("#!/bin/sh\necho conversion failed >&2\nexit 3\n")
+    script.chmod(0o755)
+    with pytest.raises(resume_build.subprocess.CalledProcessError) as exc:
+        resume_build._run_soffice([str(script)], timeout=10)
+    assert exc.value.returncode == 3
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_convert_to_pdf_timeout_kills_the_whole_soffice_process_tree(monkeypatch, tmp_path):
+    # Debian's soffice is a wrapper that starts soffice.bin; killing only the direct child (what
+    # subprocess.run's timeout does) leaves the converter running. Real processes, no LibreOffice.
+    import time
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    pid_file = tmp_path / "child.pid"
+    script = bin_dir / "soffice"
+    script.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {pid_file}\nwait\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setattr(config, "RESUME_SOFFICE_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(config, "RESUME_FONT_DIRS", [])
+    child = None
+    try:
+        with pytest.raises(resume_build.subprocess.TimeoutExpired):
+            resume_build.convert_to_pdf(str(tmp_path / "resume.docx"), str(tmp_path))
+        child = int(pid_file.read_text())
+        for _ in range(50):
+            if not _alive(child):
+                break
+            time.sleep(0.1)
+        assert not _alive(child), "the converter's child process survived the timeout"
+    finally:
+        if child and _alive(child):
+            os.kill(child, 9)
 
 
 # ── page_count ─────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-08-29-phase3-resume-intelligence-design.md.
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import tempfile
 
@@ -384,6 +385,24 @@ def _seed_profile_fonts(profile):
                 shutil.copy(os.path.join(directory, name), fonts_dir)
 
 
+def _run_soffice(argv, timeout):
+    # Own session, like claude_subscription: the soffice wrapper starts soffice.bin, and
+    # subprocess.run's timeout kills only the direct child, leaving the converter running.
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except BaseException:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        raise
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, argv, stdout, stderr)
+
+
 def convert_to_pdf(docx_path, output_dir):
     """Convert docx_path to PDF via LibreOffice headless. Returns the output PDF path. Raises on
     any failure (missing soffice binary, conversion error, timeout, no PDF written) -- never
@@ -392,13 +411,15 @@ def convert_to_pdf(docx_path, output_dir):
     headless conversion exit 0 without writing anything."""
     base = os.path.splitext(os.path.basename(docx_path))[0]
     pdf_path = os.path.join(output_dir, base + ".pdf")
+    if os.path.exists(pdf_path):
+        os.remove(pdf_path)  # an earlier conversion's file must not pass the check below
     with tempfile.TemporaryDirectory(prefix="soffice-profile-") as profile:
         _seed_profile_fonts(profile)
-        subprocess.run(
+        _run_soffice(
             ["soffice", f"-env:UserInstallation={pathlib.Path(profile).as_uri()}",
              "--headless", "--norestore", "--nolockcheck", "--nologo", "--nodefault",
              "--convert-to", "pdf", "--outdir", output_dir, docx_path],
-            check=True, capture_output=True, timeout=config.RESUME_SOFFICE_TIMEOUT_SECONDS,
+            timeout=config.RESUME_SOFFICE_TIMEOUT_SECONDS,
         )
     if not os.path.exists(pdf_path):
         raise RuntimeError(f"soffice exited cleanly but wrote no PDF at {pdf_path}")
