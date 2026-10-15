@@ -550,6 +550,28 @@ describe("ContactsList — side sheet", () => {
     expect(screen.getByDisplayValue("CEO")).toBeInTheDocument();
   });
 
+  it("a late full record for the previous contact never overwrites the one now open", async () => {
+    const user = userEvent.setup();
+    limitMock.mockResolvedValue({ data: [dana, sarah], error: null });
+    let resolveDana: (v: unknown) => void = () => {};
+    singleMock
+      .mockImplementationOnce(() => new Promise((r) => { resolveDana = r; }))
+      .mockResolvedValueOnce({ data: { ...sarah, detail: "sarah's own hook" }, error: null });
+    render(<ContactsList {...defaultProps} />);
+
+    await waitFor(() => screen.getByText("Dana Ehrlich"));
+    await user.click(screen.getByRole("button", { name: /dana ehrlich/i }));
+    await user.click(screen.getByRole("button", { name: /sarah kim/i }));
+    expect(await screen.findByDisplayValue("sarah's own hook")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveDana({ data: { ...dana, detail: "dana's stale hook" }, error: null });
+    });
+    expect(screen.queryByDisplayValue("dana's stale hook")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("sarah's own hook")).toBeInTheDocument();
+    expect(within(screen.getByTestId("sheet-content")).getByDisplayValue("sarah@stripe.com")).toBeInTheDocument();
+  });
+
   it("tabbing through a field filled from the full record saves nothing", async () => {
     const user = userEvent.setup();
     const listRow = { ...dana, role: undefined, detail: undefined } as unknown as Contact;

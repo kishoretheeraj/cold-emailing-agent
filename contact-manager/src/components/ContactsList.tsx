@@ -271,18 +271,28 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
     setConnectionContext(c.connection_context ?? "");
   }, []);
 
+  // The contact whose full record may still apply. A response for one opened earlier, or for a
+  // sheet already closed, must not overwrite the sheet or reopen it.
+  const openContactIdRef = useRef<string | null>(null);
+
   const openContact = useCallback(
     async (c: Contact) => {
+      openContactIdRef.current = c.id;
       setSelectedContact(c);
       syncSheetFields(c);
       const { data } = await supabase.from("contacts").select("*").eq("id", c.id).single();
-      if (data) {
+      if (data && openContactIdRef.current === c.id) {
         setSelectedContact(data as Contact);
         syncSheetFields(data as Contact);
       }
     },
     [syncSheetFields]
   );
+
+  const closeContact = useCallback(() => {
+    openContactIdRef.current = null;
+    setSelectedContact(null);
+  }, []);
 
   // ── Fetch functions ──────────────────────────────────────────────────────────
 
@@ -539,7 +549,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
       return;
     }
     setContacts((prev) => prev.filter((c) => c.id !== selectedContact.id));
-    setSelectedContact(null);
+    closeContact();
     setShowDeleteModal(false);
     onSuccess("Contact deleted");
   }
@@ -755,7 +765,7 @@ export function ContactsList({ refreshKey, onError, onSuccess }: Props) {
       <Sheet
         open={selectedContact !== null}
         onOpenChange={(open) => {
-          if (!open) setSelectedContact(null);
+          if (!open) closeContact();
         }}
       >
         <SheetContent>
