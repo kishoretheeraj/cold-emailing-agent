@@ -286,7 +286,8 @@ full (`--full`, used by the quarterly workflow) re-resolves every distinct
 contact company, since a company that fell to `unknown` against an earlier
 corpus may match once new employer data lands. Both skip
 `confirmed`/`rejected` `company_intel` rows (never overwrite a human
-decision) while refreshing their denormalized stats. **Never wire the
+decision) while refreshing their denormalized stats; a contact at such a company
+is still linked to the existing row, which is not rewritten. **Never wire the
 quarterly re-match step without `--full`** — incremental mode silently
 no-ops on every contact once it has any `company_intel_id`, `unknown`
 included, which was a real production incident (see docs/python/db-schema.md).
