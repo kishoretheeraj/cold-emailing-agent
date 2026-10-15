@@ -37,6 +37,10 @@ REPLY_STATUSES = ["no_reply", "replied", "interested", "call_scheduled", "dead"]
 
 TERMINAL_REPLY_STATUSES = ["replied", "interested", "call_scheduled", "dead"]
 
+# monitor.py classifier_status values that end a sequence even while reply_status is still
+# no_reply: a real reply or a bounce. Out-of-office, auto-replies and unrelated mail do not.
+REPLY_STOP_CLASSIFIER_STATUSES = ["hard_no", "bounced", "positive_reply", "soft_yes"]
+
 # ── Derived sets ──────────────────────────────────────────────────────────────
 
 # ── Reply stages (set by reply_drafter; detected by monitor sent-detection) ────

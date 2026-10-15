@@ -111,6 +111,12 @@ script, above all project imports.
 
 - A contact is **skipped** the moment `reply_status` becomes anything other
   than `no_reply`. The agent must never email someone who has already replied.
+  The monitor records a detected reply only in `classifier_status` (the operator
+  owns `reply_status`), so `classifier_status` in
+  `constants.REPLY_STOP_CLASSIFIER_STATUSES` (`hard_no`, `bounced`, `positive_reply`,
+  `soft_yes`) skips too (2026-10-15; before it, a contact who replied "no" or
+  bounced still got the next follow-up drafted). `out_of_office`, `auto_reply` and
+  `unrelated` do not stop the sequence.
 - Stage progression is **strict**: `new → *_drafted → *_sent → ...`. The
   `monitor.py` sent-draft detector auto-flips `*_drafted → *_sent` when it
   finds the email in Gmail Sent Mail. The user can also flip manually.
@@ -408,7 +414,9 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
 - The Supabase Python client validates API keys against a JWT regex. The
   monkey-patch in `db.py` widens it to also accept `sb_publishable_*` keys.
   **Do not remove this patch** — it is the only reason the publishable key
-  format works.
+  format works. It swaps the global `re.match`, so every creation holds
+  `db._create_lock` (an overlapping one used to leave a lenient wrapper installed
+  for good; `get_client`/`get_admin_client` also double-check under it).
 - **`prompts` table**: `db.load_prompts()` reads all rows at agent startup and
   returns `{key: value}`. Keys used by the agent: `sender_profile`,
   `outreach_prompt`, `applied_intro_prompt`, `applied_followup_prompt`,
@@ -578,7 +586,7 @@ The dashboard's "Last run" reads `ran_at` from the most recent `agent_runs`
 row, not `MAX(last_emailed)` from contacts. This means the date updates on
 every run regardless of whether any drafts were created.
 
-See docs/python/imap.md for IMAP patterns (mailbox quoting, DraftResult, find_sent_for_thread, _fetch_body_text).
+See docs/python/imap.md for IMAP patterns (mailbox quoting, DraftResult, find_sent_for_thread, _fetch_body_text). Every `IMAP4_SSL(...)` passes `timeout=30` (`tests/test_imap_timeouts.py` scans for it): a stalled socket otherwise hangs the run until the workflow timeout.
 
 See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 
@@ -1463,10 +1471,13 @@ finishes; the worker never clicks Submit again; unsolved -> `needs_confirmation`
 `ats_sessions.tenant_key(url)` is the account boundary (host; host + company slug on shared hosts
 like Lever/Greenhouse/Ashby/Workable/SmartRecruiters; `myworkdaysite.com/recruiting/<tenant>`);
 `save_state`/`state_path`/`forget` keep a Playwright `storage_state` per tenant under
-`APPLY_SESSIONS_DIR` (0700/0600, hashed names). `credential_vault.Vault` (Fernet, `VAULT_KEY` from
+`APPLY_SESSIONS_DIR` (0700/0600, hashed names); Workday saves pass `domain=ats_sessions.WORKDAY_COOKIE_DOMAINS`
+(audit 2026-10-14 F13: an unfiltered save after a Google/Microsoft takeover kept the operator's IdP session; files
+saved before that fix may still hold one). `credential_vault.Vault` (Fernet, `VAULT_KEY` from
 `/etc/job-agent/vault.env`, apply units only) holds one entry per tenant; `reserve()` generates a
 24-char password and writes it to disk BEFORE any typing and never replaces an entry; `mark()`
-records `active`/`rejected`. Passwords never appear in logs or reprs.
+records `active`/`rejected`; both hold an exclusive `flock` on `<vault>.lock` around load-modify-save (a second
+writer used to drop an entry it never loaded). Passwords never appear in logs or reprs.
 `email_verification.wait_for_verification(sender_domains, since, ...)` reads only the receipt inbox
 (`gmail.fetch_inbox_since`), only matching senders after `since`, and returns a code (URLs stripped
 first; letter codes uppercase-only) or a link on an allowed host; never raises.
@@ -1597,7 +1608,8 @@ rows, or computation failed) skips the check with a warning.
 marker `[RECONCILE]`): matches `needs_confirmation` rows to ATS "thank you for applying" receipts and moves them
 to `submitted` via `record_receipt_evidence` (evidence = message id/from/subject/date, shown in the detail
 sheet). It never retries a submission and never touches any other transition. Receipts go to the address the
-forms are filled with (`kishoretheerajvj@gmail.com`, `apply_agent._standard_field_values`), which is NOT the
+forms are filled with (`config.APPLY_FORM_EMAIL`, `apply_agent._standard_field_values`; the reconciler and
+`email_verification` log a warning when `RECEIPT_IMAP_ADDRESS` differs), which is NOT the
 outreach `GMAIL_ADDRESS` -- so it reads soft-optional `RECEIPT_IMAP_ADDRESS`/`RECEIPT_IMAP_APP_PASSWORD`
 (unset -> no-op). Reply-shaped mail is skipped (this inbox has human threads with the same companies), the
 search window is bounded to 72h after the submit attempt, and one receipt matching several pending rows at a
