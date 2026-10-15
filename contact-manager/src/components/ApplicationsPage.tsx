@@ -28,6 +28,16 @@ import {
 
 const SOURCE_OPTIONS = ["linkedin", "ats_scan", "jobright", "manual"] as const;
 
+async function fetchApplications(stage: string, source: string): Promise<JobApplication[]> {
+  const params = new URLSearchParams();
+  if (stage !== "__all__") params.set("stage", stage);
+  if (source !== "__all__") params.set("source", source);
+  const qs = params.toString();
+  const res = await fetch(`/api/applications${qs ? `?${qs}` : ""}`);
+  const data = await res.json();
+  return data.applications ?? [];
+}
+
 export function ApplicationsPage() {
   const [applications, setApplications] = useState<JobApplication[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,21 +107,17 @@ export function ApplicationsPage() {
     };
   }, []);
 
-  const load = async (stage: string = stageFilter, source: string = sourceFilter) => {
+  const fetchAndShow = (stage: string, source: string) =>
+    fetchApplications(stage, source)
+      .then(setApplications)
+      .catch(() => {
+        toast.error("Could not load applications");
+      })
+      .finally(() => setLoading(false));
+
+  const load = (stage: string = stageFilter, source: string = sourceFilter) => {
     setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (stage !== "__all__") params.set("stage", stage);
-      if (source !== "__all__") params.set("source", source);
-      const qs = params.toString();
-      const res = await fetch(`/api/applications${qs ? `?${qs}` : ""}`);
-      const data = await res.json();
-      setApplications(data.applications ?? []);
-    } catch {
-      toast.error("Could not load applications");
-    } finally {
-      setLoading(false);
-    }
+    return fetchAndShow(stage, source);
   };
 
   const handleStageFilterChange = (v: string) => {
@@ -124,8 +130,9 @@ export function ApplicationsPage() {
     load(stageFilter, v);
   };
 
+  // loading starts true, so the first load needs no synchronous setLoading.
   useEffect(() => {
-    load();
+    fetchAndShow("__all__", "__all__");
   }, []);
 
   const handleAdd = async (e: FormEvent) => {
