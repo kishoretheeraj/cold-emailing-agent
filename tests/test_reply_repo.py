@@ -1,6 +1,7 @@
 """Reply store: classifier, correlation, status precedence, dedup, redaction, and the poller."""
 
 import hashlib
+import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -392,24 +393,101 @@ def test_failing_notify_does_not_stop_storage(monkeypatch, tmp_path):
     assert counts["stored"] == 1 and counts["errors"] == 0
 
 
-def test_outbox_failure_is_best_effort(monkeypatch, tmp_path):
+def test_outbox_failure_stores_nothing_so_the_next_poll_retries(monkeypatch, tmp_path):
     _setup_poller(monkeypatch, tmp_path, [_interview_msg()])
-
-    def failing_enqueue(*a, **k):
-        raise RuntimeError("outbox broken")
-
-    monkeypatch.setitem(sys.modules, "outbox", types.SimpleNamespace(enqueue=failing_enqueue))
+    monkeypatch.setattr(reply_repo.outbox, "enqueue", lambda *a, **k: False)
     counts = application_replies.run(now=NOW)
-    assert counts["stored"] == 1 and counts["errors"] == 0
+    assert counts["stored"] == 0 and counts["errors"] == 1
 
 
-def test_outbox_receives_payload(monkeypatch, tmp_path):
+def test_poller_queues_the_reply_and_its_status_event(monkeypatch, tmp_path):
     _setup_poller(monkeypatch, tmp_path, [_interview_msg()])
     calls = []
-    monkeypatch.setitem(sys.modules, "outbox", types.SimpleNamespace(
-        enqueue=lambda conn, kind, key, op, payload, version=1: calls.append((kind, key, op, payload, version))))
+    real = reply_repo.outbox.enqueue
+
+    def spy(conn, kind, key, op, payload, version=1):
+        calls.append((kind, op, payload, version))
+        return real(conn, kind, key, op, payload, version=version)
+
+    monkeypatch.setattr(reply_repo.outbox, "enqueue", spy)
     application_replies.run(now=NOW)
-    assert len(calls) == 1
-    kind, key, op, payload, version = calls[0]
-    assert (kind, key, op, version) == ("reply", "<m1@acme.com>", "upsert", 1)
-    assert payload["kind"] == "interview" and "snippet" not in payload
+    assert [(k, op, v) for k, op, _, v in calls] == [("reply", "upsert", 1), ("status_event", "upsert", 1)]
+    reply, event = calls[0][2], calls[1][2]
+    assert reply["kind"] == "interview" and reply["message_id"] == "<m1@acme.com>"
+    assert "snippet" not in reply and "from_addr" not in reply
+    assert event["reply_id"] == reply["id"] and event["status"] == "interview"
+
+
+# ── sync outbox (review finding 3) ─────────────────────────────────────────────
+
+def _queued(conn, entity=None):
+    sql = "SELECT entity, entity_id, payload_json FROM sync_outbox"
+    rows = conn.execute(sql + (" WHERE entity = ?" if entity else "") + " ORDER BY id",
+                        (entity,) if entity else ()).fetchall()
+    return [(r["entity"], r["entity_id"], json.loads(r["payload_json"])) for r in rows]
+
+
+def test_interview_reply_queues_the_reply_and_its_status_event(conn):
+    row = _record(conn, kind="interview")
+    replies, events = _queued(conn, "reply"), _queued(conn, "status_event")
+    assert [(e, i) for e, i, _ in replies] == [("reply", row["id"])]
+    assert replies[0][2]["status_after"] == "interview"
+    assert len(events) == 1
+    event = events[0][2]
+    assert event["status"] == "interview" and event["reply_id"] == row["id"]
+    assert event["application_id"] == "1" and event["actor"] == "monitor"
+    stored = conn.execute("SELECT id FROM application_status_events").fetchone()["id"]
+    assert events[0][1] == event["id"] == stored
+
+
+def test_unmatched_reply_queues_only_the_reply(conn):
+    _record(conn, application_id=None, job_id=None, needs_review=True)
+    assert [e for e, _, _ in _queued(conn)] == ["reply"]
+
+
+def test_a_repeated_message_queues_nothing_more(conn):
+    _record(conn, kind="interview")
+    before = len(_queued(conn))
+    _record(conn, kind="interview", subject="again")
+    assert len(_queued(conn)) == before == 2
+
+
+def test_a_failed_enqueue_rolls_the_reply_back_and_a_retry_stores_and_queues_both(conn, monkeypatch):
+    real = reply_repo.outbox.enqueue
+    calls = []
+
+    def flaky(c, entity, *a, **k):
+        calls.append(entity)
+        return False if entity == "status_event" else real(c, entity, *a, **k)
+
+    monkeypatch.setattr(reply_repo.outbox, "enqueue", flaky)
+    with pytest.raises(reply_repo.OutboxError):
+        _record(conn, kind="interview")
+    assert conn.execute("SELECT COUNT(*) FROM replies").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM application_status_events").fetchone()[0] == 0
+    assert _queued(conn) == []
+
+    monkeypatch.setattr(reply_repo.outbox, "enqueue", real)
+    row = _record(conn, kind="interview")
+    assert row["deduped"] is False
+    assert [e for e, _, _ in _queued(conn)] == ["reply", "status_event"]
+
+
+def test_backfill_queues_replies_and_events_once(tmp_path):
+    import backfill_results
+
+    db = str(tmp_path / "pipeline.db")
+    c = reply_repo.connect(db)
+    _record(c, kind="interview")
+    c.execute("DELETE FROM sync_outbox")  # as if recorded before record_reply queued anything
+    c.commit()
+    c.close()
+    empty = tmp_path / "none.json"
+    empty.write_text("[]")
+    results = tmp_path / "none.jsonl"
+    results.write_text("")
+
+    first = backfill_results.run(queue_path=str(empty), results_path=str(results), db_path=db)
+    assert (first["replies"], first["status_events"], first["errors"]) == (1, 1, 0)
+    second = backfill_results.run(queue_path=str(empty), results_path=str(results), db_path=db)
+    assert (second["replies"], second["status_events"], second["skipped"]) == (0, 0, 2)

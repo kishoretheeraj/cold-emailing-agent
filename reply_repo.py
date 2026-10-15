@@ -25,6 +25,8 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
+import outbox
+
 log = logging.getLogger(__name__)
 
 PIPELINE_DB_PATH = os.environ.get("PIPELINE_DB_PATH", "/var/lib/jobagent24/pipeline.db")
@@ -87,6 +89,9 @@ CREATE INDEX IF NOT EXISTS idx_status_events_application
 def ensure_schema(conn):
     conn.executescript(SCHEMA_SQL)
     conn.commit()
+    # record_reply queues its sync rows inside its own transaction, so the outbox table must exist
+    # before then: creating it mid-transaction would commit the caller's half-written reply.
+    outbox.ensure_schema(conn)
 
 
 def connect(path=None):
@@ -299,6 +304,32 @@ def correlate(message, applications):
     return None, "none", False
 
 
+# ── Sync outbox ────────────────────────────────────────────────────────────────
+
+class OutboxError(RuntimeError):
+    pass
+
+
+_REPLY_SYNC_FIELDS = ("id", "application_id", "job_id", "message_id", "thread_key", "source", "from_domain",
+                      "received_at", "kind", "status_after", "confidence", "match_method", "needs_review")
+_EVENT_SYNC_FIELDS = ("id", "application_id", "status", "reply_id", "at", "actor")
+
+
+def reply_payload(row):
+    return {k: row.get(k) for k in _REPLY_SYNC_FIELDS}
+
+
+def status_event_payload(row):
+    return {k: row.get(k) for k in _EVENT_SYNC_FIELDS}
+
+
+def _queue_sync(conn, entity, payload):
+    # Joins the caller's open transaction; a failed enqueue raises so the reply is rolled back and
+    # the next poll stores and queues it again, instead of a stored reply that never syncs.
+    if not outbox.enqueue(conn, entity, payload["id"], "upsert", payload, version=1):
+        raise OutboxError(entity)
+
+
 # ── Persistence ────────────────────────────────────────────────────────────────
 
 def get_current_status(conn, application_id):
@@ -371,13 +402,21 @@ def record_reply(conn, *, application_id, job_id, message_id, thread_key, source
             # revival guard judges a later out-of-order interview against the newest rejection.
             event_status = "rejected"
         if event_status:
+            event_id = uuid.uuid4().hex
             conn.execute(
                 "INSERT OR IGNORE INTO application_status_events (id, application_id, status, reply_id, at, actor)"
                 " VALUES (?, ?, ?, ?, ?, 'monitor')",
-                (uuid.uuid4().hex, application_id, event_status, reply_id, received))
+                (event_id, application_id, event_status, reply_id, received))
             conn.execute("UPDATE replies SET status_after = ? WHERE id = ?", (event_status, reply_id))
             status_after = event_status
+    try:
+        row = _row_by_message_id(conn, message_id)
+        _queue_sync(conn, "reply", reply_payload(row))
+        for event in conn.execute("SELECT * FROM application_status_events WHERE reply_id = ?", (reply_id,)):
+            _queue_sync(conn, "status_event", status_event_payload(dict(event)))
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
-    row = _row_by_message_id(conn, message_id)
     row["deduped"] = False
     return row

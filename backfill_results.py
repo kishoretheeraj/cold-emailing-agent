@@ -4,7 +4,9 @@ Backfill -- enqueue historical pipeline data for the Supabase sync.
 Reads job_queue.json (a list of {id, company, role, url, platform, notes}) and
 application_results.jsonl (one JSON object per line: job_id, started_at, finished_at, status,
 detail, latency_s, dry_run, optional attempt_id) and appends 'job' and 'attempt' upserts to the
-sync_outbox table. Nothing is sent from here; supabase_sync.py drains the outbox.
+sync_outbox table, plus a 'reply' and 'status_event' upsert for every row already in the pipeline
+database's replies and application_status_events tables. Nothing is sent from here;
+supabase_sync.py drains the outbox.
 
 Rerunnable: a row whose (entity, entity_id, version, payload) is already in the outbox is skipped,
 and the remote upsert is idempotent on top of that. Attempt ids come from the line's attempt_id, or
@@ -99,6 +101,15 @@ def _attempt_events(results_path, counts):
     return events
 
 
+def _reply_events(conn):
+    # Replies and status events recorded before record_reply queued its own sync rows (the
+    # status events never synced at all). Read from the pipeline database itself.
+    replies = [dict(r) for r in conn.execute("SELECT * FROM replies ORDER BY created_at, id")]
+    events = [dict(r) for r in conn.execute("SELECT * FROM application_status_events ORDER BY at, id")]
+    return ([(r["id"], reply_repo.reply_payload(r)) for r in replies],
+            [(e["id"], reply_repo.status_event_payload(e)) for e in events])
+
+
 # ── Enqueue ────────────────────────────────────────────────────────────────────
 
 def _already_queued(conn, entity, entity_id, version, payload):
@@ -125,8 +136,8 @@ def _enqueue_once(conn, entity, entity_id, payload, counts, key):
 # ── Public entry point ─────────────────────────────────────────────────────────
 
 def run(queue_path=None, results_path=None, db_path=None, dry=False):
-    """Returns {'jobs', 'attempts', 'skipped', 'errors'}. Never raises."""
-    counts = {"jobs": 0, "attempts": 0, "skipped": 0, "errors": 0}
+    """Returns {'jobs', 'attempts', 'replies', 'status_events', 'skipped', 'errors'}. Never raises."""
+    counts = {"jobs": 0, "attempts": 0, "replies": 0, "status_events": 0, "skipped": 0, "errors": 0}
     conn = None
     try:
         jobs = _job_events(queue_path or DEFAULT_QUEUE, counts)
@@ -149,6 +160,11 @@ def run(queue_path=None, results_path=None, db_path=None, dry=False):
             _enqueue_once(conn, "job", job_id, payload, counts, "jobs")
         for attempt_id, payload in attempts:
             _enqueue_once(conn, "attempt", attempt_id, payload, counts, "attempts")
+        replies, events = _reply_events(conn)
+        for reply_id, payload in replies:
+            _enqueue_once(conn, "reply", reply_id, payload, counts, "replies")
+        for event_id, payload in events:
+            _enqueue_once(conn, "status_event", event_id, payload, counts, "status_events")
     except Exception as exc:
         counts["errors"] += 1
         log.error(f"[BACKFILL] | run | error | {type(exc).__name__}")
@@ -172,6 +188,7 @@ def main(argv=None):
     counts = run(queue_path=args.queue, results_path=args.results, db_path=args.db, dry=args.dry)
     mode = "dry run, nothing written" if args.dry else "enqueued"
     print(f"backfill ({mode}): jobs={counts['jobs']} attempts={counts['attempts']}"
+          f" replies={counts['replies']} status_events={counts['status_events']}"
           f" skipped={counts['skipped']} errors={counts['errors']}")
     return 1 if counts["errors"] else 0
 

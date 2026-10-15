@@ -190,17 +190,6 @@ def _fetch_threading_headers(address, password, message_ids):
     return out
 
 
-def _enqueue_outbox(conn, row):
-    try:
-        import outbox
-        payload = {k: row.get(k) for k in (
-            "id", "application_id", "job_id", "message_id", "thread_key", "source", "from_domain",
-            "received_at", "kind", "status_after", "confidence", "match_method", "needs_review")}
-        outbox.enqueue(conn, "reply", row["message_id"], "upsert", payload, version=1)
-    except Exception as exc:
-        log.info(f"[REPLIES] | OUTBOX | skipped: {type(exc).__name__}")
-
-
 def _nudge(app, kind, notify):
     log.info(f"[REPLIES] | {app.get('company')} | {app.get('role')} | {kind} | needs your attention")
     if notify is None:
@@ -294,7 +283,6 @@ def run(now=None, notify=None):
                 counts["stored"] += 1
                 if needs_review:
                     counts["needs_review"] += 1
-                _enqueue_outbox(conn, row)
                 if app is not None and not needs_review and kind in MONITOR_NUDGE_KINDS:
                     _nudge(app, kind, notify)
             except Exception as exc:
