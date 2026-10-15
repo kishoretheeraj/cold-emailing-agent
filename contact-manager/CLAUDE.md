@@ -388,6 +388,12 @@ expected, not a bug.
 - Idempotent: returns `{ already_sent: true }` if stage is already `*_sent`.
 - Status codes: 400 (missing id), 404 (contact not found), 409 (wrong stage),
   410 (no draft ID or draft deleted from Gmail), 401 (auth failure), 502 (Gmail error).
+- **Never a 5xx after Gmail has sent.** Every record step's `{ error }` is checked (and a throw
+  caught); the rest still run, and so does the label. Any failure returns 200
+  `{ ok: true, sent: true, recorded: false, error }` and best-effort writes an `agent_events` row
+  (`status: "failed"`, `error_message: "sent but not recorded: ..."`, `metadata.failed_steps`).
+  The draft is consumed, so a retry gets 410, never a second send; the monitor's sent-draft
+  detection flips the stage later. A clean send returns `recorded: true`.
 
 **POST `/api/update-draft`** — body: `{ contact_id: string, subject: string, body: string }`
 - Reads existing draft headers (In-Reply-To, References, From) via `drafts.get`.

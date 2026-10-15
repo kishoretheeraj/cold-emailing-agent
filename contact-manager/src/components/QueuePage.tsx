@@ -94,6 +94,16 @@ export function QueuePage() {
       return new Set();
     }
   });
+  // Contacts whose email went out but whose send was not recorded (stage still *_drafted until
+  // the monitor's sent-draft detection catches up). Never offered for Send again this session.
+  const [sentUnrecordedIds, setSentUnrecordedIds] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem("queue_sent_unrecorded_ids");
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
   const [filters, setFilters] = useState<Filters>({
     tiers: [],
     stages: [],
@@ -186,6 +196,17 @@ export function QueuePage() {
   }, [skippedIds]);
 
   useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        "queue_sent_unrecorded_ids",
+        JSON.stringify([...sentUnrecordedIds])
+      );
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [sentUnrecordedIds]);
+
+  useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60_000);
     return () => clearInterval(id);
   }, []);
@@ -194,6 +215,7 @@ export function QueuePage() {
 
   const visible = contacts.filter((c) => {
     if (skippedIds.has(c.id)) return false;
+    if (sentUnrecordedIds.has(c.id)) return false;
     if (pendingSends.current.has(c.id)) return false;
     if (filters.tiers.length > 0 && !filters.tiers.includes(c.tier ?? -1))
       return false;
@@ -230,7 +252,7 @@ export function QueuePage() {
 
   const tierCounts: Record<number, number> = {};
   const stageCounts: Record<string, number> = {};
-  for (const c of contacts.filter((c) => !skippedIds.has(c.id))) {
+  for (const c of contacts.filter((c) => !skippedIds.has(c.id) && !sentUnrecordedIds.has(c.id))) {
     if (c.tier != null) tierCounts[c.tier] = (tierCounts[c.tier] ?? 0) + 1;
     if (c.stage) stageCounts[c.stage] = (stageCounts[c.stage] ?? 0) + 1;
   }
@@ -261,21 +283,28 @@ export function QueuePage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ contact_id: String(contact.id) }),
           });
+          const result = (await res.json().catch(() => ({}))) as {
+            error?: string;
+            recorded?: boolean;
+          };
           if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+            throw new Error(result.error ?? `HTTP ${res.status}`);
           }
-          toast.success(`Sent to ${contact.name ?? "contact"}`);
+          if (result.recorded === false) {
+            setSentUnrecordedIds((prev) => new Set([...prev, contact.id]));
+            toast.warning(
+              `Sent, but not saved: ${result.error ?? "unknown error"}. The monitor will catch up.`
+            );
+          } else {
+            toast.success(`Sent to ${contact.name ?? "contact"}`);
+          }
           fetchData();
         } catch (err) {
           toast.error(
             `Send failed: ${err instanceof Error ? err.message : "Unknown error"}`
           );
-          setContacts((prev) => {
-            const next = [...prev];
-            next.splice(idx, 0, contact);
-            return next;
-          });
+          // The row was only hidden while pending, never removed; re-render to show it again.
+          setContacts((prev) => [...prev]);
         }
       }, 5000);
 
@@ -334,11 +363,7 @@ export function QueuePage() {
           fetchData();
         } catch {
           toast.error("Failed to mark dead");
-          setContacts((prev) => {
-            const next = [...prev];
-            next.splice(idx, 0, contact);
-            return next;
-          });
+          setContacts((prev) => [...prev]);
         }
       }, 5000);
 
