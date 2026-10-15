@@ -221,6 +221,27 @@ def _mock_pdf_checks(mocker):
     mocker.patch("resume_agent.resume_build.pdf_text", return_value="Dear team")
 
 
+@pytest.mark.parametrize("reply", ['["Experience", "Projects"]', '"just a string"', "null"])
+def test_propose_raises_value_error_when_the_reply_is_json_but_not_an_object(mocker, reply):
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "api")
+    mocker.patch.object(db, "get_job_application", return_value={
+        "id": 1, "company": "Acme", "role": "PM", "posting_snapshot": {},
+    })
+    mocker.patch.object(resume_agent, "_call_claude", return_value=(reply, _USAGE))
+    mocker.patch.object(db, "record_resume_usage", return_value={"id": 1})
+    mocker.patch.object(db, "log_api_usage", return_value={"id": 1})
+    set_strategy = mocker.patch.object(db, "set_resume_strategy")
+    with pytest.raises(ValueError, match="not a JSON object"):
+        resume_agent.propose(1)
+    set_strategy.assert_not_called()
+
+
+def test_build_raises_value_error_when_the_row_does_not_exist(mocker):
+    mocker.patch.object(db, "get_job_application", return_value=None)
+    with pytest.raises(ValueError, match="not found"):
+        resume_agent.build(404)
+
+
 def test_build_raises_when_no_strategy_proposed_yet(mocker):
     mocker.patch.object(db, "get_job_application", return_value={
         "id": 1, "company": "Acme", "role": "PM", "resume_strategy": None,

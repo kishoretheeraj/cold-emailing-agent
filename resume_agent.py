@@ -215,6 +215,8 @@ def propose(application_id):
         strategy = json.loads(_strip_json_fence(raw))
     except json.JSONDecodeError as exc:
         raise ValueError(f"could not parse strategy from Claude's response: {exc}") from exc
+    if not isinstance(strategy, dict):
+        raise ValueError(f"strategy from Claude's response is not a JSON object: {type(strategy).__name__}")
 
     attribution = _check_attribution(json.dumps(strategy))
     if attribution:
@@ -359,12 +361,14 @@ def _verify_clean_pdf(pdf_path, label):
 def build(application_id):
     """Run stages 5-9 (build, humanize/lint, scrub, upload) for a job_applications row that
     already has a proposed resume_strategy. Returns {"resume_file_ref": ..., "cover_letter_file_ref": ...}.
-    Raises ValueError if no strategy has been proposed yet, LintFailedError if the resume content
+    Raises ValueError if the row is missing or has no strategy yet, LintFailedError if the resume content
     references an unresolved metric conflict (no retry -- the data is static, retrying changes
     nothing until the user edits resume/data/metrics.json) or if the cover letter still fails lint
     after one retry, resume_build.StillOverflowError if the resume can't be formatted to one page
     after one content-editing retry."""
     job = db.get_job_application(application_id)
+    if job is None:
+        raise ValueError(f"job_applications row {application_id} not found")
     strategy = job.get("resume_strategy")
     if not strategy:
         raise ValueError(f"job_applications row {application_id} has no resume_strategy -- run --propose first")
