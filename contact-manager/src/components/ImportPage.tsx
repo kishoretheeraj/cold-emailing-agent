@@ -156,9 +156,9 @@ export function ImportPage() {
         </p>
         <ol className="text-sm text-fg-muted space-y-1 list-decimal list-inside">
           <li>Log into TuckConnect and run your alumni search</li>
-          <li>Click the "TuckConnect Export" bookmark in your browser</li>
+          <li>Click the &quot;TuckConnect Export&quot; bookmark in your browser</li>
           <li>An alert will confirm how many contacts were copied to your clipboard</li>
-          <li>Paste the clipboard here and click "Review contacts"</li>
+          <li>Paste the clipboard here and click &quot;Review contacts&quot;</li>
         </ol>
       </div>
     </div>

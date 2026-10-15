@@ -309,7 +309,7 @@ export function ApplicationDetailSheet({
                   {filesLoading ? (
                     <p className="text-fg-dim text-sm">Loading...</p>
                   ) : files.resume_error ? (
-                    <p className="text-red-400 text-sm">Couldn't load your resume -- try again.</p>
+                    <p className="text-red-400 text-sm">Couldn&apos;t load your resume -- try again.</p>
                   ) : files.resume_url ? (
                     <iframe
                       title="Resume"
@@ -326,7 +326,7 @@ export function ApplicationDetailSheet({
                   {filesLoading ? (
                     <p className="text-fg-dim text-sm">Loading...</p>
                   ) : files.cover_letter_error ? (
-                    <p className="text-red-400 text-sm">Couldn't load your cover letter -- try again.</p>
+                    <p className="text-red-400 text-sm">Couldn&apos;t load your cover letter -- try again.</p>
                   ) : files.cover_letter_url ? (
                     <iframe
                       title="Cover letter"

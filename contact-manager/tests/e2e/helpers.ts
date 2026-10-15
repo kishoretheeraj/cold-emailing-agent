@@ -35,7 +35,7 @@ function loadContacts(): Contact[] {
  */
 export async function mockSupabase(page: Page) {
   // Start with a fresh copy of the fixture for each test
-  let contacts: Contact[] = loadContacts();
+  const contacts: Contact[] = loadContacts();
 
   // Helper: apply URL query filters and return matching rows
   function applyFilters(url: string): Contact[] {
@@ -355,7 +355,7 @@ export async function mockSupabase(page: Page) {
   });
 
   // Intercept GET/PATCH /rest/v1/company_intel
-  let companyIntelRows = JSON.parse(
+  const companyIntelRows = JSON.parse(
     fs.readFileSync(path.join(FIXTURES_DIR, "company_intel.json"), "utf-8")
   ) as Array<Record<string, unknown>>;
 

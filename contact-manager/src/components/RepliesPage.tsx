@@ -578,7 +578,7 @@ export function RepliesPage() {
                     {/* Line 3: incoming snippet */}
                     {lastMsg?.body && (
                       <p className="text-xs text-fg-muted truncate mt-0.5 italic">
-                        "{stripQuoted(lastMsg.body)}"
+                        &quot;{stripQuoted(lastMsg.body)}&quot;
                       </p>
                     )}
                     {/* Line 4: timestamp */}
