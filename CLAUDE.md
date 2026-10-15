@@ -1761,7 +1761,8 @@ reproduced first). Plan: docs/superpowers/plans/2026-10-08-fifty-a-day.md.
 - **Job identity** (`job_identity.py`, pure): `identify(url)` classifies by **hostname, never substring**
   (`clever.com` is not Lever) and returns a canonical `job_key`: `greenhouse:<id>` (ids are global, so a
   company page's `?gh_jid=` is the same job), `lever:<uuid>`, `ashby:<uuid>`, `workday:<tenant>:<req>`
-  (one requisition can sit on several sites of a tenant), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
+  (one requisition can sit on several sites of a tenant; apply-flow segments such as `/apply/applyManually`
+  are dropped from the key and `canonical_url`, and no tenant means no key), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
   ids, else `url:<canonical>` with tracking parameters dropped. `apply_url` is where the browser goes
   (Ashby `/application`, Lever `/apply`, the Greenhouse embed for a `gh_jid` page). `ats_platform.classify`
   delegates to it. `company_key`/`title_key` ("title identity" = the set of title words) and a 64-bit
