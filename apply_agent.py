@@ -301,13 +301,13 @@ def _pick_option(options, value):
 
 _AFFIRMATIVE = re.compile(r"yes|i agree|agree|i acknowledge|acknowledge|i accept|accept|i consent|consent")
 _AFFIRMATIVE_OPTION = re.compile(r"(yes|i agree|agree|i acknowledge|acknowledge|i accept|accept|i consent"
-                                 r"|consent|i have read)\b")
+                                 r"|consent|i have read|i understand)\b")
 _NEGATED = re.compile(r"\b(not|no|don t|do not|disagree|decline)\b")
 
 
 def _gpa_option(options, number):
-    # GPA dropdowns list ranges ("3.50 - 3.74") or floors ("3.5+", "3.0 or above"): the range
-    # holding the number, else the highest floor at or below it. Never rounds up.
+    # GPA dropdowns list ranges ("3.50 - 3.74"), floors ("3.5+", "3.0 or above") or bare values
+    # ("3.7"): the range holding the number, else the highest floor at or below it. Never rounds up.
     try:
         value = float(number)
     except (TypeError, ValueError):
@@ -320,6 +320,8 @@ def _gpa_option(options, number):
         if len(nums) == 1 and re.search(r"\+|or (above|higher|more)|and (above|higher)|above", str(option),
                                         re.IGNORECASE) and nums[0] <= value:
             floors.append((nums[0], option))
+        elif re.fullmatch(r"\s*\d(\.\d+)?\s*", str(option)) and nums[0] <= value:
+            floors.append((nums[0], option))  # bare "3.7" in a 3.0 ... 4.0 list: 3.73 -> 3.7
     return max(floors)[1] if floors else None
 
 
@@ -838,6 +840,11 @@ _PROFILE_QUESTION_PATTERNS = (
     ("gpa_graduate", re.compile(r"^((graduate|grad|master'?s) gpa|gpa \((graduate|grad|master'?s)\))$",
                                 re.IGNORECASE)),
     ("gpa", re.compile(r"^(gpa|cumulative gpa|overall gpa|grade point average)$", re.IGNORECASE)),
+    # Only wording that allows a past job: a bare "Current Company" would claim a current employer.
+    ("recent_employer", re.compile(r"^((who|what) is your |your )?(current or (previous|most recent|past)"
+                                   r"|most recent) (employer|company)( name)?\??$", re.IGNORECASE)),
+    ("recent_title", re.compile(r"^(what is your |your )?(current or (previous|most recent|past)|most recent)"
+                                r" (job )?(title|position)\??$", re.IGNORECASE)),
 )
 
 
@@ -867,6 +874,10 @@ def _profile_answer(page, field, candidates):
             return None
         if choice is None and number is not None and "gpa" in _norm_option(field.get("label")):
             choice = _gpa_option(_combobox_options(page, field), number)
+        if choice is None and _unlisted_school(field) and not _school_named(
+                _combobox_search_labels(page, field, candidates), candidates):
+            choice = _combobox_choose(page, field, ["Other"], config.APPLY_AGENT_FIELD_TIMEOUT_MS,
+                                      click=False, strict=True)
         return choice
     options = field.get("options") or []
     if kind == "listbox" and not options:
@@ -874,7 +885,36 @@ def _profile_answer(page, field, candidates):
     choice = _pick_candidates(options, candidates)
     if choice is None and number is not None and "gpa" in _norm_option(field.get("label")):
         choice = _gpa_option(options, number)
+    if choice is None and _unlisted_school(field) and not _school_named(options, candidates):
+        choice = _pick_candidates(options, ["Other"])
     return choice
+
+
+def _unlisted_school(field):
+    # A school list without the candidate's school (Greenhouse's shared list has no Anna University)
+    # gets its "Other" choice, the truthful answer; nothing else falls back.
+    return str(_profile_key_for(field.get("label")) or "").startswith("school")
+
+
+def _school_named(labels, candidates):
+    # Any option naming a candidate in whole words ("Anna University, Chennai") means the school is
+    # listed under another spelling: a human picks it, never "Other". "Susquehanna University" does not
+    # name "Anna University".
+    names = [re.compile(rf"\b{re.escape(str(c))}\b", re.IGNORECASE) for c in candidates if c]
+    return any(n.search(str(label)) for n in names for label in labels or [])
+
+
+def _combobox_search_labels(page, field, candidates):
+    timeout = config.APPLY_AGENT_FIELD_TIMEOUT_MS
+    box = page.locator(field["selector"]).first
+    labels = []
+    for query in candidates:
+        try:
+            labels += _combobox_menu(page, box, query, timeout)[1]
+        except Exception:
+            pass
+        _combobox_close(page, box, query)
+    return labels
 
 
 # "What is your first location preference?" / "Second location preference": the Nth distinct

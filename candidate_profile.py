@@ -122,7 +122,8 @@ def _gpa_answers(entry):
 
 def form_answers():
     """{key: [acceptable answers, best first]} for the standard questions application forms ask
-    (country, city, school, degree, discipline, start/graduation year, GPA), all derived from
+    (country, city, school, degree, discipline, start/graduation year, GPA, most recent employer and
+    title), all derived from
     master.json. A form option must match an alias (allowing phone codes or city country suffixes);
     a free-text box gets the first, a number box the first bare number. A fact master.json does not
     hold is simply absent."""
@@ -137,7 +138,12 @@ def form_answers():
     if cities:
         answers["city"] = cities
         if len(cities) > 1:  # a US state was recognized
-            answers["country"] = ["United States", "United States of America", "USA"]
+            answers["country"] = ["United States", "United States of America", "USA", "US", "U.S."]
+    roles = [r for r in master.get("roles") or [] if isinstance(r, dict)]
+    if roles:
+        # Roles are listed newest first; only "current or previous" wording gets them (apply_agent).
+        answers["recent_employer"] = [roles[0]["company"]] if roles[0].get("company") else []
+        answers["recent_title"] = [roles[0]["title"]] if roles[0].get("title") else []
     education = [e for e in master.get("education") or [] if isinstance(e, dict)]
     if education:
         # A form with one School/Degree block asks about the most recent degree (listed first).
