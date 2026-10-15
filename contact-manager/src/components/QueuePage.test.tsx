@@ -457,6 +457,34 @@ describe("QueuePage — send outcomes", () => {
     expect(toastMock.warning).not.toHaveBeenCalled();
   });
 
+  it("keeps the row hidden while the send request is still in flight", async () => {
+    vi.spyOn(global, "fetch").mockReturnValue(new Promise<Response>(() => {}));
+    await approveBobAndRunTimer();
+    expect(global.fetch).toHaveBeenCalledWith("/api/send-draft", expect.anything());
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+  });
+
+  it("undo brings the row back", async () => {
+    let undo: (() => void) | undefined;
+    toastMock.mockImplementation((_msg: string, opts?: { action?: { onClick: () => void } }) => {
+      undo = opts?.action?.onClick;
+      return "toast-id";
+    });
+    vi.useFakeTimers();
+    render(<QueuePage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+    await act(async () => {
+      undo?.();
+    });
+    expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+  });
+
   it("a failed send brings the row back exactly once", async () => {
     vi.spyOn(global, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ error: "Gmail API error" }), { status: 502 })
