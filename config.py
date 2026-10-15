@@ -812,3 +812,9 @@ WARM_MAX_PEOPLE_PER_APPLICATION = 3
 # ── Application outcomes (rejections and interview invites from the receipt inbox) ──
 APPLY_OUTCOME_LOOKBACK_DAYS = 3       # each monitor pass reads this many days of mail (it runs every 20 min)
 APPLY_OUTCOME_MAX_AGE_DAYS = 180      # applications older than this are not matched any more
+
+# Cover-letter stage (cover_letter/): "0" skips letter building entirely.
+APPLY_COVER_LETTER = os.environ.get("APPLY_COVER_LETTER", "1") != "0"
+
+# Resume v2 asset builds have a hard deadline capped at six minutes.
+RESUME_V2_TOTAL_TIMEOUT_S = min(max(int(os.environ.get("RESUME_V2_TOTAL_TIMEOUT_S", "360")), 60), 360)
