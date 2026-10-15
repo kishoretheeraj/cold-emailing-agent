@@ -53,6 +53,12 @@ function relationshipLabel(value: string | null | undefined): string {
   return value && value in RELATIONSHIP_LABELS ? RELATIONSHIP_LABELS[value as Relationship] : "Linked";
 }
 
+async function fetchPeople(applicationId: string): Promise<PeopleData> {
+  const res = await fetch(`/api/applications/${applicationId}/people`);
+  if (!res.ok) throw new Error(String(res.status));
+  return (await res.json()) as PeopleData;
+}
+
 // Warm paths (spec 2026-10-08-warm-paths-design §3.4): who the user knows or can find at the
 // company, and adding the person they pick. The cold-email agent drafts to them overnight;
 // applied-mode mail waits until the application has been submitted.
@@ -63,16 +69,17 @@ export function PeoplePanel({ applicationId, onChange }: { applicationId: string
   const [saving, setSaving] = useState(false);
   const [existing, setExisting] = useState<Existing | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/applications/${applicationId}/people`);
-      if (!res.ok) throw new Error(String(res.status));
-      setData((await res.json()) as PeopleData);
-      setFailed(false);
-    } catch {
-      setFailed(true);
-    }
-  }, [applicationId]);
+  const load = useCallback(
+    () =>
+      fetchPeople(applicationId).then(
+        (people) => {
+          setData(people);
+          setFailed(false);
+        },
+        () => setFailed(true)
+      ),
+    [applicationId]
+  );
 
   useEffect(() => {
     load();
