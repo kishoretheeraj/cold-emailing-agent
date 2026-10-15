@@ -120,6 +120,13 @@ def test_posting_age(posted, ok):
     assert job_filters.fresh_enough(posted, PREFS, now=NOW) is ok
 
 
+@pytest.mark.parametrize("posted", [1e20, -1e20, 10 ** 30, float("inf"), float("-inf")])
+def test_out_of_range_epoch_is_an_unknown_date_not_a_crash(posted):
+    # datetime.fromtimestamp raises OverflowError/OSError on these; triage must keep the posting.
+    assert job_filters.fresh_enough(posted, PREFS, now=NOW) is True
+    assert job_filters.reject_reason({"title": "Product Manager", "posted_at": posted}, PREFS, {}, now=NOW) is None
+
+
 # ── Sponsorship ────────────────────────────────────────────────────────────────
 
 NEEDS = {"requires_visa_sponsorship": "Yes"}
