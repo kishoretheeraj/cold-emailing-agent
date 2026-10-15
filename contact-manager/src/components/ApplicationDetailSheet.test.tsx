@@ -194,6 +194,59 @@ describe("ApplicationDetailSheet -- apply preview (U3/U11)", () => {
     },
   };
 
+  it("switching to another application shows its answers and fetches its files", async () => {
+    const other: JobApplication = {
+      ...appWithAnswers,
+      id: "9",
+      apply_preview: {
+        ...appWithAnswers.apply_preview!,
+        screening_answers: { "Why this role?": "Because of the team." },
+      },
+    };
+    const { rerender } = render(
+      <ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />
+    );
+    expect(await screen.findByDisplayValue("Because of the mission.")).toBeInTheDocument();
+    rerender(<ApplicationDetailSheet application={other} onClose={() => {}} />);
+    expect(screen.getByDisplayValue("Because of the team.")).toBeInTheDocument();
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/applications/9/files"));
+  });
+
+  it("a new preview object for the same application resets answers without re-fetching files (M11)", async () => {
+    const { rerender } = render(
+      <ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />
+    );
+    await screen.findByTitle(/resume/i);
+    const saved: JobApplication = {
+      ...appWithAnswers,
+      apply_preview: {
+        ...appWithAnswers.apply_preview!,
+        screening_answers: { "Why this role?": "Saved elsewhere." },
+      },
+    };
+    rerender(<ApplicationDetailSheet application={saved} onClose={() => {}} />);
+    expect(screen.getByDisplayValue("Saved elsewhere.")).toBeInTheDocument();
+    const fileCalls = vi
+      .mocked(global.fetch)
+      .mock.calls.filter(([url]) => String(url).includes("/files"));
+    expect(fileCalls).toHaveLength(1);
+  });
+
+  it("clears the files on close and loads them again on reopen", async () => {
+    const { rerender } = render(
+      <ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />
+    );
+    await screen.findByTitle(/resume/i);
+    rerender(<ApplicationDetailSheet application={null} onClose={() => {}} />);
+    rerender(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
+    expect(screen.queryByTitle(/resume/i)).not.toBeInTheDocument();
+    await screen.findByTitle(/resume/i);
+    const fileCalls = vi
+      .mocked(global.fetch)
+      .mock.calls.filter(([url]) => String(url).includes("/files"));
+    expect(fileCalls).toHaveLength(2);
+  });
+
   it("renders the platform and field values", async () => {
     render(<ApplicationDetailSheet application={appWithAnswers} onClose={() => {}} />);
     // Scoped to the platform line specifically -- baseApplication.company is "Ashby Co",
