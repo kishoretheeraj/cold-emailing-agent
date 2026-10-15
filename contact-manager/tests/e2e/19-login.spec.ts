@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 // The login form talks only to /api/login, so it is mocked here; the session itself is covered by
-// operatorAuth/proxy unit tests (the dev server runs without OPERATOR_PASSWORD).
+// operatorAuth/proxy unit tests. playwright.config.ts signs the browser in for every other spec.
 test.describe("Login page", () => {
   test("shows the form without the app nav and reports a wrong password", async ({ page }) => {
     await page.route("**/api/login", (route) =>
