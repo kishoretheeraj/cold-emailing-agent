@@ -15,11 +15,13 @@ const { toastMock } = vi.hoisted(() => {
     success: ReturnType<typeof vi.fn>;
     error: ReturnType<typeof vi.fn>;
     info: ReturnType<typeof vi.fn>;
+    warning: ReturnType<typeof vi.fn>;
     dismiss: ReturnType<typeof vi.fn>;
   };
   toastFn.success = vi.fn();
   toastFn.error = vi.fn();
   toastFn.info = vi.fn();
+  toastFn.warning = vi.fn();
   toastFn.dismiss = vi.fn();
   return { toastMock: toastFn };
 });
@@ -213,6 +215,7 @@ function mockSupabaseData(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
   mockSupabaseData([grace, iris, quinn], [graceDraft], [graceMsg]);
   vi.spyOn(global, "fetch").mockResolvedValue(
     new Response(JSON.stringify({ ok: true, stage: "reply_sent" }), {
@@ -412,6 +415,45 @@ describe("RepliesPage — 5-second undo (Approve and Send)", () => {
       "/api/send-draft",
       expect.objectContaining({ method: "POST" })
     );
+  });
+
+  it("sent but not recorded: warns and does not offer Send again for that reply", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "draft_history: down" }),
+        { status: 200 }
+      )
+    );
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      "Sent, but not saved: draft_history: down. The monitor will catch up."
+    );
+    expect(toastMock.success).not.toHaveBeenCalled();
+
+    // The refetch still returns Grace's unsent reply draft; it must not be sendable again.
+    expect(screen.getAllByText("Grace Lee").length).toBeGreaterThan(0);
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("e key does nothing for hard_no contact without draft", async () => {

@@ -108,6 +108,16 @@ export function RepliesPage() {
   const [editBody, setEditBody] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [now, setNow] = useState(() => new Date());
+  // Replies that went out but were not recorded: their draft row still reads unsent until the
+  // monitor catches up, so it is never offered for Send again this session.
+  const [sentUnrecordedIds, setSentUnrecordedIds] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem("replies_sent_unrecorded_ids");
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
 
   // navigating away cancels pending actions (deliberate trade-off)
   const pendingActions = useRef<Map<string, PendingEntry>>(new Map());
@@ -190,6 +200,17 @@ export function RepliesPage() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        "replies_sent_unrecorded_ids",
+        JSON.stringify([...sentUnrecordedIds])
+      );
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [sentUnrecordedIds]);
+
   // Restore focus by contact_id after refresh
   useEffect(() => {
     if (contacts.length === 0) return;
@@ -212,8 +233,12 @@ export function RepliesPage() {
   }, [focusedIndex, visible]);
 
   const focused = visible[focusedIndex] ?? null;
-  const focusedDraft = focused ? draftsByContactId[focused.id] ?? null : null;
-  const focusedHasDraft = focused ? hasDraft(focused, draftsByContactId) : false;
+  const sendableDrafts: Record<string, DraftHistory> = {};
+  for (const [id, draft] of Object.entries(draftsByContactId)) {
+    if (!sentUnrecordedIds.has(id)) sendableDrafts[id] = draft;
+  }
+  const focusedDraft = focused ? sendableDrafts[focused.id] ?? null : null;
+  const focusedHasDraft = focused ? hasDraft(focused, sendableDrafts) : false;
 
   // ── Approve and send ─────────────────────────────────────────────────────────
 
@@ -254,11 +279,21 @@ export function RepliesPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ contact_id: String(contact.id) }),
           });
+          const result = (await res.json().catch(() => ({}))) as {
+            error?: string;
+            recorded?: boolean;
+          };
           if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+            throw new Error(result.error ?? `HTTP ${res.status}`);
           }
-          toast.success(`Sent to ${contact.name ?? "contact"}`);
+          if (result.recorded === false) {
+            setSentUnrecordedIds((prev) => new Set([...prev, contact.id]));
+            toast.warning(
+              `Sent, but not saved: ${result.error ?? "unknown error"}. The monitor will catch up.`
+            );
+          } else {
+            toast.success(`Sent to ${contact.name ?? "contact"}`);
+          }
           fetchData();
         } catch (err) {
           toast.error(
