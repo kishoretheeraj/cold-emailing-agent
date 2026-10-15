@@ -834,10 +834,12 @@ def record_board_scan(board, status, job_count, dead_after):
 
 
 def get_rows_missing_identity(limit):
-    """Rows saved before job identity existed (job_key NULL) that have a URL to derive it from."""
+    """Rows saved before job identity existed (job_key NULL) that have a URL to derive it from.
+    platform NULL marks "never identified": backfill_identity always writes it, and a duplicate it
+    withdrew or kept keeps job_key NULL on purpose, so job_key alone would re-read those forever."""
     result = _retry(lambda: get_client().table("job_applications")
                     .select("id,company,role,job_url,stage,automation_status,posting_snapshot,created_at")
-                    .is_("job_key", "null").not_.is_("job_url", "null")
+                    .is_("job_key", "null").is_("platform", "null").not_.is_("job_url", "null")
                     .order("created_at", desc=False).limit(limit).execute())
     return result.data or []
 
