@@ -169,6 +169,17 @@ tests/
   `500` for unexpected SDK errors.
 - Strip ` ```json` code fences from Claude responses before `JSON.parse`.
 
+### Home page is the review inbox (2026-10-15, Beelink dashboard)
+
+`/` renders `ReviewQueue` (mobile cards, buckets, undo; data from `useApprovalQueue`, which reads
+`GET /api/applications?view=queue`, now including `preparing`/`failed_*` via `lib/queueStatuses.ts`); the
+contacts app is `/?view=contacts`. `Nav` has a **Review** link (`/`) and **Contacts** (`/?view=contacts`), active by
+the `view` search param (`useSearchParams`, so `layout.tsx` wraps `Nav` in `Suspense`). Every contacts e2e spec opens
+`/?view=contacts`. `/pipeline` and `/pipeline/[jobId]` read the 24/7 mirror tables server-side through
+`lib/supabase-server.ts` (service role, server-only; those tables have RLS with no policies), and
+`POST /api/pipeline/link-reply` only calls the `pipeline_link_reply` RPC. These pages use inline `style` props,
+an exception to the Tailwind-only rule carried over from the Beelink branch.
+
 ### Operator login and signed approvals (2026-10-08)
 
 `src/proxy.ts` (Next 16's renamed middleware, Node.js runtime) gates every page and API route
@@ -504,7 +515,7 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
   `createSessionToken`; without it `proxy.ts` sends every page to `/login` (that was the state from the
   2026-10-08 login gate until 2026-10-15). `E2E_PORT` moves the server off 3000.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 88** (vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
+- **Current test count: 92** (2026-10-15: `24-review-home.spec.ts` (review inbox as home) plus the Beelink dashboard's own; vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more

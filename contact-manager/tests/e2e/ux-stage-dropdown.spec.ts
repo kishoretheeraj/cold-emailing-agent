@@ -12,7 +12,7 @@ test("outreach contact: stage dropdown shows only Outreach section with descript
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // Open side sheet for Alice (outreach contact)
@@ -50,7 +50,7 @@ test("applied contact: stage dropdown shows only Applied section with descriptiv
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // Search for Emily to bring her into view (she's beyond the first page)

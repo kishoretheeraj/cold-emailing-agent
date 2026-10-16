@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("nav shows a pending-count badge and links to the review page", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   const visaLink = page.getByRole("link", { name: /^visa/i });

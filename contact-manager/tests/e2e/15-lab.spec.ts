@@ -16,7 +16,7 @@ test("/lab page loads with contact picker and mode toggle", async ({ page }) => 
 });
 
 test("Lab nav link navigates to /lab", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await page.getByRole("link", { name: /^lab$/i }).click();
   await expect(page).toHaveURL(/\/lab/);
   await expect(page.getByTestId("contact-picker-toggle")).toBeVisible();

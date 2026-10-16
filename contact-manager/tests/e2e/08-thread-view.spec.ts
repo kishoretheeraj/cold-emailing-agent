@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("thread view shows empty state in side sheet", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
 
   // Click the first contact row to open the sheet
   const rows = page.locator("tbody tr, [data-testid='contact-row']");

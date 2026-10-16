@@ -9,6 +9,7 @@ vi.mock("sonner", () => ({
 
 vi.mock("next/navigation", () => ({
   usePathname: vi.fn(() => "/"),
+  useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
 // Stub Tooltip as a passthrough — TooltipProvider isn't wired in unit test renders.
@@ -29,7 +30,7 @@ vi.mock("@/lib/supabase", () => ({
   },
 }));
 
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { Nav } from "./Nav";
 
 // Helper: resolve GET /api/agent-config with a given scope.
@@ -62,7 +63,8 @@ describe("Nav — static structure", () => {
   it("renders all nav links", async () => {
     render(<Nav />);
     await waitFor(() => screen.getByRole("link", { name: /^overview$/i }));
-    expect(screen.getByRole("link", { name: /^contacts$/i })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: /^review$/i })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: /^contacts$/i })).toHaveAttribute("href", "/?view=contacts");
     expect(screen.getByRole("link", { name: /^queue$/i })).toHaveAttribute("href", "/queue");
     expect(screen.getByRole("link", { name: /^replies$/i })).toHaveAttribute("href", "/replies");
     expect(screen.getByRole("link", { name: /^prompts$/i })).toHaveAttribute("href", "/prompts");
@@ -83,6 +85,22 @@ describe("Nav — static structure", () => {
     await waitFor(() => screen.getByRole("link", { name: /^queue$/i }));
     expect(screen.getByRole("link", { name: /^queue$/i }).className).toMatch(/indigo/);
     expect(screen.getByRole("link", { name: /^overview$/i }).className).not.toMatch(/indigo/);
+  });
+
+  it("highlights Review on the home page and Contacts on ?view=contacts, never both", async () => {
+    vi.mocked(usePathname).mockReturnValue("/");
+    const { unmount } = render(<Nav />);
+    await waitFor(() => screen.getByRole("link", { name: /^review$/i }));
+    expect(screen.getByRole("link", { name: /^review$/i }).className).toMatch(/indigo/);
+    expect(screen.getByRole("link", { name: /^contacts$/i }).className).not.toMatch(/indigo/);
+    unmount();
+
+    vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams("view=contacts") as never);
+    render(<Nav />);
+    await waitFor(() => screen.getByRole("link", { name: /^contacts$/i }));
+    expect(screen.getByRole("link", { name: /^contacts$/i }).className).toMatch(/indigo/);
+    expect(screen.getByRole("link", { name: /^review$/i }).className).not.toMatch(/indigo/);
+    vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams() as never);
   });
 
   it("shows no pending-count badge on the Visa link when the queue is empty", async () => {

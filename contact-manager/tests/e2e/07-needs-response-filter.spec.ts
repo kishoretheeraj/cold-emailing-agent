@@ -6,12 +6,12 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("Needs response toggle is visible in filter bar", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Needs response")).toBeVisible();
 });
 
 test("Needs response toggle can be clicked without error", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   // Click the toggle button (ToggleSwitch renders a button next to its label text)
   const toggle = page.locator("button").filter({ hasText: "Needs response" });
   // If not found as button, fall back to clicking the label text area

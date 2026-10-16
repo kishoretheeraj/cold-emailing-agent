@@ -23,7 +23,7 @@ test("/runs page status chips are present", async ({ page }) => {
 });
 
 test("Activity nav link from home navigates to /runs", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await page.getByRole("link", { name: /activity/i }).click();
   await expect(page).toHaveURL(/\/runs/);
   await expect(page.getByRole("heading", { name: /activity/i })).toBeVisible({

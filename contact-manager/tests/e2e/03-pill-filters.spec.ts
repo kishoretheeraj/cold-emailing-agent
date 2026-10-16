@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("tier and mode pills filter list, Clear filters resets", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // Click Tier 1 pill — should show only T1 badges
@@ -50,7 +50,7 @@ test("tier and mode pills filter list, Clear filters resets", async ({
 test("visa signal badge renders per match status, sponsor filter narrows the list", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // Alice Chen (fixture id 1) is an "auto" match — badge reads "Sponsor"

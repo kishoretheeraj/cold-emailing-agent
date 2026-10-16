@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("delete modal shows amber warning for _drafted contacts with message_id", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // Bob Martinez is fixture index 1: stage="first_touch_drafted", message_id="msg-thread-2"
