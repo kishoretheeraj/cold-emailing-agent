@@ -798,6 +798,36 @@ def get_preview_candidates(limit, exclude_platforms=()):
     return _retry(lambda: query().execute()).data or []
 
 
+def get_document_candidates(limit, exclude_platforms=()):
+    """Saved rows picked 'strong' that still have no resume (idle or failed_retryable, under the attempt
+    limit), best pick_score first: the rows the v2 document pass may claim. get_preview_candidates only
+    returns rows that already have documents, so without this the v2 path never saw a row."""
+    def query():
+        q = (get_client().table("job_applications").select("*")
+             .eq("stage", "saved").eq("pick_verdict", "strong")
+             .is_("resume_file_ref", "null").is_("resume_error", "null")
+             .in_("automation_status", list(config.APPLY_AGENT_PREVIEW_ELIGIBLE_STATUSES))
+             .lt("prepare_attempts", config.APPLY_PREPARE_MAX_ATTEMPTS))
+        if exclude_platforms:
+            q = q.or_(f"platform.is.null,platform.not.in.({','.join(exclude_platforms)})")
+        return q.order("pick_score", desc=True, nullsfirst=False).order("created_at", desc=False).limit(limit)
+    return _retry(lambda: query().execute()).data or []
+
+
+def finish_document_generation(application_id, lease_id, ok, reason=None):
+    """End a document-only lease (claim_application 'preparing'): ok -> idle with the attempt refunded,
+    otherwise failed_retryable with `reason`. Returns False if the lease was already lost."""
+    return bool(_retry(lambda: _rpc("finish_document_generation", {
+        "p_id": application_id, "p_lease": lease_id, "p_ok": bool(ok), "p_reason": _clip(reason, 900)})))
+
+
+def cancel_document_generation(application_id, lease_id, reason):
+    """End a document-only lease without counting the attempt (machine-wide failures such as a usage
+    limit or Claude auth): back to idle with the claim's attempt refunded. False if the lease was lost."""
+    return bool(_retry(lambda: _rpc("cancel_document_generation", {
+        "p_id": application_id, "p_lease": lease_id, "p_reason": _clip(reason, 900)})))
+
+
 # ── Job sourcing: board registry and identity backfill (fifty-a-day §3.3) ──────
 
 def get_sourcing_boards(limit):
@@ -1066,6 +1096,96 @@ def get_recent_application_runs(limit=50):
     return result.data or []
 
 
+# ── Dashboard decisions ────────────────────────────────────────────────────────
+
+DASHBOARD_ADAPTER = "dashboard"
+_DECISION_PAGE = 500  # matches the cap inside get_dashboard_decisions_page
+
+
+class DecisionConflict(RuntimeError):
+    """A dashboard decision lost a race or contradicts one already recorded (the dashboard answers 409)."""
+    conflict = True
+
+
+def _is_decision_conflict(exc):
+    return "dashboard_decision_conflict" in str(exc)
+
+
+def record_dashboard_decision(application_id, decision, reason=None):
+    """Persist a dashboard approve/reject in ONE database transaction (record_dashboard_decision RPC):
+    the application_runs row (adapter 'dashboard') and, for a reject, the withdrawal commit together or
+    not at all. The RPC locks the row and refuses a decision that contradicts a recorded one or an
+    application no longer awaiting approval (DecisionConflict); a repeat of the same decision is a no-op.
+    An approval here is intent only: it never sets approved_at, and Submit still needs the signed
+    approve_application RPC. Raises on any failure (the dashboard answers 503/409, state untouched)."""
+    if decision not in ("approved", "rejected"):
+        raise ValueError(f"unknown dashboard decision: {decision}")
+    row_id = int(application_id)
+    params = {"p_run_id": str(uuid.uuid4()), "p_application_id": row_id, "p_decision": decision,
+              "p_reason": _clip(reason, 500), "p_host": "dashboard-api"}
+    try:
+        run_id = _retry(lambda: _rpc("record_dashboard_decision", params), give_up=_is_decision_conflict)
+    except Exception as exc:
+        if _is_decision_conflict(exc):
+            raise DecisionConflict(str(exc)) from exc
+        raise
+    if not run_id:
+        raise RuntimeError(f"could not record dashboard decision for {application_id}")
+
+
+def get_dashboard_decisions():
+    """{application_id (str): (decision, reason)}: the LATEST dashboard decision per application, read
+    server-side (DISTINCT ON) and keyset-paginated so no page cap can hide a newer decision."""
+    decisions = {}
+    after = 0
+    while True:
+        rows = _retry(lambda: _rpc("get_dashboard_decisions_page",
+                                   {"p_after": after, "p_limit": _DECISION_PAGE})) or []
+        for row in rows:
+            decisions[str(row["application_id"])] = (row["decision"], row.get("reason"))
+        if len(rows) < _DECISION_PAGE:
+            return decisions
+        after = max(row["application_id"] for row in rows)
+
+
+def _awaiting_approval_query():
+    return (get_client().table("job_applications")
+            .select("id,company,role,platform,resume_file_ref,created_at")
+            .eq("stage", "ready_to_submit").eq("automation_status", "ready_for_review"))
+
+
+def get_applications_awaiting_approval(page=200):
+    """Every row the operator can approve (preview done, not yet approved), ascending by id, read in
+    keyset pages so neither a page cap nor intent-only approvals (which stay ready_for_review) can hide
+    a newer row: the dashboard queue."""
+    rows = []
+    after = 0
+    while True:
+        batch = _retry(lambda: _awaiting_approval_query().gt("id", after).order("id").limit(page).execute()).data or []
+        rows.extend(batch)
+        if len(batch) < page:
+            return rows
+        after = max(row["id"] for row in batch)
+
+
+def get_application_awaiting_approval(application_id):
+    """One row from the dashboard queue by id, or None if it is not awaiting approval."""
+    rows = _retry(lambda: _awaiting_approval_query().eq("id", int(application_id)).limit(1).execute()).data or []
+    return rows[0] if rows else None
+
+
+def get_unsigned_approval_intents():
+    """Ids the dashboard approved (intent) that still wait for the signed approve_application step."""
+    approved = [int(k) for k, (decision, _) in get_dashboard_decisions().items() if decision == "approved"]
+    ids = []
+    for start in range(0, len(approved), 200):
+        chunk = approved[start:start + 200]
+        rows = _retry(lambda: get_client().table("job_applications").select("id").in_("id", chunk)
+                      .eq("automation_status", "ready_for_review").execute())
+        ids.extend(row["id"] for row in rows.data or [])
+    return ids
+
+
 def request_takeover(application_id, lease_id, kind, reason):
     """Ask a human to take over the browser. Only the live lease of a preparing/submitting row
     can ask; returns False otherwise."""
@@ -1122,6 +1242,12 @@ def mark_unsupported(application_id, reason):
     """Unleased 'unsupported' write for rows that can never be applied to automatically."""
     return bool(_retry(lambda: _rpc("mark_application_unsupported", {
         "p_id": application_id, "p_reason": reason})))
+
+
+def mark_unsupported_with_lease(application_id, lease_id, reason):
+    """Atomically mark a row unsupported while holding its 'preparing' lease."""
+    return bool(_retry(lambda: _rpc("mark_unsupported_under_lease", {
+        "p_id": application_id, "p_lease": lease_id, "p_reason": _clip(reason, 900)})))
 
 
 _OUTCOME_STAGES = ("applied", "phone_screen", "onsite")
@@ -1200,6 +1326,7 @@ def set_resume_files(application_id, resume_file_ref=None, cover_letter_file_ref
 
 def _strong_queue(query, exclude_platforms):
     query = (query.eq("pick_verdict", "strong").eq("stage", "saved")
+             .in_("automation_status", ["idle", "failed_retryable"])
              .is_("resume_file_ref", "null").is_("resume_error", "null"))
     if exclude_platforms:
         query = query.or_(f"platform.is.null,platform.not.in.({','.join(exclude_platforms)})")
@@ -1209,9 +1336,12 @@ def _strong_queue(query, exclude_platforms):
 def get_strong_applications_without_resume(limit, exclude_platforms=()):
     """Rows at stage='saved' that job_pick.py scored 'strong', with no built resume and no
     recorded resume_error -- the Beelink resume worker's queue (resume_agent.py --drain). Best
-    pick_score first, then oldest; rows on platforms this host cannot submit are left out.
-    Applied/rejected/withdrawn rows are never rebuilt."""
+    pick_score first, then oldest; rows on platforms this host cannot submit and rows another worker
+    holds a lease on are left out. Only claimable statuses (idle, failed_retryable) are listed, so rows
+    the claim would refuse (needs_input, unsupported, ...) never fill the pool. Applied/rejected/withdrawn
+    rows are never rebuilt."""
     result = _retry(lambda: _strong_queue(get_client().table("job_applications").select("*"), exclude_platforms)
+                    .is_("worker_lease_id", "null")
                     .order("pick_score", desc=True, nullsfirst=False)
                     .order("created_at", desc=False).limit(limit).execute())
     return result.data or []

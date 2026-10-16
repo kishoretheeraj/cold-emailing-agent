@@ -24,6 +24,7 @@ which the caller turns into a takeover or a needs_input reason. Passwords are ne
 import logging
 import re
 import time
+from urllib.parse import urlparse
 
 import takeover
 
@@ -70,6 +71,42 @@ class WorkdayStop(Exception):
     def __init__(self, kind, message):
         super().__init__(message)
         self.kind = kind
+
+
+# ── Credential safety ──────────────────────────────────────────────────────────
+
+def _redact(text, *secrets):
+    text = str(text)
+    for secret in secrets:
+        if secret:
+            text = text.replace(str(secret), "[REDACTED]")
+    return text
+
+
+def _fill_secret(locator, value):
+    # Playwright puts the typed value in its error text; nothing from the original exception
+    # (message or chained context) may leave this function.
+    try:
+        locator.fill(value)
+    except Exception as exc:
+        raise WorkdayStop("unrecognized_page",
+                          _redact(f"Could not fill a credential field ({type(exc).__name__}: {exc})", value)[:300]) from None
+
+
+def _origin(url):
+    try:
+        parts = urlparse(url or "")
+        if parts.scheme != "https" or not parts.hostname:
+            return None
+        return f"https://{parts.hostname.lower()}:{parts.port or 443}"
+    except ValueError:
+        return None
+
+
+def _require_origin(page, expected_origin):
+    expected = _origin(expected_origin)
+    if not expected or _origin(getattr(page, "url", "")) != expected:
+        raise WorkdayStop("unrecognized_page", "The page is not the expected HTTPS Workday tenant; not entering credentials")
 
 
 def _visible(page, selector):
@@ -185,18 +222,21 @@ def _verify_email(page, verify):
         raise WorkdayStop("email_verification", f"Email verification did not complete: {text or outcome}")
 
 
-def authenticate(page, vault, tenant, email, login_url, verify):
+def authenticate(page, vault, tenant, email, login_url, verify, expected_origin=None):
     """Sign in or sign up on the auth gate. Returns "signed_in" or "created"; raises WorkdayStop.
-    `verify()` returns {"code": ...}, {"link": ...} or None (email_verification.wait_for_verification)."""
+    `verify()` returns {"code": ...}, {"link": ...} or None (email_verification.wait_for_verification).
+    `expected_origin` (a URL on the tenant) is required: credentials are typed only on that HTTPS origin."""
     _stop_if_challenge(page)
+    _require_origin(page, expected_origin)
     entry = vault.get(tenant)
     if entry and entry.get("status") == "rejected":
         raise WorkdayStop("login", "This site's saved account was refused before; sign in by hand, then press I'm done")
 
     if entry:
         _show_panel(page, "signin")
+        _require_origin(page, expected_origin)
         page.locator(EMAIL).first.fill(entry["email"])
-        page.locator(PASSWORD).first.fill(entry["password"])
+        _fill_secret(page.locator(PASSWORD).first, entry["password"])
         _press_auth_submit(page, SIGN_IN_SUBMIT)
         outcome, text = _after_auth(page)
         if outcome == "error":
@@ -212,10 +252,11 @@ def authenticate(page, vault, tenant, email, login_url, verify):
 
     entry = vault.reserve(tenant, email, login_url)
     _show_panel(page, "create")
+    _require_origin(page, expected_origin)
     page.locator(EMAIL).first.fill(entry["email"])
-    page.locator(PASSWORD).first.fill(entry["password"])
+    _fill_secret(page.locator(PASSWORD).first, entry["password"])
     if _visible(page, VERIFY_PASSWORD):
-        page.locator(VERIFY_PASSWORD).first.fill(entry["password"])
+        _fill_secret(page.locator(VERIFY_PASSWORD).first, entry["password"])
     if _visible(page, CREATE_CHECKBOX) and not page.locator(CREATE_CHECKBOX).first.is_checked():
         page.locator(CREATE_CHECKBOX).first.check()
     _press_auth_submit(page, CREATE_SUBMIT)

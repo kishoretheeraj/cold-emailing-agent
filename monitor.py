@@ -573,6 +573,15 @@ def run():
     except Exception as exc:
         log.warning(f"[MONITOR] application outcomes failed: {exc}")
 
+    # Best-effort: store every application-related employer mail in the local reply store
+    # (reply_repo via application_replies.run), with the status each message implies.
+    try:
+        import application_replies
+        reply_counts = application_replies.run()
+        log.info(f"[MONITOR] application replies: {reply_counts}")
+    except Exception as exc:
+        log.warning(f"[MONITOR] application replies failed: {exc}")
+
     prompts = {}
     try:
         prompts = load_prompts() or {}

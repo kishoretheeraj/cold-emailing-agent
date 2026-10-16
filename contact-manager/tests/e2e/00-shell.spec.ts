@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("main page has expected chrome: title, nav links, input toggle", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
 
   await expect(page.getByRole("heading", { name: "Cold Email Ops" })).toBeVisible();
 
@@ -16,9 +16,14 @@ test("main page has expected chrome: title, nav links, input toggle", async ({
   await expect(overviewLink).toBeVisible();
   await expect(overviewLink).toHaveAttribute("href", "/overview");
 
+  // The review inbox is the home page; the contacts app lives at /?view=contacts.
+  const reviewLink = page.getByRole("link", { name: /^review$/i });
+  await expect(reviewLink).toBeVisible();
+  await expect(reviewLink).toHaveAttribute("href", "/");
+
   const contactsLink = page.getByRole("link", { name: /^contacts$/i });
   await expect(contactsLink).toBeVisible();
-  await expect(contactsLink).toHaveAttribute("href", "/");
+  await expect(contactsLink).toHaveAttribute("href", "/?view=contacts");
 
   const applicationsLink = page.getByRole("link", { name: /^applications$/i });
   await expect(applicationsLink).toBeVisible();
@@ -57,7 +62,7 @@ test("main page has expected chrome: title, nav links, input toggle", async ({
 });
 
 test("Prompts link navigates to /prompts", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await page.getByRole("link", { name: /prompts/i }).click();
   await expect(page).toHaveURL(/\/prompts/);
   await expect(page.getByRole("heading", { name: /prompts/i })).toBeVisible({
@@ -77,7 +82,7 @@ test("Pause Agent button is visible in the nav", async ({ page }) => {
   await page.route("**/api/agent-config", (route) =>
     route.fulfill({ json: { scope: "none" } })
   );
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByRole("button", { name: /pause agent/i })).toBeVisible({
     timeout: 5000,
   });
@@ -87,7 +92,7 @@ test("Run Agent opens confirmation modal", async ({ page }) => {
   await page.route("**/api/agent-config", (route) =>
     route.fulfill({ json: { scope: "none" } })
   );
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await page.getByRole("button", { name: /pause agent/i }).waitFor({ timeout: 5000 });
   await page.getByRole("button", { name: /run agent/i }).click();
   await expect(page.getByRole("dialog")).toBeVisible();

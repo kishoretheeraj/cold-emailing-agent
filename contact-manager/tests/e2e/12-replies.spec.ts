@@ -220,7 +220,7 @@ test("empty state when no contacts have classifier_status", async ({ page }) => 
 });
 
 test("Replies nav link is present on home page", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   const repliesLink = page.getByRole("link", { name: /^replies$/i });
   await expect(repliesLink).toBeVisible();
   await expect(repliesLink).toHaveAttribute("href", "/replies");

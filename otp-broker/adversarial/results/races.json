@@ -1,0 +1,254 @@
+[
+ {
+  "id": "R01",
+  "name": "10 concurrent waiters, 1 matching mail -> exactly one gets the code",
+  "status": "PASS",
+  "observed": "results=['424242', 'timeout', 'timeout', 'timeout', 'timeout', 'timeout', 'timeout', 'timeout', 'timeout', 'timeout']",
+  "severity": "-",
+  "fix": "Atomic consume must be the only delivery path",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R02",
+  "name": "10 waiters, 10 mails -> 10 distinct codes, none duplicated",
+  "status": "PASS",
+  "observed": "results=['100001', '100002', '100003', '100004', '100005', '100006', '100007', '100008', '100009', '100010']",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R03",
+  "name": "20 waiters + 50 thread-notified scans, 1 mail -> 1 delivery, 1 consumed row",
+  "status": "PASS",
+  "observed": "deliveries=1 consumed_rows=1",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R04",
+  "name": "Store.consume(uv,uid) from 32 threads -> exactly one True",
+  "status": "PASS",
+  "observed": "True=1",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R05",
+  "name": "consume keys on (uidvalidity,uid): rollover re-delivers uid 7 once",
+  "status": "PASS",
+  "observed": "True,True",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "R06",
+  "name": "mail that arrived BEFORE register is found immediately (register-then-search)",
+  "status": "PASS",
+  "observed": "result={'code': '565656', 'message_id': '<m1@t>', 'received_at': '2026-10-12T06:14:28.419637+00:00'} in 0.00s",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R07",
+  "name": "wait(after=now) must NOT return a 4-minute-old OTP (client just requested a fresh one)",
+  "status": "FAIL",
+  "observed": "result={'code': '111111', 'message_id': '<m1@t>', 'received_at': '2026-10-12T06:10:58.421134+00:00'}",
+  "severity": "P0",
+  "fix": "The 5-min CLOCK_SKEW_MARGIN is applied to BOTH the IMAP fetch and _matches, so any unconsumed OTP from the last 5 min is returned instantly -> job agent submits a stale/expired code. Gmail INTERNALDATE is server-assigned (no client skew), so use margin<=10-15s; or let callers pass `after` = their own request time and drop the margin; or track last-delivered per sender",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R08",
+  "name": "two valid mails -> NEWEST delivered",
+  "status": "PASS",
+  "observed": "result={'code': '222222', 'message_id': '<m2@t>', 'received_at': '2026-10-12T06:14:53.422850+00:00'}",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R09",
+  "name": "conflict is returned once; later waiter still gets the next good mail",
+  "status": "PASS",
+  "observed": "r1={'error': 'conflict'} r2={'code': '444444', 'message_id': '<m2@t>', 'received_at': '2026-10-12T06:14:57.424916+00:00'}",
+  "severity": "-",
+  "fix": "Conflict message is not consumed, so it is re-evaluated (and re-409s) for every future waiter in the window while newer-first ordering saves only the case where a newer good mail exists; consume or blacklist a conflicting message after first report",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R10",
+  "name": "reloaded orphan waiter is evaluated, result persisted, identical retry receives it",
+  "status": "PASS",
+  "observed": "rows_while_waiting=1 active_after_reload=1 stored=True retry={'code': '727272', 'message_id': '<m1@t>', 'received_at': '2026-10-12T06:14:58.728779+00:00'}",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R11",
+  "name": "expired orphan waiter disappears from active_waiter_count on its own",
+  "status": "FAIL",
+  "observed": "count at reload=1, 0.5s after expiry=1",
+  "severity": "P2",
+  "fix": "Prune expired orphans in active_waiter_count (filter by expires_at) and/or run a periodic sweeper task",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "R12",
+  "name": "waiter with after=0001-01-02 does not starve other waiters while pending",
+  "status": "FAIL",
+  "observed": "legit waiter got {'error': 'timeout'}; poison={'error': 'timeout'}",
+  "severity": "P1",
+  "fix": "scan() uses min(after) across ALL pending waiters; one OverflowError/odd date makes fetch_since raise for everyone (swallowed as 'scan failed'). Validate `after` on input (clamp to [now-1h, now+5m]) and evaluate waiters with independent fetch windows",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R13",
+  "name": "timeout_s=2 honoured even if IMAP fetch hangs 6s",
+  "status": "FAIL",
+  "observed": "returned {'error': 'timeout'} after 6.0s (asked 2s)",
+  "severity": "P1",
+  "fix": "Broker.wait awaits scan() OUTSIDE asyncio.wait_for. Wrap the whole register+scan+wait body in asyncio.timeout(timeout_s), and run initial scan as a task so the deadline can fire; also hold _scan_lock only around state changes, not IMAP I/O",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R14",
+  "name": "short-timeout waiter is not stuck behind another waiter's slow scan",
+  "status": "FAIL",
+  "observed": "timeout_s=1 waiter finished after 10.0s",
+  "severity": "P1",
+  "fix": "Same fix as R13",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R15",
+  "name": "fetch_since raising -> waiter times out cleanly",
+  "status": "PASS",
+  "observed": "result={'error': 'timeout'}",
+  "severity": "-",
+  "fix": "A broken mailbox is reported as 'timeout' (408) which a client cannot tell from 'no mail': return 503 {error: mailbox_unavailable} when scans fail for the entire wait",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "R16",
+  "name": "FastAPI-level: 2 concurrent POSTs, 1 mail -> one 200 (code) + one 408",
+  "status": "PASS",
+  "observed": "statuses=[200, 408] bodies=[{'request_id': 'f03801a7-1b5f-481f-814f-3affbca50776', 'code': '606060', 'message_id': '<m1@t>', 'received_at': '2026-10-12T06:15:21.265216+00:00'}, {'error': 'timeout'}]",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "R17",
+  "name": "timeout_s=99999 clamps server-side to <=300s",
+  "status": "PASS",
+  "observed": "expires_in=300s",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "R20a1",
+  "name": "restart with short waiter (40s): client gets a clean, bounded outcome",
+  "status": "PASS",
+  "observed": "client status=408 err=None after 40.0s; journal='Oct 12 02:15:26 beelink systemd[1]: Stopping otp-broker.service - OTP broker (IMAP verification-code service)...\\nOct 12 02:16:04 beelink uvicorn[185833]: 2026-10-12 02:16:04,479 INFO otp_broker.broker wait 6911ebf0-0316-45c8-bf4e-ba9bbc7864b5 timed out\\nOct 12 02:16:04 beelink systemd[1]: Stopped otp'",
+  "severity": "-",
+  "fix": "On shutdown resolve in-flight waiters with 503 {error:'restarting'} so clients get an explicit retryable error instead of a reset",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R20a2",
+  "name": "restart with short waiter (40s): `systemctl restart` completes promptly (<15s)",
+  "status": "FAIL",
+  "observed": "restart blocked 38.4s; new process answered 0.5s later",
+  "severity": "P1",
+  "fix": "uvicorn drains in-flight /v1/wait on SIGTERM, so every deploy/restart blocks until the longest waiter finishes or systemd SIGKILLs at 90s. Add --timeout-graceful-shutdown 5 and cancel waiters in lifespan shutdown",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R20a3",
+  "name": "waiter recovered from SQLite after restart (short waiter (40s))",
+  "status": "PASS",
+  "observed": "active_waiter_count before=1 right after=0 (waiter finished during graceful drain; nothing to recover)",
+  "severity": "-",
+  "fix": "Orphan reload only works if the old process is killed; clients must retry with identical parameters to pick up a stored result",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R20a5",
+  "name": "IMAP reconnected after restart",
+  "status": "FAIL",
+  "observed": "{'imap_connected': False, 'last_successful_poll': None, 'active_waiter_count': 0, 'degraded': False, 'uptime_seconds': 0.2, 'last_auth_failure': None}",
+  "severity": "P1",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R20b1",
+  "name": "restart with long waiter (150s > systemd default TimeoutStopSec=90s): client gets a clean, bounded outcome",
+  "status": "PASS",
+  "observed": "client status=None err=RemoteDisconnected: Remote end closed connection without response after 92.24s; journal=\"Oct 12 02:16:07 beelink systemd[1]: Stopping otp-broker.service - OTP broker (IMAP verification-code service)...\\nOct 12 02:17:37 beelink systemd[1]: otp-broker.service: State 'stop-sigterm' timed out. Killing.\\nOct 12 02:17:37 beelink systemd[1]: otp-broker.service: Killing process 186153 (uvicorn) w\"",
+  "severity": "-",
+  "fix": "On shutdown resolve in-flight waiters with 503 {error:'restarting'} so clients get an explicit retryable error instead of a reset",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R20b2",
+  "name": "restart with long waiter (150s > systemd default TimeoutStopSec=90s): `systemctl restart` completes promptly (<15s)",
+  "status": "FAIL",
+  "observed": "restart blocked 90.2s; new process answered 0.5s later",
+  "severity": "P1",
+  "fix": "uvicorn drains in-flight /v1/wait on SIGTERM, so every deploy/restart blocks until the longest waiter finishes or systemd SIGKILLs at 90s. Add --timeout-graceful-shutdown 5 and cancel waiters in lifespan shutdown",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R20b3",
+  "name": "waiter recovered from SQLite after restart (long waiter (150s > systemd default TimeoutStopSec=90s))",
+  "status": "PASS",
+  "observed": "active_waiter_count before=1 right after=1",
+  "severity": "-",
+  "fix": "Orphan reload only works if the old process is killed; clients must retry with identical parameters to pick up a stored result",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R20b4",
+  "name": "orphan waiter count drains to 0 after its expiry (no new traffic)",
+  "status": "PASS",
+  "observed": "drained after 58.13s",
+  "severity": "-",
+  "fix": "Same as R11: count only unexpired waiters; add a periodic sweeper",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "R20b5",
+  "name": "IMAP reconnected after restart",
+  "status": "PASS",
+  "observed": "{'imap_connected': True, 'last_successful_poll': '2026-10-12T06:18:35.891052+00:00', 'active_waiter_count': 0, 'degraded': False, 'uptime_seconds': 58.4, 'last_auth_failure': None}",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "R30",
+  "name": "inject REAL email and race two live waiters",
+  "status": "SKIP",
+  "observed": "Would require reading the Gmail app password (jobagent-owned, 600) to send mail, or sending from an external sender; out of scope without explicit credential-use approval. Covered by simulated R01-R03/R16 which exercise the same Store.consume path.",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "R31",
+  "name": "live 'mail before register' using a real mailbox message",
+  "status": "SKIP",
+  "observed": "Needs a real recent OTP email; the only path to read the mailbox is the broker itself, and a successful match would mark a real message consumed in the production DB. Covered by simulated R06.",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ }
+]

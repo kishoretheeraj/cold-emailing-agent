@@ -16,7 +16,7 @@ import apply_agent
 import config
 import credential_vault
 
-FIXTURE = (Path(__file__).resolve().parent / "fixtures" / "workday_tenant.html").as_uri()
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "workday_tenant.html"
 JOB_URL = "https://fixture.wd5.myworkdayjobs.com/en-US/External/job/Remote/PM_R-1"
 TENANT = "fixture.wd5.myworkdayjobs.com"
 ELIGIBILITY = {
@@ -52,9 +52,13 @@ def tenant(browser, mocker, tmp_path):
         context = browser.new_context(storage_state=storage_state) if storage_state else browser.new_context()
         if init_script:
             context.add_init_script(init_script)
+        # Keep the real HTTPS origin checks active while serving only the local fixture.
+        # A file:// page correctly fails the production credential-origin gate.
+        context.route("**/*", lambda route: route.fulfill(path=str(FIXTURE), content_type="text/html")
+                      if route.request.url == url else route.abort())
         page = context.new_page()
         page.add_init_script(f"window.SCENARIO = {json.dumps(state['scenario'])};")
-        page.goto(FIXTURE)
+        page.goto(url)
         state["pages"].append(page)
         return page
 

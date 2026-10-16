@@ -8,6 +8,7 @@ import {
 } from "@/lib/warmPathsData";
 import { visaKey, visaSignal } from "@/lib/visaSignal";
 import type { JobApplication } from "@/lib/types";
+import { QUEUE_STATUSES } from "@/lib/queueStatuses";
 
 function getClient() {
   return createClient(
@@ -16,11 +17,8 @@ function getClient() {
   );
 }
 
-const QUEUE_STATUSES = [
-  "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
-];
-// Submitted rows stay in the queue's "Submitted" list for two weeks; at fifty a day an unbounded
-// list grows past what a phone can show and past the API's row cap.
+// Terminal rows (submitted, failed_terminal) stay for two weeks; at fifty a day an unbounded list
+// grows past what a phone can show and past the API's row cap.
 const SUBMITTED_DAYS = 14;
 
 // Each queue card shows who is linked and how many people the user knows at the company
@@ -74,7 +72,7 @@ export async function GET(req: Request) {
       query = query
         .not("stage", "in", "(withdrawn,rejected)")
         .in("automation_status", QUEUE_STATUSES)
-        .or(`automation_status.neq.submitted,updated_at.gte.${since}`);
+        .or(`automation_status.not.in.(submitted,failed_terminal),updated_at.gte.${since}`);
     }
     const { data, error } = await query.order("created_at", { ascending: false });
     if (error) throw error;

@@ -1,0 +1,39 @@
+# apply_pipeline.py on display :2, DRY RUN, never armed. The pipeline launches its own Chrome (no
+# debugging port, no flags that hide automation) and gives every job a fresh browser context:
+# service workers blocked, WebSockets never connected, Worker/SharedWorker refused, saved per-tenant
+# sessions restored only for that tenant. It holds the display :2 lock for the browser's lifetime, so
+# jobagent24-apply.service skips its runs while this is up. Not enabled by provisioning: start it by
+# hand for the supervised soak (RUNBOOK-24-7.md section 5).
+# JoinsNamespaceOf= is load-bearing: the X11 socket lives in xvfb@2's private /tmp.
+[Unit]
+Description=jobagent24 pipeline: per-job browser contexts on display :2 (dry run, never submits)
+After=xvfb@2.service network-online.target
+Requires=xvfb@2.service
+JoinsNamespaceOf=xvfb@2.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/jobagent24
+EnvironmentFile=/etc/jobagent24/base.env
+Environment=HOME=/var/lib/jobagent24
+Environment=DISPLAY=:2
+Environment=APPLY_DRY_RUN=1
+Environment=APPLY_BROWSER_HEADLESS=0
+Environment=APPLY_BROWSER_CHANNEL=chrome
+Environment=APPLY_BROWSER_MAX_JOBS=100
+Environment=APPLY_DISPLAY_LOCK=/var/lib/jobagent24/display2.lock
+Environment=APPLY_SESSIONS_DIR=/var/lib/jobagent24/sessions
+Environment=APPLY_AGENT_ARMED=
+ExecStartPre=/opt/jobagent24/.venv/bin/python -c "import config; config.require_secrets()"
+ExecStart=/opt/jobagent24/.venv/bin/python apply_pipeline.py
+Restart=on-failure
+RestartSec=60
+MemoryMax=3072M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/jobagent24 /var/lib/jobagent24

@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("soft delete: cancel keeps row, confirm removes it and row stays gone on refresh", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // ── Cancel path ────────────────────────────────────────────────────────────

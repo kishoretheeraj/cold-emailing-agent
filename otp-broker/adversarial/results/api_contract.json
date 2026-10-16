@@ -1,0 +1,416 @@
+[
+ {
+  "id": "A01",
+  "name": "missing sender_domains -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"sender_domains\"],\"msg\":\"Field required\",\"input\":{\"after\":\"2026-10-12T06:00:18.761829+00:00\",\"kin' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A02",
+  "name": "empty sender_domains [] -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"too_short\",\"loc\":[\"body\",\"sender_domains\"],\"msg\":\"List should have at least 1 item after validation, not 0\",\"input\":[],\"' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A03",
+  "name": "sender_domains as bare string -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"list_type\",\"loc\":[\"body\",\"sender_domains\"],\"msg\":\"Input should be a valid list\",\"input\":\"x.com\"}]}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A04",
+  "name": "sender_domains [123] -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"string_type\",\"loc\":[\"body\",\"sender_domains\",0],\"msg\":\"Input should be a valid string\",\"input\":123}]}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A05",
+  "name": "sender_domains [''] (empty-string domain) rejected",
+  "status": "FAIL",
+  "observed": "status=408 t=1.21s body='{\"error\":\"timeout\"}' ",
+  "severity": "P2",
+  "fix": "Validate each domain: non-empty, hostname charset, no whitespace; reject '', '*', '.'",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A05b",
+  "name": "sender_domains ['*'] / ['.'] rejected",
+  "status": "FAIL",
+  "observed": "status=408 t=1.0s body='{\"error\":\"timeout\"}' ",
+  "severity": "P2",
+  "fix": "Same domain validator; wildcard-only entries should be 422",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A06",
+  "name": "timeout_s='abc' -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"int_parsing\",\"loc\":[\"body\",\"timeout_s\"],\"msg\":\"Input should be a valid integer, unable to parse string as an integer\",\"i' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A07",
+  "name": "timeout_s='1' (numeric string) -> 422 (strict typing)",
+  "status": "FAIL",
+  "observed": "status=408 t=1.0s body='{\"error\":\"timeout\"}' ",
+  "severity": "P2",
+  "fix": "Use pydantic StrictInt (or model_config strict=True) so string numerics are rejected",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A08",
+  "name": "timeout_s=1.5 -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"int_from_float\",\"loc\":[\"body\",\"timeout_s\"],\"msg\":\"Input should be a valid integer, got a number with a fractional part\",' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A09",
+  "name": "timeout_s=-5 -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"greater_than_equal\",\"loc\":[\"body\",\"timeout_s\"],\"msg\":\"Input should be greater than or equal to 1\",\"input\":-5,\"ctx\":{\"ge\"' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A10",
+  "name": "timeout_s=0 -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"greater_than_equal\",\"loc\":[\"body\",\"timeout_s\"],\"msg\":\"Input should be greater than or equal to 1\",\"input\":0,\"ctx\":{\"ge\":' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A11",
+  "name": "timeout_s missing -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"timeout_s\"],\"msg\":\"Field required\",\"input\":{\"sender_domains\":[\"nomatch.invalid\"],\"after\":\"2026-1' (spec: required)",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A12",
+  "name": "timeout_s=null -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"int_type\",\"loc\":[\"body\",\"timeout_s\"],\"msg\":\"Input should be a valid integer\",\"input\":null}]}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A13",
+  "name": "kind='sms' -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"literal_error\",\"loc\":[\"body\",\"kind\"],\"msg\":\"Input should be \\'otp\\' or \\'link\\'\",\"input\":\"sms\",\"ctx\":{\"expected\":\"\\'otp\\' or \\'' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A14",
+  "name": "kind missing -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"kind\"],\"msg\":\"Field required\",\"input\":{\"sender_domains\":[\"nomatch.invalid\"],\"after\":\"2026-10-12T' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A15",
+  "name": "after='not-a-date' -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"datetime_from_date_parsing\",\"loc\":[\"body\",\"after\"],\"msg\":\"Input should be a valid datetime or date, invalid character in' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A16",
+  "name": "after missing -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"after\"],\"msg\":\"Field required\",\"input\":{\"sender_domains\":[\"nomatch.invalid\"],\"kind\":\"otp\",\"timeo' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A17",
+  "name": "after naive timestamp (no tz) accepted as UTC",
+  "status": "PASS",
+  "observed": "status=408 t=1.0s body='{\"error\":\"timeout\"}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A18",
+  "name": "after=0001-01-01T00:00:00Z does not 500",
+  "status": "FAIL",
+  "observed": "status=500 t=0.13s body='Internal Server Error' ",
+  "severity": "P1",
+  "fix": "Clamp/validate `after` to a sane window (e.g. now-24h .. now+1h) in WaitRequest; OverflowError escapes Broker.scan() as HTTP 500",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "A19",
+  "name": "after=0001-01-02T00:00:00Z does not 500",
+  "status": "PASS",
+  "observed": "status=408 t=1.01s body='{\"error\":\"timeout\"}' ",
+  "severity": "-",
+  "fix": "Same: validate `after` range",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "A20",
+  "name": "after=9999-12-31T23:59:59Z does not 500",
+  "status": "PASS",
+  "observed": "status=408 t=1.0s body='{\"error\":\"timeout\"}' ",
+  "severity": "-",
+  "fix": "Same: validate `after` range",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "A21",
+  "name": "after as unix int 1700000000 not 500",
+  "status": "PASS",
+  "observed": "status=408 t=4.03s body='{\"error\":\"timeout\"}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A22",
+  "name": "unknown extra fields rejected (typo protection)",
+  "status": "FAIL",
+  "observed": "status=408 t=1.0s body='{\"error\":\"timeout\"}' ",
+  "severity": "P2",
+  "fix": "model_config = ConfigDict(extra='forbid'); typos like allowed_link_host silently fall back to defaults",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A23",
+  "name": "non-JSON body -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"json_invalid\",\"loc\":[\"body\",0],\"msg\":\"JSON decode error\",\"input\":{},\"ctx\":{\"error\":\"Expecting value\"}}]}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A24",
+  "name": "JSON array body -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"model_attributes_type\",\"loc\":[\"body\"],\"msg\":\"Input should be a valid dictionary or object to extract fields from\",\"input' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A25",
+  "name": "empty body -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\"],\"msg\":\"Field required\",\"input\":null}]}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A26",
+  "name": "valid JSON with Content-Type: text/plain -> rejected",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"model_attributes_type\",\"loc\":[\"body\"],\"msg\":\"Input should be a valid dictionary or object to extract fields from\",\"input' ",
+  "severity": "-",
+  "fix": "Upgrade FastAPI (strict_content_type) or check Content-Type; text/plain POSTs are CSRF-able from a browser on the same host",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A27",
+  "name": "GET /v1/wait -> 405",
+  "status": "PASS",
+  "observed": "status=405 t=0.0s body='{\"detail\":\"Method Not Allowed\"}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A28",
+  "name": "POST /health -> 405",
+  "status": "PASS",
+  "observed": "status=405 t=0.0s body='{\"detail\":\"Method Not Allowed\"}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A29",
+  "name": "unknown path -> 404",
+  "status": "PASS",
+  "observed": "status=404 t=0.0s body='{\"detail\":\"Not Found\"}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A30",
+  "name": "allowed_link_hosts wrong type -> 422",
+  "status": "PASS",
+  "observed": "status=422 t=0.0s body='{\"detail\":[{\"type\":\"list_type\",\"loc\":[\"body\",\"allowed_link_hosts\"],\"msg\":\"Input should be a valid list\",\"input\":\"x.com\"}]}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A31",
+  "name": "1 MB hint string handled (no 500/hang)",
+  "status": "PASS",
+  "observed": "status=408 t=1.02s body='{\"error\":\"timeout\"}' ",
+  "severity": "-",
+  "fix": "Cap field sizes: hint<=256, <=20 domains of <=253 chars; add body size limit at the proxy/uvicorn",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A32",
+  "name": "5000 sender_domains handled (no 500/hang)",
+  "status": "PASS",
+  "observed": "status=408 t=1.0s body='{\"error\":\"timeout\"}' ",
+  "severity": "-",
+  "fix": "Cap sender_domains length (e.g. <=20)",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A33",
+  "name": "kind=link with allowed_link_hosts [] handled",
+  "status": "PASS",
+  "observed": "status=408 t=1.0s body='{\"error\":\"timeout\"}' ",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A34",
+  "name": "/docs and /openapi.json not exposed",
+  "status": "FAIL",
+  "observed": "/docs=200 /openapi.json=200",
+  "severity": "P2",
+  "fix": "FastAPI(docs_url=None, redoc_url=None, openapi_url=None) in production",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "H01",
+  "name": "/health has exactly the 6 spec keys",
+  "status": "PASS",
+  "observed": "keys=['active_waiter_count', 'degraded', 'imap_connected', 'last_auth_failure', 'last_successful_poll', 'uptime_seconds']",
+  "severity": "-",
+  "fix": "Match BUILD_BRIEF schema exactly",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "H02",
+  "name": "/health value types correct",
+  "status": "PASS",
+  "observed": "bad_types=[] status=200 body={'imap_connected': True, 'last_successful_poll': '2026-10-12T06:00:33.190134+00:00', 'active_waiter_count': 0, 'degraded': False, 'uptime_seconds': 443.9, 'last_auth_failure': None}",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "H03",
+  "name": "last_successful_poll is parseable ISO-8601",
+  "status": "PASS",
+  "observed": "value=2026-10-12T06:00:33.190134+00:00",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "H04",
+  "name": "last_successful_poll fresh while imap_connected (usable as liveness signal)",
+  "status": "PASS",
+  "observed": "age=0s uptime=443.9s connected=True degraded=False",
+  "severity": "-",
+  "fix": "In IDLE mode last_successful_poll only advances on EXISTS/fetch, so it goes arbitrarily stale on a healthy idle box. Stamp it on every IDLE keepalive/re-issue (or NOOP every few min) so staleness means 'broken'",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "H05",
+  "name": "uptime_seconds monotonic",
+  "status": "PASS",
+  "observed": "443.9 -> 445.9",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "C01",
+  "name": "10 concurrent waits (5s) all return 408, none 500/hang",
+  "status": "PASS",
+  "observed": "statuses=[408, 408, 408, 408, 408, 408, 408, 408, 408, 408] max_elapsed=5.0s wall=5.0s",
+  "severity": "-",
+  "fix": "Investigate scan serialization: each wait triggers a full IMAP SEARCH under one scan lock",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "C02",
+  "name": "each 408 arrives close to requested timeout (5s +/- 3)",
+  "status": "PASS",
+  "observed": "elapsed=[5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]",
+  "severity": "-",
+  "fix": "Enforce the deadline around the initial scan() too (it currently sits outside asyncio.wait_for)",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "C03",
+  "name": "active_waiter_count returns to 0 after timeouts",
+  "status": "PASS",
+  "observed": "settled_after=0.0s count=0",
+  "severity": "-",
+  "fix": "Always deregister in finally (it does) and make count reflect only live waiters",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "A35",
+  "name": "timeout_s=301 accepted (silently clamped) rather than rejected",
+  "status": "FAIL",
+  "observed": "status=None error=TimeoutError: timed out -> server clamped silently and kept waiting",
+  "severity": "P2",
+  "fix": "Spec says 'int<=300': reject >300 with 422 (le=300) instead of silently clamping, so clients learn their assumption is wrong",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A36",
+  "name": "timeout_s=99999 accepted (silently clamped) rather than rejected",
+  "status": "FAIL",
+  "observed": "status=None error=TimeoutError: timed out -> server clamped silently and kept waiting",
+  "severity": "P2",
+  "fix": "Spec says 'int<=300': reject >300 with 422 (le=300) instead of silently clamping, so clients learn their assumption is wrong",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "A38",
+  "name": "abandoned long waits (client gone after 8s) are released promptly",
+  "status": "FAIL",
+  "observed": "count after disconnect=2; drained to 0 after 300.3s since request start (=> timeout_s clamp = 300s confirmed)",
+  "severity": "P1",
+  "fix": "Poll request.is_disconnected() (or use a Starlette background disconnect watcher) in the wait loop and cancel + deregister; otherwise an abandoned waiter keeps consuming OTP emails for ~5 min and the real retry gets nothing",
+  "fail_severity": "P1"
+ }
+]

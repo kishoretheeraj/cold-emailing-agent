@@ -1,0 +1,8 @@
+# The 24/7 namespace's own imports (api/dashboard.py, ats_api/, otp-broker, vault_reveal.py), kept out of
+# requirements.txt so monitor.yml (about 50 installs a day) and daily_agent.yml do not pay for them.
+# Installed on the Beelink through requirements-beelink.txt and by the test suite through
+# requirements-dev.txt.
+-r requirements.txt
+fastapi>=0.100.0
+httpx>=0.27.0
+pyotp>=2.9.0,<3

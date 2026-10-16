@@ -3,6 +3,7 @@
 # platforms are off on the Beelink (APPLY_GENERIC_ADAPTER=none) until a subscription-only
 # adapter replaces them, so no paid API key is ever needed here.
 -r requirements.txt
+-r requirements-247.txt
 playwright==1.60.0
 # credential_vault.py (Fernet). Already pulled in by supabase's auth client; pinned here because
 # the vault must never depend on a transitive dependency staying put.

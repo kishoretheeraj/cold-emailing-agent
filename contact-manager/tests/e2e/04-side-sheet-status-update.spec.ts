@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("row click opens side sheet, stage update is optimistic (no extra GET)", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // Count GET /contacts requests during the stage update only.

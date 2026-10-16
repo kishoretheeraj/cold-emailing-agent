@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("search debounces 300ms then filters list, clear restores all", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   const searchInput = page.getByPlaceholder("Search by name or company");

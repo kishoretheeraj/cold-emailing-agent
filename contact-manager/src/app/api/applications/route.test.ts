@@ -55,10 +55,11 @@ describe("GET /api/applications?view=queue", () => {
     expect(mockNot).toHaveBeenCalledWith("stage", "in", "(withdrawn,rejected)");
     expect(mockIn).toHaveBeenCalledWith("automation_status", [
       "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
+      "preparing", "failed_retryable", "failed_terminal",
     ]);
-    // Only the last two weeks of submitted rows, so the list stays bounded at fifty a day.
+    // Only the last two weeks of terminal rows, so the list stays bounded at fifty a day.
     const filter = mockOr.mock.calls[0][0] as string;
-    expect(filter.startsWith("automation_status.neq.submitted,updated_at.gte.")).toBe(true);
+    expect(filter.startsWith("automation_status.not.in.(submitted,failed_terminal),updated_at.gte.")).toBe(true);
     const since = Date.parse(filter.split("updated_at.gte.")[1]);
     expect(Math.round((Date.now() - since) / 86_400_000)).toBe(14);
   });
@@ -236,5 +237,16 @@ describe("POST /api/applications", () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(500);
+  });
+});
+
+describe("view=queue feeds the review inbox (review finding 4)", () => {
+  it("returns every status the inbox classifies as blocked or counts as preparing", async () => {
+    const { buildReviewItems, countQueue } = await import("@/hooks/useApprovalQueue");
+    const { QUEUE_STATUSES } = await import("@/lib/queueStatuses");
+    const rows = QUEUE_STATUSES.map((s, i) => ({ id: String(i), company: "Acme", role: "PM", automation_status: s }));
+    const blocked = buildReviewItems(rows as never).filter((i) => i.bucket === "blocked").map((i) => i.app.automation_status);
+    expect(blocked.sort()).toEqual(["failed_retryable", "failed_terminal", "needs_confirmation", "needs_input"]);
+    expect(countQueue(rows as never, []).preparing).toBe(3);
   });
 });

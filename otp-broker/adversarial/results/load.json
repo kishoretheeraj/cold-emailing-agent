@@ -1,0 +1,128 @@
+[
+ {
+  "id": "L01",
+  "name": "50 sequential waits (2s) all 408",
+  "status": "PASS",
+  "observed": "statuses={408: 50} total=108.4s (ideal 100s) lat min/med/max=2.0/2.0/3.81",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L02",
+  "name": "per-request overhead small (every wait within 2.0-3.0s)",
+  "status": "FAIL",
+  "observed": "max overhead=1.81s",
+  "severity": "P2",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "L03",
+  "name": "/health sane after sequential run (uptime grew ~ elapsed, connected, 0 waiters)",
+  "status": "PASS",
+  "observed": "uptime 425.2 -> 533.7, waiters=0, connected=True",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L04",
+  "name": "no memory / fd / thread growth after 50 sequential requests",
+  "status": "PASS",
+  "observed": "MemoryCurrent 39.7MB -> 40.6MB, fds 11->11, threads 4->4",
+  "severity": "-",
+  "fix": "Investigate leak (cache bounded at 300 msgs, MAX_FETCH=50)",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L05",
+  "name": "20 register+abandon cycles: waiters released promptly after client RST",
+  "status": "FAIL",
+  "observed": "active_waiter_count 1s after abandon=20; fully drained 30.3s after start (timeout_s was 30)",
+  "severity": "P1",
+  "fix": "Detect client disconnect (await request.is_disconnected() in a watcher task, or anyio cancel scope) and deregister immediately. Leaked waiters keep scanning, can CONSUME OTP emails meant for the retry, and inflate IMAP SEARCH load",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L06",
+  "name": "count returns to 0 eventually (no permanent leak)",
+  "status": "PASS",
+  "observed": "drained=29.13s",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P0"
+ },
+ {
+  "id": "L07",
+  "name": "no fd/thread leak after abandoned connections",
+  "status": "PASS",
+  "observed": "fds 11->11, threads 4->4, mem 41.2MB",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L08",
+  "name": "no stale rows left in SQLite waiters table",
+  "status": "PASS",
+  "observed": "waiters rows=(0,)",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L09",
+  "name": "30 concurrent waits: all 408, no 500, none dropped",
+  "status": "PASS",
+  "observed": "statuses={408: 30} wall=30.3s max_elapsed=30.26s errors=[]",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L10",
+  "name": "30 concurrent finish near their 5s deadline (<=10s)",
+  "status": "FAIL",
+  "observed": "wall=30.3s",
+  "severity": "P2",
+  "fix": "Deadline not enforced around initial scan(); scans serialize on _scan_lock with one IMAP SEARCH each",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "L11",
+  "name": "after burst: waiters 0, IMAP still connected, no growth",
+  "status": "PASS",
+  "observed": "waiters settled=0.0s connected=True mem 39.7->41.6MB fds 11->11 threads 4->4",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L14",
+  "name": "deadline honoured as concurrency grows (timeout_s=5): wall/max-elapsed/non-408 per N",
+  "status": "FAIL",
+  "observed": "N -> (wall_s, max_elapsed_s, non408): {5: (5.0, 5.0, 0), 10: (14.6, 14.6, 0), 20: (19.6, 19.6, 0), 30: (31.7, 31.7, 0)}",
+  "severity": "P1",
+  "fix": "Each wait() runs its own scan() under one asyncio lock holding a blocking IMAP round-trip (END IDLE + SEARCH + re-IDLE ~0.9s). Coalesce: one scanner task + per-waiter futures; run waiters' deadlines independently of scan; skip SEARCH when UIDNEXT unchanged",
+  "fail_severity": "P1"
+ },
+ {
+  "id": "L12",
+  "name": "journal noise during load (imap error / scan failed / IDLE lines in last 20 min)",
+  "status": "INFO",
+  "observed": "4 lines",
+  "severity": "-",
+  "fix": "",
+  "fail_severity": "P2"
+ },
+ {
+  "id": "L13",
+  "name": "Gmail-side amplification: every /v1/wait registration triggers a full IMAP SEARCH (+ DONE/IDLE cycle) with no rate limit",
+  "status": "INFO",
+  "observed": "100 waits issued above => ~100+ SEARCH commands to Gmail in a few minutes",
+  "severity": "-",
+  "fix": "Coalesce scans (min interval 1-2s), serve cache hits without touching IMAP when nothing new (use EXISTS/UIDNEXT from IDLE), rate-limit /v1/wait per client",
+  "fail_severity": "P2"
+ }
+]

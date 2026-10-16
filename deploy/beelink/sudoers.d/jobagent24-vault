@@ -1,0 +1,14 @@
+# jobagent24-vault: SSH-gated credential retrieval.
+#
+# Scope: the operator user may run exactly one program as the jobagent user, without a sudo
+# password: the reveal script. The script itself refuses to run without a TTY and demands a TOTP
+# code, and writes an audit line for every attempt. This grants nothing else (no shell, no
+# other commands, no root).
+#
+# SSH_CONNECTION is kept so the audit log can record the client IP (sudo resets the environment).
+#
+# Install (as root, after checking syntax):
+#   visudo -cf deploy/beelink/sudoers.d/jobagent24-vault
+#   install -m 0440 -o root -g root deploy/beelink/sudoers.d/jobagent24-vault /etc/sudoers.d/jobagent24-vault
+Defaults:kishore env_keep += "SSH_CONNECTION"
+kishore ALL=(jobagent) NOPASSWD: /opt/jobagent24/vault_reveal.py *

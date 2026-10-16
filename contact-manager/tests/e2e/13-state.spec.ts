@@ -44,7 +44,7 @@ test("queue header shows sender time and timezone distribution", async ({ page }
 });
 
 test("contacts side sheet state dropdown shows Unknown default", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   // Alice Chen has no state — click to open side sheet

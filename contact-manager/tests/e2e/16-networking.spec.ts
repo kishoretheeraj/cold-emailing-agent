@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("create a networking contact via Structured Form, verify mode toggle and stage badge", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: /structured form/i }).click();
@@ -52,7 +52,7 @@ test("create a networking contact via Structured Form, verify mode toggle and st
 test("networking contact sheet shows only the Networking stage group and the Connection field", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Priya Nair")).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: /priya nair/i }).click();
@@ -78,7 +78,7 @@ test("networking contact sheet shows only the Networking stage group and the Con
 });
 
 test("promote flow: networking contact can be promoted to outreach", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   await expect(page.getByText("Priya Nair")).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: /priya nair/i }).click();

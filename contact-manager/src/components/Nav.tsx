@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -14,7 +14,8 @@ type SelectedScope = "agent" | "all";
 
 const NAV_LINKS = [
   { href: "/overview", label: "Overview" },
-  { href: "/", label: "Contacts" },
+  { href: "/", label: "Review" },
+  { href: "/?view=contacts", label: "Contacts" },
   { href: "/applications", label: "Applications" },
   { href: "/queue", label: "Queue" },
   { href: "/replies", label: "Replies" },
@@ -27,6 +28,7 @@ const NAV_LINKS = [
 
 export function Nav() {
   const pathname = usePathname();
+  const contactsView = useSearchParams().get("view") === "contacts";
   const [triggerState, setTriggerState] = useState<TriggerState>("idle");
 
   const [pauseScope, setPauseScope] = useState<PauseScope>("none");
@@ -130,7 +132,9 @@ export function Nav() {
         {/* On a phone the links scroll sideways inside the bar instead of widening the page. */}
         <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-x-auto">
           {NAV_LINKS.map(({ href, label }) => {
-            const active = pathname === href;
+            // "/" is the review inbox; the contacts app lives at "/?view=contacts".
+            const active = href === "/?view=contacts" ? pathname === "/" && contactsView
+              : href === "/" ? pathname === "/" && !contactsView : pathname === href;
             return (
               <Link
                 key={href}

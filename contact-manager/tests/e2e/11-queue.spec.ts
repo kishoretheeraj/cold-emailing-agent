@@ -213,7 +213,7 @@ test("empty state when no drafted contacts", async ({ page }) => {
 });
 
 test("Queue nav link is present on home page", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
   const queueLink = page.getByRole("link", { name: /^queue$/i });
   await expect(queueLink).toBeVisible();
   await expect(queueLink).toHaveAttribute("href", "/queue");

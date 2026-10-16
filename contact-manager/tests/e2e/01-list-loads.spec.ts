@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test("list loads contacts, scroll loads more, end-of-list appears", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?view=contacts");
 
   // Wait for fixture contacts to appear (first contact in fixture is Alice Chen)
   await expect(page.getByText("Alice Chen")).toBeVisible({ timeout: 10_000 });

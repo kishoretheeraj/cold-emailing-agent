@@ -109,13 +109,21 @@ def _parse(proc):
     return sanitize(payload.get("result") or ""), usage
 
 
-def complete(prompt, system=None, model=None):
+def complete(prompt, system=None, model=None, max_output_tokens=None):
     """Run one completion on the subscription. Returns (text, usage) with usage =
     {"input_tokens", "output_tokens"}, cache tokens folded into input. Raises
-    ClaudeUsageLimitError for retry-later conditions, ClaudeSubscriptionError otherwise."""
+    ClaudeUsageLimitError for retry-later conditions, ClaudeSubscriptionError otherwise.
+    max_output_tokens is advisory: the CLI has no token-limit flag, so it is appended to the
+    system prompt as an instruction."""
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         raise ClaudeSubscriptionError(
             "CLAUDE_CODE_OAUTH_TOKEN is not set -- create one with `claude setup-token`")
+    if max_output_tokens:
+        system = (
+            f"{system or _DEFAULT_SYSTEM}\n\n"
+            f"Hard limit: keep your entire reply under {int(max_output_tokens)} tokens. "
+            "Stop before exceeding it."
+        )
     workdir = tempfile.mkdtemp(prefix="claude-cwd-")
     config_dir = tempfile.mkdtemp(prefix="claude-cfg-")
     try:
