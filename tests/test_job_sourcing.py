@@ -164,6 +164,23 @@ def test_run_backfills_identity_first(stack, mocker):
     assert stats["backfill_set"] == 1 and stats["backfill_withdrawn"] == 1
 
 
+def test_backfill_never_reselects_a_row_it_already_processed(mocker):
+    # A duplicate withdrawn by backfill_identity (or one kept in flight) keeps job_key NULL on
+    # purpose, so "job_key IS NULL" alone re-read it on every run, oldest first: wasted writes, and
+    # 200 such rows would starve every newer legacy row. backfill_identity always writes platform;
+    # rows saved before job identity have none.
+    client = MagicMock(name="supabase_client")
+    mocker.patch.object(db, "get_client", return_value=client)
+    chain = client.table.return_value.select.return_value
+    chain.is_.return_value = chain
+    chain.not_.is_.return_value = chain
+    chain.order.return_value.limit.return_value.execute.return_value.data = []
+    db.get_rows_missing_identity(200)
+    assert ("platform", "null") in [c.args for c in chain.is_.call_args_list]
+    fields = db._identity_fields("Acme", "PM", "not a url", None)
+    assert fields["platform"] and fields["job_key"] is None
+
+
 def test_run_survives_every_database_failure(stack):
     for name in ("get_rows_missing_identity", "add_job_boards", "get_sourcing_boards", "record_run"):
         getattr(db, name).side_effect = RuntimeError("supabase down")

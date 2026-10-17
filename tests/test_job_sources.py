@@ -61,6 +61,17 @@ def test_simplify_keeps_active_visible_rows_in_the_wanted_categories(mocker):
     assert job["posted_at"] == datetime.fromtimestamp(1791000000, tz=timezone.utc).isoformat()
 
 
+@pytest.mark.parametrize("bad", [1e20, -1e20, 10 ** 30, float("inf"), float("nan"), "garbage", True])
+def test_simplify_bad_date_on_one_row_never_costs_the_feed(mocker, bad):
+    # One row's out-of-range epoch used to raise out of fetch_simplify (and abort the sourcing pass).
+    bad_row = dict(SIMPLIFY[0], company_name="Bad Date Co", date_posted=bad,
+                   url="https://boards.greenhouse.io/bad/jobs/1")
+    _http(mocker, {job_sources.config.SOURCING_SIMPLIFY_URL: [bad_row, SIMPLIFY[0]]})
+    jobs = job_sources.fetch_simplify(["Product"])
+    assert [j["company"] for j in jobs] == ["Bad Date Co", "Figma"]
+    assert jobs[0]["posted_at"] is None
+
+
 @pytest.mark.parametrize("payload", [None, {}, "x", Exception("boom")])
 def test_simplify_failures_return_nothing(mocker, payload):
     _http(mocker, {job_sources.config.SOURCING_SIMPLIFY_URL: payload})

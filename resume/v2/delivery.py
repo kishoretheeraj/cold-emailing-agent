@@ -44,15 +44,21 @@ def _content_text(content):
 def generate_cover_letter(job, content, gaps=None):
     """Cover letter text for a job_applications row, grounded in the tailored resume `content`
     (tailor_v2's content_json). Reuses resume_agent's prompt, model call and lint; retries once with
-    the violations. Raises ValueError if it still fails lint. Subscription errors propagate."""
+    the violations. Every call is logged to api_usage_log. Raises ValueError if it still fails lint.
+    Subscription errors propagate."""
+    import config
     import resume_agent
+    import usage_tracking
+    billing = "subscription" if config.RESUME_CLAUDE_BACKEND == "subscription" else "api"
     prompt = resume_agent._COVER_LETTER_PROMPT.format(
         company=job.get("company"), role=job.get("role"),
         angle=content.get("summary") or content.get("headline") or "", gaps=gaps or [])
     resume_text = _content_text(content)
     violations = []
     for _ in range(MAX_COVER_LETTER_ATTEMPTS):
-        text, _usage = resume_agent._call_claude(prompt)
+        text, usage = resume_agent._call_claude(prompt)
+        usage_tracking.log_usage("resume_v2", "cover_letter", config.RESUME_MODEL, usage,
+                                 job_application_id=job.get("id"), billing=billing)
         violations = resume_agent._lint_cover_letter(text, resume_text)
         if not violations:
             return text

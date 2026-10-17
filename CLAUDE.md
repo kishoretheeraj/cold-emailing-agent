@@ -111,6 +111,12 @@ script, above all project imports.
 
 - A contact is **skipped** the moment `reply_status` becomes anything other
   than `no_reply`. The agent must never email someone who has already replied.
+  The monitor records a detected reply only in `classifier_status` (the operator
+  owns `reply_status`), so `classifier_status` in
+  `constants.REPLY_STOP_CLASSIFIER_STATUSES` (`hard_no`, `bounced`, `positive_reply`,
+  `soft_yes`) skips too (2026-10-15; before it, a contact who replied "no" or
+  bounced still got the next follow-up drafted). `out_of_office`, `auto_reply` and
+  `unrelated` do not stop the sequence.
 - Stage progression is **strict**: `new → *_drafted → *_sent → ...`. The
   `monitor.py` sent-draft detector auto-flips `*_drafted → *_sent` when it
   finds the email in Gmail Sent Mail. The user can also flip manually.
@@ -286,7 +292,8 @@ full (`--full`, used by the quarterly workflow) re-resolves every distinct
 contact company, since a company that fell to `unknown` against an earlier
 corpus may match once new employer data lands. Both skip
 `confirmed`/`rejected` `company_intel` rows (never overwrite a human
-decision) while refreshing their denormalized stats. **Never wire the
+decision) while refreshing their denormalized stats; a contact at such a company
+is still linked to the existing row, which is not rewritten. **Never wire the
 quarterly re-match step without `--full`** — incremental mode silently
 no-ops on every contact once it has any `company_intel_id`, `unknown`
 included, which was a real production incident (see docs/python/db-schema.md).
@@ -408,7 +415,9 @@ See docs/python/resilience.md for resilience patterns (Anthropic SDK, Tavily, Su
 - The Supabase Python client validates API keys against a JWT regex. The
   monkey-patch in `db.py` widens it to also accept `sb_publishable_*` keys.
   **Do not remove this patch** — it is the only reason the publishable key
-  format works.
+  format works. It swaps the global `re.match`, so every creation holds
+  `db._create_lock` (an overlapping one used to leave a lenient wrapper installed
+  for good; `get_client`/`get_admin_client` also double-check under it).
 - **`prompts` table**: `db.load_prompts()` reads all rows at agent startup and
   returns `{key: value}`. Keys used by the agent: `sender_profile`,
   `outreach_prompt`, `applied_intro_prompt`, `applied_followup_prompt`,
@@ -578,7 +587,7 @@ The dashboard's "Last run" reads `ran_at` from the most recent `agent_runs`
 row, not `MAX(last_emailed)` from contacts. This means the date updates on
 every run regardless of whether any drafts were created.
 
-See docs/python/imap.md for IMAP patterns (mailbox quoting, DraftResult, find_sent_for_thread, _fetch_body_text).
+See docs/python/imap.md for IMAP patterns (mailbox quoting, DraftResult, find_sent_for_thread, _fetch_body_text). Every `IMAP4_SSL(...)` passes `timeout=30` (`tests/test_imap_timeouts.py` scans for it): a stalled socket otherwise hangs the run until the workflow timeout.
 
 See docs/python/sent-detection.md for sent-draft auto-detection invariants.
 
@@ -1056,10 +1065,11 @@ posture (built for unattended background runs), this pipeline is manual and inte
 failure should surface immediately.
 
 `resume_build.py`'s fitting ladder (`_FIT_RUNGS`) cumulatively tightens header/bullet/entry-line
-spacing, margins, and body font size (10pt down to 9pt) across 5 rungs; the content-editing rungs
-(orphan-word trims, section folding, bullet drops) are handled by `resume_agent.py --build`'s
-one-retry regeneration loop instead (same pattern as `preflight.py`'s regenerate-with-error-list
-retry), since those are content decisions, not formatting. The fitting ladder starts at
+spacing, margins, and body font size (10pt down to 9pt) across 5 rungs; content edits are
+`resume_agent.py --build`'s one overflow retry, which re-resolves the master with one fewer bullet
+per entry (the last curated one) before walking the ladder again -- the ladder is deterministic, so
+a retry with unchanged content can only overflow again (it did until 2026-10-15). Orphan-word trims
+and section folding are not implemented. The fitting ladder starts at
 `build_docx`'s own `"standard"` margin preset, not the looser `"comfortable"` preset at index 0 of
 `_MARGIN_LADDER` -- it only ever tightens from the normal baseline. Every paragraph is built via
 `_new_paragraph()`, which zeroes python-docx's default template spacing (1.15x line height + 10pt
@@ -1463,10 +1473,13 @@ finishes; the worker never clicks Submit again; unsolved -> `needs_confirmation`
 `ats_sessions.tenant_key(url)` is the account boundary (host; host + company slug on shared hosts
 like Lever/Greenhouse/Ashby/Workable/SmartRecruiters; `myworkdaysite.com/recruiting/<tenant>`);
 `save_state`/`state_path`/`forget` keep a Playwright `storage_state` per tenant under
-`APPLY_SESSIONS_DIR` (0700/0600, hashed names). `credential_vault.Vault` (Fernet, `VAULT_KEY` from
+`APPLY_SESSIONS_DIR` (0700/0600, hashed names); Workday saves pass `domain=ats_sessions.WORKDAY_COOKIE_DOMAINS`
+(audit 2026-10-14 F13: an unfiltered save after a Google/Microsoft takeover kept the operator's IdP session; files
+saved before that fix may still hold one). `credential_vault.Vault` (Fernet, `VAULT_KEY` from
 `/etc/job-agent/vault.env`, apply units only) holds one entry per tenant; `reserve()` generates a
 24-char password and writes it to disk BEFORE any typing and never replaces an entry; `mark()`
-records `active`/`rejected`. Passwords never appear in logs or reprs.
+records `active`/`rejected`; both hold an exclusive `flock` on `<vault>.lock` around load-modify-save (a second
+writer used to drop an entry it never loaded). Passwords never appear in logs or reprs.
 `email_verification.wait_for_verification(sender_domains, since, ...)` reads only the receipt inbox
 (`gmail.fetch_inbox_since`), only matching senders after `since`, and returns a code (URLs stripped
 first; letter codes uppercase-only) or a link on an allowed host; never raises.
@@ -1608,7 +1621,8 @@ rows, or computation failed) skips the check with a warning.
 marker `[RECONCILE]`): matches `needs_confirmation` rows to ATS "thank you for applying" receipts and moves them
 to `submitted` via `record_receipt_evidence` (evidence = message id/from/subject/date, shown in the detail
 sheet). It never retries a submission and never touches any other transition. Receipts go to the address the
-forms are filled with (`kishoretheerajvj@gmail.com`, `apply_agent._standard_field_values`), which is NOT the
+forms are filled with (`config.APPLY_FORM_EMAIL`, `apply_agent._standard_field_values`; the reconciler and
+`email_verification` log a warning when `RECEIPT_IMAP_ADDRESS` differs), which is NOT the
 outreach `GMAIL_ADDRESS` -- so it reads soft-optional `RECEIPT_IMAP_ADDRESS`/`RECEIPT_IMAP_APP_PASSWORD`
 (unset -> no-op). Reply-shaped mail is skipped (this inbox has human threads with the same companies), the
 search window is bounded to 72h after the submit attempt, and one receipt matching several pending rows at a
@@ -1772,7 +1786,8 @@ reproduced first). Plan: docs/superpowers/plans/2026-10-08-fifty-a-day.md.
 - **Job identity** (`job_identity.py`, pure): `identify(url)` classifies by **hostname, never substring**
   (`clever.com` is not Lever) and returns a canonical `job_key`: `greenhouse:<id>` (ids are global, so a
   company page's `?gh_jid=` is the same job), `lever:<uuid>`, `ashby:<uuid>`, `workday:<tenant>:<req>`
-  (one requisition can sit on several sites of a tenant), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
+  (one requisition can sit on several sites of a tenant; apply-flow segments such as `/apply/applyManually`
+  are dropped from the key and `canonical_url`, and no tenant means no key), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
   ids, else `url:<canonical>` with tracking parameters dropped. `apply_url` is where the browser goes
   (Ashby `/application`, Lever `/apply`, the Greenhouse embed for a `gh_jid` page). `ats_platform.classify`
   delegates to it. `company_key`/`title_key` ("title identity" = the set of title words) and a 64-bit

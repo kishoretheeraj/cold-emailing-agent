@@ -2,6 +2,9 @@
 Playwright browser, no real browser-use call, no real network. Covers: platform routing,
 Workday/aggregator exclusion, the eligibility-answer lookup, and per-row failure isolation."""
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -1730,3 +1733,25 @@ def test_refuse_on_failed_attachments_raises_only_for_failed():
     apply_agent._refuse_on_failed_attachments({"resume": True})
     apply_agent._refuse_on_failed_attachments({})
     apply_agent._refuse_on_failed_attachments(None)
+
+
+def test_standard_field_values_match_the_resume_master():
+    # Audit 2026-10-14 F2: the form identity must not drift from resume/data/master.json (the
+    # resume and the form must name the same person) except the email, which is the receipt inbox.
+    master = json.loads((Path(__file__).resolve().parent.parent / "resume" / "data" / "master.json").read_text())
+    values = apply_agent._standard_field_values({})
+    assert values["name"] == master["name"]
+    assert f"{values['first_name']} {values['last_name']}" == master["name"]
+    for key in ("phone", "location", "linkedin"):
+        assert values[key] == master["contact"][key], key
+    assert values["email"] == apply_agent.config.APPLY_FORM_EMAIL
+
+
+def test_email_code_takeover_names_the_form_email(mocker):
+    mocker.patch.object(apply_agent.config, "APPLY_FORM_EMAIL", "forms@example.com")
+    mocker.patch.object(apply_agent.email_verification, "wait_for_verification", return_value=None)
+    mocker.patch.object(apply_agent.config, "APPLY_TAKEOVER_ENABLED", True)
+    await_human = mocker.patch.object(apply_agent.takeover, "await_human", return_value=False)
+    page = MagicMock()
+    apply_agent._complete_email_code(page, 7, "lease", datetime.now(timezone.utc))
+    assert "forms@example.com" in await_human.call_args.args[3]

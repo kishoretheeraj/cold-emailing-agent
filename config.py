@@ -32,7 +32,7 @@ RESEARCH_MAX_QUERY_LEN = 80
 RESEARCH_TAVILY_RESULTS_PER_QUERY = 5
 # Cap concurrent Tavily searches inside one contact's research brief.
 RESEARCH_TAVILY_WORKERS = 5
-RESEARCH_HARDCODED_FALLBACK_QUERY = "{company} news 2026"
+RESEARCH_HARDCODED_FALLBACK_QUERY = "{company} news {year}"  # year filled at call time
 RESEARCH_TIERS = {1, 2}
 
 RESEARCH_QUERY_MODEL = "claude-haiku-4-5-20251001"
@@ -803,6 +803,11 @@ CU_LINKEDIN_MAX_WAIT_SECONDS = 300
 # does nothing -- no IMAP, no escalation.
 RECEIPT_IMAP_ADDRESS = os.environ.get("RECEIPT_IMAP_ADDRESS")
 RECEIPT_IMAP_APP_PASSWORD = os.environ.get("RECEIPT_IMAP_APP_PASSWORD")
+# The email every application form is filled with (apply_agent._standard_field_values). Receipts,
+# security codes and outcomes arrive there, so RECEIPT_IMAP_ADDRESS must be this same inbox; the
+# reconciler and email_verification warn when it is not. A constant, not an env var: the preview
+# and the submit pass must type the same address the operator approved.
+APPLY_FORM_EMAIL = "kishoretheerajvj@gmail.com"
 
 # ── Warm paths (contacts linked to a job application) ──────────────────────────
 # Mirrored by the contacts_link_guard trigger (migration 20261010000000) and warmPaths.ts; a static

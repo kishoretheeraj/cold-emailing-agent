@@ -1,11 +1,13 @@
 """Tests for agent.py — decision logic, stage transitions, and run() orchestration."""
 
+import itertools
 from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
 import agent
+import constants
 from email_verify import EmailVerifyResult
 from gmail import DraftResult
 
@@ -315,6 +317,34 @@ def test_next_stage_values_end_in_drafted():
     """Every action transitions a contact into a *_drafted stage."""
     for action, stage in agent.NEXT_STAGE.items():
         assert stage.endswith("_drafted"), f"{action} -> {stage}"
+
+
+def test_emailer_template_map_matches_the_agent_action_maps():
+    # CLAUDE.md: the four action maps must keep matching keys; the test above covers three.
+    import emailer
+    assert set(emailer.ACTION_TO_TEMPLATE) == set(agent.NEXT_STAGE)
+
+
+def test_every_drafted_stage_has_a_sent_successor():
+    for stage in agent.NEXT_STAGE.values():
+        assert agent.DRAFTED_TO_SENT[stage].endswith("_sent"), stage
+
+
+def test_first_touch_copies_agree():
+    # Four hand-kept copies (CLAUDE.md "Threading invariants"): a drifted one silently turns off
+    # research/critic for a track, loses subject-fallback sent detection, or undercounts reports.
+    import re
+    from pathlib import Path
+    import emailer
+    import engagement_report
+
+    assert emailer._FIRST_TOUCH_ACTIONS == agent._FIRST_TOUCH_ACTIONS
+    first_touch_stages = {agent.NEXT_STAGE[a] for a in agent._FIRST_TOUCH_ACTIONS}
+    assert set(engagement_report._FIRST_TOUCH_DRAFTED_STAGES) == first_touch_stages
+    monitor_src = (Path(__file__).resolve().parent.parent / "monitor.py").read_text()
+    literal = re.search(r'mode = "first_touch" if stage in \{([^}]*)\}', monitor_src)
+    assert literal, "monitor.detect_sent_drafts no longer classifies first-touch stages inline"
+    assert set(re.findall(r'"(\w+)"', literal.group(1))) == first_touch_stages
 
 
 # ── run() integration ────────────────────────────────────────────────────────
@@ -1025,3 +1055,69 @@ def test_run_skips_linked_applied_contacts_when_the_lookup_fails(mocker):
 
     assert create_draft.call_count == 1
     assert create_draft.call_args.args[0] == "pat@example.com"
+
+
+# ── Exhaustive decision invariants ───────────────────────────────────────────
+
+_MODE_ACTIONS = {
+    "outreach": {"send_first_touch", "send_followup1", "send_followup2", "send_breakup"},
+    "applied": {"send_applied_intro", "send_applied_followup"},
+    "networking": {"send_networking_first_touch", "send_networking_followup"},
+}
+_ALL_STAGES = sorted(set(constants.OUTREACH_STAGES + constants.APPLIED_STAGES
+                         + constants.NETWORKING_STAGES + constants.REPLY_STAGES))
+_TERMINAL_SENT = {"breakup_sent", "applied_followup_sent", "networking_followup_sent"}
+
+
+def _decide(mode, stage, reply, offset):
+    followup = None if offset is None else str(TODAY + timedelta(days=offset))
+    return agent.decide_action({"mode": mode, "stage": stage, "reply_status": reply,
+                                "followup_date": followup}, TODAY)
+
+
+@pytest.mark.parametrize("mode", sorted(_MODE_ACTIONS))
+def test_decide_action_invariants_hold_for_every_state(mode):
+    for stage, reply, offset in itertools.product(_ALL_STAGES, constants.REPLY_STATUSES, (None, -1, 0, 1)):
+        action = _decide(mode, stage, reply, offset)
+        where = (mode, stage, reply, offset)
+        assert action == "skip" or action in _MODE_ACTIONS[mode], where
+        if reply != "no_reply":
+            assert action == "skip", where  # never email someone who replied
+        if "drafted" in stage or stage in _TERMINAL_SENT or stage == "closed":
+            assert action == "skip", where  # waits for the human to send; terminal stays terminal
+        if offset == 1 and stage != "new":
+            assert action == "skip", where  # a follow-up due tomorrow is not due today
+    for stage in _ALL_STAGES:
+        # `<=`, not `<`: due today behaves exactly like overdue.
+        assert _decide(mode, stage, "no_reply", 0) == _decide(mode, stage, "no_reply", -1), stage
+
+
+@pytest.mark.parametrize("mode", sorted(_MODE_ACTIONS))
+def test_every_due_sent_stage_of_a_mode_gets_its_next_action(mode):
+    stages = {"outreach": constants.OUTREACH_STAGES, "applied": constants.APPLIED_STAGES,
+              "networking": constants.NETWORKING_STAGES}[mode]
+    produced = {_decide(mode, s, "no_reply", 0) for s in stages} - {"skip"}
+    assert produced == _MODE_ACTIONS[mode]
+
+
+# ── Classified replies stop the sequence ─────────────────────────────────────
+
+_DUE_SENT = [("outreach", "first_touch_sent", "send_followup1"),
+             ("applied", "applied_intro_sent", "send_applied_followup"),
+             ("networking", "networking_sent", "send_networking_followup")]
+
+
+@pytest.mark.parametrize("mode,stage,followup_action", _DUE_SENT)
+@pytest.mark.parametrize("classifier_status,stops", [
+    ("hard_no", True), ("bounced", True), ("positive_reply", True), ("soft_yes", True),
+    ("out_of_office", False), ("auto_reply", False), ("unrelated", False), (None, False),
+])
+def test_a_classified_reply_stops_follow_ups(mode, stage, followup_action, classifier_status, stops):
+    # The monitor records a detected reply only in classifier_status; reply_status is the
+    # operator's. A real reply (or a bounce) must stop the next follow-up draft on its own.
+    contact = {"mode": mode, "stage": stage, "reply_status": "no_reply",
+               "classifier_status": classifier_status, "followup_date": str(TODAY)}
+    expected = "skip" if stops else followup_action
+    assert agent.decide_action(contact, TODAY) == expected
+    if stops:
+        assert agent._skip_reason(contact, TODAY) == f"replied (classified {classifier_status})"

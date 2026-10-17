@@ -58,6 +58,9 @@ def wait_for_verification(sender_domains, since, timeout_seconds=60, poll_second
     if not (address and password):
         log.info("[APPLY-VERIFY] | receipt inbox not configured")
         return None
+    if address.strip().lower() != config.APPLY_FORM_EMAIL.lower():
+        log.warning("[APPLY-VERIFY] | RECEIPT_IMAP_ADDRESS is not APPLY_FORM_EMAIL, the address forms "
+                    "are filled with; codes land there, not in this inbox")
     domains = tuple(d.lower() for d in sender_domains)
     hosts = {h.lower() for h in allowed_link_hosts}
 

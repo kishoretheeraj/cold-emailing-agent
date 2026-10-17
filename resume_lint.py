@@ -36,15 +36,21 @@ def _extract_numbers(text):
     return _NUMBER_PATTERN.findall(text)
 
 
+def _number_keys(text):
+    # Compare numbers by value, not spelling: "$207,600", "207,600" and "207600" are one number, and
+    # the pattern's [\d,]* also captures a trailing list comma ("70," in "70, then 90").
+    return {n.lstrip("$").replace(",", "").lower() for n in _extract_numbers(text)}
+
+
 def check_metrics_whitelist(text, metrics):
     violations = []
-    candidate_numbers = set(_extract_numbers(text))
+    candidate_numbers = _number_keys(text)
     for metric in metrics:
         if metric.get("resolved") is not None:
             continue
-        banned_numbers = set(_extract_numbers(metric.get("text", "")))
+        banned_numbers = _number_keys(metric.get("text", ""))
         for cv in metric.get("conflicting_values", []):
-            banned_numbers |= set(_extract_numbers(cv))
+            banned_numbers |= _number_keys(cv)
         overlap = candidate_numbers & banned_numbers
         if overlap:
             violations.append(
@@ -66,7 +72,7 @@ def _ngrams(text, n):
 
 
 def check_cover_letter_number_overlap(cl_text, resume_text):
-    overlap = set(_extract_numbers(cl_text)) & set(_extract_numbers(resume_text))
+    overlap = _number_keys(cl_text) & _number_keys(resume_text)
     return [f"number '{n}' also appears in the resume" for n in sorted(overlap)]
 
 

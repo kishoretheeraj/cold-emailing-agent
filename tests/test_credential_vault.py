@@ -93,3 +93,35 @@ def test_passwords_never_reach_logs_or_reprs(vault, caplog):
     assert entry["password"] not in caplog.text
     assert entry["password"] not in repr(vault)
     assert vault.key not in repr(vault)
+
+
+def test_concurrent_reserves_from_two_processes_never_lose_an_entry(tmp_path):
+    # Audit 2026-10-14 F6: reserve() is load-modify-save. Without a lock, a second writer that
+    # loads before the first one saves overwrites it, and the first tenant's password (already
+    # typed into a signup form) is gone. Two Vault objects stand in for two processes.
+    import threading
+
+    key = Fernet.generate_key().decode()
+    path = str(tmp_path / "vault.bin")
+    first, second = credential_vault.Vault(path, key), credential_vault.Vault(path, key)
+    loaded, go = threading.Event(), threading.Event()
+    original_load = first._load
+
+    def paused_load():
+        entries = original_load()
+        loaded.set()
+        go.wait(5)
+        return entries
+
+    first._load = paused_load
+    a = threading.Thread(target=first.reserve, args=("tenant-a", "a@example.com", "https://a"))
+    b = threading.Thread(target=second.reserve, args=("tenant-b", "b@example.com", "https://b"))
+    a.start()
+    assert loaded.wait(5)
+    b.start()
+    b.join(2)  # without a lock b finishes here, between a's load and a's save
+    go.set()
+    a.join(5)
+    b.join(5)
+    reread = credential_vault.Vault(path, key)
+    assert reread.get("tenant-a") and reread.get("tenant-b")

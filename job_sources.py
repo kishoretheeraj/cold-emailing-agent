@@ -61,7 +61,10 @@ def _text(value):
 def _iso(value):
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
         seconds = value / 1000 if value > 1e11 else value
-        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
     if isinstance(value, str) and value.strip():
         try:
             parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))

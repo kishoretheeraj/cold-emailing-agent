@@ -35,7 +35,9 @@ _RESUME_HEADERS = ("EXPERIENCE", "EDUCATION")
 _PLACEHOLDER = re.compile(
     r"\[[A-Z][^\]]{0,60}\]|\{[a-z_]{2,40}\}|<[A-Z][A-Za-z ]{2,40}>|\bX{3,}\b|lorem ipsum"
     r"|\b(hiring manager name|company name|job title)\b", re.IGNORECASE)
-_MODEL_TELLS = re.compile(r"\bas an ai\b|\blanguage model\b|\bi (cannot|can't) (help|assist)\b"
+# Self-reference only: an AI product manager's documents legitimately name language models.
+_MODEL_TELLS = re.compile(r"\bas an ai\b|\b(as|i am|i'm) an? (large )?language model\b"
+                          r"|\bi (cannot|can't) (help|assist)\b"
                           r"|\bhere(?:'s| is) (a|your) (cover letter|resume)\b", re.IGNORECASE)
 _COMPANY_SUFFIX = re.compile(
     r"[,.]?\s+(inc|incorporated|llc|l\.l\.c|ltd|limited|corp|corporation|co|company|plc|gmbh|"

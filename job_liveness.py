@@ -40,7 +40,8 @@ def _endpoint(ident, url):
     if platform == "ashby" and tenant:
         return f"https://api.ashbyhq.com/posting-api/job-board/{tenant}", True
     if platform == "workday" and tenant:
-        parts = urllib.parse.urlsplit(url)
+        # canonical_url, not the raw URL: it drops apply-flow segments (…/apply), whose CXS path 404s.
+        parts = urllib.parse.urlsplit(ident["canonical_url"])
         segs = [s for s in parts.path.split("/") if s]
         segs = [s for s in segs if not job_identity._LOCALE_RE.match(s)]
         if segs[:1] == ["recruiting"]:

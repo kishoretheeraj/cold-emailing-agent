@@ -56,15 +56,22 @@ def state_path(key):
     return path if os.path.isfile(path) else None
 
 
+# Workday sign-in can set cookies on any of these, so a Workday save keeps all three (and only
+# them): one tenant's host alone would quietly log every saved tenant out.
+WORKDAY_COOKIE_DOMAINS = ("myworkdayjobs.com", "myworkdaysite.com", "workday.com")
+
+
 def _within(host, domain):
     host = (host or "").lower().lstrip(".")
-    return host == domain or host.endswith("." + domain)
+    domains = (domain,) if isinstance(domain, str) else domain
+    return any(host == d or host.endswith("." + d) for d in domains)
 
 
 def save_state(context, key, domain=None):
     """Write the context's cookies and storage for this tenant, atomically, readable only by us.
-    With `domain`, only that site's cookies and origins are kept: a human who signed in with
-    Google during a takeover must not leave the operator's Google session in this file."""
+    With `domain` (one registrable domain, or a tuple of them), only those sites' cookies and
+    origins are kept: a human who signed in with Google during a takeover must not leave the
+    operator's Google session in this file."""
     os.makedirs(config.APPLY_SESSIONS_DIR, mode=0o700, exist_ok=True)
     os.chmod(config.APPLY_SESSIONS_DIR, 0o700)
     path = _path(key)

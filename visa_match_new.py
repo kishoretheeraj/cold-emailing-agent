@@ -82,17 +82,21 @@ def run(full_rematch=False):
 
             row = visa_matching.resolve_company(company, existing_row, employer_corpus)
             if row is None:
-                continue
+                # Nothing to write (a human-decided row, or no name), but a contact at a company
+                # that already has a row still links to it, so its /visa-review decision shows.
+                if not (existing_row and existing_row.get("id")):
+                    continue
+                company_intel_id = existing_row["id"]
+            else:
+                if not db.upsert_company_intel([row]):
+                    errors += 1
+                    continue
 
-            if not db.upsert_company_intel([row]):
-                errors += 1
-                continue
-
-            linked_rows = db.get_company_intel_by_normalized_names([row["normalized_name"]])
-            if not linked_rows:
-                errors += 1
-                continue
-            company_intel_id = linked_rows[0]["id"]
+                linked_rows = db.get_company_intel_by_normalized_names([row["normalized_name"]])
+                if not linked_rows:
+                    errors += 1
+                    continue
+                company_intel_id = linked_rows[0]["id"]
 
             for contact_id in contact_ids:
                 if not db.update_contact_company_intel_id(contact_id, company_intel_id):

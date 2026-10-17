@@ -71,7 +71,10 @@ def test_parse_filing_date_handles_dd_mon_yyyy(raw, expected):
     assert ingest_form_d.parse_filing_date(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["", None, "2025-12-31", "garbage", "31-XXX-2025"])
+@pytest.mark.parametrize("raw", ["", None, "2025-12-31", "garbage", "31-XXX-2025",
+                                 # Not real calendar days: Postgres rejects them on the DATE column,
+                                 # failing the whole company's upsert, and they win the latest-date sort.
+                                 "31-FEB-2025", "29-FEB-2025", "31-APR-2026", "00-JAN-2026"])
 def test_parse_filing_date_degrades_to_none(raw):
     assert ingest_form_d.parse_filing_date(raw) is None
 

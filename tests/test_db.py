@@ -277,3 +277,60 @@ def test_upsert_prompt_is_best_effort(mocker):
     mocker.patch.object(db, "get_client", side_effect=RuntimeError("db down"))
     mocker.patch.object(db, "_retry", side_effect=lambda fn: fn())
     assert db.upsert_prompt("voice_dna", "x") is False
+
+
+def test_concurrent_client_creation_restores_re_match(monkeypatch):
+    # Audit 2026-10-14 F8: _create_patched swaps the global re.match. When a second creation
+    # starts inside the first and finishes after it, it saved the first one's lenient wrapper as
+    # "original" and put it back for good.
+    import re
+    import threading
+
+    original = re.match
+    inside = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    order = []
+
+    def slow_create(url, key, options=None):
+        n = len(order)
+        order.append(n)
+        inside[n].set()
+        release[n].wait(2)
+        return MagicMock(name="created")
+
+    monkeypatch.setattr(db, "_original_create", slow_create)
+    a = threading.Thread(target=db._create_patched, args=("https://x", "sb_publishable_a"))
+    b = threading.Thread(target=db._create_patched, args=("https://x", "sb_publishable_b"))
+    a.start()
+    assert inside[0].wait(2)
+    b.start()
+    inside[1].wait(0.5)  # unlocked, b is now inside too
+    release[0].set()
+    a.join(2)
+    release[1].set()
+    b.join(2)
+    try:
+        assert re.match is original
+    finally:
+        re.match = original
+
+
+def test_concurrent_get_client_creates_one_client(monkeypatch):
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(db, "_client", None)
+    calls = {"n": 0}
+
+    def fake_create(url, key, options=None):
+        calls["n"] += 1
+        _time.sleep(0.05)
+        return MagicMock(name="created")
+
+    monkeypatch.setattr(db, "_create_patched", fake_create)
+    threads = [threading.Thread(target=db.get_client) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(2)
+    assert calls["n"] == 1
