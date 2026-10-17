@@ -101,6 +101,6 @@ jobs:
             echo "Refusing to push: set the confirm input to exactly 'push'." >&2
             exit 1
           fi
-          supabase db push --include-all --linked --dry-run --password "$SUPABASE_DB_PASSWORD"
-          supabase db push --include-all --linked --password "$SUPABASE_DB_PASSWORD" --yes
+          supabase db push --linked --dry-run --password "$SUPABASE_DB_PASSWORD"
+          supabase db push --linked --password "$SUPABASE_DB_PASSWORD" --yes
           supabase migration list --linked
