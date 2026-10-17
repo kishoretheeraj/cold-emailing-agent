@@ -12,7 +12,7 @@
 -- takeover_continue) are untouched and stay anon-callable.
 --
 -- Rollout order (the workers must hold the key first, or every prepare/submit/reconcile fails):
---   1. SUPABASE_SERVICE_ROLE_KEY in /etc/job-agent/base.env on the Beelink and in the
+--   1. SUPABASE_SERVICE_ROLE_KEY in /etc/job-agent/worker.env on the Beelink and in the
 --      monitor / apply_agent_preview / apply_agent_submit workflow env (GitHub secret exists).
 --   2. Deploy the code that routes these calls through the service-role client.
 --   3. db_migrate.yml dryrun with supabase/tests/worker_rpcs_service_role_dryrun.sql, then push.
