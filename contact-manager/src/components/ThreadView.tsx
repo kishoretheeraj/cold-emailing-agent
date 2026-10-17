@@ -147,14 +147,16 @@ export function ThreadView({ contactId }: Props) {
   const messages = loading ? [] : thread.messages;
 
   useEffect(() => {
+    let cancelled = false;
     supabase
       .from("email_messages")
       .select("*")
       .eq("contact_id", contactId)
       .order("sent_at", { ascending: true })
       .then(({ data }) => {
-        setThread({ contactId, messages: (data as EmailMessage[]) ?? [] });
+        if (!cancelled) setThread({ contactId, messages: (data as EmailMessage[]) ?? [] });
       });
+    return () => { cancelled = true; };
   }, [contactId]);
 
   if (loading) {

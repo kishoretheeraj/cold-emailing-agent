@@ -8,7 +8,7 @@ const baseURL = `http://localhost:${port}`;
 
 // proxy.ts fails closed without an operator session, so the dev server Playwright starts gets
 // test-only login secrets and every test context starts signed in with a cookie minted from them.
-// A dev server you started yourself (reused below) must have the same SESSION_SECRET.
+// Always start the test server so its credentials match the browser session.
 const E2E_OPERATOR_PASSWORD = "e2e-operator-password";
 const E2E_SESSION_SECRET = "e2e-session-secret-0123456789abcdef";
 
@@ -39,7 +39,7 @@ export default defineConfig({
   webServer: {
     command: `npm run dev -- -p ${port}`,
     url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 60_000,
     env: {
       OPERATOR_PASSWORD: E2E_OPERATOR_PASSWORD,

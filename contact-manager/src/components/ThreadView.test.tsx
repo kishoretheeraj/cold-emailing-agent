@@ -75,6 +75,22 @@ describe("ThreadView", () => {
     expect(await screen.findByText(/second thread/i)).toBeTruthy();
   });
 
+  it("ignores a previous contact's response arriving after the current thread", async () => {
+    const pending: ((r: { data: EmailMessage[] }) => void)[] = [];
+    selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
+      pending.push(cb);
+      return Promise.resolve();
+    });
+    const { rerender } = render(<ThreadView contactId={42} />);
+    rerender(<ThreadView contactId={43} />);
+    act(() => pending[1]({ data: [makeMsg({ contact_id: 43, subject: "current thread" })] }));
+    expect(screen.getByText("current thread")).toBeTruthy();
+    act(() => pending[0]({ data: [makeMsg({ subject: "stale thread" })] }));
+    expect(screen.getByText("current thread")).toBeTruthy();
+    expect(screen.queryByText(/loading thread/i)).toBeNull();
+    expect(screen.queryByText("stale thread")).toBeNull();
+  });
+
   it("shows empty state when no messages", async () => {
     selectThenMock.mockImplementation((cb: (r: { data: EmailMessage[] }) => void) => {
       cb({ data: [] });

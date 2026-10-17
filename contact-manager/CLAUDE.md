@@ -545,8 +545,8 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - Run: `npm run test:e2e`.
 - **Signed in by the harness.** `playwright.config.ts` starts the dev server with test-only
   `OPERATOR_PASSWORD`/`SESSION_SECRET` and gives every context a `cm_session` cookie minted from
-  them (proxy.ts fails closed otherwise and every spec lands on Sign in). A dev server you started
-  yourself is reused and must have that same `SESSION_SECRET`. `E2E_PORT=3100` runs a second
+  them (proxy.ts fails closed otherwise and every spec lands on Sign in). The harness always starts
+  its own server so the credentials match. `E2E_PORT=3100` runs a second
   checkout (a git worktree) on its own port instead of reusing whatever listens on 3000.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
 - **Current test count: 91** (verified 2026-10-15: vitest 1159 passed across 70 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 91; the 2026-10-15 hardening pass added the sent-not-recorded case in `11-queue.spec.ts`, `operatorGuard.test.ts`, `pythonMirrors.test.ts`, `github.test.ts`, `trigger-agent/route.test.ts`, `overview/page.test.tsx`; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
