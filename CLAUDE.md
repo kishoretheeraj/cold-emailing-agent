@@ -567,7 +567,7 @@ which workflows consequently pay for it.
 `ANTHROPIC_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `SUPABASE_URL`,
 `SUPABASE_ANON_KEY`, plus (`daily_agent.yml` only) `TAVILY_API_KEY`,
 `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
-`monitor.yml` additionally receives the soft-optional `RECEIPT_IMAP_ADDRESS`/`RECEIPT_IMAP_APP_PASSWORD` (Gmail-receipt reconciler). It does **not** receive `TAVILY_API_KEY` — monitor never imports
+`monitor.yml` additionally receives the soft-optional `RECEIPT_IMAP_ADDRESS`/`RECEIPT_IMAP_APP_PASSWORD` (Gmail-receipt reconciler) and `SUPABASE_SERVICE_ROLE_KEY` (the reconciler's and lease recovery's service_role-only RPCs; the apply workflows get it too). It does **not** receive `TAVILY_API_KEY` — monitor never imports
 `research`. Any new script that imports `db.py` needs at minimum
 `SUPABASE_URL`/`SUPABASE_ANON_KEY` plus the other three core secrets, since
 `config.py` reads all five via hard `os.environ[...]` lookups at import time
@@ -1603,6 +1603,17 @@ anon-writable (changes only invalidate approval via the trigger-owned hash). Ema
 `authenticated` JWT), so migration `20261004000001` makes `authenticated`'s job_applications privileges exactly
 anon's -- before it, authenticated could write `approved_revision_hash` and re-forge an approval. Functional checks:
 `supabase/tests/lifecycle_rpcs_dryrun.sql`, `supabase/tests/authenticated_mirrors_anon_dryrun.sql` (run inside BEGIN/ROLLBACK against the linked DB, migration prepended).
+
+**Worker RPCs are service_role-only (migration `20261015000000`, audit 2026-10-14 F11/F12).** Holding the public
+anon key used to be enough to read a live lease and call `complete_preview` with a crafted preview,
+`record_submission` on a row never submitted, or `record_receipt_evidence` (no lease at all) with an invented
+message id. The twelve worker RPCs (`db._WORKER_RPCS`: the lifecycle ones above minus `requeue_preview`, plus
+`request_takeover`, `clear_takeover`, `log_application_run`) are now executable only by `service_role`;
+`db._rpc` sends them through `get_admin_client()` when `SUPABASE_SERVICE_ROLE_KEY` is set and falls back to anon
+with one warning otherwise (staged rollout). The contact-manager's RPCs stay anon. The key lives in the Beelink's
+`/etc/job-agent/worker.env` (apply-prepare, apply-submit, resume-worker only; never `base.env`) and in the
+`monitor.yml`/`apply_agent_*.yml` env. `tests/conftest.py` blanks it so a real key never reaches a test.
+Rollout: key on the box and in Actions -> deploy -> dryrun `supabase/tests/worker_rpcs_service_role_dryrun.sql` -> push.
 
 **Form-drift check**: `apply_agent._form_signature(page)` = sha256 over the sorted, normalized identifiers
 (`name` > `aria-label` > label text > placeholder, never `id` -- framework ids change per load; captcha fields

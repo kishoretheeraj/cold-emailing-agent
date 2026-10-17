@@ -384,6 +384,35 @@ def test_provision_creates_the_vault_env_template_but_never_a_key():
     assert "Fernet.generate_key" not in code and "VAULT_KEY=" not in code
 
 
+_WORKER_ENV_EXAMPLE = os.path.join(_ROOT, "deploy", "beelink", "env", "worker.env.example")
+_WORKER_ENV_UNITS = ("apply-prepare.service", "apply-submit.service", "resume-worker.service")
+
+
+def test_only_the_lifecycle_units_load_the_service_role_key():
+    # The service_role key bypasses RLS everywhere; it goes only to the units that call the
+    # service_role-only lifecycle RPCs (migration 20261015000000), never into base.env.
+    for path in _unit_paths():
+        name = os.path.basename(path)
+        # Optional ("-"): a box provisioned before worker.env existed must still start these
+        # units after a plain git pull; without the key they use anon and warn once.
+        loads = "EnvironmentFile=-/etc/job-agent/worker.env" in _directives(path)
+        assert loads == (name in _WORKER_ENV_UNITS), name
+        if name not in _WORKER_ENV_UNITS:
+            assert "worker.env" not in _read(path), name
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in _read(_ENV_EXAMPLE)
+
+
+def test_worker_env_template_is_valueless_and_key_only():
+    lines = [l for l in _read(_WORKER_ENV_EXAMPLE).splitlines() if l and not l.startswith("#")]
+    assert lines == ["SUPABASE_SERVICE_ROLE_KEY="]
+
+
+def test_provision_creates_the_worker_env_template_but_never_a_key():
+    code = _provision_code()
+    assert "worker.env.example" in code
+    assert "SUPABASE_SERVICE_ROLE_KEY=" not in code
+
+
 # ── Sourcing and scoring (fifty-a-day) ─────────────────────────────────────────
 
 def test_sourcing_needs_no_model_and_no_secrets_beyond_base():

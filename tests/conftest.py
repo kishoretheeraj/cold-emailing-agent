@@ -16,6 +16,10 @@ os.environ.setdefault("GMAIL_APP_PASSWORD", "test password")
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_ANON_KEY", "sb_publishable_test_key")
 os.environ.setdefault("TAVILY_API_KEY", "test-tavily-key")
+# Worker RPCs use the service-role client whenever this key is set (db._worker_client); a real key
+# in a developer's shell or .env must never reach a test. Empty, not unset, so load_dotenv() in
+# config.py cannot fill it back in. Tests that need it patch db.SUPABASE_SERVICE_ROLE_KEY.
+os.environ["SUPABASE_SERVICE_ROLE_KEY"] = ""
 # Gmail OAuth vars — absent by default so tests verify graceful degradation.
 # Individual tests that need them set them explicitly via monkeypatch.
 

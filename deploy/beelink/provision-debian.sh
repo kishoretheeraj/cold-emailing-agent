@@ -112,6 +112,10 @@ if [ ! -f "$ETC/approval.env" ]; then
     install -o root -g root -m 0600 "$APP/deploy/beelink/env/approval.env.example" "$ETC/approval.env"
     log "created $ETC/approval.env from the template -- paste the signing key: sudo nano $ETC/approval.env"
 fi
+if [ ! -f "$ETC/worker.env" ]; then
+    install -o root -g root -m 0600 "$APP/deploy/beelink/env/worker.env.example" "$ETC/worker.env"
+    log "created $ETC/worker.env from the template -- paste the service_role key: sudo nano $ETC/worker.env"
+fi
 if [ ! -f "$ETC/vault.env" ]; then
     install -o root -g root -m 0600 "$APP/deploy/beelink/env/vault.env.example" "$ETC/vault.env"
     log "created $ETC/vault.env from the template -- generate a key as its comment says: sudo nano $ETC/vault.env"
