@@ -87,3 +87,26 @@ def test_build_enrichment_rows_zero_total_has_null_approval_rate():
     existing_corpus = [{"id": 1, "normalized_name": "acme"}]
     rows = ingest.build_enrichment_rows(accumulator, existing_corpus)
     assert rows[0]["approval_rate"] is None
+
+
+# ── run() ─────────────────────────────────────────────────────────────────────────
+
+def test_run_counts_a_failed_enrichment_upsert_as_an_error(mocker, tmp_path):
+    # upsert_employer_h1b_stats returns False on failure instead of raising; run() used to record
+    # "enriched=N, errors=0" with nothing written.
+    mocker.patch.object(ingest.db, "get_employer_h1b_stats_corpus",
+                        return_value=[{"id": 1, "normalized_name": "acme"}])
+
+    def fake_download(url, dest):
+        with open(dest, "w") as fh:
+            fh.write("Employer,Initial Approval,Initial Denial\nAcme Inc.,10,2\n")
+
+    mocker.patch.object(ingest, "download_file", side_effect=fake_download)
+    mocker.patch.object(ingest.db, "upsert_employer_h1b_stats", return_value=False)
+    record = mocker.patch.object(ingest.db, "record_run")
+
+    ingest.run(csv_url="https://example.test/uscis.csv")
+
+    args = record.call_args[0]
+    assert args[1] == 0   # nothing enriched
+    assert args[3] == 1   # errors

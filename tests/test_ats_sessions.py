@@ -144,3 +144,26 @@ def test_restore_cookies_without_a_saved_tenant_does_nothing(sessions_dir):
     context = _Context({})
     assert ats_sessions.restore_cookies(context, "nobody.example") is False
     assert context.added == []
+
+
+_WORKDAY_AFTER_SSO = {
+    "cookies": [{"name": "PLAY_SESSION", "domain": "acme.wd5.myworkdayjobs.com", "value": "a"},
+                {"name": "wd-browser-id", "domain": ".myworkdayjobs.com", "value": "b"},
+                {"name": "wday_vps", "domain": ".workday.com", "value": "c"},
+                {"name": "site", "domain": "wd3.myworkdaysite.com", "value": "d"},
+                {"name": "SID", "domain": ".google.com", "value": "operator-google-session"},
+                {"name": "ESTSAUTH", "domain": "login.microsoftonline.com", "value": "operator-ms-session"}],
+    "origins": [{"origin": "https://acme.wd5.myworkdayjobs.com", "localStorage": []},
+                {"origin": "https://accounts.google.com", "localStorage": []}],
+}
+
+
+def test_a_workday_save_keeps_every_workday_cookie_and_no_identity_provider(sessions_dir):
+    # Audit 2026-10-14 F13: a takeover sign-in with Google or Microsoft must not leave the
+    # operator's identity-provider session in the tenant's saved state.
+    ats_sessions.save_state(_Context(_WORKDAY_AFTER_SSO), "acme.wd5.myworkdayjobs.com",
+                            domain=ats_sessions.WORKDAY_COOKIE_DOMAINS)
+    with open(ats_sessions.state_path("acme.wd5.myworkdayjobs.com")) as fh:
+        saved = json.load(fh)
+    assert [c["name"] for c in saved["cookies"]] == ["PLAY_SESSION", "wd-browser-id", "wday_vps", "site"]
+    assert [o["origin"] for o in saved["origins"]] == ["https://acme.wd5.myworkdayjobs.com"]

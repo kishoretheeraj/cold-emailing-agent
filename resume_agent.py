@@ -215,6 +215,8 @@ def propose(application_id):
         strategy = json.loads(_strip_json_fence(raw))
     except json.JSONDecodeError as exc:
         raise ValueError(f"could not parse strategy from Claude's response: {exc}") from exc
+    if not isinstance(strategy, dict):
+        raise ValueError(f"strategy from Claude's response is not a JSON object: {type(strategy).__name__}")
 
     attribution = _check_attribution(json.dumps(strategy))
     if attribution:
@@ -256,12 +258,12 @@ generic statement. Around 250-290 words. No em dashes. End with one concrete,
 scoped 90-day item."""
 
 
-def _resolve_bullets(bullet_ids, metrics_by_id):
+def _resolve_bullets(bullet_ids, metrics_by_id, max_bullets=None):
     resolved = [metrics_by_id[bid] for bid in bullet_ids if bid in metrics_by_id]
-    return resolved[:config.RESUME_MAX_BULLETS_PER_ENTRY]
+    return resolved[:max_bullets or config.RESUME_MAX_BULLETS_PER_ENTRY]
 
 
-def _resolve_master(master, metrics, strategy):
+def _resolve_master(master, metrics, strategy, max_bullets=None):
     """Resolve master.json's bullet_ids (referencing metrics.json entries) into literal bullet
     text, which is the shape resume_build.build_docx expects. All roles and leadership bullets
     are included, capped at config.RESUME_MAX_BULLETS_PER_ENTRY each (real historical resumes show
@@ -270,7 +272,8 @@ def _resolve_master(master, metrics, strategy):
     raise ValueError if a name isn't a real master.json project key (the LLM strategy step is
     prompted with the real project list, but this is the enforcement backstop -- a live run
     showed it can still invent fictional project names/descriptions otherwise).
-    Education is already a list of literal entries in master.json -- no bullet_ids to resolve."""
+    Education is already a list of literal entries in master.json -- no bullet_ids to resolve.
+    max_bullets lowers the per-entry cap (build's overflow retry drops the last curated bullet)."""
     metrics_by_id = {m["id"]: m["text"] for m in metrics}
     resolved = {
         "name": master.get("name", ""),
@@ -284,7 +287,7 @@ def _resolve_master(master, metrics, strategy):
         resolved["roles"].append({
             "title": role["title"], "company": role["company"], "period": role["period"],
             "descriptor": role.get("descriptor"), "location": role.get("location"),
-            "bullets": _resolve_bullets(role.get("bullet_ids", []), metrics_by_id),
+            "bullets": _resolve_bullets(role.get("bullet_ids", []), metrics_by_id, max_bullets),
         })
     for name in strategy.get("projects_included", []):
         project = master.get("projects", {}).get(name)
@@ -296,10 +299,10 @@ def _resolve_master(master, metrics, strategy):
             )
         resolved["projects"][name] = {
             "descriptor": project.get("descriptor"), "period": project.get("period"),
-            "bullets": _resolve_bullets(project.get("bullet_ids", []), metrics_by_id),
+            "bullets": _resolve_bullets(project.get("bullet_ids", []), metrics_by_id, max_bullets),
         }
     leadership = master.get("leadership") or {}
-    resolved["leadership_bullets"] = _resolve_bullets(leadership.get("bullet_ids", []), metrics_by_id)
+    resolved["leadership_bullets"] = _resolve_bullets(leadership.get("bullet_ids", []), metrics_by_id, max_bullets)
     return resolved
 
 
@@ -358,12 +361,14 @@ def _verify_clean_pdf(pdf_path, label):
 def build(application_id):
     """Run stages 5-9 (build, humanize/lint, scrub, upload) for a job_applications row that
     already has a proposed resume_strategy. Returns {"resume_file_ref": ..., "cover_letter_file_ref": ...}.
-    Raises ValueError if no strategy has been proposed yet, LintFailedError if the resume content
+    Raises ValueError if the row is missing or has no strategy yet, LintFailedError if the resume content
     references an unresolved metric conflict (no retry -- the data is static, retrying changes
     nothing until the user edits resume/data/metrics.json) or if the cover letter still fails lint
     after one retry, resume_build.StillOverflowError if the resume can't be formatted to one page
     after one content-editing retry."""
     job = db.get_job_application(application_id)
+    if job is None:
+        raise ValueError(f"job_applications row {application_id} not found")
     strategy = job.get("resume_strategy")
     if not strategy:
         raise ValueError(f"job_applications row {application_id} has no resume_strategy -- run --propose first")
@@ -388,6 +393,12 @@ def build(application_id):
     try:
         pdf_path = None
         for attempt in range(config.RESUME_MAX_BUILD_RETRIES + 1):
+            if attempt:
+                # The formatting ladder is deterministic, so a retry must change content: drop the last
+                # curated bullet of every entry (a subset, so the content lint above still holds).
+                master = _resolve_master(master_raw, metrics, strategy,
+                                         max_bullets=max(1, config.RESUME_MAX_BULLETS_PER_ENTRY - attempt))
+                resume_text = _resume_content_text(master)
             try:
                 pdf_path, preset_used = resume_build.fit_to_one_page(
                     strategy, master, os.path.join(workdir, "resume.docx"), workdir,
@@ -396,7 +407,7 @@ def build(application_id):
             except resume_build.StillOverflowError:
                 if attempt >= config.RESUME_MAX_BUILD_RETRIES:
                     raise
-                log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying once")
+                log.warning(f"[RESUME] | {application_id} | still overflows one page, retrying with fewer bullets")
 
         resume_scrub.scrub_pdf_metadata(
             pdf_path, title=f"{job.get('company')} - Resume", keywords=job.get("role", ""),

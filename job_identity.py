@@ -28,6 +28,7 @@ _UUID_RE = re.compile(rf"^{_UUID}$", re.IGNORECASE)
 _LOCALE_RE = re.compile(r"^[a-z]{2}-[a-z]{2}$", re.IGNORECASE)
 _WD_SHARD_RE = re.compile(r"^wd\d+$", re.IGNORECASE)
 _ORACLE_HOST_RE = re.compile(r"\.fa(\.[a-z0-9-]+)*\.oraclecloud\.com$")
+_WD_ACTIONS = {"apply", "applymanually", "autofillwithresume", "usemylastapplication"}
 
 # Query parameters that only say where a click came from. Real parameters (an id, gh_jid) stay.
 _TRACKING_PARAMS = {
@@ -120,6 +121,13 @@ def _ashby_embedded(query):
 def _workday(host, segs, original):
     if not (_host_is(host, "myworkdayjobs.com") or _host_is(host, "myworkdaysite.com")):
         return None
+    # The apply flow hangs action segments off the posting URL (…/Title_R1/apply/applyManually);
+    # they are not the requisition and not part of the posting's address.
+    actions = [i for i, s in enumerate(segs) if s.lower() in _WD_ACTIONS and i > 0
+               and any(m in segs[:i] for m in ("job", "details"))]
+    if actions:
+        segs = segs[:actions[0]]
+        original = f"https://{host}/" + "/".join(segs)
     labels = host.split(".")
     tenant = labels[0] if len(labels) >= 3 and not _WD_SHARD_RE.match(labels[0]) else ""
     rest = [s for s in segs if not _LOCALE_RE.match(s)]
@@ -134,7 +142,8 @@ def _workday(host, segs, original):
             break
     # One requisition can be published under several sites of a tenant (careers page, Indeed feed,
     # ...): the requisition id is the identity, the site is not (Career-Ops #3439).
-    key = f"workday:{tenant}:{req}".lower() if req else None
+    # Without a tenant the key would be shared by every tenant reusing a requisition number.
+    key = f"workday:{tenant}:{req}".lower() if req and tenant else None
     return _result("workday", req, key, original, original, tenant=tenant or None)
 
 

@@ -78,7 +78,8 @@ def parse_filing_date(raw):
         day_i, year_i = int(day), int(year)
         if not (1 <= day_i <= 31) or year_i < 1900:
             return None
-        return f"{year_i:04d}-{month:02d}-{day_i:02d}"
+        # Raises ValueError (-> None) for days the month does not have, e.g. 31-FEB.
+        return datetime(year_i, month, day_i).date().isoformat()
     except Exception:
         return None
 

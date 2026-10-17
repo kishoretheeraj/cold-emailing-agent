@@ -49,6 +49,24 @@ def test_cover_letter_retries_once_then_passes(mocker):
     assert delivery.generate_cover_letter({"company": "Acme", "role": "PM"}, CONTENT) == "good"
 
 
+def test_cover_letter_logs_every_claude_call_to_the_usage_ledger(mocker):
+    import config
+    import usage_tracking
+    usage = {"input_tokens": 10, "output_tokens": 5}
+    replies = iter(["bad", "good"])
+    module = types.SimpleNamespace(
+        _COVER_LETTER_PROMPT="{company}|{role}|{angle}|{gaps}",
+        _call_claude=lambda prompt: (next(replies), usage),
+        _lint_cover_letter=lambda text, resume_text: ["too long"] if text == "bad" else [])
+    mocker.patch.dict(sys.modules, {"resume_agent": module})
+    mocker.patch.object(config, "RESUME_CLAUDE_BACKEND", "subscription")
+    log_usage = mocker.patch.object(usage_tracking, "log_usage")
+    delivery.generate_cover_letter({"id": 7, "company": "Acme", "role": "PM"}, CONTENT)
+    assert log_usage.call_count == 2
+    log_usage.assert_called_with("resume_v2", "cover_letter", config.RESUME_MODEL, usage,
+                                 job_application_id=7, billing="subscription")
+
+
 def test_cover_letter_raises_when_lint_keeps_failing(mocker):
     _fake_agent(mocker, ["bad", "bad"], lambda t: ["nope"])
     with pytest.raises(ValueError):

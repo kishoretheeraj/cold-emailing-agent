@@ -137,7 +137,12 @@ def fetch_recommended_jobs():
 
         jobs = []
         position = 0
-        while len(jobs) < config.JOBRIGHT_MAX_JOBS:
+        # Bounded by entries read, not jobs kept: pages of entries that never parse (schema drift)
+        # would otherwise keep a `len(jobs) < MAX_JOBS` loop paging forever.
+        max_pages = -(-config.JOBRIGHT_MAX_JOBS // config.JOBRIGHT_PAGE_SIZE)
+        for _ in range(max_pages):
+            if len(jobs) >= config.JOBRIGHT_MAX_JOBS:
+                break
             page_jobs, raw_count = _fetch_page(opener, position, config.JOBRIGHT_PAGE_SIZE)
             jobs.extend(page_jobs)
             if raw_count < config.JOBRIGHT_PAGE_SIZE:

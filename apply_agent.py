@@ -47,7 +47,7 @@ def _standard_field_values(job):
         "name": "Kishore Theeraj Vasudevan Jaya",
         "first_name": "Kishore Theeraj",
         "last_name": "Vasudevan Jaya",
-        "email": "kishoretheerajvj@gmail.com",
+        "email": config.APPLY_FORM_EMAIL,
         "phone": "+1 603-322-0535",
         "location": "Hanover, NH",
         "linkedin": "linkedin.com/in/kishoretheeraj",
@@ -1131,7 +1131,7 @@ def _complete_email_code(page, job_id, lease, clicked_at):
     if not config.APPLY_TAKEOVER_ENABLED:
         return False
     if takeover.await_human(job_id, lease, "email_verification",
-                            "Enter the code from your email (kishoretheerajvj@gmail.com) and press Submit once"):
+                            f"Enter the code from your email ({config.APPLY_FORM_EMAIL}) and press Submit once"):
         return _submission_confirmed(page)
     return False
 
@@ -1533,7 +1533,7 @@ def _prepare_workday(job, job_id, lease, page, quality=None, salary=None):
     tenant, vault = _workday_session(job)
     field_values = _standard_field_values(job)
     _workday_reach_wizard(page, job_id, lease, tenant, vault, field_values["email"], job.get("job_url"))
-    ats_sessions.save_state(page.context, tenant)
+    ats_sessions.save_state(page.context, tenant, domain=ats_sessions.WORKDAY_COOKIE_DOMAINS)
     signature = _form_signature(page)
     eligibility = _eligibility_answers()
     if salary:
@@ -2100,7 +2100,7 @@ def submit(job_id):
                 tenant, vault = _workday_session(job)
                 _workday_reach_wizard(page, job_id, lease, tenant, vault,
                                       _standard_field_values(job)["email"], job.get("job_url"))
-                ats_sessions.save_state(page.context, tenant)
+                ats_sessions.save_state(page.context, tenant, domain=ats_sessions.WORKDAY_COOKIE_DOMAINS)
             expected_signature = job.get("form_signature")
             if not expected_signature:
                 log.warning(f"[APPLY-SUBMIT] | {job.get('company')} | no preview form_signature, drift check skipped")

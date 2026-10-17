@@ -163,7 +163,7 @@ def create_draft(to_email, subject, body, in_reply_to=None, references=None,
                 return DraftResult(mid, gmail_draft_id, gmail_thread_id)
 
     # IMAP fallback: idempotency check + APPEND (first-touch drafts and API failures).
-    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
 
@@ -265,7 +265,7 @@ def apply_label_to_latest_draft(label_name, gmail_draft_id=None, message_id=None
                 log.warning(f"[GMAIL-API] apply_label_to_latest_draft failed — falling back to IMAP: {exc}")
 
     # IMAP COPY fallback
-    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         create_gmail_label_if_not_exists(imap, label_name)
@@ -508,7 +508,7 @@ def fetch_recent_sent(limit=40, since_date=None):
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL("imap.gmail.com")
+        imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         imap.select('"[Gmail]/Sent Mail"', readonly=True)
         status, data = imap.search(None, *criteria)

@@ -138,7 +138,8 @@ def test_run_upserts_wage_rows_after_employer_rows(mocker, tmp_path):
 
     mocker.patch.object(ingest, "parse_lca_file", side_effect=fake_parse)
     calls = []
-    mocker.patch.object(ingest.db, "upsert_employer_h1b_stats", side_effect=lambda rows: calls.append("employers"))
+    mocker.patch.object(ingest.db, "upsert_employer_h1b_stats",
+                        side_effect=lambda rows: calls.append("employers") or True)
     upsert_wages = mocker.patch.object(ingest.db, "upsert_h1b_wage_stats",
                                        side_effect=lambda rows: calls.append("wages") or True)
     delete_stale = mocker.patch.object(ingest.db, "delete_stale_h1b_wage_stats", return_value=True)
@@ -168,6 +169,29 @@ def test_run_counts_zero_wage_rows_as_an_error(mocker, caplog):
 
     assert record.call_args[0][3] == 1
     assert any("no wage rows" in r.getMessage() for r in caplog.records)
+
+
+def test_run_counts_a_failed_employer_upsert_as_an_error(mocker):
+    # upsert_employer_h1b_stats is best-effort (returns False, never raises); run() used to ignore
+    # that and record a clean run with every employer row unwritten.
+    mocker.patch.object(ingest, "current_dol_fiscal_year", return_value=2026)
+    mocker.patch.object(ingest, "discover_lca_file_urls", return_value={2026: "https://example.test/fy26.xlsx"})
+    mocker.patch.object(ingest, "download_file")
+
+    def fake_parse(path, fy, acc, wages):
+        ingest.fold_row(acc, "Stripe, Inc.", fy)
+        wages[("stripe", "product_manager", "CA")] = [180000]
+        return 1
+
+    mocker.patch.object(ingest, "parse_lca_file", side_effect=fake_parse)
+    mocker.patch.object(ingest.db, "upsert_employer_h1b_stats", return_value=False)
+    mocker.patch.object(ingest.db, "upsert_h1b_wage_stats", return_value=True)
+    mocker.patch.object(ingest.db, "delete_stale_h1b_wage_stats", return_value=True)
+    record = mocker.patch.object(ingest.db, "record_run")
+
+    ingest.run(fiscal_years_back=1)
+
+    assert record.call_args[0][3] == 1  # errors
 
 
 def test_parse_lca_file_reads_the_real_fy2026_wage_headers(tmp_path):

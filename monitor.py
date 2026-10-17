@@ -394,7 +394,7 @@ def detect_replies(prompts=None):
 
     newly_classified = []
 
-    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
     try:
         imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         imap.select("INBOX", readonly=True)

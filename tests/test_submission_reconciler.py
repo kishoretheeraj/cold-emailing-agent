@@ -276,3 +276,16 @@ def test_already_consumed_receipt_does_not_suppress_manual_escalation(env):
     env["evidence"].return_value = False
     out = sr.run(now=T0 + timedelta(minutes=30))
     assert out["resolved"] == 0 and out["escalated"] == 1
+
+
+@pytest.mark.parametrize("inbox,warned", [
+    ("receipts@gmail.com", True),
+    ("KishoreTheerajVJ@gmail.com", False),
+])
+def test_warns_when_the_receipt_inbox_is_not_the_form_email(env, caplog, inbox, warned):
+    # Audit 2026-10-14 F2: forms are filled with config.APPLY_FORM_EMAIL; reading any other inbox
+    # silently never finds a receipt.
+    sr.config.RECEIPT_IMAP_ADDRESS = inbox
+    with caplog.at_level("WARNING"):
+        sr.run(now=T0)
+    assert any("APPLY_FORM_EMAIL" in r.getMessage() for r in caplog.records) is warned
