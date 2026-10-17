@@ -26,9 +26,11 @@ describe("authConfig", () => {
     vi.stubEnv("OPERATOR_PASSWORD", "");
     vi.stubEnv("SESSION_SECRET", "");
     expect(authConfig()).toBeNull();
-    vi.stubEnv("OPERATOR_PASSWORD", "short");
+    vi.stubEnv("OPERATOR_PASSWORD", "123");
     vi.stubEnv("SESSION_SECRET", SECRET);
     expect(authConfig()).toBeNull();
+    vi.stubEnv("OPERATOR_PASSWORD", "1234");
+    expect(authConfig()).toEqual({ password: "1234", secret: SECRET });
     vi.stubEnv("OPERATOR_PASSWORD", "correct horse battery");
     vi.stubEnv("SESSION_SECRET", "short");
     expect(authConfig()).toBeNull();

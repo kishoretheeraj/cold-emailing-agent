@@ -5,7 +5,9 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 // strict cookie is also what keeps a cross-site page from posting to the submit route.
 export const SESSION_COOKIE = "cm_session";
 export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
-const MIN_PASSWORD_LENGTH = 16;
+// A 4-digit PIN is allowed because /api/login limits attempts in the database (5 per 15 minutes,
+// 20 a day); see migration 20261017000000.
+const MIN_PASSWORD_LENGTH = 4;
 const MIN_SECRET_LENGTH = 32;
 
 export interface AuthConfig {

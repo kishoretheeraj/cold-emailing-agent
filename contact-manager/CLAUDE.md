@@ -172,11 +172,11 @@ tests/
 ### Operator login and signed approvals (2026-10-08)
 
 `src/proxy.ts` (Next 16's renamed middleware, Node.js runtime) gates every page and API route
-behind an operator session once `OPERATOR_PASSWORD` (16+ chars) and `SESSION_SECRET` (32+ chars)
+behind an operator session once `OPERATOR_PASSWORD` (4+ chars; a PIN is fine) and `SESSION_SECRET` (32+ chars)
 are set: pages redirect to `/login?next=...`, API calls get `401`. Unset, everything except
 `/login`, `/api/login` and `/api/logout` is denied (fail closed). `POST /api/login` (`{ password }`) sets `cm_session` (expiry + HMAC under
 `SESSION_SECRET`, HttpOnly, Secure, SameSite=Strict, 30 days); a wrong password waits 750 ms and
-returns `401`; unconfigured returns `503`. `POST /api/logout` clears it. `Nav` renders nothing on
+returns `401`; unconfigured returns `503`. Every attempt first calls the `operator_login_attempt` RPC (migration `20261017000000`): at most 5 attempts per 15 minutes and 20 a day, serialized with an advisory lock, counted before the PIN is compared, successes included. Over budget is `429`; an RPC failure is `503` (fails closed). The anon key can only add attempts, so the worst it does is lock the operator out for the window. `POST /api/logout` clears it. `Nav` renders nothing on
 `/login`. `safeNextPath` (`lib/loginNext.ts`, client-safe) only allows same-origin paths.
 
 The anon key ships in the browser bundle, so anyone holding it can call `approve_application`.
