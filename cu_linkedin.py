@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 import anthropic
 
@@ -442,6 +443,14 @@ def _canonical_job_url(url):
         return None
     cleaned = url.strip().split("#", 1)[0]
     if not cleaned:
+        return None
+    # Only a LinkedIn address is a LinkedIn posting: an employer site's /jobs/view/<id> or
+    # ?currentJobId= (the session can click through to one) must not become linkedin.com/jobs/view/<id>.
+    try:
+        host = (urlsplit(cleaned if "://" in cleaned else "https://" + cleaned).hostname or "").lower()
+    except ValueError:
+        return None
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
         return None
     path, _, query = cleaned.partition("?")
     path = path.rstrip("/")

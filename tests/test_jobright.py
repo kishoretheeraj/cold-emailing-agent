@@ -210,6 +210,27 @@ def test_fetch_recommended_jobs_stops_at_max_jobs_cap(mocker):
     assert request.call_count == 1   # exactly one page, not a second, once the cap is reached
 
 
+def test_fetch_recommended_jobs_page_count_is_bounded_when_entries_never_parse(mocker):
+    # Schema drift (no jobTitle) leaves every full page with zero usable jobs: `jobs` never grows,
+    # so the old `while len(jobs) < MAX_JOBS` loop paged (and slept) forever.
+    mocker.patch.object(config, "JOBRIGHT_PAGE_SIZE", 2)
+    mocker.patch.object(config, "JOBRIGHT_MAX_JOBS", 5)
+    mocker.patch.object(jobright, "_login", return_value=True)
+    mocker.patch.object(jobright, "_session_is_valid", return_value=True)
+    drifted = {"result": {"jobList": [{"jobResult": {"title": "A"}}, {"jobResult": {"title": "B"}}]}}
+    calls = []
+
+    def fake(opener, method, path, body=None):
+        calls.append(path)
+        if len(calls) > 50:
+            raise RuntimeError("unbounded pagination")
+        return drifted
+
+    mocker.patch.object(jobright, "_request", side_effect=fake)
+    assert jobright.fetch_recommended_jobs() == []
+    assert len(calls) == 3   # ceil(MAX_JOBS / PAGE_SIZE) pages, then stop
+
+
 def test_fetch_recommended_jobs_never_raises_on_unexpected_error(mocker):
     mocker.patch.object(jobright, "_login", side_effect=RuntimeError("boom"))
     assert jobright.fetch_recommended_jobs() == []

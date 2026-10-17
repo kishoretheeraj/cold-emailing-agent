@@ -227,7 +227,10 @@ def _as_datetime(value):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         seconds = value / 1000 if value > 1e11 else value
-        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     if isinstance(value, str):
         try:
             return _as_datetime(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))

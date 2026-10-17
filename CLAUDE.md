@@ -286,7 +286,8 @@ full (`--full`, used by the quarterly workflow) re-resolves every distinct
 contact company, since a company that fell to `unknown` against an earlier
 corpus may match once new employer data lands. Both skip
 `confirmed`/`rejected` `company_intel` rows (never overwrite a human
-decision) while refreshing their denormalized stats. **Never wire the
+decision) while refreshing their denormalized stats; a contact at such a company
+is still linked to the existing row, which is not rewritten. **Never wire the
 quarterly re-match step without `--full`** — incremental mode silently
 no-ops on every contact once it has any `company_intel_id`, `unknown`
 included, which was a real production incident (see docs/python/db-schema.md).
@@ -1762,7 +1763,8 @@ reproduced first). Plan: docs/superpowers/plans/2026-10-08-fifty-a-day.md.
 - **Job identity** (`job_identity.py`, pure): `identify(url)` classifies by **hostname, never substring**
   (`clever.com` is not Lever) and returns a canonical `job_key`: `greenhouse:<id>` (ids are global, so a
   company page's `?gh_jid=` is the same job), `lever:<uuid>`, `ashby:<uuid>`, `workday:<tenant>:<req>`
-  (one requisition can sit on several sites of a tenant), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
+  (one requisition can sit on several sites of a tenant; apply-flow segments such as `/apply/applyManually`
+  are dropped from the key and `canonical_url`, and no tenant means no key), `smartrecruiters:`/`workable:`/`oracle:`/`icims:`
   ids, else `url:<canonical>` with tracking parameters dropped. `apply_url` is where the browser goes
   (Ashby `/application`, Lever `/apply`, the Greenhouse embed for a `gh_jid` page). `ats_platform.classify`
   delegates to it. `company_key`/`title_key` ("title identity" = the set of title words) and a 64-bit

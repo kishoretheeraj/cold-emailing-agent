@@ -63,3 +63,11 @@ def test_unknown_sites_are_never_called(mocker, url):
     calls = _http(mocker, {})
     assert job_liveness.check(url) == "unknown"
     assert calls == []
+
+
+@pytest.mark.parametrize("suffix", ["/apply", "/apply/applyManually"])
+def test_workday_apply_flow_url_is_checked_at_its_posting(mocker, suffix):
+    # The CXS detail path used to carry the /apply segments, and its 404 read as 'closed'.
+    calls = _http(mocker, {"jobPostingInfo": {"title": "PM"}})
+    assert job_liveness.check(WD + suffix) == "live"
+    assert calls == ["https://amat.wd1.myworkdayjobs.com/wday/cxs/amat/External/job/Santa-Clara-CA/PM_R1"]

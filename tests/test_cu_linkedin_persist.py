@@ -44,6 +44,23 @@ def test_canonical_job_url_returns_none_for_a_non_posting_url():
     assert cu_linkedin._canonical_job_url(url) is None
 
 
+@pytest.mark.parametrize("url", [
+    "https://careers.acme.com/jobs/view/123",
+    "https://linkedin.com.evil.example/jobs/view/123",
+    "https://acme.example/apply?currentJobId=123",
+])
+def test_canonical_job_url_never_rewrites_another_site_into_a_linkedin_posting(url):
+    # The session can click through to an employer's site; its /jobs/view/<id> or currentJobId was
+    # rewritten to linkedin.com/jobs/view/<id>, a different (or nonexistent) LinkedIn posting.
+    assert cu_linkedin._canonical_job_url(url) is None
+
+
+@pytest.mark.parametrize("url", ["https://linkedin.com/jobs/view/42", "www.linkedin.com/jobs/view/42/",
+                                 "https://de.linkedin.com/jobs/view/42?trk=x"])
+def test_canonical_job_url_accepts_linkedin_hosts(url):
+    assert cu_linkedin._canonical_job_url(url) == "https://www.linkedin.com/jobs/view/42"
+
+
 # ── extract_postings ───────────────────────────────────────────────────────────
 
 def test_extract_postings_parses_a_plain_json_array():

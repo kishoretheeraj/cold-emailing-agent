@@ -212,11 +212,16 @@ def run(csv_url=None):
 
     rows = build_enrichment_rows(accumulator, existing_corpus)
     batch_size = 500
+    enriched = 0
     for i in range(0, len(rows), batch_size):
-        db.upsert_employer_h1b_stats(rows[i:i + batch_size])
+        batch = rows[i:i + batch_size]
+        if db.upsert_employer_h1b_stats(batch):
+            enriched += len(batch)
+        else:
+            errors += 1
 
-    log.info(f"[RESEARCH-C] visa_intel | uscis_datahub | DONE | enriched={len(rows)} | errors={errors}")
-    db.record_run("success", len(rows), 0, errors, round(time.time() - start), source="visa_ingest_uscis")
+    log.info(f"[RESEARCH-C] visa_intel | uscis_datahub | DONE | enriched={enriched} | errors={errors}")
+    db.record_run("success", enriched, 0, errors, round(time.time() - start), source="visa_ingest_uscis")
 
 
 if __name__ == "__main__":

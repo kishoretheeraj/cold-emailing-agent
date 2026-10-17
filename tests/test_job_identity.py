@@ -175,3 +175,31 @@ def test_fingerprint_keeps_unrelated_descriptions_apart():
 def test_no_fingerprint_without_enough_text(text):
     assert job_identity.fingerprint(text) == ""
     assert job_identity.similarity("", "") == 0
+
+
+# ── Workday apply-flow URLs (QA 2026-10-15) ───────────────────────────────────
+
+_WD_JOB = "https://acme.wd1.myworkdayjobs.com/en-US/External/job/Austin-TX/Product-Manager_R123"
+
+
+@pytest.mark.parametrize("suffix", ["/apply", "/apply/", "/apply/applyManually", "/apply/autofillWithResume",
+                                    "/apply/useMyLastApplication", "/apply?source=LinkedIn"])
+def test_workday_apply_flow_url_keys_to_its_requisition(suffix):
+    # Workday's apply-flow pages hang action segments off the posting URL. The last segment used to
+    # become the "requisition", so every /apply URL of a tenant shared one key (workday:acme:apply)
+    # and the unique job_key index dropped every later job as a duplicate.
+    ident = job_identity.identify(_WD_JOB + suffix)
+    assert ident["job_key"] == "workday:acme:r123"
+    assert ident["canonical_url"] == _WD_JOB
+
+
+def test_workday_apply_urls_of_different_requisitions_stay_apart():
+    a = job_identity.identify(_WD_JOB + "/apply")["job_key"]
+    b = job_identity.identify(_WD_JOB.replace("R123", "R999") + "/apply")["job_key"]
+    c = job_identity.identify("https://wd1.myworkdaysite.com/recruiting/acme/External/details/PM_R5/apply")["job_key"]
+    assert len({a, b, c}) == 3 and c == "workday:acme:r5"
+
+
+def test_workday_without_a_tenant_has_no_tenant_wide_key():
+    # "workday::r1" would collide across every tenant that reuses a requisition number.
+    assert job_identity.identify("https://wd1.myworkdayjobs.com/External/job/Austin-TX/PM_R1")["job_key"] is None

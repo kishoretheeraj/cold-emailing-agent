@@ -81,6 +81,29 @@ def test_full_rematch_reprocesses_already_linked_unknown_contacts(mocker, no_op_
     assert row["match_status"] == "auto"
 
 
+@pytest.mark.parametrize("existing", [
+    {"id": 7, "normalized_name": "acme", "match_status": "rejected", "matched_employer_id": None},
+    {"id": 7, "normalized_name": "acme", "match_status": "confirmed", "matched_employer_id": None},
+    {"id": 7, "normalized_name": "acme", "match_status": "confirmed", "matched_employer_id": 999},
+])
+def test_new_contact_links_to_a_human_decided_row_without_rewriting_it(mocker, no_op_record_run, existing):
+    # resolve_company returns None for these (nothing to write), and run() used to skip the
+    # contact too: it stayed unlinked forever, so the contacts list showed "No data" instead of
+    # the human's /visa-review decision, and every daily run reprocessed it.
+    mocker.patch.object(db, "get_all_contacts", return_value=[{"id": 1, "company": "Acme Inc.", "company_intel_id": None}])
+    mocker.patch.object(db, "get_employer_h1b_stats_corpus", return_value=[
+        {"id": 10, "normalized_name": "acme", "lca_recent_2fy": 5, "latest_filing_fy": 2025, "approval_rate": 0.9},
+    ])
+    mocker.patch.object(db, "get_company_intel_by_normalized_names", return_value=[existing])
+    upsert_mock = mocker.patch.object(db, "upsert_company_intel", return_value=True)
+    link_mock = mocker.patch.object(db, "update_contact_company_intel_id", return_value=True)
+
+    vmn.run()
+
+    upsert_mock.assert_not_called()
+    link_mock.assert_called_once_with(1, 7)
+
+
 def test_full_rematch_still_skips_confirmed_rows(mocker, no_op_record_run):
     mocker.patch.object(db, "get_all_contacts", return_value=[
         {"id": 1, "company": "Acme Inc.", "company_intel_id": 5},
