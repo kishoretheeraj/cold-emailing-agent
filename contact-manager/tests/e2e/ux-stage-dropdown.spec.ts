@@ -22,6 +22,9 @@ test("outreach contact: stage dropdown shows only Outreach section with descript
   // Open the stage dropdown
   // Scoped to the sheet: the page's own Stage filter is also a combobox.
   const combobox = page.getByRole("dialog").getByRole("combobox").first();
+  await page.getByRole("dialog").evaluate(async (el) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished));
+  });
   await combobox.click();
   await page.waitForTimeout(300);
 
@@ -77,6 +80,9 @@ test("applied contact: stage dropdown shows only Applied section with descriptiv
   // Open the stage dropdown
   // Scoped to the sheet: the page's own Stage filter is also a combobox.
   const combobox = page.getByRole("dialog").getByRole("combobox").first();
+  await page.getByRole("dialog").evaluate(async (el) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished));
+  });
   await combobox.click();
   await page.waitForTimeout(300);
 

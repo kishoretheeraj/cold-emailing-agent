@@ -69,6 +69,9 @@ test("networking contact sheet shows only the Networking stage group and the Con
 
   // Stage dropdown shows the Networking group, not Outreach/Applied.
   const stageCombobox = dialog.getByRole("combobox").first();
+  await dialog.evaluate(async (el) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished));
+  });
   await stageCombobox.click();
   await expect(page.getByText("Networking", { exact: true })).toBeVisible();
   await expect(page.getByText("Outreach", { exact: true })).not.toBeVisible();
