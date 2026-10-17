@@ -1,5 +1,7 @@
 """Tests for resume_lint.py. Every check is a pure function -- no mocking needed."""
 
+import pytest
+
 import resume_lint
 
 
@@ -58,6 +60,16 @@ def test_check_metrics_whitelist_flags_own_text_number_when_unresolved():
     assert "vendor_cost" in violations[0]
 
 
+@pytest.mark.parametrize("text", [
+    "Eliminated 120K/year in vendor cost",      # dollar sign dropped
+    "Eliminated $120k/year in vendor cost",     # suffix case changed
+    "Eliminated $120K, then expanded",          # trailing comma captured by the pattern
+])
+def test_check_metrics_whitelist_matches_a_conflicting_number_however_it_is_written(text):
+    violations = resume_lint.check_metrics_whitelist(text, _METRICS)
+    assert len(violations) == 1 and "vendor_cost" in violations[0]
+
+
 def test_check_metrics_whitelist_passes_resolved_metric():
     violations = resume_lint.check_metrics_whitelist("Saved 110 verified hours/month", _METRICS)
     assert violations == []
@@ -76,6 +88,15 @@ def test_check_cover_letter_flags_number_shared_with_resume():
     cl = "I drove a 32% improvement in processing efficiency at my last role."
     violations = resume_lint.check_cover_letter(cl, _RESUME_TEXT)
     assert any("32%" in v for v in violations)
+
+
+@pytest.mark.parametrize("cl,resume", [
+    ("We saved 207,600 dollars.", "Saved $207,600 in fees."),
+    ("I worked across 70 countries.", "Rolled out to 70, then 90 markets."),
+    ("Cut 20K in spend.", "Cut $20k/year in spend."),
+])
+def test_check_cover_letter_number_overlap_ignores_formatting_differences(cl, resume):
+    assert resume_lint.check_cover_letter_number_overlap(cl, resume)
 
 
 def test_check_cover_letter_flags_shared_six_word_phrase():

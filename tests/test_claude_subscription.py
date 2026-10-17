@@ -82,6 +82,21 @@ def test_system_prompt_replaces_the_default(run):
     assert argv[argv.index("--system-prompt") + 1] == "Be terse."
 
 
+def test_max_output_tokens_is_appended_to_the_system_prompt(run):
+    # resume/v2's llm.call_claude always passes max_output_tokens; without the parameter every v2
+    # and cover-letter call raised TypeError.
+    claude_subscription.complete("hi", system="Be terse.", max_output_tokens=100)
+    system = run.call_args.args[0][run.call_args.args[0].index("--system-prompt") + 1]
+    assert system.startswith("Be terse.")
+    assert "under 100 tokens" in system
+
+
+def test_max_output_tokens_omitted_keeps_the_system_prompt_unchanged(run):
+    claude_subscription.complete("hi", max_output_tokens=None)
+    argv = run.call_args.args[0]
+    assert argv[argv.index("--system-prompt") + 1] == claude_subscription._DEFAULT_SYSTEM
+
+
 def test_child_env_isolates_config_and_keeps_the_token(run, monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin")
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
