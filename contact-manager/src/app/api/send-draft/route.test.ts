@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 // Hoist mocks so they are available before module-level imports.
 const { mockDraftsSend, mockMessagesGet, mockMessagesModify, mockLabelsList, mockGetGmail } =
@@ -19,8 +22,12 @@ const mockSingle = vi.hoisted(() => vi.fn());
 const mockLimit = vi.hoisted(() => vi.fn(() => ({ single: mockSingle })));
 const mockInsert = vi.hoisted(() => vi.fn());
 const mockUpsert = vi.hoisted(() => vi.fn());
-// Separate mock for contacts.update so tests can assert the update payload.
+// Separate mocks for contacts.update / draft_history.update so tests can assert the payload
+// and fail one step after the Gmail send.
 const mockContactsUpdate = vi.hoisted(() =>
+  vi.fn(() => ({ eq: vi.fn(() => ({ data: null, error: null })) }))
+);
+const mockDraftUpdate = vi.hoisted(() =>
   vi.fn(() => ({ eq: vi.fn(() => ({ data: null, error: null })) }))
 );
 
@@ -31,8 +38,6 @@ vi.mock("@supabase/supabase-js", () => {
   }
   chain.order = vi.fn(() => ({ limit: mockLimit }));
   chain.single = mockSingle;
-  const eqStub = vi.fn(() => ({ data: null, error: null }));
-  const updateChain = { eq: eqStub };
   const upsertResult = { data: null, error: null };
 
   return {
@@ -41,7 +46,7 @@ vi.mock("@supabase/supabase-js", () => {
         if (table === "draft_history") {
           return {
             select: vi.fn(() => chain),
-            update: vi.fn(() => updateChain),
+            update: mockDraftUpdate,
             upsert: vi.fn(() => upsertResult),
           };
         }
@@ -64,7 +69,7 @@ vi.mock("@supabase/supabase-js", () => {
 import { POST } from "./route";
 
 function req(body: unknown) {
-  return new Request("http://localhost/api/send-draft", {
+  return operatorRequest("http://localhost/api/send-draft", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -105,7 +110,17 @@ beforeEach(() => {
   mockLabelsList.mockResolvedValue({ data: { labels: [] } });
   mockMessagesModify.mockResolvedValue({ data: {} });
   mockContactsUpdate.mockReturnValue({ eq: vi.fn(() => ({ data: null, error: null })) });
+  mockDraftUpdate.mockReturnValue({ eq: vi.fn(() => ({ data: null, error: null })) });
 });
+
+function primeSuccessfulSend() {
+  mockSingle
+    .mockResolvedValueOnce({ data: contact, error: null })
+    .mockResolvedValueOnce({ data: draftRow, error: null });
+  mockDraftsSend.mockResolvedValueOnce({
+    data: { id: "msg-sent-01", threadId: "thread-01" },
+  });
+}
 
 describe("POST /api/send-draft", () => {
   it("returns 400 when contact_id is missing", async () => {
@@ -302,5 +317,90 @@ describe("POST /api/send-draft", () => {
     const res = await POST(req({ contact_id: "1" }));
     // Label is best-effort — send still succeeds
     expect(res.status).toBe(200);
+  });
+});
+
+describe("POST /api/send-draft after Gmail has sent", () => {
+  it("reports sent but not recorded (200) when the contacts update fails", async () => {
+    primeSuccessfulSend();
+    mockContactsUpdate.mockReturnValueOnce({
+      eq: vi.fn(() => ({ data: null, error: { message: "contacts write refused" } })),
+    });
+
+    const res = await POST(req({ contact_id: "1" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({ ok: true, sent: true, recorded: false });
+    expect(json.error).toContain("contacts write refused");
+    // The remaining record steps still run.
+    expect(mockDraftUpdate).toHaveBeenCalled();
+    expect(mockUpsert).toHaveBeenCalled();
+    const statuses = mockInsert.mock.calls.map((c) => (c[0] as { status: string }).status);
+    expect(statuses).not.toContain("success");
+    const failure = mockInsert.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((row) => row.status === "failed");
+    expect(failure).toMatchObject({ event_type: "send_draft", contact_id: 1 });
+    expect(String(failure?.error_message)).toContain("sent but not recorded");
+    expect(failure?.metadata).toMatchObject({ sent: true, recorded: false });
+  });
+
+  it("reports not recorded when the draft_history update fails", async () => {
+    primeSuccessfulSend();
+    mockDraftUpdate.mockReturnValueOnce({
+      eq: vi.fn(() => ({ data: null, error: { message: "draft_history down" } })),
+    });
+
+    const res = await POST(req({ contact_id: "1" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.recorded).toBe(false);
+    expect(json.error).toContain("draft_history down");
+  });
+
+  it("reports not recorded when the email_messages upsert fails", async () => {
+    primeSuccessfulSend();
+    mockUpsert.mockResolvedValueOnce({ data: null, error: { message: "upsert failed" } });
+
+    const res = await POST(req({ contact_id: "1" }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).recorded).toBe(false);
+  });
+
+  it("never returns 5xx when a record step throws, and still applies the label", async () => {
+    primeSuccessfulSend();
+    mockContactsUpdate.mockImplementationOnce(() => {
+      throw new Error("network reset");
+    });
+    mockLabelsList.mockResolvedValueOnce({
+      data: { labels: [{ id: "Label_FT", name: "Cold Outreach/First Touch" }] },
+    });
+
+    const res = await POST(req({ contact_id: "1" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({ ok: true, sent: true, recorded: false });
+    expect(json.error).toContain("network reset");
+    expect(mockMessagesModify).toHaveBeenCalled();
+  });
+
+  it("still answers 200 when the failure event itself cannot be written", async () => {
+    primeSuccessfulSend();
+    mockContactsUpdate.mockReturnValueOnce({
+      eq: vi.fn(() => ({ data: null, error: { message: "contacts write refused" } })),
+    });
+    mockInsert.mockRejectedValue(new Error("agent_events down"));
+
+    const res = await POST(req({ contact_id: "1" }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).recorded).toBe(false);
+  });
+
+  it("reports recorded: true when every step succeeds", async () => {
+    primeSuccessfulSend();
+    const res = await POST(req({ contact_id: "1" }));
+    const json = await res.json();
+    expect(json).toMatchObject({ ok: true, sent: true, recorded: true });
+    expect(json.error).toBeUndefined();
   });
 });

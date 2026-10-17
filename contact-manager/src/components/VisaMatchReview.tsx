@@ -66,7 +66,7 @@ export function VisaMatchReview() {
         }
       }
 
-      let employerMap: Record<number, Employer> = {};
+      const employerMap: Record<number, Employer> = {};
       if (employerIds.size > 0) {
         const { data: employerRows } = await supabase
           .from("employer_h1b_stats")

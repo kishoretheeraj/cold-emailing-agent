@@ -15,11 +15,13 @@ const { toastMock } = vi.hoisted(() => {
     success: ReturnType<typeof vi.fn>;
     error: ReturnType<typeof vi.fn>;
     info: ReturnType<typeof vi.fn>;
+    warning: ReturnType<typeof vi.fn>;
     dismiss: ReturnType<typeof vi.fn>;
   };
   toastFn.success = vi.fn();
   toastFn.error = vi.fn();
   toastFn.info = vi.fn();
+  toastFn.warning = vi.fn();
   toastFn.dismiss = vi.fn();
   return { toastMock: toastFn };
 });
@@ -209,10 +211,17 @@ function mockSupabaseData(
   );
 }
 
+function focusRow(name: string) {
+  const row = screen.getAllByRole("listitem").find((li) => li.textContent?.includes(name));
+  if (!row) throw new Error(`no row for ${name}`);
+  fireEvent.click(row);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
   mockSupabaseData([grace, iris, quinn], [graceDraft], [graceMsg]);
   vi.spyOn(global, "fetch").mockResolvedValue(
     new Response(JSON.stringify({ ok: true, stage: "reply_sent" }), {
@@ -412,6 +421,138 @@ describe("RepliesPage — 5-second undo (Approve and Send)", () => {
       "/api/send-draft",
       expect.objectContaining({ method: "POST" })
     );
+  });
+
+  it("sent but not recorded: warns and does not offer Send again for that reply", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "draft_history: down" }),
+        { status: 200 }
+      )
+    );
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      "Sent, but not saved: draft_history: down. The monitor will catch up."
+    );
+    expect(toastMock.success).not.toHaveBeenCalled();
+
+    // The refetch still returns Grace's unsent reply draft; it must not be sendable again.
+    expect(screen.getAllByText("Grace Lee").length).toBeGreaterThan(0);
+    await act(async () => {
+      focusRow("Grace Lee");
+    });
+    expect(screen.getByRole("heading", { name: "Grace Lee" })).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a new reply draft for the same contact is offered again after an unsaved send", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "draft_history: down" }),
+        { status: 200 }
+      )
+    );
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    // Grace replies again and the agent drafts a new reply row.
+    mockSupabaseData([grace, iris, quinn], [makeDraft({ id: 77 })], [graceMsg]);
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    await act(async () => {
+      focusRow("Grace Lee");
+    });
+    expect(screen.getByRole("heading", { name: "Grace Lee" })).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("a refresh during an in-flight send neither shows nor duplicates the row", async () => {
+    vi.useFakeTimers();
+    let failSend: (r: Response) => void = () => {};
+    vi.spyOn(global, "fetch").mockReturnValue(
+      new Promise<Response>((resolve) => {
+        failSend = resolve;
+      })
+    );
+    render(<RepliesPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    // Send fires at 5s; the 30s refresh returns Grace again while the request is in flight.
+    await act(async () => {
+      vi.advanceTimersByTime(30_001);
+    });
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(screen.queryAllByText("Grace Lee")).toHaveLength(0);
+
+    await act(async () => {
+      failSend(new Response(JSON.stringify({ error: "Gmail API error" }), { status: 502 }));
+    });
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(toastMock.error).toHaveBeenCalledWith("Send failed: Gmail API error");
+    const graceRows = screen
+      .getAllByRole("listitem")
+      .filter((li) => li.textContent?.includes("Grace Lee"));
+    expect(graceRows).toHaveLength(1);
   });
 
   it("e key does nothing for hard_no contact without draft", async () => {

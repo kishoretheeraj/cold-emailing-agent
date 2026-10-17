@@ -37,6 +37,22 @@ beforeEach(() => {
 });
 
 describe("PromptSection", () => {
+  it("replaces the draft when the saved value changes", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <PromptSection prompt={basePrompt} onSaved={vi.fn()} onError={vi.fn()} />
+    );
+    await user.type(screen.getByDisplayValue("Hello {name} at {company}"), " edited");
+    rerender(
+      <PromptSection
+        prompt={{ ...basePrompt, value: "Saved elsewhere" }}
+        onSaved={vi.fn()}
+        onError={vi.fn()}
+      />
+    );
+    expect(screen.getByDisplayValue("Saved elsewhere")).toBeInTheDocument();
+  });
+
   it("renders display_title, description, value in textarea, formatted updated_at", () => {
     render(
       <PromptSection prompt={basePrompt} onSaved={vi.fn()} onError={vi.fn()} />

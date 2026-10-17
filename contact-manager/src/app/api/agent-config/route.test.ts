@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, POST } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockSingle = vi.fn();
 const mockEq = vi.fn();
@@ -47,7 +50,7 @@ describe("GET /api/agent-config", () => {
 
 describe("POST /api/agent-config", () => {
   it("accepts valid scope and returns ok", async () => {
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "POST",
       body: JSON.stringify({ scope: "all" }),
     });
@@ -58,7 +61,7 @@ describe("POST /api/agent-config", () => {
   });
 
   it("returns 400 for invalid scope", async () => {
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "POST",
       body: JSON.stringify({ scope: "bad" }),
     });
@@ -67,7 +70,7 @@ describe("POST /api/agent-config", () => {
   });
 
   it("returns 400 for missing scope", async () => {
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "POST",
       body: JSON.stringify({}),
     });
@@ -76,7 +79,7 @@ describe("POST /api/agent-config", () => {
   });
 
   it("returns 400 for invalid JSON", async () => {
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "POST",
       body: "not json",
     });

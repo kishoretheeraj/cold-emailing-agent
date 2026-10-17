@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
@@ -61,7 +64,7 @@ const PROMPTS = [
 ];
 
 function makeRequest(body: unknown, ip = "1.2.3.4"): Request {
-  return new Request("http://localhost/api/preview-draft", {
+  return operatorRequest("http://localhost/api/preview-draft", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -103,7 +106,7 @@ beforeEach(() => {
 describe("POST /api/preview-draft — validation", () => {
   it("returns 400 when body is empty", async () => {
     const res = await POST(
-      new Request("http://localhost/api/preview-draft", {
+      operatorRequest("http://localhost/api/preview-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-forwarded-for": "1.2.3.4" },
         body: "{}",
@@ -137,7 +140,7 @@ describe("POST /api/preview-draft — validation", () => {
 
   it("returns 400 for invalid JSON body", async () => {
     const res = await POST(
-      new Request("http://localhost/api/preview-draft", {
+      operatorRequest("http://localhost/api/preview-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-forwarded-for": "1.2.3.4" },
         body: "not-json",

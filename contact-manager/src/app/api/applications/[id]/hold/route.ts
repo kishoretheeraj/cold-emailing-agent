@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { createClient } from "@supabase/supabase-js";
 import { holdDays } from "@/lib/warmPaths";
 import { loadPreferences } from "@/lib/warmPathsData";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 function getClient() {
   return createClient(
@@ -18,7 +19,10 @@ function validId(id: string) {
 // "Ask for a referral first": hold_for_referral clamps the days to 1..14 and only acts on an
 // unapproved preview (it raises otherwise, which becomes a 409). The hold never approves or
 // blocks anything; Submit stays available on the card.
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   const { id } = await params;
   if (!validId(id)) return Response.json({ error: "Invalid application id" }, { status: 400 });
   try {
@@ -32,7 +36,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   const { id } = await params;
   if (!validId(id)) return Response.json({ error: "Invalid application id" }, { status: 400 });
   try {

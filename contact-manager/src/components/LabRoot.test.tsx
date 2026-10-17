@@ -182,4 +182,20 @@ describe("LabRoot", () => {
       expect(screen.getByText(/Dear Alice/i)).toBeInTheDocument();
     });
   });
+
+  it("picks the recommended prompt tab for a selected contact, and the critic tab in critic mode", async () => {
+    render(<LabRoot />);
+    await waitFor(() => screen.getByTestId("contact-picker-toggle"));
+    expect(screen.getByLabelText("Prompt editor for sender_profile")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("contact-picker-toggle"));
+    await waitFor(() => screen.getByText("Alice Chen"));
+    fireEvent.click(screen.getByText("Alice Chen"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Prompt editor for outreach_first_touch_instruction")).toBeInTheDocument()
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /critic/i }));
+    expect(screen.getByLabelText("Prompt editor for critic_prompt")).toBeInTheDocument();
+  });
 });

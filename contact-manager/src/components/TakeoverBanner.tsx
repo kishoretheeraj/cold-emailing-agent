@@ -7,6 +7,14 @@ import type { JobApplication } from "@/lib/types";
 
 export const TAKEOVER_POLL_MS = 15_000;
 
+// null when the server answered with an error; the banner then keeps what it shows.
+async function fetchWaiting(): Promise<JobApplication[] | null> {
+  const res = await fetch("/api/applications?takeover=open");
+  if (!res.ok) return null;
+  const body = (await res.json()) as { applications?: JobApplication[] };
+  return (body.applications ?? []).filter((a) => openTakeover(a));
+}
+
 // Shows every application a Beelink worker is holding open for a human (a CAPTCHA, a code, a
 // login). The browser is reached over noVNC on the tailnet; "I'm done" lets the worker re-check
 // the page and carry on. Nothing here clicks anything on the employer's site.
@@ -15,16 +23,17 @@ export function TakeoverBanner() {
   const [busy, setBusy] = useState<string | null>(null);
   const viewerUrl = process.env.NEXT_PUBLIC_TAKEOVER_URL;
 
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch("/api/applications?takeover=open");
-      if (!res.ok) return;
-      const body = (await res.json()) as { applications?: JobApplication[] };
-      setWaiting((body.applications ?? []).filter((a) => openTakeover(a)));
-    } catch {
-      // Best-effort: the next poll tries again.
-    }
-  }, []);
+  const load = useCallback(
+    () =>
+      fetchWaiting()
+        .then((rows) => {
+          if (rows) setWaiting(rows);
+        })
+        .catch(() => {
+          // Best-effort: the next poll tries again.
+        }),
+    []
+  );
 
   useEffect(() => {
     load();

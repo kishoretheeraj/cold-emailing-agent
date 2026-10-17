@@ -230,3 +230,29 @@ test("screenshot: queue page with drafts loaded", async ({ page }) => {
     fullPage: false,
   });
 });
+
+test("a send that Gmail completed but the database did not record warns and is not offered again", async ({ page }) => {
+  // Registered after mockSupabase, so this handler wins for /api/send-draft.
+  await page.route(/\/api\/send-draft$/, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, sent: true, recorded: false, error: "contacts: timeout" }),
+    });
+  });
+
+  await page.goto("/queue");
+  await expect(page.getByRole("heading", { name: "Bob Martinez" })).toBeVisible({ timeout: 8_000 });
+
+  await page.keyboard.press("e");
+  await expect(page.getByText(/sent, but not saved/i)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/the monitor will catch up/i)).toBeVisible();
+  await page.screenshot({ path: "tests/e2e/screenshots/11-queue-sent-not-recorded.png", fullPage: true });
+
+  // The draft went out, so Bob is not offered for sending again, even after a reload.
+  await expect(page.locator("li", { hasText: "Bob Martinez" })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText(/^queue$/i).first()).toBeVisible({ timeout: 8_000 });
+  await expect(page.locator("li", { hasText: "Bob Martinez" })).toHaveCount(0);
+});

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockRpc = vi.fn();
 vi.mock("@supabase/supabase-js", () => ({
@@ -12,7 +15,7 @@ beforeEach(() => {
 });
 
 function makeRequest() {
-  return new Request("http://test", { method: "POST" });
+  return operatorRequest("http://test", { method: "POST" });
 }
 
 function makeParams(id = "5") {

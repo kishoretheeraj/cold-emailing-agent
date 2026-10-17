@@ -4,8 +4,12 @@ export const runtime = "nodejs";
 // Ships now so the API surface is complete when /queue undo wires up.
 import { getGmailClient } from "@/lib/gmail-server";
 import type { gmail_v1 } from "googleapis";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   let messageId: string;
   try {
     const body = (await req.json()) as { message_id?: unknown };

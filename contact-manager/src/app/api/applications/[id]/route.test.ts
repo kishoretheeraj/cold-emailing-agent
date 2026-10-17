@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, PATCH } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockSingle = vi.fn();
 const mockSelect = vi.fn();
@@ -41,7 +44,7 @@ beforeEach(() => {
 
 describe("PATCH /api/applications/[id]", () => {
   it("updates stage", async () => {
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -49,32 +52,32 @@ describe("PATCH /api/applications/[id]", () => {
   });
 
   it("rejects an invalid stage", async () => {
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "not_a_stage" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "not_a_stage" }) });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(400);
   });
 
   it("returns 400 for invalid JSON", async () => {
-    const req = new Request("http://test", { method: "PATCH", body: "not json" });
+    const req = operatorRequest("http://test", { method: "PATCH", body: "not json" });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(400);
   });
 
   it("returns 400 when no valid fields given", async () => {
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({}) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({}) });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(400);
   });
 
   it("returns 500 on supabase error", async () => {
     mockSingle.mockResolvedValue({ data: null, error: new Error("update failed") });
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(500);
   });
 
   it("rejects a non-numeric id (M9 -- matches GET/submit/reset-approval/files routes)", async () => {
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
     const res = await PATCH(req, params("abc"));
     expect(res.status).toBe(400);
     expect(mockFrom).not.toHaveBeenCalled();
@@ -82,7 +85,7 @@ describe("PATCH /api/applications/[id]", () => {
 
   it("accepts ready_to_submit as a valid stage (regression test for U10)", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", stage: "ready_to_submit" }, error: null });
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ stage: "ready_to_submit" }),
     });
@@ -101,7 +104,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
 
   it("updates apply_preview when given a valid object", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", apply_preview: validPreview }, error: null });
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ apply_preview: validPreview }),
     });
@@ -124,7 +127,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
   it("rejects an apply_preview edit once the row is approved (409, not the generic 500 path)", async () => {
     mockSingle.mockResolvedValue({ data: null, error: { code: "PGRST116", message: "no rows" } });
     mockMaybeSingle.mockResolvedValue({ data: { id: "1", approved_at: "2026-10-01T00:00:00Z", worker_lease_id: null }, error: null });
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ apply_preview: validPreview }),
     });
@@ -137,7 +140,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
   it("returns 404, not 409, when the guarded update matches zero rows because the id doesn't exist", async () => {
     mockSingle.mockResolvedValue({ data: null, error: { code: "PGRST116", message: "no rows" } });
     mockMaybeSingle.mockResolvedValue({ data: null, error: null });
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ apply_preview: validPreview }),
     });
@@ -147,7 +150,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
 
   it("does not gate a stage-only edit on approved_at (e.g. marking an approved row withdrawn), only on no worker lease", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", stage: "withdrawn" }, error: null });
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ stage: "withdrawn" }),
     });
@@ -158,7 +161,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
   });
 
   it("apply_preview edit is conditional on both approved_at and worker_lease_id being NULL", async () => {
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ apply_preview: validPreview }),
     });
@@ -170,7 +173,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
   it("returns 409 'worker is currently processing' when a worker lease blocks a stage edit", async () => {
     mockSingle.mockResolvedValue({ data: null, error: { code: "PGRST116", message: "no rows" } });
     mockMaybeSingle.mockResolvedValue({ data: { id: "1", approved_at: null, worker_lease_id: "lease-1" }, error: null });
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "withdrawn" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "withdrawn" }) });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/worker is currently processing/i);
@@ -179,20 +182,20 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
   it("returns 404 when a stage edit matches zero rows and the row is missing", async () => {
     mockSingle.mockResolvedValue({ data: null, error: { code: "PGRST116", message: "no rows" } });
     mockMaybeSingle.mockResolvedValue({ data: null, error: null });
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "withdrawn" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "withdrawn" }) });
     const res = await PATCH(req, params("999"));
     expect(res.status).toBe(404);
   });
 
   it("a notes-only PATCH stays unconditional", async () => {
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ notes: "hi" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ notes: "hi" }) });
     const res = await PATCH(req, params("1"));
     expect(res.status).toBe(200);
     expect(mockIs).not.toHaveBeenCalled();
   });
 
   it("rejects apply_preview that isn't a well-formed object", async () => {
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ apply_preview: "nope" }),
     });
@@ -203,7 +206,7 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
   });
 
   it("rejects apply_preview missing a required key", async () => {
-    const req = new Request("http://test", {
+    const req = operatorRequest("http://test", {
       method: "PATCH",
       body: JSON.stringify({ apply_preview: { platform: "ashby" } }),
     });
@@ -217,20 +220,20 @@ describe("PATCH /api/applications/[id] -- apply_preview (U11)", () => {
 describe("GET /api/applications/[id] (I8 -- single-row fetch for status polling)", () => {
   it("returns the row for a valid id", async () => {
     mockSingle.mockResolvedValue({ data: { id: "5", stage: "applied", apply_blocked_reason: null }, error: null });
-    const res = await GET(new Request("http://test"), params("5"));
+    const res = await GET(operatorRequest("http://test"), params("5"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.application).toEqual({ id: "5", stage: "applied", apply_blocked_reason: null });
   });
 
   it("rejects a non-numeric id", async () => {
-    const res = await GET(new Request("http://test"), params("abc"));
+    const res = await GET(operatorRequest("http://test"), params("abc"));
     expect(res.status).toBe(400);
   });
 
   it("returns 500 on a supabase read error", async () => {
     mockSingle.mockResolvedValue({ data: null, error: new Error("db down") });
-    const res = await GET(new Request("http://test"), params("5"));
+    const res = await GET(operatorRequest("http://test"), params("5"));
     expect(res.status).toBe(500);
   });
 });
@@ -244,7 +247,7 @@ describe("PATCH /api/applications/[id] -- applied_date when marked applied (warm
   it("records today's New York date when a row is marked applied without one", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", stage: "applied", applied_date: null }, error: null });
     mockDated.mockResolvedValue({ data: { id: "1", stage: "applied", applied_date: "2026-10-09" }, error: null });
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "applied" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "applied" }) });
     const body = await (await PATCH(req, params("1"))).json();
     expect(body.application.applied_date).toBe("2026-10-09");
     expect(mockUpdate.mock.calls[1][0]).toEqual({ applied_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
@@ -253,7 +256,7 @@ describe("PATCH /api/applications/[id] -- applied_date when marked applied (warm
 
   it("never overwrites an existing applied_date", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", stage: "applied", applied_date: "2026-10-01" }, error: null });
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "applied" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "applied" }) });
     const body = await (await PATCH(req, params("1"))).json();
     expect(body.application.applied_date).toBe("2026-10-01");
     expect(mockUpdate).toHaveBeenCalledTimes(1);
@@ -261,7 +264,7 @@ describe("PATCH /api/applications/[id] -- applied_date when marked applied (warm
 
   it("other stages leave the date alone", async () => {
     mockSingle.mockResolvedValue({ data: { id: "1", stage: "onsite", applied_date: null }, error: null });
-    const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
+    const req = operatorRequest("http://test", { method: "PATCH", body: JSON.stringify({ stage: "onsite" }) });
     await PATCH(req, params("1"));
     expect(mockUpdate).toHaveBeenCalledTimes(1);
   });

@@ -1,6 +1,7 @@
 export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 type PauseScope = "none" | "agent" | "all";
 const VALID_SCOPES: PauseScope[] = ["none", "agent", "all"];
@@ -31,6 +32,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   let body: unknown;
   try {
     body = await req.json();

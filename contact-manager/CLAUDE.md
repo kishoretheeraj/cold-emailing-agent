@@ -117,6 +117,7 @@ src/
     ├── warmPathsData.ts
     ├── visaSignal.ts
     ├── gmail-server.ts
+    ├── github.ts
     ├── cadence.ts
     ├── personalization.ts
     ├── promptCategories.ts
@@ -178,6 +179,15 @@ are set: pages redirect to `/login?next=...`, API calls get `401`. Unset, everyt
 `SESSION_SECRET`, HttpOnly, Secure, SameSite=Strict, 30 days); a wrong password waits 750 ms and
 returns `401`; unconfigured returns `503`. `POST /api/logout` clears it. `Nav` renders nothing on
 `/login`. `safeNextPath` (`lib/loginNext.ts`, client-safe) only allows same-origin paths.
+
+Every mutating route handler (POST/PATCH/PUT/DELETE: send-draft, update-draft, trash-message,
+trigger-agent, agent-config, extract, preview-draft, and every `/api/applications` write) also
+checks `isOperatorRequest(req)` as its first line and answers `401 { error: "Sign in required" }`,
+so a request that slips past the proxy still cannot send, spend tokens, dispatch or write.
+`src/app/api/operatorGuard.test.ts` is the table test (no session, forged session, login
+unconfigured: 401 with nothing downstream touched). Route tests build signed-in requests with
+`operatorRequest()` + `stubOperatorLogin()` from `src/lib/testing/operatorSession.ts`. GETs rely on
+the proxy alone.
 
 The anon key ships in the browser bundle, so anyone holding it can call `approve_application`.
 That is why `POST /api/applications/[id]/submit` checks the session itself (`isOperatorRequest`,
@@ -384,10 +394,21 @@ expected, not a bug.
   (never writes `contacts.message_id` — that column is agent-managed, first-touch only).
 - Updates `draft_history` with sent content. Inserts `email_messages` + `agent_events`.
 - Applies the stage-appropriate Gmail label to the sent message (best-effort, via `STAGE_TO_LABEL`
-  map that mirrors `agent.py::ACTION_LABEL`). Label application never blocks the response.
+  in `lib/cadence.ts`, which mirrors `agent.py::ACTION_LABEL`). Label application never blocks the response.
+- **Mirrors are tested against the Python source.** `src/lib/pythonMirrors.test.ts` parses
+  `config.py::FOLLOWUP_DAYS`, `agent.py::NEXT_STAGE`/`ACTION_LABEL`/`DRAFTED_TO_SENT` and the
+  `constants.py` stage lists as text and compares them to `CADENCE`, `STAGE_TRANSITIONS`,
+  `STAGE_TO_LABEL`, `QUEUE_STAGES` and the `constants.ts`/`types.ts` stage lists. Change both sides
+  together; a one-sided edit fails this test.
 - Idempotent: returns `{ already_sent: true }` if stage is already `*_sent`.
 - Status codes: 400 (missing id), 404 (contact not found), 409 (wrong stage),
   410 (no draft ID or draft deleted from Gmail), 401 (auth failure), 502 (Gmail error).
+- **Never a 5xx after Gmail has sent.** Every record step's `{ error }` is checked (and a throw
+  caught); the rest still run, and so does the label. Any failure returns 200
+  `{ ok: true, sent: true, recorded: false, error }` and best-effort writes an `agent_events` row
+  (`status: "failed"`, `error_message: "sent but not recorded: ..."`, `metadata.failed_steps`).
+  The draft is consumed, so a retry gets 410, never a second send; the monitor's sent-draft
+  detection flips the stage later. A clean send returns `recorded: true`.
 
 **POST `/api/update-draft`** — body: `{ contact_id: string, subject: string, body: string }`
 - Reads existing draft headers (In-Reply-To, References, From) via `drafts.get`.
@@ -403,6 +424,29 @@ expected, not a bug.
 **POST `/api/trash-message`** — body: `{ message_id: string }`
 - Reserved for future undo feature. Calls `messages.trash`. Not called from UI in v1.
 - Status codes: 400 (missing id), 401 (auth), 502 (Gmail error).
+
+## Threat model
+
+Built for **one operator** (Kishore) on a personal deployment. What protects what:
+
+- **The anon key is public.** `NEXT_PUBLIC_SUPABASE_ANON_KEY` ships in the browser bundle, so treat
+  it as known to anyone who has loaded the app.
+- **`contacts` has RLS off and several anon writers** (this app, the warm-paths routes, the Python
+  agent). Anyone holding the anon key can read and write contact PII and stages directly through
+  PostgREST. The same holds for most other tables the browser reads.
+- **The operator login gates this app, not the database.** `proxy.ts` plus `isOperatorRequest`
+  in every mutating route stop requests to this app's pages and `/api/*` without a session. They
+  do nothing against a direct PostgREST call made with the anon key.
+- **What is protected beyond the anon key:** `job_applications` lifecycle columns
+  (`automation_status`, leases, `approved_at`, the revision hashes) have no anon/authenticated
+  UPDATE or INSERT grant and change only through `SECURITY DEFINER` RPCs, and an approval only counts when
+  it carries an HMAC from `APPROVAL_SIGNING_KEY` (server-only), which the submit worker verifies.
+  Gmail, Anthropic and GitHub credentials are server-only, so sending, spending and dispatching
+  need the operator session.
+- **To close the contacts gap**, RLS on `contacts` would need every read and write moved off the
+  browser client into server routes using the service role (and the Python agent's anon writes
+  moved too). That is a deliberate redesign, not a policy toggle: this file's "no service-role key
+  path" rule would change with it.
 
 ## Supabase patterns
 
@@ -499,8 +543,13 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - **Write e2e tests for every UI change.** For any change that affects what the user sees or interacts with, add a Playwright test that exercises the changed flow. Assertions alone are not enough — take a screenshot with `page.screenshot()` and visually verify the result before committing.
 - **Verify screenshots.** After capturing a screenshot in a test, read the image and confirm it shows the correct UI. Do not claim a UI change is correct without having looked at the screenshot. Silent test passes do not prove correct visual output.
 - Run: `npm run test:e2e`.
+- **Signed in by the harness.** `playwright.config.ts` starts the dev server with test-only
+  `OPERATOR_PASSWORD`/`SESSION_SECRET` and gives every context a `cm_session` cookie minted from
+  them (proxy.ts fails closed otherwise and every spec lands on Sign in). The harness always starts
+  its own server so the credentials match. `E2E_PORT=3100` runs a second
+  checkout (a git worktree) on its own port instead of reusing whatever listens on 3000.
 - Tests live in `tests/e2e/`. Files run alphabetically (00–). Update the count in this file when adding new spec files.
-- **Current test count: 88** (vitest: 1036 across 65 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 88; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
+- **Current test count: 91** (verified 2026-10-15: vitest 1159 passed across 70 files plus `warmPathsData.stress.test.ts`, which is skipped without the local stack; playwright: 91; the 2026-10-15 hardening pass added the sent-not-recorded case in `11-queue.spec.ts`, `operatorGuard.test.ts`, `pythonMirrors.test.ts`, `github.test.ts`, `trigger-agent/route.test.ts`, `overview/page.test.tsx`; warm paths added `22-warm-paths.spec.ts`, application outcomes `23-company-replies.spec.ts`; 2026-10-08 added `19-login.spec.ts`, `20-takeover.spec.ts`, `21-approval-queue.spec.ts`; fifty-a-day added `nyDay.test.ts` and `today/route.test.ts`; 2026-10-07 added Re-prepare on ready_for_review rows and the detail sheet salary-basis line). Counts are branch baselines pending merged-suite verification. Beelink M2 Task 9
   (the final task of that plan) added 3 new files (`route.test.ts`, `SystemHealthStrip.test.tsx`,
   plus one new `describe` in the existing `ApplicationsPage.test.tsx`) totaling 10 vitest cases,
   and 1 new playwright case. The whole-branch final review fix round (2026-09-28) added 12 more
@@ -561,7 +610,9 @@ See docs/testing/mocking.md for mocking conventions (Supabase chain, Intersectio
 - Env vars (server-only): `APPLY_SUBMIT_HOST` (`beelink` once the Beelink submits), `OPERATOR_PASSWORD`, `SESSION_SECRET`, `APPROVAL_SIGNING_KEY` (same value as the
   GitHub secret and the Beelink's), `ANTHROPIC_API_KEY`, `GITHUB_DISPATCH_TOKEN`,
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`.
-- `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo.
+- `GITHUB_DISPATCH_TOKEN` must have `actions: write` on the agent repo. The repo name and the
+  dispatch URL live in `src/lib/github.ts` (`GITHUB_REPO`, `workflowDispatchUrl`), shared by
+  trigger-agent and submit.
 - Gmail OAuth vars: run `cd contact-manager && npx tsx scripts/capture-gmail-token.mts` once
   to obtain `GOOGLE_OAUTH_REFRESH_TOKEN`. Must run from `contact-manager/` (dotenv and googleapis
   are in that directory's node_modules, not the repo root). Script uses `http://localhost:8080`

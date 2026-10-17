@@ -72,6 +72,76 @@ function relativeTime(ts: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+type UnrecordedSend = { stage: string | null; draftId: string | null };
+
+// The contact is still at the stage it was sent from, showing the sent draft row (or none, when
+// that row was marked sent but the contact's stage write failed).
+function isUnrecordedSend(
+  contact: Contact,
+  draft: DraftHistory | undefined,
+  sent: Record<string, UnrecordedSend>
+): boolean {
+  const entry = sent[contact.id];
+  if (!entry || entry.stage !== (contact.stage ?? null)) return false;
+  return !draft || String(draft.id) === entry.draftId;
+}
+
+// ── Data loading ───────────────────────────────────────────────────────────────
+
+async function loadQueueContacts(): Promise<Contact[]> {
+  const { data: contactData } = await supabase
+    .from("contacts")
+    .select("*")
+    .in("stage", [...QUEUE_STAGES])
+    .is("deleted_at", null)
+    .neq("reply_status", "dead")
+    .order("tier", { ascending: true })
+    .order("created_at", { ascending: false });
+  return (contactData as Contact[]) ?? [];
+}
+
+async function loadQueueDetails(ids: string[]): Promise<{
+  drafts: Record<string, DraftHistory>;
+  critics: Record<string, CriticSignal>;
+}> {
+  const [{ data: draftData }, { data: eventData }] = await Promise.all([
+    supabase
+      .from("draft_history")
+      .select("*")
+      .in("contact_id", ids)
+      .is("sent_body", null)
+      .order("drafted_at", { ascending: false }),
+    supabase
+      .from("agent_events")
+      .select("*")
+      .in("contact_id", ids)
+      .eq("event_type", "critic")
+      .order("started_at", { ascending: false }),
+  ]);
+
+  // Keep latest draft per contact
+  const drafts: Record<string, DraftHistory> = {};
+  for (const d of (draftData as DraftHistory[]) ?? []) {
+    if (!drafts[String(d.contact_id)]) {
+      drafts[String(d.contact_id)] = d;
+    }
+  }
+
+  // Keep latest critic event per contact
+  const critics: Record<string, CriticSignal> = {};
+  for (const e of (eventData as AgentEvent[]) ?? []) {
+    const cid = String(e.contact_id);
+    if (!critics[cid] && e.metadata) {
+      critics[cid] = {
+        score: e.metadata.score as number,
+        verdict: e.metadata.verdict as string,
+        retried: Boolean(e.metadata.retried),
+      };
+    }
+  }
+  return { drafts, critics };
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function QueuePage() {
@@ -94,6 +164,17 @@ export function QueuePage() {
       return new Set();
     }
   });
+  // Sends that went out but were not recorded, by contact: the stage and draft row that were
+  // sent. That row stays hidden until the monitor's sent-draft detection moves the contact on;
+  // a later draft for the same contact (a new stage or a new row) shows as usual.
+  const [sentUnrecorded, setSentUnrecorded] = useState<Record<string, UnrecordedSend>>(() => {
+    try {
+      const raw = sessionStorage.getItem("queue_sent_unrecorded");
+      return raw ? (JSON.parse(raw) as Record<string, UnrecordedSend>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [filters, setFilters] = useState<Filters>({
     tiers: [],
     stages: [],
@@ -102,71 +183,37 @@ export function QueuePage() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [now, setNow] = useState(() => new Date());
 
-  // pendingSends: navigating away cancels pending sends (deliberate trade-off)
+  // pendingSends holds the timers (navigating away cancels pending sends, a deliberate
+  // trade-off); pendingIds hides those rows until the outcome is known.
   const pendingSends = useRef<Map<string, PendingEntry>>(new Map());
+  const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
+  const hideRow = (id: string) => setPendingIds((prev) => new Set(prev).add(id));
+  const showRow = (id: string) =>
+    setPendingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   const lastGPress = useRef<number>(0);
 
   // ── Data fetch ───────────────────────────────────────────────────────────────
 
-  const fetchData = useCallback(async () => {
-    const { data: contactData } = await supabase
-      .from("contacts")
-      .select("*")
-      .in("stage", [...QUEUE_STAGES])
-      .is("deleted_at", null)
-      .neq("reply_status", "dead")
-      .order("tier", { ascending: true })
-      .order("created_at", { ascending: false });
-
-    const fetched = (contactData as Contact[]) ?? [];
-    setContacts(fetched);
-
-    if (fetched.length === 0) {
-      setDraftsByContactId({});
-      setCriticByContactId({});
-      return;
-    }
-
-    const ids = fetched.map((c) => c.id);
-
-    const [{ data: draftData }, { data: eventData }] = await Promise.all([
-      supabase
-        .from("draft_history")
-        .select("*")
-        .in("contact_id", ids)
-        .is("sent_body", null)
-        .order("drafted_at", { ascending: false }),
-      supabase
-        .from("agent_events")
-        .select("*")
-        .in("contact_id", ids)
-        .eq("event_type", "critic")
-        .order("started_at", { ascending: false }),
-    ]);
-
-    // Keep latest draft per contact
-    const drafts: Record<string, DraftHistory> = {};
-    for (const d of (draftData as DraftHistory[]) ?? []) {
-      if (!drafts[String(d.contact_id)]) {
-        drafts[String(d.contact_id)] = d;
-      }
-    }
-    setDraftsByContactId(drafts);
-
-    // Keep latest critic event per contact
-    const critics: Record<string, CriticSignal> = {};
-    for (const e of (eventData as AgentEvent[]) ?? []) {
-      const cid = String(e.contact_id);
-      if (!critics[cid] && e.metadata) {
-        critics[cid] = {
-          score: e.metadata.score as number,
-          verdict: e.metadata.verdict as string,
-          retried: Boolean(e.metadata.retried),
-        };
-      }
-    }
-    setCriticByContactId(critics);
-  }, []);
+  const fetchData = useCallback(
+    () =>
+      loadQueueContacts().then((fetched) => {
+        setContacts(fetched);
+        if (fetched.length === 0) {
+          setDraftsByContactId({});
+          setCriticByContactId({});
+          return;
+        }
+        return loadQueueDetails(fetched.map((c) => c.id)).then(({ drafts, critics }) => {
+          setDraftsByContactId(drafts);
+          setCriticByContactId(critics);
+        });
+      }),
+    []
+  );
 
   // Preserve focus by contact_id across auto-refresh
   const focusedContactId = useRef<string | null>(null);
@@ -186,6 +233,14 @@ export function QueuePage() {
   }, [skippedIds]);
 
   useEffect(() => {
+    try {
+      sessionStorage.setItem("queue_sent_unrecorded", JSON.stringify(sentUnrecorded));
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, [sentUnrecorded]);
+
+  useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60_000);
     return () => clearInterval(id);
   }, []);
@@ -194,7 +249,8 @@ export function QueuePage() {
 
   const visible = contacts.filter((c) => {
     if (skippedIds.has(c.id)) return false;
-    if (pendingSends.current.has(c.id)) return false;
+    if (isUnrecordedSend(c, draftsByContactId[c.id], sentUnrecorded)) return false;
+    if (pendingIds.has(c.id)) return false;
     if (filters.tiers.length > 0 && !filters.tiers.includes(c.tier ?? -1))
       return false;
     if (filters.stages.length > 0 && !filters.stages.includes(c.stage ?? ""))
@@ -230,12 +286,26 @@ export function QueuePage() {
 
   const tierCounts: Record<number, number> = {};
   const stageCounts: Record<string, number> = {};
-  for (const c of contacts.filter((c) => !skippedIds.has(c.id))) {
+  const counted = contacts.filter(
+    (c) => !skippedIds.has(c.id) && !isUnrecordedSend(c, draftsByContactId[c.id], sentUnrecorded)
+  );
+  for (const c of counted) {
     if (c.tier != null) tierCounts[c.tier] = (tierCounts[c.tier] ?? 0) + 1;
     if (c.stage) stageCounts[c.stage] = (stageCounts[c.stage] ?? 0) + 1;
   }
 
   // ── Approve and send ─────────────────────────────────────────────────────────
+
+  const onUndo = useCallback((contactId: string, originalIndex: number) => {
+    const entry = pendingSends.current.get(contactId);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    toast.dismiss(entry.toastId);
+    pendingSends.current.delete(contactId);
+    toast.info("Send canceled");
+    showRow(contactId);
+    setFocusedIndex(originalIndex);
+  }, []);
 
   const onApprove = useCallback(
     (contact: Contact, idx: number) => {
@@ -261,21 +331,34 @@ export function QueuePage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ contact_id: String(contact.id) }),
           });
+          const result = (await res.json().catch(() => ({}))) as {
+            error?: string;
+            recorded?: boolean;
+          };
           if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+            throw new Error(result.error ?? `HTTP ${res.status}`);
           }
-          toast.success(`Sent to ${contact.name ?? "contact"}`);
-          fetchData();
+          if (result.recorded === false) {
+            const sentDraft = draftsByContactId[contact.id];
+            setSentUnrecorded((prev) => ({
+              ...prev,
+              [contact.id]: {
+                stage: contact.stage ?? null,
+                draftId: sentDraft ? String(sentDraft.id) : null,
+              },
+            }));
+            toast.warning(
+              `Sent, but not saved: ${result.error ?? "unknown error"}. The monitor will catch up.`
+            );
+          } else {
+            toast.success(`Sent to ${contact.name ?? "contact"}`);
+          }
+          fetchData().finally(() => showRow(contact.id));
         } catch (err) {
           toast.error(
             `Send failed: ${err instanceof Error ? err.message : "Unknown error"}`
           );
-          setContacts((prev) => {
-            const next = [...prev];
-            next.splice(idx, 0, contact);
-            return next;
-          });
+          showRow(contact.id);
         }
       }, 5000);
 
@@ -285,23 +368,10 @@ export function QueuePage() {
         originalIndex: idx,
         kind: "send",
       });
-
-      // Force re-filter to hide the row
-      setContacts((prev) => [...prev]);
+      hideRow(contact.id);
     },
-    [visible.length, fetchData] // eslint-disable-line react-hooks/exhaustive-deps
+    [visible.length, fetchData, onUndo, draftsByContactId]
   );
-
-  const onUndo = useCallback((contactId: string, originalIndex: number) => {
-    const entry = pendingSends.current.get(contactId);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    toast.dismiss(entry.toastId);
-    pendingSends.current.delete(contactId);
-    toast.info("Send canceled");
-    setContacts((prev) => [...prev]); // trigger re-filter
-    setFocusedIndex(originalIndex);
-  }, []);
 
   // ── Mark dead ────────────────────────────────────────────────────────────────
 
@@ -331,14 +401,10 @@ export function QueuePage() {
             .from("contacts")
             .update({ reply_status: "dead" })
             .eq("id", contact.id);
-          fetchData();
+          fetchData().finally(() => showRow(contact.id));
         } catch {
           toast.error("Failed to mark dead");
-          setContacts((prev) => {
-            const next = [...prev];
-            next.splice(idx, 0, contact);
-            return next;
-          });
+          showRow(contact.id);
         }
       }, 5000);
 
@@ -348,10 +414,9 @@ export function QueuePage() {
         originalIndex: idx,
         kind: "dead",
       });
-
-      setContacts((prev) => [...prev]);
+      hideRow(contact.id);
     },
-    [visible.length, fetchData, onUndo] // eslint-disable-line react-hooks/exhaustive-deps
+    [visible.length, fetchData, onUndo]
   );
 
   // ── Quick Fix ────────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import {
   deriveAction,
 } from "@/lib/assembleUserMessage";
 import type { Contact, Prompt } from "@/lib/types";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -55,6 +56,9 @@ function stripFences(raw: string): string {
 // ── POST handler ───────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   // Rate limit by IP
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";

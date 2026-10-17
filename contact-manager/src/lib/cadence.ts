@@ -53,6 +53,19 @@ export const STAGE_TRANSITIONS: Record<
   },
 };
 
+// Mirror of agent.py::ACTION_LABEL, keyed by drafted stage (send-draft re-applies it to the sent
+// message). pythonMirrors.test.ts compares it, CADENCE and STAGE_TRANSITIONS to the Python source.
+export const STAGE_TO_LABEL: Record<string, string> = {
+  first_touch_drafted:      "Cold Outreach/First Touch",
+  followup1_drafted:        "Cold Outreach/Follow-up #1",
+  followup2_drafted:        "Cold Outreach/Follow-up #2",
+  breakup_drafted:          "Cold Outreach/Break-up",
+  applied_intro_drafted:    "Cold Outreach/Applied Intro",
+  applied_followup_drafted: "Cold Outreach/Applied Follow-up",
+  networking_drafted:          "Networking/Intro",
+  networking_followup_drafted: "Networking/Follow-up",
+};
+
 // /queue uses QUEUE_STAGES; /replies handles reply_drafted separately.
 export const QUEUE_STAGES = [
   "first_touch_drafted",

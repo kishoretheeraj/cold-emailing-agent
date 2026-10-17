@@ -3,6 +3,9 @@ import { GET, POST } from "./route";
 import { POST as LINK } from "./link/route";
 import { POST as UNLINK } from "./unlink/route";
 import * as data from "@/lib/warmPathsData";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 vi.mock("@supabase/supabase-js", () => ({ createClient: vi.fn(() => ({})) }));
 vi.mock("@/lib/warmPathsData", () => ({
@@ -23,7 +26,7 @@ const APP = {
   posting_snapshot: { description: "Questions: jane@acme.com" },
 };
 const params = (id = "7") => ({ params: Promise.resolve({ id }) });
-const post = (body: unknown) => new Request("http://x", { method: "POST", body: JSON.stringify(body) });
+const post = (body: unknown) => operatorRequest("http://x", { method: "POST", body: JSON.stringify(body) });
 const contact = (over: Record<string, unknown> = {}) => ({
   id: 1, name: "Ann Lee", email: "ann.lee@acme.com", company: "Acme Inc", mode: "networking", stage: "new",
   reply_status: "no_reply", job_application_id: null, relationship: null, created_at: new Date().toISOString(), ...over,
@@ -42,12 +45,12 @@ beforeEach(() => {
 
 describe("GET people", () => {
   it("rejects a non-numeric id", async () => {
-    expect((await GET(new Request("http://x"), params("7 or 1=1"))).status).toBe(400);
+    expect((await GET(operatorRequest("http://x"), params("7 or 1=1"))).status).toBe(400);
   });
 
   it("404s an unknown application", async () => {
     m.loadApplication.mockResolvedValue(null);
-    expect((await GET(new Request("http://x"), params())).status).toBe(404);
+    expect((await GET(operatorRequest("http://x"), params())).status).toBe(404);
   });
 
   it("returns linked, known people with their blockers, links, posting emails and caps", async () => {
@@ -57,7 +60,7 @@ describe("GET people", () => {
       contact({ id: 6, stage: "networking_sent" }),
       contact({ id: 8, mode: "applied" }),
     ] as never);
-    const body = await (await GET(new Request("http://x"), params())).json();
+    const body = await (await GET(operatorRequest("http://x"), params())).json();
     expect(body.linked.map((c: { id: number }) => c.id)).toEqual([5]);
     expect(body.known.map((c: { id: number; blocker: string | null }) => [c.id, c.blocker])).toEqual([
       [6, "Already in touch"], [8, null],
@@ -72,7 +75,7 @@ describe("GET people", () => {
 
   it("500s when a read fails", async () => {
     m.loadLinked.mockRejectedValue(new Error("down"));
-    expect((await GET(new Request("http://x"), params())).status).toBe(500);
+    expect((await GET(operatorRequest("http://x"), params())).status).toBe(500);
   });
 });
 
@@ -89,7 +92,7 @@ describe("POST people", () => {
     [{ name: "x" }, 400],
     ["not json at all", 400],
   ])("400s bad input %j", async (body, status) => {
-    const req = typeof body === "string" ? new Request("http://x", { method: "POST", body }) : post(body);
+    const req = typeof body === "string" ? operatorRequest("http://x", { method: "POST", body }) : post(body);
     expect((await POST(req, params())).status).toBe(status);
     expect(m.insertContact).not.toHaveBeenCalled();
   });

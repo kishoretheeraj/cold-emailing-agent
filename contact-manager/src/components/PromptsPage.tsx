@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
@@ -13,14 +13,39 @@ import {
 import type { Prompt } from "@/lib/types";
 
 const STORAGE_KEY = "prompts-open-categories";
+const DEFAULT_OPEN = ["Sender & Core"];
+
+// Read straight from localStorage. The server snapshot is null, so hydration matches the server
+// render and the stored set appears right after it.
+function subscribeNever() {
+  return () => {};
+}
+
+function readStoredOpen(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function parseOpen(stored: string): Set<string> {
+  try {
+    return new Set<string>(stored ? (JSON.parse(stored) as string[]) : DEFAULT_OPEN);
+  } catch {
+    return new Set<string>(DEFAULT_OPEN);
+  }
+}
 
 export function PromptsPage() {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  // null = skeleton (pre-hydration); Set = hydrated from localStorage
-  const [openCategories, setOpenCategories] = useState<Set<string> | null>(null);
+  // null = skeleton (server render and hydration); then the stored set, until the user toggles.
+  const storedOpen = useSyncExternalStore(subscribeNever, readStoredOpen, () => null);
+  const [toggledOpen, setToggledOpen] = useState<Set<string> | null>(null);
+  const openCategories = toggledOpen ?? (storedOpen === null ? null : parseOpen(storedOpen));
 
   useEffect(() => {
     async function load() {
@@ -39,22 +64,9 @@ export function PromptsPage() {
     load();
   }, []);
 
-  // Read localStorage after mount to avoid SSR hydration mismatch
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      const initial = stored
-        ? new Set<string>(JSON.parse(stored) as string[])
-        : new Set<string>(["Sender & Core"]);
-      setOpenCategories(initial);
-    } catch {
-      setOpenCategories(new Set<string>(["Sender & Core"]));
-    }
-  }, []);
-
   function handleToggle(category: string) {
-    setOpenCategories((prev) => {
-      const next = new Set(prev);
+    setToggledOpen((prev) => {
+      const next = new Set(prev ?? openCategories);
       next.has(category) ? next.delete(category) : next.add(category);
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify([...next]));

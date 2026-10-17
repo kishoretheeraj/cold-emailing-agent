@@ -46,14 +46,15 @@ export function LabContactPicker({ selectedContact, onSelect }: Props) {
     setLoading(false);
   }, []);
 
-  // Load on open
-  useEffect(() => {
+  function toggleOpen() {
     if (open) {
-      void fetchContacts(search);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setOpen(false);
+      return;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    setOpen(true);
+    void fetchContacts(search);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
 
   // Debounce search
   useEffect(() => {
@@ -88,7 +89,7 @@ export function LabContactPicker({ selectedContact, onSelect }: Props) {
       <button
         type="button"
         data-testid="contact-picker-toggle"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggleOpen}
         className="w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-border bg-surface hover:border-border-strong transition text-left"
       >
         <span className="text-sm text-fg truncate">

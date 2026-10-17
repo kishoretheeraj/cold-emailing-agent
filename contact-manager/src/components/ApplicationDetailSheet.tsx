@@ -121,16 +121,31 @@ export function ApplicationDetailSheet({
   onClose: () => void;
   onSaved?: (app: JobApplication) => void;
 }) {
+  const applicationId = application?.id ?? null;
+  const preview = application?.apply_preview;
   const [files, setFiles] = useState<Files>(EMPTY_FILES);
-  const [filesLoading, setFilesLoading] = useState(false);
-  const [screeningAnswers, setScreeningAnswers] = useState<Record<string, string>>({});
-  const [eligibilityAnswers, setEligibilityAnswers] = useState<Record<string, string>>({});
+  const [filesLoading, setFilesLoading] = useState(applicationId !== null);
+  const [screeningAnswers, setScreeningAnswers] = useState<Record<string, string>>(
+    () => preview?.screening_answers ?? {}
+  );
+  const [eligibilityAnswers, setEligibilityAnswers] = useState<Record<string, string>>(
+    () => preview?.eligibility_answers ?? {}
+  );
   const [savingAnswers, setSavingAnswers] = useState(false);
 
-  useEffect(() => {
-    setScreeningAnswers(application?.apply_preview?.screening_answers ?? {});
-    setEligibilityAnswers(application?.apply_preview?.eligibility_answers ?? {});
-  }, [application?.id, application?.apply_preview]);
+  // Reset local state when the shown application (or its saved preview) changes, during render
+  // rather than in an effect. Files reload only on a different id: onSaved hands back a new
+  // object on every answer save, and that must not re-fetch the signed URLs.
+  const [shown, setShown] = useState({ id: applicationId, preview });
+  if (shown.id !== applicationId || shown.preview !== preview) {
+    setShown({ id: applicationId, preview });
+    setScreeningAnswers(preview?.screening_answers ?? {});
+    setEligibilityAnswers(preview?.eligibility_answers ?? {});
+    if (shown.id !== applicationId) {
+      if (applicationId === null) setFiles(EMPTY_FILES);
+      else setFilesLoading(true);
+    }
+  }
 
   const handleSaveAnswers = async () => {
     if (!application || !application.apply_preview) return;
@@ -175,13 +190,9 @@ export function ApplicationDetailSheet({
   const isApproved = Boolean(application?.approved_at);
 
   useEffect(() => {
-    if (!application) {
-      setFiles(EMPTY_FILES);
-      return;
-    }
+    if (applicationId === null) return;
     let cancelled = false;
-    setFilesLoading(true);
-    fetch(`/api/applications/${application.id}/files`)
+    fetch(`/api/applications/${applicationId}/files`)
       .then((res) => res.json())
       .then((data) => {
         if (!cancelled) {
@@ -204,13 +215,9 @@ export function ApplicationDetailSheet({
     return () => {
       cancelled = true;
     };
-    // M11: intentionally keyed on application?.id only, not the whole `application` object --
-    // I7's onSaved gives the parent a new application object reference on every answer save,
-    // and this effect must NOT re-fetch signed file URLs just because apply_preview text
-    // changed. react-hooks/exhaustive-deps would otherwise flag this; suppress with a reason
-    // rather than widen the dependency array and reintroduce the wasteful refetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [application?.id]);
+    // M11: keyed on the id only. I7's onSaved gives the parent a new application object on
+    // every answer save, and that must NOT re-fetch the signed file URLs.
+  }, [applicationId]);
 
   return (
     <Sheet open={application !== null} onOpenChange={(o) => !o && onClose()}>
@@ -309,7 +316,7 @@ export function ApplicationDetailSheet({
                   {filesLoading ? (
                     <p className="text-fg-dim text-sm">Loading...</p>
                   ) : files.resume_error ? (
-                    <p className="text-red-400 text-sm">Couldn't load your resume -- try again.</p>
+                    <p className="text-red-400 text-sm">Couldn&apos;t load your resume -- try again.</p>
                   ) : files.resume_url ? (
                     <iframe
                       title="Resume"
@@ -326,7 +333,7 @@ export function ApplicationDetailSheet({
                   {filesLoading ? (
                     <p className="text-fg-dim text-sm">Loading...</p>
                   ) : files.cover_letter_error ? (
-                    <p className="text-red-400 text-sm">Couldn't load your cover letter -- try again.</p>
+                    <p className="text-red-400 text-sm">Couldn&apos;t load your cover letter -- try again.</p>
                   ) : files.cover_letter_url ? (
                     <iframe
                       title="Cover letter"

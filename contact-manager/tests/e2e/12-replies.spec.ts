@@ -92,6 +92,8 @@ test("e key shows undo toast; clicking Undo cancels send", async ({ page }) => {
     page.getByRole("heading", { name: "Grace Lee" })
   ).toBeVisible({ timeout: 8_000 });
 
+  // The contact heading renders before its reply draft finishes loading.
+  await expect(page.getByRole("button", { name: /approve and send/i })).toBeVisible();
   await page.keyboard.press("e");
 
   // Undo toast appears
@@ -116,6 +118,8 @@ test("e key send: after 6s, POST /api/send-draft fires", async ({ page }) => {
     page.getByRole("heading", { name: "Grace Lee" })
   ).toBeVisible({ timeout: 8_000 });
 
+  // The contact heading renders before its reply draft finishes loading.
+  await expect(page.getByRole("button", { name: /approve and send/i })).toBeVisible();
   await page.keyboard.press("e");
   await expect(page.getByText(/sending to grace/i)).toBeVisible({ timeout: 5_000 });
 
@@ -130,6 +134,8 @@ test("E key opens Quick Fix; Cancel returns to read-only", async ({ page }) => {
     page.getByRole("heading", { name: "Grace Lee" })
   ).toBeVisible({ timeout: 8_000 });
 
+  // The contact heading renders before its reply draft finishes loading.
+  await expect(page.getByRole("button", { name: /approve and send/i })).toBeVisible();
   await page.keyboard.press("E");
 
   await expect(
@@ -162,6 +168,8 @@ test("Quick Fix: Save and Send calls /api/update-draft then undo toast", async (
     page.getByRole("heading", { name: "Grace Lee" })
   ).toBeVisible({ timeout: 8_000 });
 
+  // The contact heading renders before its reply draft finishes loading.
+  await expect(page.getByRole("button", { name: /approve and send/i })).toBeVisible();
   await page.keyboard.press("E");
   await expect(
     page.getByRole("button", { name: /save and send/i })

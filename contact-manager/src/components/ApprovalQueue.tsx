@@ -70,6 +70,13 @@ function peopleLine(app: JobApplication): string | null {
   return parts.length ? parts.join(" · ") : null;
 }
 
+// null when the response is not ok; a network or JSON error rejects.
+async function fetchJson<T>(url: string): Promise<T | null> {
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  return (await res.json()) as T;
+}
+
 // The one-tap approval queue (spec 2026-10-08 §9). Submit starts a 5-second bar with Undo; only
 // when it runs out is the approval sent, so a mis-tap or closing the page sends nothing. The
 // approval is bound to the preview revision rendered on the card (preview_revision_hash).
@@ -84,25 +91,28 @@ export function ApprovalQueue() {
   const [outcomes, setOutcomes] = useState<JobApplication[]>([]);
   const countdown = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch("/api/applications?view=queue");
-      if (!res.ok) return;
-      const body = (await res.json()) as { applications?: JobApplication[] };
-      setRows(body.applications ?? []);
-      const todayRes = await fetch("/api/applications/today");
-      if (todayRes.ok) setToday((await todayRes.json()) as Today);
-      const outcomesRes = await fetch("/api/applications?view=outcomes");
-      if (outcomesRes.ok) {
-        const o = (await outcomesRes.json()) as { applications?: JobApplication[] };
-        setOutcomes((o.applications ?? []).filter((a) => a.outcome_evidence));
-      }
-    } catch {
-      // the next poll tries again
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
+  // Rows first, then today's count, then company replies, each shown as it arrives.
+  const load = useCallback(
+    () =>
+      fetchJson<{ applications?: JobApplication[] }>("/api/applications?view=queue")
+        .then((body) => {
+          if (!body) return;
+          setRows(body.applications ?? []);
+          return fetchJson<Today>("/api/applications/today")
+            .then((todayBody) => {
+              if (todayBody) setToday(todayBody);
+              return fetchJson<{ applications?: JobApplication[] }>("/api/applications?view=outcomes");
+            })
+            .then((o) => {
+              if (o) setOutcomes((o.applications ?? []).filter((a) => a.outcome_evidence));
+            });
+        })
+        .catch(() => {
+          // the next poll tries again
+        })
+        .finally(() => setLoaded(true)),
+    []
+  );
 
   useEffect(() => {
     load();

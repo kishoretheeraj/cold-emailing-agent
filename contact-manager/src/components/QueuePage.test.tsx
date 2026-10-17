@@ -6,6 +6,7 @@ import {
   waitFor,
   act,
   fireEvent,
+  cleanup,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -16,11 +17,13 @@ const { toastMock } = vi.hoisted(() => {
     success: ReturnType<typeof vi.fn>;
     error: ReturnType<typeof vi.fn>;
     info: ReturnType<typeof vi.fn>;
+    warning: ReturnType<typeof vi.fn>;
     dismiss: ReturnType<typeof vi.fn>;
   };
   toastFn.success = vi.fn();
   toastFn.error = vi.fn();
   toastFn.info = vi.fn();
+  toastFn.warning = vi.fn();
   toastFn.dismiss = vi.fn();
   return { toastMock: toastFn };
 });
@@ -386,6 +389,166 @@ describe("QueuePage — 5-second undo flow", () => {
       "/api/send-draft",
       expect.objectContaining({ method: "POST" })
     );
+  });
+});
+
+describe("QueuePage — send outcomes", () => {
+  async function approveBobAndRunTimer() {
+    vi.useFakeTimers();
+    render(<QueuePage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    // Flush the fetch, its .json(), and the refetch that follows.
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+  }
+
+  it("sent but not recorded: warns, and the refetched contact is not offered again", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "contacts: write refused" }),
+        { status: 200 }
+      )
+    );
+    // The refetch still returns Bob at first_touch_drafted, because the stage write failed.
+    await approveBobAndRunTimer();
+
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      "Sent, but not saved: contacts: write refused. The monitor will catch up."
+    );
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(toastMock.error).not.toHaveBeenCalled();
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+    expect(screen.getAllByText("Dave Johnson").length).toBeGreaterThan(0);
+  });
+
+  it("stays hidden when the draft row was marked sent but the stage write failed", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "contacts: write refused" }),
+        { status: 200 }
+      )
+    );
+    vi.useFakeTimers();
+    render(<QueuePage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // After the send, Bob is still first_touch_drafted but has no unsent draft row.
+    mockSupabaseData([bob, dave], [daveDraft]);
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5001);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(toastMock.warning).toHaveBeenCalled();
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+  });
+
+  it("a later draft for a sent-but-unsaved contact shows again", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "contacts: write refused" }),
+        { status: 200 }
+      )
+    );
+    await approveBobAndRunTimer();
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+
+    // The monitor flips Bob to first_touch_sent; days later the agent drafts follow-up 1.
+    const bobFollowup = { ...bob, stage: "followup1_drafted" };
+    const followupDraft = makeDraft({ id: 99, stage: "followup1_drafted", subject: "Re: Quick intro" });
+    mockSupabaseData([bobFollowup, dave], [followupDraft, daveDraft]);
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+  });
+
+  it("keeps a sent-but-unsaved contact hidden after a remount in the same session", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, sent: true, recorded: false, error: "contacts: write refused" }),
+        { status: 200 }
+      )
+    );
+    await approveBobAndRunTimer();
+    cleanup();
+    vi.useRealTimers();
+
+    render(<QueuePage />);
+    await waitFor(() => expect(screen.getAllByText("Dave Johnson").length).toBeGreaterThan(0));
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+  });
+
+  it("a recorded send shows the success toast", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, sent: true, recorded: true }), { status: 200 })
+    );
+    await approveBobAndRunTimer();
+    expect(toastMock.success).toHaveBeenCalledWith("Sent to Bob Martinez");
+    expect(toastMock.warning).not.toHaveBeenCalled();
+  });
+
+  it("keeps the row hidden while the send request is still in flight", async () => {
+    vi.spyOn(global, "fetch").mockReturnValue(new Promise<Response>(() => {}));
+    await approveBobAndRunTimer();
+    expect(global.fetch).toHaveBeenCalledWith("/api/send-draft", expect.anything());
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+  });
+
+  it("undo brings the row back", async () => {
+    let undo: (() => void) | undefined;
+    toastMock.mockImplementation((_msg: string, opts?: { action?: { onClick: () => void } }) => {
+      undo = opts?.action?.onClick;
+      return "toast-id";
+    });
+    vi.useFakeTimers();
+    render(<QueuePage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "e" });
+    });
+    expect(screen.queryAllByText("Bob Martinez")).toHaveLength(0);
+    await act(async () => {
+      undo?.();
+    });
+    expect(screen.getAllByText("Bob Martinez").length).toBeGreaterThan(0);
+  });
+
+  it("a failed send brings the row back exactly once", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "Gmail API error" }), { status: 502 })
+    );
+    await approveBobAndRunTimer();
+    expect(toastMock.error).toHaveBeenCalledWith("Send failed: Gmail API error");
+    const bobRows = screen
+      .getAllByRole("listitem")
+      .filter((li) => li.textContent?.includes("Bob Martinez"));
+    expect(bobRows).toHaveLength(1);
   });
 });
 

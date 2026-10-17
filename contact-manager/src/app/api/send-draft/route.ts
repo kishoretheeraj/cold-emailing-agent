@@ -2,25 +2,14 @@ export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
 import { getGmailClient } from "@/lib/gmail-server";
-import { CADENCE, STAGE_TRANSITIONS } from "@/lib/cadence";
+import { CADENCE, STAGE_TO_LABEL, STAGE_TRANSITIONS } from "@/lib/cadence";
 import type { gmail_v1 } from "googleapis";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 // All *_sent stage values — used for idempotency check.
 const SENT_STAGES = new Set(
   Object.values(STAGE_TRANSITIONS).map((t) => t.next)
 );
-
-// Mirror of agent.py::ACTION_LABEL, keyed by drafted stage.
-const STAGE_TO_LABEL: Record<string, string> = {
-  first_touch_drafted:      "Cold Outreach/First Touch",
-  followup1_drafted:        "Cold Outreach/Follow-up #1",
-  followup2_drafted:        "Cold Outreach/Follow-up #2",
-  breakup_drafted:          "Cold Outreach/Break-up",
-  applied_intro_drafted:    "Cold Outreach/Applied Intro",
-  applied_followup_drafted: "Cold Outreach/Applied Follow-up",
-  networking_drafted:          "Networking/Intro",
-  networking_followup_drafted: "Networking/Follow-up",
-};
 
 function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
@@ -41,6 +30,9 @@ function getSupabase() {
 }
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   const startedAt = new Date().toISOString();
   let contactId: string | undefined;
 
@@ -187,57 +179,107 @@ export async function POST(req: Request) {
   const followupDate = computeFollowupDate(transition.cadenceKey);
   const today = todayUTC();
 
+  // Steps 10-13 record the send. Gmail has already sent the message and consumed the draft, so
+  // from here on nothing returns a 5xx: a failed write is reported as "sent but not recorded"
+  // (200, recorded: false) and the monitor's sent-draft detection flips the stage later. Each
+  // step runs even when an earlier one failed.
+  const recordErrors: string[] = [];
+  async function record(
+    step: string,
+    run: () => PromiseLike<{ error: { message: string } | null }>
+  ) {
+    try {
+      const { error } = await run();
+      if (error) recordErrors.push(`${step}: ${error.message}`);
+    } catch (err) {
+      recordErrors.push(`${step}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // Step 10: update contact
   // latest_message_id receives the RFC822 Message-ID so the agent can use it for
   // follow-up In-Reply-To threading. contacts.message_id is agent-managed (first-touch
   // only) and must never be written here.
-  await supabase
-    .from("contacts")
-    .update({
-      stage: nextStage,
-      last_emailed: today,
-      followup_date: followupDate,
-      ...(rfcMessageId ? { latest_message_id: rfcMessageId } : {}),
-    })
-    .eq("id", contactId);
+  await record("contacts", () =>
+    supabase
+      .from("contacts")
+      .update({
+        stage: nextStage,
+        last_emailed: today,
+        followup_date: followupDate,
+        ...(rfcMessageId ? { latest_message_id: rfcMessageId } : {}),
+      })
+      .eq("id", contactId)
+  );
 
   // Step 11: update draft_history
   const editDetected = sentBody !== draftRow.body;
-  await supabase
-    .from("draft_history")
-    .update({
-      sent_subject: sentSubject,
-      sent_body: sentBody,
-      sent_at: new Date().toISOString(),
-      edit_detected: editDetected,
-    })
-    .eq("id", draftRow.id);
+  await record("draft_history", () =>
+    supabase
+      .from("draft_history")
+      .update({
+        sent_subject: sentSubject,
+        sent_body: sentBody,
+        sent_at: new Date().toISOString(),
+        edit_detected: editDetected,
+      })
+      .eq("id", draftRow.id)
+  );
 
   // Step 12: insert email_messages (ignore duplicate message_id)
   if (sentMessageId) {
-    await supabase.from("email_messages").upsert(
-      {
-        contact_id: Number(contactId),
-        direction: "outgoing",
-        // Prefer the RFC822 Message-ID from sent headers; fall back to Gmail hex ID.
-        message_id: rfcMessageId ?? sentMessageId,
-        subject: sentSubject,
-        body: sentBody,
-        sent_at: new Date().toISOString(),
-        ...(sentThreadId ? { thread_id: sentThreadId } : {}),
-      },
-      { onConflict: "message_id", ignoreDuplicates: true }
+    await record("email_messages", () =>
+      supabase.from("email_messages").upsert(
+        {
+          contact_id: Number(contactId),
+          direction: "outgoing",
+          // Prefer the RFC822 Message-ID from sent headers; fall back to Gmail hex ID.
+          message_id: rfcMessageId ?? sentMessageId,
+          subject: sentSubject,
+          body: sentBody,
+          sent_at: new Date().toISOString(),
+          ...(sentThreadId ? { thread_id: sentThreadId } : {}),
+        },
+        { onConflict: "message_id", ignoreDuplicates: true }
+      )
     );
   }
 
   // Step 13: log success event
-  await supabase.from("agent_events").insert({
-    event_type: "send_draft",
-    status: "success",
-    contact_id: Number(contactId),
-    started_at: startedAt,
-    completed_at: new Date().toISOString(),
-  });
+  if (recordErrors.length === 0) {
+    await record("agent_events", () =>
+      supabase.from("agent_events").insert({
+        event_type: "send_draft",
+        status: "success",
+        contact_id: Number(contactId),
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+      })
+    );
+  }
+  const recorded = recordErrors.length === 0;
+  const recordError = recordErrors.join("; ");
+  if (!recorded) {
+    console.error(`[send-draft] contact ${contactId} sent but not recorded: ${recordError}`);
+    try {
+      await supabase.from("agent_events").insert({
+        event_type: "send_draft",
+        status: "failed",
+        contact_id: Number(contactId),
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        error_message: `sent but not recorded: ${recordError}`,
+        metadata: {
+          sent: true,
+          recorded: false,
+          failed_steps: recordErrors.map((e) => e.split(":")[0]),
+          gmail_message_id: sentMessageId,
+        },
+      });
+    } catch (err) {
+      console.error(`[send-draft] could not log the failure for contact ${contactId}:`, err);
+    }
+  }
 
   // Step 14: apply Gmail label to sent message — best-effort, never blocks the response.
   // Labels applied to the draft are lost when update-draft replaces the message object,
@@ -262,8 +304,14 @@ export async function POST(req: Request) {
   }
 
   // Step 15: return
+  if (!recorded) {
+    return Response.json(
+      { ok: true, sent: true, recorded: false, error: recordError, message_id: sentMessageId },
+      { status: 200 }
+    );
+  }
   return Response.json(
-    { ok: true, message_id: sentMessageId, stage: nextStage },
+    { ok: true, sent: true, recorded: true, message_id: sentMessageId, stage: nextStage },
     { status: 200 }
   );
 }

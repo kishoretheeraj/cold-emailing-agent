@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const { mockDraftsGet, mockDraftsUpdate, mockMessagesList, mockGetGmail } = vi.hoisted(() => ({
   mockDraftsGet: vi.fn(),
@@ -34,7 +37,7 @@ vi.mock("@supabase/supabase-js", () => {
 import { POST } from "./route";
 
 function req(body: unknown) {
-  return new Request("http://localhost/api/update-draft", {
+  return operatorRequest("http://localhost/api/update-draft", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

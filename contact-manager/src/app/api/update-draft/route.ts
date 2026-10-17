@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getGmailClient } from "@/lib/gmail-server";
 import { STAGE_TRANSITIONS } from "@/lib/cadence";
 import type { gmail_v1 } from "googleapis";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 function getSupabase() {
   return createClient(
@@ -25,6 +26,9 @@ function mimeEncodeHeader(value: string): string {
 }
 
 export async function POST(req: Request) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   let contactId: string, subject: string, body: string;
   try {
     const parsed = (await req.json()) as {

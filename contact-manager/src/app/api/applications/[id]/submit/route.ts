@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { createClient } from "@supabase/supabase-js";
 import { approvalSigningKey, signApproval } from "@/lib/approvalSignature";
 import { isOperatorRequest } from "@/lib/operatorAuth";
+import { workflowDispatchUrl } from "@/lib/github";
 
 function getClient() {
   return createClient(
@@ -103,7 +104,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   let res: Response;
   try {
     res = await fetch(
-      "https://api.github.com/repos/kishoretheeraj/cold-emailing-agent/actions/workflows/apply_agent_submit.yml/dispatches",
+      workflowDispatchUrl("apply_agent_submit.yml"),
       {
         method: "POST",
         headers: {

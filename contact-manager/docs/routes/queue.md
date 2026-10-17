@@ -11,7 +11,8 @@ Three-column layout: left rail (filters), center (scrollable draft list), right 
 **5-second undo pattern** (used for both Approve and Send and Mark Dead):
 - API fires AFTER the 5-second delay. Optimistically remove from list → show toast with Undo button → start `setTimeout(5000)`.
 - Undo: `clearTimeout`, re-insert at `originalIndex`, toast.info("Send canceled"). API never called.
-- Timer fires: POST `/api/send-draft` (or Supabase PATCH for dead). On error: re-add to list + error toast.
+- Timer fires: POST `/api/send-draft` (or Supabase PATCH for dead). On error: the row shows again (it was only hidden) + error toast.
+- `recorded: false` (sent, but a database write failed): warning toast "Sent, but not saved: ... The monitor will catch up." and the contact's stage and sent draft row go into `sentUnrecorded` (sessionStorage `queue_sent_unrecorded`). That row stays hidden while the contact is still at that stage with that draft (or no draft), so it is never offered for Send again; a later draft (new stage or new row) shows as usual.
 - Unmount: all pending timers are cleared — navigating away cancels pending sends (deliberate trade-off, documented in comment).
 - Concurrent: multiple contacts can have pending timers simultaneously; each is tracked separately in `pendingSends` Map.
 
@@ -62,6 +63,6 @@ networking drafts appear in `/queue` alongside outreach/applied drafts — no se
 page. `CADENCE.NETWORKING_TO_FOLLOWUP_DAYS = 6` is the only cadence value (the
 follow-up is terminal — `networking_followup_drafted`'s `cadenceKey` is `null`, same
 shape as `applied_followup_drafted`, so no further follow-up is ever scheduled).
-`STAGE_TO_LABEL` in `src/app/api/send-draft/route.ts` applies `Networking/Intro` and
+`STAGE_TO_LABEL` in `src/lib/cadence.ts` (used by send-draft) applies `Networking/Intro` and
 `Networking/Follow-up` Gmail labels for these stages (a separate top-level Gmail label
 from `Cold Outreach/...`).

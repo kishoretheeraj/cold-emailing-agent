@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { TextArea } from "./Field";
 import { extractVariables, getUnknownVariables, PROMPT_OUTPUT_SCHEMAS } from "@/lib/promptVariables";
@@ -18,9 +18,12 @@ export function PromptSection({
   const [draft, setDraft] = useState(prompt.value);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  // A new saved value (from this editor or elsewhere) replaces the draft, adjusted during render.
+  const [syncedValue, setSyncedValue] = useState(prompt.value);
+  if (syncedValue !== prompt.value) {
+    setSyncedValue(prompt.value);
     setDraft(prompt.value);
-  }, [prompt.value]);
+  }
 
   const variables = extractVariables(draft);
   const unknownVars = getUnknownVariables(prompt.key, draft);

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, POST } from "./route";
+import { operatorRequest, stubOperatorLogin } from "@/lib/testing/operatorSession";
+
+beforeEach(() => stubOperatorLogin());
 
 const mockOrder = vi.fn();
 const mockEq = vi.fn();
@@ -51,7 +54,7 @@ describe("GET /api/applications?view=queue", () => {
     const mockIn = vi.fn().mockReturnValue({ order: mockOrder, eq: mockEq, or: mockOr });
     const mockNot = vi.fn().mockReturnValue({ in: mockIn, order: mockOrder });
     mockSelect.mockReturnValue({ order: mockOrder, eq: mockEq, not: mockNot, in: mockIn });
-    await GET(new Request("http://test/api/applications?view=queue"));
+    await GET(operatorRequest("http://test/api/applications?view=queue"));
     expect(mockNot).toHaveBeenCalledWith("stage", "in", "(withdrawn,rejected)");
     expect(mockIn).toHaveBeenCalledWith("automation_status", [
       "ready_for_review", "approved", "submitting", "needs_input", "needs_confirmation", "submitted",
@@ -77,7 +80,7 @@ describe("GET /api/applications?view=queue -- people counts (warm paths)", () =>
     mockOrder.mockResolvedValue({ data: [{ id: "7", company: "Acme, Inc." }, { id: "8", company: "Beta" }], error: null });
     mockLinked.mockResolvedValue(new Map([[7, 2]]));
     mockKnown.mockResolvedValue(new Map([["acme", 4]]));
-    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    const body = await (await GET(operatorRequest("http://test/api/applications?view=queue"))).json();
     expect(mockLinked.mock.calls[0][1]).toEqual([7, 8]);
     expect(body.applications.map((a: { people: unknown }) => a.people)).toEqual([
       { linked: 2, known: 4 }, { linked: 0, known: 0 },
@@ -91,7 +94,7 @@ describe("GET /api/applications?view=queue -- people counts (warm paths)", () =>
     ], error: null });
     mockAtCompany.mockResolvedValue(new Map([["acme", [7, 3, 4]], ["beta", [8]]]));
     mockPrefs.mockResolvedValue(JSON.stringify({ per_company_cap_30d: 2 }));
-    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    const body = await (await GET(operatorRequest("http://test/api/applications?view=queue"))).json();
     expect(mockAtCompany.mock.calls[0][1]).toEqual(["acme", "beta"]);
     expect(body.applications.map((a: { company_30d: unknown }) => a.company_30d)).toEqual([
       { others: 2, cap: 2 }, { others: 0, cap: 2 },
@@ -105,7 +108,7 @@ describe("GET /api/applications?view=queue -- people counts (warm paths)", () =>
       intel: new Map(),
       stats: new Map([["amazon", { normalized_name: "amazon", lca_recent_2fy: 900, latest_filing_fy: 2026 }]]),
     });
-    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    const body = await (await GET(operatorRequest("http://test/api/applications?view=queue"))).json();
     expect(mockVisa.mock.calls[0][1]).toEqual(["amazon", "tiny startup"]);
     expect(body.applications.map((a: { visa: unknown }) => a.visa)).toEqual([
       { label: "H-1B filings: 900 in 2 years", tone: "good" }, { label: "No H-1B data", tone: "none" },
@@ -115,7 +118,7 @@ describe("GET /api/applications?view=queue -- people counts (warm paths)", () =>
   it("leaves the signal out when the H-1B tables can't be read", async () => {
     queueChain();
     mockVisa.mockRejectedValue(new Error("down"));
-    const body = await (await GET(new Request("http://test/api/applications?view=queue"))).json();
+    const body = await (await GET(operatorRequest("http://test/api/applications?view=queue"))).json();
     expect(body.applications[0]).not.toHaveProperty("visa");
     expect(body.applications[0]).toHaveProperty("people");
   });
@@ -123,13 +126,13 @@ describe("GET /api/applications?view=queue -- people counts (warm paths)", () =>
   it("still returns the queue when the counts fail", async () => {
     queueChain();
     mockKnown.mockRejectedValue(new Error("down"));
-    const res = await GET(new Request("http://test/api/applications?view=queue"));
+    const res = await GET(operatorRequest("http://test/api/applications?view=queue"));
     expect(res.status).toBe(200);
     expect((await res.json()).applications).toEqual([{ id: "1", company: "Acme" }]);
   });
 
   it("other views never pay for the counts", async () => {
-    await GET(new Request("http://test/api/applications"));
+    await GET(operatorRequest("http://test/api/applications"));
     expect(mockKnown).not.toHaveBeenCalled();
   });
 });
@@ -139,7 +142,7 @@ describe("GET /api/applications?view=outcomes", () => {
     const mockGte = vi.fn().mockReturnValue({ order: mockOrder });
     const mockNot = vi.fn().mockReturnValue({ gte: mockGte });
     mockSelect.mockReturnValue({ not: mockNot });
-    await GET(new Request("http://test/api/applications?view=outcomes"));
+    await GET(operatorRequest("http://test/api/applications?view=outcomes"));
     expect(mockNot).toHaveBeenCalledWith("outcome_evidence", "is", null);
     const [column, since] = mockGte.mock.calls[0];
     expect(column).toBe("updated_at");
@@ -156,7 +159,7 @@ describe("GET /api/applications?takeover=open", () => {
     const mockNot = vi.fn().mockReturnValue({ order: mockOrder, eq: mockEq });
     mockSelect.mockReturnValue({ order: mockOrder, eq: mockEq, not: mockNot });
     mockOrder.mockResolvedValue({ data: [waiting, stale, answered], error: null });
-    const res = await GET(new Request("http://test/api/applications?takeover=open"));
+    const res = await GET(operatorRequest("http://test/api/applications?takeover=open"));
     expect(mockNot).toHaveBeenCalledWith("takeover", "is", null);
     expect((await res.json()).applications).toEqual([waiting]);
   });
@@ -164,37 +167,37 @@ describe("GET /api/applications?takeover=open", () => {
 
 describe("GET /api/applications", () => {
   it("returns all applications", async () => {
-    const res = await GET(new Request("http://test/api/applications"));
+    const res = await GET(operatorRequest("http://test/api/applications"));
     const body = await res.json();
     expect(body.applications).toEqual([{ id: "1", company: "Acme" }]);
   });
 
   it("filters by stage query param", async () => {
-    await GET(new Request("http://test/api/applications?stage=applied"));
+    await GET(operatorRequest("http://test/api/applications?stage=applied"));
     expect(mockEq).toHaveBeenCalledWith("stage", "applied");
   });
 
   it("filters by source query param", async () => {
-    await GET(new Request("http://test/api/applications?source=linkedin"));
+    await GET(operatorRequest("http://test/api/applications?source=linkedin"));
     expect(mockEq).toHaveBeenCalledWith("source", "linkedin");
   });
 
   it("filters by both stage and source query params together (M4)", async () => {
-    await GET(new Request("http://test/api/applications?stage=applied&source=linkedin"));
+    await GET(operatorRequest("http://test/api/applications?stage=applied&source=linkedin"));
     expect(mockEq).toHaveBeenCalledWith("stage", "applied");
     expect(mockEq).toHaveBeenCalledWith("source", "linkedin");
   });
 
   it("returns 500 on supabase error", async () => {
     mockOrder.mockResolvedValue({ data: null, error: new Error("db down") });
-    const res = await GET(new Request("http://test/api/applications"));
+    const res = await GET(operatorRequest("http://test/api/applications"));
     expect(res.status).toBe(500);
   });
 });
 
 describe("POST /api/applications", () => {
   it("creates an application with company and role", async () => {
-    const req = new Request("http://test/api/applications", {
+    const req = operatorRequest("http://test/api/applications", {
       method: "POST",
       body: JSON.stringify({ company: "Acme", role: "PM" }),
     });
@@ -205,7 +208,7 @@ describe("POST /api/applications", () => {
   });
 
   it("returns 400 when company is missing", async () => {
-    const req = new Request("http://test/api/applications", {
+    const req = operatorRequest("http://test/api/applications", {
       method: "POST",
       body: JSON.stringify({ role: "PM" }),
     });
@@ -214,7 +217,7 @@ describe("POST /api/applications", () => {
   });
 
   it("returns 400 when role is missing", async () => {
-    const req = new Request("http://test/api/applications", {
+    const req = operatorRequest("http://test/api/applications", {
       method: "POST",
       body: JSON.stringify({ company: "Acme" }),
     });
@@ -223,14 +226,14 @@ describe("POST /api/applications", () => {
   });
 
   it("returns 400 for invalid JSON", async () => {
-    const req = new Request("http://test/api/applications", { method: "POST", body: "not json" });
+    const req = operatorRequest("http://test/api/applications", { method: "POST", body: "not json" });
     const res = await POST(req);
     expect(res.status).toBe(400);
   });
 
   it("returns 500 on supabase insert error", async () => {
     mockSingle.mockResolvedValue({ data: null, error: new Error("insert failed") });
-    const req = new Request("http://test/api/applications", {
+    const req = operatorRequest("http://test/api/applications", {
       method: "POST",
       body: JSON.stringify({ company: "Acme", role: "PM" }),
     });

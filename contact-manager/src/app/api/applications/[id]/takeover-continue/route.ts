@@ -1,6 +1,7 @@
 export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
+import { isOperatorRequest } from "@/lib/operatorAuth";
 
 function getClient() {
   return createClient(
@@ -9,7 +10,10 @@ function getClient() {
   );
 }
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (!isOperatorRequest(req)) {
+    return Response.json({ error: "Sign in required" }, { status: 401 });
+  }
   const { id } = await params;
   if (!/^\d+$/.test(id)) {
     return Response.json({ error: "Invalid application id" }, { status: 400 });

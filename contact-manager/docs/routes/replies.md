@@ -19,7 +19,7 @@ Two-column layout: left (320px scrollable triage list), right (focused detail + 
 **Action bar** — without draft (hard_no, unrelated, etc.):
 [Open in Gmail] | [Mark interested] [Mark call scheduled] [Mark dead]
 
-**5-second undo**: same pattern as QueuePage. `pendingActions: Map<contact_id, PendingEntry>`. Both "Approve and Send" and "mark reply_status" changes use this pattern. Reply_status changes: Supabase PATCH fires after 5s; undo reverts optimistic removal from list.
+**5-second undo**: same pattern as QueuePage. `pendingActions: Map<contact_id, PendingEntry>`. Both "Approve and Send" and "mark reply_status" changes use this pattern. Reply_status changes: Supabase PATCH fires after 5s; undo reverts optimistic removal from list. A send answered `recorded: false` shows the "Sent, but not saved" warning and drops that draft row from Send for the session (`sentDraftIds`, sessionStorage `replies_sent_unrecorded_draft_ids`); a later reply draft for the same contact is a new row and is offered as usual.
 
 **Important**: `reply_status` updates (i/c/D) do NOT touch `stage` — stage is managed manually via the contacts side sheet on /contacts.
 

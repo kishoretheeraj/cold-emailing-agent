@@ -20,7 +20,11 @@ test("outreach contact: stage dropdown shows only Outreach section with descript
   await expect(page.getByRole("dialog")).toBeVisible({ timeout: 5_000 });
 
   // Open the stage dropdown
-  const combobox = page.getByRole("combobox").first();
+  // Scoped to the sheet: the page's own Stage filter is also a combobox.
+  const combobox = page.getByRole("dialog").getByRole("combobox").first();
+  await page.getByRole("dialog").evaluate(async (el) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished));
+  });
   await combobox.click();
   await page.waitForTimeout(300);
 
@@ -74,7 +78,11 @@ test("applied contact: stage dropdown shows only Applied section with descriptiv
   await fullRecordFetch;
 
   // Open the stage dropdown
-  const combobox = page.getByRole("combobox").first();
+  // Scoped to the sheet: the page's own Stage filter is also a combobox.
+  const combobox = page.getByRole("dialog").getByRole("combobox").first();
+  await page.getByRole("dialog").evaluate(async (el) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished));
+  });
   await combobox.click();
   await page.waitForTimeout(300);
 
