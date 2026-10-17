@@ -4,6 +4,7 @@ import logging
 import posixpath
 import os
 import re
+import threading
 import time
 import uuid
 import supabase._sync.client as _sc
@@ -14,18 +15,22 @@ log = logging.getLogger(__name__)
 # client still validates against JWT regex. Widen the check by monkeypatching
 # re.match for the duration of create_client's internal validation call.
 _original_create = _sc.create_client
+# One creation at a time: an overlapping one would save the other's lenient wrapper as the
+# "original" re.match and leave it installed after both finish.
+_create_lock = threading.RLock()
 
 def _create_patched(supabase_url, supabase_key, options=None):
-    orig_re_match = re.match
-    def lenient_match(pattern, string, *a, **kw):
-        if "A-Za-z0-9-_=" in str(pattern) and string.startswith("sb_"):
-            return True
-        return orig_re_match(pattern, string, *a, **kw)
-    re.match = lenient_match
-    try:
-        return _original_create(supabase_url, supabase_key, options)
-    finally:
-        re.match = orig_re_match
+    with _create_lock:
+        orig_re_match = re.match
+        def lenient_match(pattern, string, *a, **kw):
+            if "A-Za-z0-9-_=" in str(pattern) and string.startswith("sb_"):
+                return True
+            return orig_re_match(pattern, string, *a, **kw)
+        re.match = lenient_match
+        try:
+            return _original_create(supabase_url, supabase_key, options)
+        finally:
+            re.match = orig_re_match
 
 from supabase import create_client as _orig_create_client
 import config
@@ -58,7 +63,9 @@ def _is_unique_violation(exc):
 def get_client():
     global _client
     if _client is None:
-        _client = _create_patched(SUPABASE_URL, SUPABASE_ANON_KEY)
+        with _create_lock:
+            if _client is None:
+                _client = _create_patched(SUPABASE_URL, SUPABASE_ANON_KEY)
     return _client
 
 _CONTACT_PAGE = 1000
@@ -68,7 +75,9 @@ def get_admin_client():
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not set")
     if _admin_client is None:
-        _admin_client = _create_patched(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        with _create_lock:
+            if _admin_client is None:
+                _admin_client = _create_patched(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
     return _admin_client
 
 def get_all_contacts():

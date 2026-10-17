@@ -165,7 +165,7 @@ def _run_hardcoded_fallback(contact):
     if not company:
         return []
 
-    q = config.RESEARCH_HARDCODED_FALLBACK_QUERY.format(company=company)
+    q = config.RESEARCH_HARDCODED_FALLBACK_QUERY.format(company=company, year=datetime.now(timezone.utc).year)
 
     try:
         client = _get_client()

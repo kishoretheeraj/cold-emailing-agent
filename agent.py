@@ -27,7 +27,7 @@ from config import (
     ANTHROPIC_API_KEY, BATCH_POLL_INTERVAL,
     EMAIL_MODEL, FOLLOWUP_DAYS, PREPARE_EMAIL_WORKERS,
 )
-from constants import TERMINAL_REPLY_STATUSES
+from constants import REPLY_STOP_CLASSIFIER_STATUSES, TERMINAL_REPLY_STATUSES
 from db import get_all_contacts, get_application_states, update_contact, close_contact, save_thread_info, get_thread_info, load_prompts, get_pause_scope, record_run, insert_email_message, log_drafted_email, update_message_id, update_latest_message_id, log_agent_event
 from emailer import generate_email, prepare_email, finalize_email, hash_prompt_set
 from gmail import create_draft, apply_label_to_latest_draft, find_sent_by_thread_id, find_sent_by_subject
@@ -54,6 +54,8 @@ def decide_action(contact, today):
 
     # Global skips
     if reply in TERMINAL_REPLY_STATUSES:
+        return "skip"
+    if contact.get("classifier_status") in REPLY_STOP_CLASSIFIER_STATUSES:
         return "skip"
     if stage == "closed":
         return "skip"
@@ -706,6 +708,8 @@ def _skip_reason(contact, today):
         return f"replied ({reply})"
     if reply == "dead":
         return "marked dead"
+    if contact.get("classifier_status") in REPLY_STOP_CLASSIFIER_STATUSES:
+        return f"replied (classified {contact['classifier_status']})"
     if stage == "closed":
         return "closed"
     if contact.get("mode") == "applied":

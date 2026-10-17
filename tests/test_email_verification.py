@@ -128,3 +128,14 @@ def test_only_bodies_from_matching_senders_are_fetched(_inbox):
     want_body = _inbox.call_args.kwargs["want_body"]
     assert want_body({"from": "acme@myworkday.com", "is_reply": False}) is True
     assert want_body({"from": "friend@gmail.com", "is_reply": False}) is False
+
+
+def test_warns_when_the_receipt_inbox_is_not_the_form_email(mocker, caplog):
+    # Audit 2026-10-14 F2: security codes go to config.APPLY_FORM_EMAIL.
+    mocker.patch.object(email_verification.config, "RECEIPT_IMAP_ADDRESS", "other@example.com")
+    mocker.patch.object(email_verification.config, "RECEIPT_IMAP_APP_PASSWORD", "pw")
+    mocker.patch.object(email_verification.gmail, "fetch_inbox_since", return_value=[])
+    mocker.patch.object(email_verification.time, "sleep")
+    with caplog.at_level("WARNING"):
+        email_verification.wait_for_verification(("greenhouse.io",), datetime.now(timezone.utc), timeout_seconds=0)
+    assert any("APPLY_FORM_EMAIL" in r.getMessage() for r in caplog.records)
